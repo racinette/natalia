@@ -1,0 +1,4 @@
+---
+alwaysApply: true
+---
+Do not create unnecessary markdown files like `IMPLEMENTATION_DETAILS.MD`, `QUICK_REFERENCE.MD`, etc., unless specifically prompted to. If you want to document, make sure to either create or update the `README.MD` file.

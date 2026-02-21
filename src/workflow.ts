@@ -1,0 +1,468 @@
+import type { StandardSchemaV1 } from "./internal/standard-schema";
+import type {
+  StepDefinition,
+  RetryPolicyOptions,
+  ChannelDefinitions,
+  StreamDefinitions,
+  EventDefinitions,
+  StepDefinitions,
+  WorkflowDefinitions,
+  WorkflowDefinition,
+  WorkflowContext,
+  CompensationContext,
+  PatchDefinitions,
+  RngDefinitions,
+  RngAccessors,
+} from "./types";
+
+// =============================================================================
+// DEFINE STEP
+// =============================================================================
+
+/**
+ * Define a reusable step.
+ *
+ * Steps are durable, idempotent operations that:
+ * - Are automatically retried on failure per their retry policy
+ * - Have their results cached for deterministic replay
+ *
+ * In `WorkflowContext`, `.execute()` returns the decoded result `T` directly —
+ * failures auto-terminate the workflow and trigger compensation (happy-path model).
+ *
+ * In `CompensationContext`, `.execute()` returns `CompensationStepResult<T>` — a
+ * discriminated union that compensation code must handle gracefully.
+ * `.start()` returns a `ScopeEntry<CompensationStepHandle<T>>` for concurrent
+ * execution within compensation scopes.
+ *
+ * LOGGING: Use your own application logger (console.log, Winston, Pino, etc.)
+ * inside step implementations. Workflow-level logging is separate via ctx.logger.
+ *
+ * @example
+ * ```typescript
+ * const FlightBookingResult = z.object({
+ *   id: z.string(),
+ *   price: z.number(),
+ * });
+ *
+ * const bookFlight = defineStep({
+ *   name: 'bookFlight',
+ *   execute: async ({ signal }, destination: string, customerId: string) => {
+ *     const res = await fetch('https://api.flights.com/book', {
+ *       method: 'POST',
+ *       body: JSON.stringify({ destination, customerId }),
+ *       signal,
+ *     });
+ *     return await res.json();
+ *   },
+ *   schema: FlightBookingResult,
+ *   retryPolicy: { maxAttempts: 3, intervalSeconds: 2 },
+ * });
+ *
+ * // Compensation step — used in compensation callbacks
+ * const cancelFlight = defineStep({
+ *   name: 'cancelFlight',
+ *   execute: async ({ signal }, destination: string, customerId: string) => {
+ *     await fetch('https://api.flights.com/cancel-by-route', {
+ *       method: 'POST',
+ *       body: JSON.stringify({ destination, customerId }),
+ *       signal,
+ *     });
+ *     return undefined;
+ *   },
+ *   schema: z.undefined(),
+ *   retryPolicy: { maxAttempts: 20, intervalSeconds: 5 },
+ * });
+ * ```
+ */
+export function defineStep<
+  TArgs extends unknown[],
+  TResultSchema extends StandardSchemaV1<unknown, unknown> = any,
+>(config: {
+  name: string;
+  execute: (
+    context: { signal: AbortSignal },
+    ...args: TArgs
+  ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
+  schema: TResultSchema;
+  retryPolicy?: RetryPolicyOptions;
+}): StepDefinition<TArgs, TResultSchema> {
+  if (!config.name || typeof config.name !== "string") {
+    throw new Error("Step name must be a non-empty string");
+  }
+  if (typeof config.execute !== "function") {
+    throw new Error("Step execute must be a function");
+  }
+  if (!config.schema || !("~standard" in config.schema)) {
+    throw new Error("Step schema must be a standard schema");
+  }
+
+  return {
+    name: config.name,
+    execute: config.execute,
+    schema: config.schema,
+    retryPolicy: config.retryPolicy,
+  };
+}
+
+// =============================================================================
+// DEFINE WORKFLOW
+// =============================================================================
+
+/**
+ * Define a workflow with full type safety.
+ *
+ * Workflows are durable, long-running processes that:
+ * - Survive process restarts via replay
+ * - Communicate via channels (messages)
+ * - Output data via streams
+ * - Signal milestones via events
+ * - Execute durable operations via steps
+ *
+ * **Happy-path model:** `.execute()` returns the decoded result `T` directly.
+ * Failures auto-terminate the workflow and trigger compensation in LIFO order.
+ * No `if (!result.ok) throw` boilerplate.
+ *
+ * **Compensation:** Each handle has at most one compensation callback, defined
+ * at `.start()` or `.execute()` time. Compensation runs in LIFO order when
+ * the workflow fails. `ctx.addCompensation()` provides general-purpose cleanup.
+ *
+ * **Structured concurrency:** All concurrent handles must exist within a
+ * `ctx.scope()` declaration. `.start()` is only available inside scopes.
+ * Handles with a `compensate` callback are compensated on scope exit;
+ * handles without are settled (waited for, result ignored).
+ *
+ * **Failure handling:** Concurrency primitives (match, forEach, map) support
+ * `{ onComplete, onFailure }` handlers for explicit failure recovery without
+ * crashing the workflow.
+ *
+ * **Detached children:** `startDetached()` fires off a child workflow without
+ * a scope — the only way to start concurrent work without structured concurrency.
+ *
+ * @example
+ * ```typescript
+ * const travelWorkflow = defineWorkflow({
+ *   name: 'travel',
+ *   args: TravelArgs,
+ *   steps: { bookFlight, cancelFlight, bookHotel, cancelHotel },
+ *   result: z.object({ bookingId: z.string() }),
+ *
+ *   async execute(ctx, args) {
+ *     // .execute() returns T directly — failure auto-compensates
+ *     const flight = await ctx.steps.bookFlight.execute(args.destination, args.customerId, {
+ *       compensate: async (compCtx, result) => {
+ *         if (result.status === 'complete') {
+ *           await compCtx.steps.cancelFlight.execute(args.destination, args.customerId);
+ *         }
+ *       },
+ *     });
+ *
+ *     // Concurrent with scope and compensation callback
+ *     const winner = await ctx.scope({
+ *       a: ctx.steps.bookHotel.start(args.city, args.checkIn, args.checkOut, {
+ *         compensate: async (compCtx, result) => {
+ *           if (result.status === 'complete') {
+ *             await compCtx.steps.cancelHotel.execute(args.city, args.checkIn, args.checkOut);
+ *           }
+ *         },
+ *       }),
+ *     }, async ({ a }) => {
+ *       return await a.join();
+ *     });
+ *
+ *     return { bookingId: flight.id };
+ *   },
+ * });
+ * ```
+ */
+export function defineWorkflow<
+  TState = undefined,
+  TChannels extends ChannelDefinitions = Record<string, never>,
+  TStreams extends StreamDefinitions = Record<string, never>,
+  TEvents extends EventDefinitions = Record<string, never>,
+  TSteps extends StepDefinitions = Record<string, never>,
+  TWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TResultSchema extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+    void,
+    void
+  >,
+  TArgs extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+    void,
+    void
+  >,
+  TPatches extends PatchDefinitions = Record<string, never>,
+  TRng extends RngDefinitions = Record<string, never>,
+>(config: {
+  name: string;
+  state?: (ctx: { rng: RngAccessors<TRng> }) => TState;
+  channels?: TChannels;
+  streams?: TStreams;
+  events?: TEvents;
+  steps?: TSteps;
+  workflows?: TWorkflows;
+  patches?: TPatches;
+  rng?: TRng;
+  result?: TResultSchema;
+  args?: TArgs;
+  retention?:
+    | number
+    | {
+        complete: number | null;
+        failed: number | null;
+        terminated: number | null;
+      };
+  beforeCompensate?: (params: {
+    ctx: CompensationContext<
+      TState,
+      TChannels,
+      TStreams,
+      TEvents,
+      TSteps,
+      TWorkflows,
+      TPatches,
+      TRng
+    >;
+    args: StandardSchemaV1.InferOutput<TArgs>;
+  }) => Promise<void>;
+  afterCompensate?: (params: {
+    ctx: CompensationContext<
+      TState,
+      TChannels,
+      TStreams,
+      TEvents,
+      TSteps,
+      TWorkflows,
+      TPatches,
+      TRng
+    >;
+    args: StandardSchemaV1.InferOutput<TArgs>;
+  }) => Promise<void>;
+  execute: (
+    ctx: WorkflowContext<
+      TState,
+      TChannels,
+      TStreams,
+      TEvents,
+      TSteps,
+      TWorkflows,
+      TPatches,
+      TRng
+    >,
+    args: StandardSchemaV1.InferOutput<TArgs>,
+  ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
+}): WorkflowDefinition<
+  TState,
+  TChannels,
+  TStreams,
+  TEvents,
+  TSteps,
+  TWorkflows,
+  TResultSchema,
+  TArgs,
+  TPatches,
+  TRng
+> {
+  // Validate name
+  if (!config.name || typeof config.name !== "string") {
+    throw new Error("Workflow name must be a non-empty string");
+  }
+
+  // Validate state if provided
+  if (config.state !== undefined) {
+    if (typeof config.state !== "function") {
+      throw new Error("state must be a factory function");
+    }
+  }
+
+  // Validate result schema if provided
+  if (config.result !== undefined) {
+    if (!config.result || !("~standard" in config.result)) {
+      throw new Error("result must be a standard schema");
+    }
+  }
+
+  // Validate channels
+  const channels = config.channels ?? ({} as TChannels);
+  if (config.channels !== undefined) {
+    if (typeof config.channels !== "object" || Array.isArray(config.channels)) {
+      throw new Error("channels must be an object");
+    }
+    for (const [name, schema] of Object.entries(config.channels)) {
+      if (!schema || typeof schema !== "object" || !("~standard" in schema)) {
+        throw new Error(`Channel '${name}' must have a standard schema`);
+      }
+    }
+  }
+
+  // Validate streams
+  const streams = config.streams ?? ({} as TStreams);
+  if (config.streams !== undefined) {
+    if (typeof config.streams !== "object" || Array.isArray(config.streams)) {
+      throw new Error("streams must be an object");
+    }
+    for (const [name, schema] of Object.entries(config.streams)) {
+      if (!schema || typeof schema !== "object" || !("~standard" in schema)) {
+        throw new Error(`Stream '${name}' must have a standard schema`);
+      }
+    }
+  }
+
+  // Validate events
+  const events = config.events ?? ({} as TEvents);
+  if (config.events !== undefined) {
+    if (typeof config.events !== "object" || Array.isArray(config.events)) {
+      throw new Error("events must be an object");
+    }
+    for (const [name, value] of Object.entries(config.events)) {
+      if (value !== true) {
+        throw new Error(`Event '${name}' must be true`);
+      }
+    }
+  }
+
+  // Validate steps
+  const steps = config.steps ?? ({} as TSteps);
+  if (config.steps !== undefined) {
+    if (typeof config.steps !== "object" || Array.isArray(config.steps)) {
+      throw new Error("steps must be an object");
+    }
+    for (const [name, step] of Object.entries(config.steps)) {
+      if (!step || typeof step !== "object") {
+        throw new Error(`Step '${name}' must be a valid step definition`);
+      }
+      if (typeof step.execute !== "function") {
+        throw new Error(`Step '${name}' must have an execute function`);
+      }
+    }
+  }
+
+  // Validate workflows
+  const workflows = config.workflows ?? ({} as TWorkflows);
+  if (config.workflows !== undefined) {
+    if (
+      typeof config.workflows !== "object" ||
+      Array.isArray(config.workflows)
+    ) {
+      throw new Error("workflows must be an object");
+    }
+    for (const [name, wf] of Object.entries(config.workflows)) {
+      if (!wf || typeof wf !== "object") {
+        throw new Error(
+          `Workflow '${name}' must be a valid workflow definition`,
+        );
+      }
+      if (!wf.name || typeof wf.name !== "string") {
+        throw new Error(`Workflow '${name}' must have a name`);
+      }
+      if (typeof wf.execute !== "function") {
+        throw new Error(`Workflow '${name}' must have execute function`);
+      }
+    }
+  }
+
+  // Validate execute
+  if (typeof config.execute !== "function") {
+    throw new Error("execute must be a function");
+  }
+
+  // Validate arg schema if provided
+  if (config.args !== undefined) {
+    if (
+      !config.args ||
+      typeof config.args !== "object" ||
+      !("~standard" in config.args)
+    ) {
+      throw new Error("args must be a standard schema");
+    }
+  }
+
+  // Validate patches if provided
+  if (config.patches !== undefined) {
+    if (typeof config.patches !== "object" || Array.isArray(config.patches)) {
+      throw new Error("patches must be an object");
+    }
+    for (const [name, value] of Object.entries(config.patches)) {
+      if (typeof value !== "boolean") {
+        throw new Error(
+          `Patch '${name}' must be a boolean (true = active, false = deprecated)`,
+        );
+      }
+    }
+  }
+
+  // Validate rng if provided
+  if (config.rng !== undefined) {
+    if (typeof config.rng !== "object" || Array.isArray(config.rng)) {
+      throw new Error("rng must be an object");
+    }
+    for (const [name, value] of Object.entries(config.rng)) {
+      if (value !== true && typeof value !== "function") {
+        throw new Error(
+          `RNG '${name}' must be true (simple) or a key derivation function (parametrized)`,
+        );
+      }
+    }
+  }
+
+  // Validate retention if provided
+  if (config.retention !== undefined) {
+    if (typeof config.retention === "number") {
+      if (config.retention < 0) {
+        throw new Error("retention must be a non-negative number (seconds)");
+      }
+    } else if (typeof config.retention === "object") {
+      const r = config.retention;
+      if (
+        (r.complete !== null &&
+          (typeof r.complete !== "number" || r.complete < 0)) ||
+        (r.failed !== null && (typeof r.failed !== "number" || r.failed < 0)) ||
+        (r.terminated !== null &&
+          (typeof r.terminated !== "number" || r.terminated < 0))
+      ) {
+        throw new Error(
+          "retention settings must have complete, failed, and terminated as non-negative numbers or null",
+        );
+      }
+    } else {
+      throw new Error("retention must be a number or RetentionSettings object");
+    }
+  }
+
+  // Validate hooks if provided
+  if (
+    config.beforeCompensate !== undefined &&
+    typeof config.beforeCompensate !== "function"
+  ) {
+    throw new Error("beforeCompensate must be a function");
+  }
+  if (
+    config.afterCompensate !== undefined &&
+    typeof config.afterCompensate !== "function"
+  ) {
+    throw new Error("afterCompensate must be a function");
+  }
+
+  const patches = config.patches ?? ({} as TPatches);
+  const rng = config.rng ?? ({} as TRng);
+
+  return {
+    ...config,
+    channels,
+    streams,
+    events,
+    steps,
+    workflows,
+    patches,
+    rng,
+  } as WorkflowDefinition<
+    TState,
+    TChannels,
+    TStreams,
+    TEvents,
+    TSteps,
+    TWorkflows,
+    TResultSchema,
+    TArgs,
+    TPatches,
+    TRng
+  >;
+}
