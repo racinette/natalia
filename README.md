@@ -361,7 +361,7 @@ const stepRace = await ctx.scope(
 const childRace = await ctx.scope(
   {
     payment: ctx.childWorkflows.payment({
-      workflowId: "payment-1",
+      id: "payment-1",
       args: { amount: 100, customerId: "cust-1" },
     }),
     timer: ctx.sleep(45).then(() => "timed_out" as const),
@@ -868,7 +868,7 @@ Workflow-internal blocking operations (`channels.receive()`, `select`, `sleep`) 
 | `ctx.streams.*`              | `.write()`                                                                                             |
 | `ctx.events.*`               | `.set()`                                                                                               |
 | `ctx.childWorkflows.*`       | `(options)` → `WorkflowCall<T>` by default; with `detached: true` → `ForeignWorkflowHandle`            |
-| `ctx.foreignWorkflows.*`     | `.get(workflowId)` → `ForeignWorkflowHandle` (channels.send only, fire-and-forget)                     |
+| `ctx.foreignWorkflows.*`     | `.get(id)` → `ForeignWorkflowHandle` (channels.send only, fire-and-forget)                             |
 | `ctx.patches.*`              | `await ctx.patches.name` → boolean, `(callback, default?)` → callback result or default                |
 | `ctx.scope()`                | Structured concurrency boundary — accepts closures and collections                                     |
 | `ctx.select()`               | Multiplex handles — `for await` (primary) or `.match()` (key-aware, `{ complete, failure }`)           |
@@ -917,12 +917,26 @@ Engine-level waits use `{ signal?: AbortSignal }` instead of numeric timeouts.
 | Resource                    | Operations                                               |
 | --------------------------- | -------------------------------------------------------- |
 | `.channels.*`               | `.send()`                                                |
-| `.streams.*`                | `.read(offset, { signal? })`, `.iterator()`, `.isOpen()` |
+| `.streams.*`                | `.read(offset, { signal? })`, `.iterator()`, `.isOpen()`, `for await...of` |
 | `.events.*`                 | `.wait({ signal? })`, `.isSet()`                         |
 | `.lifecycle.*`              | `.wait({ signal? })`, `.get()`                           |
 | `.getResult({ signal? })`   | Wait for result                                          |
 | `.sigterm()` / `.sigkill()` | Send signals (engine-level only)                         |
 | `.setRetention()`           | Update retention policy                                  |
+
+External stream async iteration:
+
+```typescript
+// Iterate directly from offset 0
+for await (const item of handle.streams.progress) {
+  console.log(item);
+}
+
+// Iterate from a custom offset
+for await (const item of handle.streams.progress.iterator(10)) {
+  console.log(item);
+}
+```
 
 ## Garbage Collection
 
@@ -987,7 +1001,7 @@ const engine = new WorkflowEngine({
 await engine.start();
 
 // Engine-level uses full result unions
-const result = await engine.workflows.hello.execute({ workflowId: "hello-1" });
+const result = await engine.workflows.hello.execute({ id: "hello-1" });
 if (result.ok) {
   console.log(result.data.message); // "Hello, World!"
 } else if (result.status === "failed") {
@@ -995,7 +1009,7 @@ if (result.ok) {
 }
 
 // Or start() for a handle with full control
-const handle = await engine.workflows.hello.start({ workflowId: "hello-2" });
+const handle = await engine.workflows.hello.start({ id: "hello-2" });
 const result2 = await handle.getResult();
 
 await engine.shutdown();
@@ -1041,7 +1055,7 @@ Work in Progress — Public API design complete. Internal implementation pending
 - **CompensationContext with full structured concurrency** — `scope()`, `select()`, `forEach()`, `map()`, `CompensationStepCall.retry()`; failures always explicit in result types
 - `CompensationStepResult<T>` for defensive compensation code
 - **`ctx.childWorkflows.*` / `ctx.foreignWorkflows.*`** split — structured vs message-only access
-- **Detached child start via call options** — `ctx.childWorkflows.name({ workflowId, args, detached: true })` returns `ForeignWorkflowHandle`
+- **Detached child start via call options** — `ctx.childWorkflows.name({ id, args, detached: true })` returns `ForeignWorkflowHandle`
 - **Simplified typing model** — detached vs result mode is selected at call-site options instead of builder chaining
 - **Collection support** — Array and Map of closures/handles in scope/select/forEach/map; callbacks receive `innerKey` for collections
 - Error observability — `StepExecutionError`, `StepErrorAccessor`, `WorkflowExecutionError`

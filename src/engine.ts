@@ -56,7 +56,7 @@ export interface EngineWorkflowAccessor<
    * @example
    * ```typescript
    * const handle = await engine.workflows.order.start({
-   *   workflowId: 'order-123',
+   *   id: 'order-123',
    *   args: { customerId: 'cust-456', items: [...] },
    * });
    * ```
@@ -83,7 +83,7 @@ export interface EngineWorkflowAccessor<
    * @example
    * ```typescript
    * const result = await engine.workflows.order.execute({
-   *   workflowId: 'order-123',
+   *   id: 'order-123',
    *   args: { customerId: 'cust-456', items: [...] },
    * });
    * if (result.ok) {
@@ -100,7 +100,7 @@ export interface EngineWorkflowAccessor<
   /**
    * Get a handle to an existing workflow instance.
    *
-   * @param workflowId - The workflow instance ID.
+   * @param id - The workflow instance ID.
    * @returns External handle to the workflow.
    *
    * @example
@@ -110,7 +110,7 @@ export interface EngineWorkflowAccessor<
    * ```
    */
   get(
-    workflowId: string,
+    id: string,
   ): WorkflowHandleExternal<
     InferWorkflowResult<W>,
     InferWorkflowChannels<W>,
@@ -221,7 +221,7 @@ export interface WorkflowEngineConfig<
  * await engine.start();
  *
  * const handle = await engine.workflows.order.start({
- *   workflowId: 'order-123',
+ *   id: 'order-123',
  *   args: { customerId: 'cust-456', items: [...] },
  * });
  *
@@ -337,9 +337,9 @@ export class WorkflowEngine<
           );
           return handle.getResult();
         },
-        get: (workflowId: string) => {
+        get: (id: string) => {
           this.assertNotShutdown();
-          return this.executor.getWorkflowHandle(workflowDef, workflowId);
+          return this.executor.getWorkflowHandle(workflowDef, id);
         },
       };
     }
