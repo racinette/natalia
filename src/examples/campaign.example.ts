@@ -92,7 +92,7 @@ export const campaignWorkflow = defineWorkflow({
       data: { campaignId },
     });
 
-    const useLegacySms = await ctx.patches.legacySms();
+    const useLegacySms = await ctx.patches.legacySms;
     if (useLegacySms) {
       ctx.logger.info("Using legacy SMS path (replaying old workflow)");
     }

@@ -69,10 +69,10 @@ export type RngDefinitions = Record<
  *
  * Supports two usage patterns:
  *
- * **Boolean form** — returns true/false indicating whether the patch is active.
+ * **Boolean form** — await the accessor directly to get true/false.
  * Use for removing code or complex restructuring:
  * ```typescript
- * if (!await ctx.patches.removeLegacyEmail()) {
+ * if (!await ctx.patches.removeLegacyEmail) {
  *   await ctx.steps.sendLegacyEmail(...);
  * }
  * ```
@@ -86,8 +86,14 @@ export type RngDefinitions = Record<
  * ```
  */
 export interface PatchAccessor {
-  /** Boolean form — returns whether this patch is active for this workflow instance */
-  (): Promise<boolean>;
+  /** Boolean form — await the accessor directly for active/inactive */
+  then<R1 = boolean, R2 = never>(
+    onfulfilled?:
+      | ((value: boolean) => R1 | PromiseLike<R1>)
+      | null
+      | undefined,
+    onrejected?: ((reason: any) => R2 | PromiseLike<R2>) | null | undefined,
+  ): Promise<R1 | R2>;
   /** Callback form with default — runs callback if active, returns default otherwise */
   <T, D>(callback: () => Promise<T>, defaultValue: D): Promise<T | D>;
   /** Callback form without default — runs callback if active, returns undefined otherwise */

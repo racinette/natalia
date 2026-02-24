@@ -651,8 +651,8 @@ const workflow = defineWorkflow({
       return await ctx.steps.fraudCheck(args.flightId);
     }, null);
 
-    // Boolean form — removing old code
-    if (!(await ctx.patches.removeLegacyEmail())) {
+    // Boolean form — await patch accessor directly
+    if (!(await ctx.patches.removeLegacyEmail)) {
       await ctx.steps.sendLegacyEmail(...);
     }
   },
@@ -826,7 +826,7 @@ Workflow-internal blocking operations (`channels.receive()`, `select`, `sleep`) 
 | `ctx.events.*`               | `.set()`                                                                                               |
 | `ctx.childWorkflows.*`       | `(options)` → `WorkflowCall<T>` by default; with `detached: true` → `ForeignWorkflowHandle`            |
 | `ctx.foreignWorkflows.*`     | `.get(workflowId)` → `ForeignWorkflowHandle` (channels.send only, fire-and-forget)                     |
-| `ctx.patches.*`              | `()` → boolean, `(callback, default?)` → callback result or default                                    |
+| `ctx.patches.*`              | `await ctx.patches.name` → boolean, `(callback, default?)` → callback result or default                |
 | `ctx.scope()`                | Structured concurrency boundary — accepts closures and collections                                     |
 | `ctx.select()`               | Multiplex handles — `for await` (primary) or `.match()` (key-aware, `{ complete, failure }`)           |
 | `ctx.forEach()`              | Process branch handles concurrently; `{ complete, failure }` handlers; collection-aware                |
