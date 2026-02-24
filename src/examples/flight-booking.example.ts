@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { defineWorkflow } from "../workflow";
-import { bookFlight, cancelFlight, bookHotel, cancelHotel, sendEmail } from "./shared";
+import {
+  bookFlight,
+  cancelFlight,
+  bookHotel,
+  cancelHotel,
+  sendEmail,
+} from "./shared";
 
 const FlightBookingArgs = z.object({
   destination: z.string(),
@@ -85,9 +91,9 @@ export const flightBookingWorkflow = defineWorkflow({
                 id: data.id,
                 dest: args.destination,
               }),
-              failure: async (failure) => {
+              failure: async ({ compensate }) => {
                 ctx.logger.warn("Primary hotel failed — falling back");
-                await failure.compensate();
+                await compensate();
                 return { ok: false as const, id: null, dest: null };
               },
             },

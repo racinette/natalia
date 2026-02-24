@@ -17,7 +17,7 @@ const ApprovalMessage = z.object({ approved: z.boolean(), reason: z.string() });
  * - sequential compensation (unconditional)
  * - .failure/.complete/.retry
  * - dontCompensate
- * - channels.receive + addCompensation + mutable state
+ * - channels.receive + afterCompensate + mutable state
  */
 export const orderWorkflow = defineWorkflow({
   name: "order",
@@ -34,22 +34,21 @@ export const orderWorkflow = defineWorkflow({
     flightId: null as string | null,
     hotelId: null as string | null,
   }),
+  afterCompensate: async ({ ctx: compCtx, args }) => {
+    compCtx.logger.info("Order failed — notifying customer", {
+      workflowId: compCtx.workflowId,
+    });
+    const result = await compCtx.steps.sendEmail(
+      args.customerEmail,
+      "Order Failed",
+      "We were unable to complete your order. Any charges have been refunded.",
+    );
+    if (!result.ok) {
+      compCtx.logger.error("Failed to send failure notification");
+    }
+  },
 
   async execute(ctx, args) {
-    ctx.addCompensation(async (compCtx) => {
-      compCtx.logger.info("Order failed — notifying customer", {
-        workflowId: compCtx.workflowId,
-      });
-      const result = await compCtx.steps.sendEmail(
-        args.customerEmail,
-        "Order Failed",
-        "We were unable to complete your order. Any charges have been refunded.",
-      );
-      if (!result.ok) {
-        compCtx.logger.error("Failed to send failure notification");
-      }
-    });
-
     const flightId = await ctx.steps
       .bookFlight(args.destination, args.customerId)
       .compensate(async (compCtx) => {

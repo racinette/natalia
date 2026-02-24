@@ -13,7 +13,7 @@ const PaymentOrchestrationArgs = z.object({
  * - child workflow builders (.compensate/.failure/.complete)
  * - detached child start via call option
  * - foreign workflow get/send
- * - addCompensation
+ * - afterCompensate hook
  */
 export const paymentOrchestrationWorkflow = defineWorkflow({
   name: "paymentOrchestration",
@@ -25,14 +25,13 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
     campaignStarted: z.boolean(),
   }),
   rng: { ids: true },
+  afterCompensate: async ({ ctx: compCtx }) => {
+    compCtx.logger.info("Payment orchestration compensating", {
+      workflowId: compCtx.workflowId,
+    });
+  },
 
   async execute(ctx, args) {
-    ctx.addCompensation(async (compCtx) => {
-      compCtx.logger.info("Payment orchestration compensating", {
-        workflowId: compCtx.workflowId,
-      });
-    });
-
     const receiptId = await ctx.childWorkflows
       .payment({
         workflowId: `payment-${ctx.rng.ids.uuidv4()}`,
