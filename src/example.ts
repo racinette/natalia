@@ -277,7 +277,10 @@ export const heartbeatWorkflow = defineWorkflow({
     // Signal event
     await ctx.events.done.set();
 
-    await ctx.streams.auditLog.write({ msg: "Heartbeat complete", ts: ctx.timestamp });
+    await ctx.streams.auditLog.write({
+      msg: "Heartbeat complete",
+      ts: ctx.timestamp,
+    });
   },
 });
 
@@ -368,16 +371,15 @@ export const orderWorkflow = defineWorkflow({
     // without running the callback.
     const hotelId = await ctx.scope(
       {
-        hotel: async () =>
-          ctx.steps
-            .bookHotel(args.destination, args.checkIn, args.checkOut)
-            .compensate(async (compCtx) => {
-              await compCtx.steps.cancelHotel(
-                args.destination,
-                args.checkIn,
-                args.checkOut,
-              );
-            }),
+        hotel: ctx.steps
+          .bookHotel(args.destination, args.checkIn, args.checkOut)
+          .compensate(async (compCtx) => {
+            await compCtx.steps.cancelHotel(
+              args.destination,
+              args.checkIn,
+              args.checkOut,
+            );
+          }),
       },
       async ({ hotel }) => {
         const result = await ctx.map(
@@ -392,7 +394,9 @@ export const orderWorkflow = defineWorkflow({
                 // side effects (e.g. a third-party timeout before the request
                 // ever reached the server).
                 failure.dontCompensate();
-                ctx.logger.error("Hotel booking failed — no side effects, skipping compensation");
+                ctx.logger.error(
+                  "Hotel booking failed — no side effects, skipping compensation",
+                );
                 return null;
               },
             },
@@ -405,7 +409,11 @@ export const orderWorkflow = defineWorkflow({
     ctx.state.hotelId = hotelId;
     ctx.state.phase = "done";
 
-    return { flightId: ctx.state.flightId, hotelId: ctx.state.hotelId, approved: true };
+    return {
+      flightId: ctx.state.flightId,
+      hotelId: ctx.state.hotelId,
+      approved: true,
+    };
   },
 });
 
@@ -431,27 +439,26 @@ export const flightBookingWorkflow = defineWorkflow({
 
   async execute(ctx, args) {
     // --- Scope 1: Race two flight providers — first successful result wins ---
+    // Demonstrates shorthand scope entries: direct thenables (no `async () =>` wrapper).
     const flight = await ctx.scope(
       {
-        provider1: async () =>
-          ctx.steps
-            .bookFlight(`${args.destination}/p1`, args.customerId)
-            .compensate(async (compCtx) => {
-              await compCtx.steps.cancelFlight(
-                `${args.destination}/p1`,
-                args.customerId,
-              );
-            }),
-        provider2: async () =>
-          ctx.steps
-            .bookFlight(`${args.destination}/p2`, args.customerId)
-            .compensate(async (compCtx) => {
-              await compCtx.steps.cancelFlight(
-                `${args.destination}/p2`,
-                args.customerId,
-              );
-            })
-            .retry({ maxAttempts: 5 }),
+        provider1: ctx.steps
+          .bookFlight(`${args.destination}/p1`, args.customerId)
+          .compensate(async (compCtx) => {
+            await compCtx.steps.cancelFlight(
+              `${args.destination}/p1`,
+              args.customerId,
+            );
+          }),
+        provider2: ctx.steps
+          .bookFlight(`${args.destination}/p2`, args.customerId)
+          .compensate(async (compCtx) => {
+            await compCtx.steps.cancelFlight(
+              `${args.destination}/p2`,
+              args.customerId,
+            );
+          })
+          .retry({ maxAttempts: 5 }),
       },
       async ({ provider1, provider2 }) => {
         const sel = ctx.select({ provider1, provider2 });
@@ -468,29 +475,28 @@ export const flightBookingWorkflow = defineWorkflow({
     );
 
     // --- Scope 2: Book a hotel — primary destination, fall back to backup ---
-    // Demonstrates: nested scope, sel.remaining, .match() with { complete, failure }
+    // Demonstrates: nested scope, sel.remaining, .match() with { complete, failure }.
+    // Also shows shorthand entries can coexist with full callback-based entries.
     const hotelId = await ctx.scope(
       {
-        primary: async () =>
-          ctx.steps
-            .bookHotel(args.destination, args.checkIn, args.checkOut)
-            .compensate(async (compCtx) => {
-              await compCtx.steps.cancelHotel(
-                args.destination,
-                args.checkIn,
-                args.checkOut,
-              );
-            }),
-        backup: async () =>
-          ctx.steps
-            .bookHotel(args.backupDestination, args.checkIn, args.checkOut)
-            .compensate(async (compCtx) => {
-              await compCtx.steps.cancelHotel(
-                args.backupDestination,
-                args.checkIn,
-                args.checkOut,
-              );
-            }),
+        primary: ctx.steps
+          .bookHotel(args.destination, args.checkIn, args.checkOut)
+          .compensate(async (compCtx) => {
+            await compCtx.steps.cancelHotel(
+              args.destination,
+              args.checkIn,
+              args.checkOut,
+            );
+          }),
+        backup: ctx.steps
+          .bookHotel(args.backupDestination, args.checkIn, args.checkOut)
+          .compensate(async (compCtx) => {
+            await compCtx.steps.cancelHotel(
+              args.backupDestination,
+              args.checkIn,
+              args.checkOut,
+            );
+          }),
       },
       async ({ primary, backup }) => {
         const sel = ctx.select({ primary, backup });
@@ -500,7 +506,11 @@ export const flightBookingWorkflow = defineWorkflow({
         while (sel.remaining.size > 0) {
           const result = await sel.match({
             primary: {
-              complete: (data) => ({ ok: true as const, id: data.id, dest: args.destination }),
+              complete: (data) => ({
+                ok: true as const,
+                id: data.id,
+                dest: args.destination,
+              }),
               failure: async (failure) => {
                 ctx.logger.warn("Primary hotel failed — falling back");
                 await failure.compensate();
@@ -508,7 +518,11 @@ export const flightBookingWorkflow = defineWorkflow({
               },
             },
             backup: {
-              complete: (data) => ({ ok: true as const, id: data.id, dest: args.backupDestination }),
+              complete: (data) => ({
+                ok: true as const,
+                id: data.id,
+                dest: args.backupDestination,
+              }),
               failure: async (failure) => {
                 ctx.logger.error("Backup hotel also failed");
                 await failure.compensate();
@@ -562,50 +576,42 @@ export const quoteAggregationWorkflow = defineWorkflow({
     // Array fan-out: BranchHandle<QuoteResult>[] — innerKey is index (number)
     const arrayBranches = args.providers.map(
       (p) => async () =>
-        ctx.steps
-          .getQuote(p, args.destination)
-          .compensate(async (compCtx) => {
-            await compCtx.steps.cancelQuote(p);
-          }),
+        ctx.steps.getQuote(p, args.destination).compensate(async (compCtx) => {
+          await compCtx.steps.cancelQuote(p);
+        }),
     );
 
     const arrayPrices: number[] = [];
 
-    await ctx.scope(
-      { quotes: arrayBranches },
-      async ({ quotes }) => {
-        // forEach on BranchHandle[] — callback receives (data, innerKey: number)
-        await ctx.forEach(
-          { quotes },
-          {
-            quotes: {
-              complete: (data, innerKey) => {
-                ctx.logger.info("Array quote received", {
-                  idx: innerKey,
-                  provider: data.provider,
-                  price: data.price,
-                });
-                arrayPrices.push(data.price);
-              },
-              failure: (_failure, innerKey) => {
-                ctx.logger.warn("Array quote failed", { idx: innerKey });
-              },
+    await ctx.scope({ quotes: arrayBranches }, async ({ quotes }) => {
+      // forEach on BranchHandle[] — callback receives (data, innerKey: number)
+      await ctx.forEach(
+        { quotes },
+        {
+          quotes: {
+            complete: (data, innerKey) => {
+              ctx.logger.info("Array quote received", {
+                idx: innerKey,
+                provider: data.provider,
+                price: data.price,
+              });
+              arrayPrices.push(data.price);
+            },
+            failure: (_failure, innerKey) => {
+              ctx.logger.warn("Array quote failed", { idx: innerKey });
             },
           },
-        );
-      },
-    );
+        },
+      );
+    });
 
     // Map fan-out: Map<string, BranchHandle<QuoteResult>> — innerKey is provider name
     const mapBranches = new Map(
       args.providers.map((p) => [
         p,
-        async () =>
-          ctx.steps
-            .getQuote(p, args.destination)
-            .compensate(async (compCtx) => {
-              await compCtx.steps.cancelQuote(p);
-            }),
+        ctx.steps.getQuote(p, args.destination).compensate(async (compCtx) => {
+          await compCtx.steps.cancelQuote(p);
+        }),
       ]),
     );
 
@@ -617,7 +623,10 @@ export const quoteAggregationWorkflow = defineWorkflow({
           { quotes },
           {
             quotes: {
-              complete: (data, innerKey) => ({ price: data.price, provider: innerKey }),
+              complete: (data, innerKey) => ({
+                price: data.price,
+                provider: innerKey,
+              }),
               failure: (_failure, innerKey) => {
                 ctx.logger.warn("Map quote failed", { provider: innerKey });
                 return null;
@@ -731,7 +740,10 @@ const ChannelRaceArgs = z.object({
   customerId: z.string(),
 });
 
-const CancelCommand = z.object({ type: z.literal("cancel"), reason: z.string() });
+const CancelCommand = z.object({
+  type: z.literal("cancel"),
+  reason: z.string(),
+});
 
 export const channelRaceWorkflow = defineWorkflow({
   name: "channelRace",
@@ -747,12 +759,11 @@ export const channelRaceWorkflow = defineWorkflow({
     // Race a branch handle against a channel receive using for await
     const outcome = await ctx.scope(
       {
-        booking: async () =>
-          ctx.steps
-            .bookFlight(args.destination, args.customerId)
-            .compensate(async (compCtx) => {
-              await compCtx.steps.cancelFlight(args.destination, args.customerId);
-            }),
+        booking: ctx.steps
+          .bookFlight(args.destination, args.customerId)
+          .compensate(async (compCtx) => {
+            await compCtx.steps.cancelFlight(args.destination, args.customerId);
+          }),
       },
       async ({ booking }) => {
         const sel = ctx.select({ booking, cancel: ctx.channels.cancel });
@@ -765,7 +776,10 @@ export const channelRaceWorkflow = defineWorkflow({
           // On first event (either booking result or cancel message) decide outcome.
           // We distinguish by shape — booking data has `id`, cancel has `type`.
           if ("id" in data) {
-            return { outcome: "booked" as const, flightId: (data as { id: string }).id };
+            return {
+              outcome: "booked" as const,
+              flightId: (data as { id: string }).id,
+            };
           }
           return { outcome: "cancelled" as const, flightId: null };
         }
@@ -783,15 +797,14 @@ export const channelRaceWorkflow = defineWorkflow({
     // so we just log it.
     const cancelMsg = await ctx.scope(
       {
-        booking2: async () =>
-          ctx.steps
-            .bookFlight(`${args.destination}-2`, args.customerId)
-            .compensate(async (compCtx) => {
-              await compCtx.steps.cancelFlight(
-                `${args.destination}-2`,
-                args.customerId,
-              );
-            }),
+        booking2: ctx.steps
+          .bookFlight(`${args.destination}-2`, args.customerId)
+          .compensate(async (compCtx) => {
+            await compCtx.steps.cancelFlight(
+              `${args.destination}-2`,
+              args.customerId,
+            );
+          }),
       },
       async ({ booking2 }) => {
         const sel2 = ctx.select({ booking2, cancel2: ctx.channels.cancel });
@@ -842,8 +855,8 @@ export const campaignWorkflow = defineWorkflow({
   streams: { events: z.object({ type: z.string(), data: z.unknown() }) },
 
   patches: {
-    multiChannel: true,   // active: new workflows use multi-channel path
-    legacySms: false,     // deprecated: kept for in-flight replay, not for new runs
+    multiChannel: true, // active: new workflows use multi-channel path
+    legacySms: false, // deprecated: kept for in-flight replay, not for new runs
   },
 
   rng: {
@@ -861,9 +874,9 @@ export const campaignWorkflow = defineWorkflow({
   }),
 
   retention: {
-    complete: 7 * 24 * 3600,     // 7 days
-    failed: 30 * 24 * 3600,      // 30 days
-    terminated: 24 * 3600,       // 1 day
+    complete: 7 * 24 * 3600, // 7 days
+    failed: 30 * 24 * 3600, // 30 days
+    terminated: 24 * 3600, // 1 day
   },
 
   async execute(ctx, args) {
@@ -902,10 +915,16 @@ export const campaignWorkflow = defineWorkflow({
     const shuffled = sessionRng.shuffle(args.candidates);
 
     // sample — N random elements without replacement
-    const sampled = sessionRng.sample(args.candidates, Math.min(batchSize, args.candidates.length));
+    const sampled = sessionRng.sample(
+      args.candidates,
+      Math.min(batchSize, args.candidates.length),
+    );
 
     // string — random string
-    const token = sessionRng.string({ length: 16, alphabet: "abcdef0123456789" });
+    const token = sessionRng.string({
+      length: 16,
+      alphabet: "abcdef0123456789",
+    });
 
     // bytes
     const nonce = sessionRng.bytes(8);
@@ -929,7 +948,10 @@ export const campaignWorkflow = defineWorkflow({
       wave1Id,
     });
 
-    await ctx.streams.events.write({ type: "campaign_start", data: { campaignId } });
+    await ctx.streams.events.write({
+      type: "campaign_start",
+      data: { campaignId },
+    });
 
     // --- Patches ---
 
@@ -1039,10 +1061,12 @@ export const compensationHooksWorkflow = defineWorkflow({
           { logEntry, auditEntry },
           {
             logEntry: (data) => {
-              if (!data.ok) ctx.logger.warn("Customer notification failed to send");
+              if (!data.ok)
+                ctx.logger.warn("Customer notification failed to send");
             },
             auditEntry: (data) => {
-              if (!data.ok) ctx.logger.warn("Audit notification failed to send");
+              if (!data.ok)
+                ctx.logger.warn("Audit notification failed to send");
             },
           },
         );
@@ -1082,16 +1106,14 @@ export const compensationHooksWorkflow = defineWorkflow({
         // compCtx.scope() — cancel hotel and send notification concurrently
         await compCtx.scope(
           {
-            cancel: async () =>
-              compCtx.steps
-                .cancelHotel(args.destination, args.checkIn, args.checkOut)
-                .retry({ maxAttempts: 10 }),
-            notify: async () =>
-              compCtx.steps.sendEmail(
-                args.notificationEmail,
-                "Hotel Cancelled",
-                `Hotel booking for ${args.destination} was cancelled.`,
-              ),
+            cancel: compCtx.steps
+              .cancelHotel(args.destination, args.checkIn, args.checkOut)
+              .retry({ maxAttempts: 10 }),
+            notify: compCtx.steps.sendEmail(
+              args.notificationEmail,
+              "Hotel Cancelled",
+              `Hotel booking for ${args.destination} was cancelled.`,
+            ),
           },
           async ({ cancel, notify }) => {
             const sel = compCtx.select({ cancel, notify });

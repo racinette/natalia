@@ -1047,6 +1047,15 @@ export interface LifecycleEvents {
 export type ScopeBranch<T> = () => Promise<T>;
 
 /**
+ * A scope entry value.
+ *
+ * Supports two forms:
+ * - Closure form: `() => Promise<T>` (full flexibility, lazy execution)
+ * - Direct thenable form: `PromiseLike<T>` (short-hand for common step/child calls)
+ */
+export type ScopeEntryValue<T> = ScopeBranch<T> | PromiseLike<T>;
+
+/**
  * A handle to a running scope branch — awaitable in the scope callback.
  * Resolves to T when the branch completes successfully.
  *
@@ -1077,29 +1086,40 @@ export type HandleGroup<T, K = any> =
 
 /**
  * Valid entry values for `ctx.scope()` declarations.
- * Each entry is a closure (single) or a collection of closures (array/map).
+ * Each entry can be either:
+ * - a closure (`() => Promise<T>`)
+ * - a direct thenable (`PromiseLike<T>`)
+ *
+ * Collections (array/map) accept the same two forms per element.
  */
 export type ScopeEntries = Record<
   string,
-  | (() => Promise<any>)
-  | (() => Promise<any>)[]
-  | Map<any, () => Promise<any>>
+  | ScopeEntryValue<any>
+  | ScopeEntryValue<any>[]
+  | Map<any, ScopeEntryValue<any>>
 >;
 
 /**
- * Maps scope entry closures to their corresponding branch handle types,
+ * Extract resolved value type from a scope entry value.
+ */
+type ScopeEntryResult<V> = V extends (...args: any[]) => infer R
+  ? Awaited<R>
+  : Awaited<V>;
+
+/**
+ * Maps scope entry values to their corresponding branch handle types,
  * preserving collection structure (single → BranchHandle, array → array, map → map).
  */
 export type ScopeHandles<E extends ScopeEntries> = {
-  [K in keyof E]: E[K] extends () => Promise<infer T>
-    ? BranchHandle<T>
+  [K in keyof E]: E[K] extends ScopeEntryValue<any>
+    ? BranchHandle<ScopeEntryResult<E[K]>>
     : E[K] extends (infer U)[]
-      ? U extends () => Promise<infer T>
-        ? BranchHandle<T>[]
+      ? U extends ScopeEntryValue<any>
+        ? BranchHandle<ScopeEntryResult<U>>[]
         : never
       : E[K] extends Map<infer MK, infer V>
-        ? V extends () => Promise<infer T>
-          ? Map<MK, BranchHandle<T>>
+        ? V extends ScopeEntryValue<any>
+          ? Map<MK, BranchHandle<ScopeEntryResult<V>>>
           : never
         : never;
 };
@@ -1629,8 +1649,8 @@ export interface CompensationContext<
   /**
    * Create a scope for structured concurrency in compensation.
    *
-   * Entries are async closures (or collections of closures). The engine runs
-   * them on a virtual event loop, interleaving at durable yield points.
+   * Entries can be async closures OR direct thenables (or collections of either).
+   * The engine runs them on a virtual event loop, interleaving at durable yield points.
    *
    * On scope exit, all running branches are awaited to completion.
    * No per-branch compensation — compensation cannot nest.
@@ -1867,8 +1887,8 @@ export interface WorkflowContext<
   /**
    * Create a scope for structured concurrency.
    *
-   * Entries are async closures (or collections of closures). The engine runs
-   * them on a virtual event loop, interleaving at durable yield points.
+   * Entries can be async closures OR direct thenables (or collections of either).
+   * The engine runs them on a virtual event loop, interleaving at durable yield points.
    * The callback receives `BranchHandle<T>` values (matching the closure structure)
    * which can be directly awaited or passed into select/forEach/map.
    *
@@ -1877,10 +1897,10 @@ export interface WorkflowContext<
    * - Branches without compensation that weren't consumed → awaited, result ignored
    * - On error (callback throws): all unresolved compensated branches are compensated
    *
-   * Entries can be single closures or collections:
-   * - `flight: async () => T` → callback receives `BranchHandle<T>`
-   * - `providers: Array<() => Promise<T>>` → callback receives `BranchHandle<T>[]`
-   * - `quotes: Map<K, () => Promise<T>>` → callback receives `Map<K, BranchHandle<T>>`
+   * Entries can be single values or collections:
+   * - `flight: async () => T` OR `flight: ctx.steps.bookFlight(...)` → `BranchHandle<T>`
+   * - `providers: Array<() => Promise<T> | PromiseLike<T>>` → `BranchHandle<T>[]`
+   * - `quotes: Map<K, () => Promise<T> | PromiseLike<T>>` → `Map<K, BranchHandle<T>>`
    */
   scope<R, E extends ScopeEntries>(
     entries: E,

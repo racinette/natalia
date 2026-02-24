@@ -17,7 +17,7 @@ A type-safe, Postgres-backed durable execution engine for TypeScript.
 
 - **Happy path by default, explicit when needed** — Workflow code describes business intent, not error handling plumbing. The engine handles retries, compensation, and cleanup. `.failure(cb)` opts in to explicit error handling for individual operations.
 - **Explicit over implicit** — No decorators, no global state, no magic.
-- **Structured concurrency** — Every concurrent branch lives inside a `ctx.scope()` closure. Branches with compensated steps are compensated on exit; others are settled.
+- **Structured concurrency** — Every concurrent branch lives inside `ctx.scope()` using either a closure (`async () => ...`) or a direct thenable entry (`ctx.steps.x(...)`). Branches with compensated steps are compensated on exit; others are settled.
 - **Sound compensation** — One callback per handle via `.compensate(cb)` builder. `{ complete, failure }` handler entries for explicit failure recovery. Virtual event loop for concurrent compensation execution.
 - **Type safety** — Full TypeScript inference with standard schemas. Impossible states are unrepresentable.
 - **Deterministic replay** — Global sequence ordering for reproducible execution.
@@ -118,18 +118,25 @@ Steps have no lifecycle control — they are function calls, not processes. They
 
 ### Structured Concurrency (`ctx.scope()`)
 
-Every concurrent branch must exist within a **scope** — a lexical boundary that manages branch lifecycle. Entries are plain `async () => T` closures (or collections of closures). The scope callback receives awaitable `BranchHandle<T>` values.
+Every concurrent branch must exist within a **scope** — a lexical boundary that manages branch lifecycle. Entries support two forms:
+
+- **Closure form** (`async () => T`) — full control for complex branch logic.
+- **Shorthand form** (`PromiseLike<T>`) — pass step/child-workflow thenables directly for concise common cases.
+
+Both forms can be mixed in the same scope. The scope callback receives awaitable `BranchHandle<T>` values.
 
 ```typescript
 const winner = await ctx.scope(
   {
-    flight: async () =>
+    // shorthand (no async wrapper)
+    flight:
       ctx.steps
         .bookFlight("Paris", "cust-1")
         .compensate(async (compCtx) => {
           // No status check — compensation always runs if an attempt was made
           await compCtx.steps.cancelFlight("Paris", "cust-1");
         }),
+    // closure form remains supported for complex logic
     hotel: async () =>
       ctx.steps
         .bookHotel(city, checkIn, checkOut)
@@ -152,17 +159,17 @@ const winner = await ctx.scope(
 
 The scope resolves to whatever the callback returns. Cleanup happens after the callback returns but before the scope's promise resolves.
 
-**Dynamic fan-out with collections:** Scope entries can also be arrays or Maps of closures for parallel dispatch over unknown-at-definition-time sets:
+**Dynamic fan-out with collections:** Scope entries can also be arrays or Maps for parallel dispatch over unknown-at-definition-time sets (each element can be a closure or direct thenable):
 
 ```typescript
-// Build a Map of closures dynamically
+// Build a Map of closures dynamically (closure form)
 const providers = new Map<string, () => Promise<Quote>>();
 for (const p of args.providerCodes) {
   providers.set(p, async () => ctx.steps.getQuote(p, args.destination));
 }
 
 const result = await ctx.scope(
-  { flight: async () => ctx.steps.bookFlight(...), quotes: providers },
+  { flight: ctx.steps.bookFlight(...), quotes: providers }, // shorthand + closures mixed
   async ({ flight, quotes }) => {
     // flight: BranchHandle<Flight>
     // quotes: Map<string, BranchHandle<Quote>>
@@ -502,7 +509,7 @@ const msg = await ctx.channels.payment.receive();
 
 // Time-bounded receive: use ctx.sleep() + ctx.select() for an explicit race
 const result = await ctx.scope(
-  { payment: async () => ctx.channels.payment.receive() },
+  { payment: ctx.channels.payment.receive() }, // shorthand
   async ({ payment }) => {
     const sel = ctx.select({ payment });
     await ctx.sleep(300);
@@ -948,7 +955,7 @@ Work in Progress — Public API design complete. Internal implementation pending
 - `defineStep()` — flat structure with `execute`, `schema`, `retryPolicy`
 - `defineWorkflow()` with full type safety
 - **Callable thenable model** — steps and child workflows return `StepCall<T>` / `WorkflowCall<T>` thenables with builder chains
-- **Closure-based structured concurrency** via `ctx.scope()` — entries are `async () => T` closures; collections (Array, Map) supported for dynamic fan-out
+- **Structured concurrency with shorthand entries** via `ctx.scope()` — entries can be `async () => T` closures or direct thenables; collections (Array, Map) supported for dynamic fan-out
 - **One compensation callback per handle** — defined via `.compensate(cb)` builder, full `CompensationContext`; compensation is always unconditional (at-least-once semantics)
 - **Scope exit behavior** — branches with compensated steps → compensated; others → settled
 - **Unified failure model** — `.failure(cb)` / `{ complete, failure }` handler entries; `BranchFailureInfo` with `compensate()` for eager discharge and `dontCompensate()` to discharge without running the callback
