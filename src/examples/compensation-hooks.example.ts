@@ -11,19 +11,46 @@ const CompensationHooksArgs = z.object({
 });
 
 const CompensationCommand = z.object({ type: z.literal("ack") });
+const OperatorResolution = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("retry_cancel"),
+    note: z.string(),
+  }),
+  z.object({
+    action: z.literal("confirm_resolved"),
+    note: z.string(),
+  }),
+  z.object({
+    action: z.literal("abort_compensation"),
+    note: z.string(),
+  }),
+]);
 
 /**
  * Showcases:
  * - beforeCompensate / afterCompensate
  * - compensation context scope/forEach/select/sleep/channels/streams/events
  * - CompensationStepCall.retry()
+ * - human-in-the-loop compensation via channels + events + streams
  */
 export const compensationHooksWorkflow = defineWorkflow({
   name: "compensationHooks",
   args: CompensationHooksArgs,
-  channels: { compAck: CompensationCommand },
-  streams: { compLog: z.object({ msg: z.string(), ts: z.number() }) },
-  events: { compensationStarted: true, compensationComplete: true },
+  channels: { compAck: CompensationCommand, operatorResolution: OperatorResolution },
+  streams: {
+    compLog: z.object({ msg: z.string(), ts: z.number() }),
+    interventionLog: z.object({
+      kind: z.enum(["requested", "retry_failed", "resolved", "aborted"]),
+      note: z.string(),
+      ts: z.number(),
+    }),
+  },
+  events: {
+    compensationStarted: true,
+    compensationComplete: true,
+    manualInterventionRequested: true,
+    manualInterventionResolved: true,
+  },
   steps: { bookFlight, cancelFlight, bookHotel, cancelHotel, sendEmail },
 
   beforeCompensate: async ({ ctx, args }) => {
@@ -89,7 +116,7 @@ export const compensationHooksWorkflow = defineWorkflow({
     await ctx.steps
       .bookFlight(args.destination, args.customerId)
       .compensate(async (compCtx) => {
-        const result = await compCtx.steps
+        let result = await compCtx.steps
           .cancelFlight(args.destination, args.customerId)
           .retry({ maxAttempts: 15, intervalSeconds: 10, backoffRate: 2 });
 
@@ -97,6 +124,59 @@ export const compensationHooksWorkflow = defineWorkflow({
           compCtx.logger.error("Flight cancellation failed after retries", {
             reason: result.reason,
           });
+
+          // Human-in-the-loop flow:
+          // Compensation cannot be compensated itself, so we must explicitly
+          // handle failure paths. Emit durable signals/logs and wait for operator input.
+          await compCtx.events.manualInterventionRequested.set();
+          await compCtx.streams.interventionLog.write({
+            kind: "requested",
+            note: `cancelFlight failed (${result.reason}); waiting for operator resolution`,
+            ts: compCtx.timestamp,
+          });
+
+          while (true) {
+            const resolution = await compCtx.channels.operatorResolution.receive();
+            if (resolution.action === "retry_cancel") {
+              result = await compCtx.steps
+                .cancelFlight(args.destination, args.customerId)
+                .retry({ maxAttempts: 5, intervalSeconds: 5 });
+
+              if (result.ok) {
+                await compCtx.events.manualInterventionResolved.set();
+                await compCtx.streams.interventionLog.write({
+                  kind: "resolved",
+                  note: `operator requested retry and cancellation succeeded: ${resolution.note}`,
+                  ts: compCtx.timestamp,
+                });
+                break;
+              }
+
+              await compCtx.streams.interventionLog.write({
+                kind: "retry_failed",
+                note: `operator retry failed (${result.reason}): ${resolution.note}`,
+                ts: compCtx.timestamp,
+              });
+              continue;
+            }
+
+            if (resolution.action === "confirm_resolved") {
+              await compCtx.events.manualInterventionResolved.set();
+              await compCtx.streams.interventionLog.write({
+                kind: "resolved",
+                note: `operator confirmed externally resolved: ${resolution.note}`,
+                ts: compCtx.timestamp,
+              });
+              break;
+            }
+
+            await compCtx.streams.interventionLog.write({
+              kind: "aborted",
+              note: `operator aborted compensation path: ${resolution.note}`,
+              ts: compCtx.timestamp,
+            });
+            break;
+          }
         }
       });
 
