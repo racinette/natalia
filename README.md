@@ -957,7 +957,8 @@ src/
 ├── types.ts      # Type definitions (canonical type system)
 ├── workflow.ts   # defineStep, defineWorkflow
 ├── engine.ts     # WorkflowEngine
-└── example.ts    # Comprehensive usage examples
+├── example.ts    # Backward-compatible barrel re-export for examples
+└── examples/     # One file per focused workflow example
 ```
 
 ## Status
