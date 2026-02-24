@@ -155,20 +155,18 @@ export function defineStep<
  *     // Call step directly — failure auto-compensates
  *     const flight = await ctx.steps
  *       .bookFlight(args.destination, args.customerId)
- *       .compensate(async (compCtx, result) => {
- *         if (result.status === 'complete') {
- *           await compCtx.steps.cancelFlight(args.destination, args.customerId);
- *         }
+ *       .compensate(async (compCtx) => {
+ *         // No status check — compensation is always unconditional.
+ *         // The step is idempotent; side effects may exist even on failure.
+ *         await compCtx.steps.cancelFlight(args.destination, args.customerId);
  *       });
  *
  *     // Concurrent with scope — closures as branches
  *     const hotel = await ctx.scope({
  *       a: async () => ctx.steps
  *         .bookHotel(args.city, args.checkIn, args.checkOut)
- *         .compensate(async (compCtx, result) => {
- *           if (result.status === 'complete') {
- *             await compCtx.steps.cancelHotel(args.city, args.checkIn, args.checkOut);
- *           }
+ *         .compensate(async (compCtx) => {
+ *           await compCtx.steps.cancelHotel(args.city, args.checkIn, args.checkOut);
  *         }),
  *     }, async ({ a }) => await a);
  *

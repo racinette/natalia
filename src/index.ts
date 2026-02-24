@@ -11,22 +11,37 @@
  *     Collections (Array, Map) are supported for dynamic fan-out.
  * - BranchHandle: Awaitable handle produced by scope entries — passed to select/forEach/map
  * - Compensation: Registered per-step via .compensate(cb) builder, runs LIFO on failure.
+ *     Compensation always runs if any attempt was made — the engine assumes at-least-once
+ *     semantics for external side effects. No status checks needed in callbacks.
  *     addCompensation(cb) provides general-purpose cleanup.
+ * - BranchFailureInfo: Passed to failure callbacks in forEach/map/match for branch handles.
+ *     compensate() — eagerly discharge the LIFO obligation by running the callback.
+ *     dontCompensate() — explicitly discharge the obligation WITHOUT running the callback
+ *     (use when you know the failed operation had no observable side effects).
  * - failure/complete builders: { complete, failure } callbacks on concurrency primitives
- *     (match, forEach, map) for explicit failure recovery. failure() receives BranchFailureInfo
- *     with compensate() for eager discharge when compensation was registered.
+ *     (match, forEach, map) for explicit failure recovery.
+ * - Select: `ctx.select(handles)` returns a Selection<M>.
+ *     `for await...of` — primary iteration surface; yields SelectDataUnion<M> (successful data);
+ *     branch failure auto-terminates the workflow.
+ *     `.match(handlers)` — key-aware single-event dispatch; supports { complete, failure }
+ *     handlers on branch handle keys for granular recovery without auto-termination.
+ *     No `.next()` method — use `for await` for simple iteration, `.match()` for granular control.
+ * - forEach / map: Batch processing with { complete, failure } handlers; collection-aware
+ *     (BranchHandle, BranchHandle[], Map<K, BranchHandle>) — innerKey identifies element.
  * - Child workflows: ctx.childWorkflows.* — structured invocation (WorkflowCall<T> thenable).
  *     Supports .compensate(), .failure(), .complete() (result mode) or .detached() (messaging mode).
+ *     Result mode and detached mode are mutually exclusive.
  * - Foreign workflows: ctx.foreignWorkflows.* — message-only handles to existing instances.
- * - Channels: Async message passing (input)
+ *     Only channels.send() is available — no lifecycle coupling.
+ * - Channels: Async message passing (input) — ctx.channels.receive() blocks until a message arrives.
+ *     No timeout on receive; use ctx.sleep() + ctx.select() for time-bounded waits.
  * - Streams: Append-only logs (output)
  * - Events: Write-once coordination flags with "never" semantics
- * - Lifecycle Events: Engine-managed workflow state signals
- * - Select: Concurrency primitive for multiplexing handles (.next, .match, async iteration)
- * - forEach / map: Batch processing with { complete, failure } handlers; collection-aware
+ * - Lifecycle Events: Engine-managed workflow state signals (external API only)
  * - Signals: sigterm (graceful) / sigkill (immediate) — engine-level only
  * - CompensationContext: Full structured concurrency with explicit failure visibility;
- *     step calls resolve to CompensationStepResult<T> (must handle ok/!ok gracefully)
+ *     step calls resolve to CompensationStepResult<T> (must handle ok/!ok gracefully).
+ *     No addCompensation() (no nested compensation chains).
  */
 
 // Public API - Types

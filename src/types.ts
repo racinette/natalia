@@ -290,15 +290,7 @@ export type WorkflowResultExternal<TResult> =
 // =============================================================================
 
 /**
- * Result of receiving a message from a channel (workflow level).
- */
-export type ChannelReceiveResult<T> =
-  | { ok: true; status: "received"; data: T }
-  | { ok: false; status: "timeout" };
-
-/**
- * @deprecated Use T directly — channel receive without timeout returns
- * the decoded value directly since there is no discriminated union.
+ * @deprecated Use T directly — channel receive returns the decoded value directly.
  */
 export type ChannelReceiveResultNoTimeout<T> = T;
 
@@ -540,6 +532,13 @@ export type WithCompensation<T> = T & {
  */
 export interface BranchFailureInfo {
   compensate(): Promise<void>;
+  /**
+   * Explicitly discharge the compensation obligation for this branch
+   * WITHOUT running the compensation callback.
+   * Use when you have already compensated externally, or the operation is
+   * known to have had no effect and compensation is unnecessary.
+   */
+  dontCompensate(): void;
 }
 
 // =============================================================================
@@ -962,14 +961,6 @@ export interface ChannelHandle<T> {
    * Blocks until a message arrives. Returns the decoded value directly.
    */
   receive(): Promise<T>;
-
-  /**
-   * Receive a message from this channel with a timeout (in seconds).
-   * Returns { ok: false, status: 'timeout' } if no message arrives within
-   * the timeout.
-   * @param timeoutSeconds - Timeout in seconds.
-   */
-  receive(timeoutSeconds: number): Promise<ChannelReceiveResult<T>>;
 }
 
 /**
@@ -1079,65 +1070,6 @@ export interface LifecycleEvents {
 }
 
 // =============================================================================
-// STREAM ITERATOR & READER
-// =============================================================================
-
-/**
- * Stream iterator handle — reads records from a stream sequentially.
- * Can be passed into select for multiplexed reading.
- * T is the decoded type (z.output<Schema>).
- */
-export interface StreamIteratorHandle<T> {
-  /**
-   * Read the next record from the stream.
-   * Blocks until a record is available or the stream is closed.
-   */
-  read(): Promise<StreamIteratorReadResultNoTimeout<T>>;
-
-  /**
-   * Read the next record from the stream with a timeout (in seconds).
-   * Returns { ok: false, status: 'timeout' } if no record arrives within
-   * the timeout.
-   * @param timeoutSeconds - Timeout in seconds.
-   */
-  read(timeoutSeconds: number): Promise<StreamIteratorReadResult<T>>;
-}
-
-/**
- * Stream reader on a child workflow handle (workflow-internal).
- * Timeouts are durable execution concerns — specified as seconds.
- * T is the decoded type (z.output<Schema>).
- */
-export interface StreamReaderAccessor<T> {
-  /**
-   * Read a record at the given offset (random access).
-   * Blocks until the record is available, the stream is closed, or the
-   * workflow is not found.
-   * @param offset - The stream offset to read from.
-   */
-  read(offset: number): Promise<StreamReadResultNoTimeout<T>>;
-
-  /**
-   * Read a record at the given offset with a timeout (in seconds).
-   * @param offset - The stream offset to read from.
-   * @param timeoutSeconds - Timeout in seconds.
-   */
-  read(offset: number, timeoutSeconds: number): Promise<StreamReadResult<T>>;
-
-  /**
-   * Create an iterator starting at the given offset.
-   * @param startOffset - Start reading from this offset (default: 0).
-   * @param endOffset - Stop reading at this offset (inclusive, default: unbounded).
-   */
-  iterator(startOffset?: number, endOffset?: number): StreamIteratorHandle<T>;
-
-  /**
-   * Check if the stream is still open.
-   */
-  isOpen(): Promise<StreamOpenResult>;
-}
-
-// =============================================================================
 // SCOPE TYPES — CLOSURES AND BRANCH HANDLES
 // =============================================================================
 
@@ -1220,10 +1152,7 @@ export type SelectableHandle =
   | BranchHandle<any>
   | BranchHandle<any>[]
   | Map<any, BranchHandle<any>>
-  | ChannelHandle<any>
-  | StreamIteratorHandle<any>
-  | LifecycleEventAccessor
-  | EventAccessorReadonly;
+  | ChannelHandle<any>;
 
 // =============================================================================
 // SELECT — EVENT TYPES (WorkflowContext)
@@ -1232,31 +1161,27 @@ export type SelectableHandle =
 /**
  * Map a handle type to its select event result type.
  *
- * - BranchHandle: `{ key, data: T }`
- * - BranchHandle[]: `{ key, innerKey: number, data: T }`
- * - Map<K, BranchHandle>: `{ key, innerKey: K, data: T }`
- * - Channels: `{ key, data: T }`
- * - Streams: `{ key, status: "record", data, offset }` or `{ key, status: "closed" }`
- * - Events: `{ key, status: "set" | "never" }`
+ * - BranchHandle: `{ key, status: "complete", data: T } | { key, status: "failed", failure }`
+ * - BranchHandle[]: `{ key, innerKey: number, status: "complete", data: T } | { key, innerKey: number, status: "failed", failure }`
+ * - Map<K, BranchHandle>: `{ key, innerKey: K, status: "complete", data: T } | { key, innerKey: K, status: "failed", failure }`
+ * - ChannelHandle: `{ key, data: T }`
  */
 export type HandleSelectEvent<K extends string, H> =
   H extends BranchHandle<infer T>
-    ? { key: K; data: T }
+    ?
+        | { key: K; status: "complete"; data: T }
+        | { key: K; status: "failed"; failure: BranchFailureInfo }
     : H extends BranchHandle<infer T>[]
-      ? { key: K; innerKey: number; data: T }
+      ?
+          | { key: K; innerKey: number; status: "complete"; data: T }
+          | { key: K; innerKey: number; status: "failed"; failure: BranchFailureInfo }
       : H extends Map<infer MK, BranchHandle<infer T>>
-        ? { key: K; innerKey: MK; data: T }
+        ?
+            | { key: K; innerKey: MK; status: "complete"; data: T }
+            | { key: K; innerKey: MK; status: "failed"; failure: BranchFailureInfo }
         : H extends ChannelHandle<infer T>
           ? { key: K; data: T }
-          : H extends StreamIteratorHandle<infer T>
-            ?
-                | { key: K; status: "record"; data: T; offset: number }
-                | { key: K; status: "closed" }
-            : H extends LifecycleEventAccessor
-              ? { key: K; status: "set" } | { key: K; status: "never" }
-              : H extends EventAccessorReadonly
-                ? { key: K; status: "set" } | { key: K; status: "never" }
-                : never;
+          : never;
 
 /**
  * What a match handler receives for a specific key.
@@ -1264,8 +1189,7 @@ export type HandleSelectEvent<K extends string, H> =
  * - BranchHandle<T>: `T` directly
  * - BranchHandle<T>[]: `{ data: T; innerKey: number }`
  * - Map<K, BranchHandle<T>>: `{ data: T; innerKey: K }`
- * - Channels: `T` directly
- * - Streams / Events: status-discriminated union
+ * - ChannelHandle<T>: `T` directly
  */
 export type HandleMatchData<H> =
   H extends BranchHandle<infer T>
@@ -1276,15 +1200,7 @@ export type HandleMatchData<H> =
         ? { data: T; innerKey: MK }
         : H extends ChannelHandle<infer T>
           ? T
-          : H extends StreamIteratorHandle<infer T>
-            ?
-                | { status: "record"; data: T; offset: number }
-                | { status: "closed" }
-            : H extends LifecycleEventAccessor
-              ? { status: "set" } | { status: "never" }
-              : H extends EventAccessorReadonly
-                ? { status: "set" } | { status: "never" }
-                : never;
+          : never;
 
 /**
  * Union of all possible events from a select record.
@@ -1294,19 +1210,14 @@ export type SelectEvent<M extends Record<string, SelectableHandle>> = {
 }[keyof M & string];
 
 /**
- * Result of Selection.next() without a timeout.
+ * Union of successful data values yielded by `for await...of` on a Selection.
+ * Branch handles yield their result type T; channel handles yield their message type T.
+ * For collections (array/map), the per-element data type is yielded.
+ * A branch failure auto-terminates the workflow when iterating with `for await`.
  */
-export type SelectNextResultNoTimeout<
-  M extends Record<string, SelectableHandle>,
-> = SelectEvent<M> | { key: null; status: "exhausted" };
-
-/**
- * Result of Selection.next() with a timeout.
- */
-export type SelectNextResult<M extends Record<string, SelectableHandle>> =
-  | SelectEvent<M>
-  | { key: null; status: "timeout" }
-  | { key: null; status: "exhausted" };
+export type SelectDataUnion<M extends Record<string, SelectableHandle>> = {
+  [K in keyof M & string]: BranchData<M[K]>;
+}[keyof M & string];
 
 // =============================================================================
 // MATCH HELPERS
@@ -1318,13 +1229,6 @@ export type SelectNextResult<M extends Record<string, SelectableHandle>> =
 export type SelectMatchResult<T> =
   | { ok: true; status: "matched"; data: T }
   | { ok: false; status: "exhausted" };
-
-/**
- * Result of Selection.match() with a timeout.
- */
-export type SelectMatchResultWithTimeout<T> =
-  | SelectMatchResult<T>
-  | { ok: false; status: "timeout" };
 
 /**
  * Extract the return type from a match/forEach/map handler entry.
@@ -1404,37 +1308,24 @@ export type UnhandledSelectEvent<
  * A selection — multiplexes multiple handles and yields events as they arrive.
  * Events are ordered by global_sequence for deterministic replay.
  *
- * In the happy-path model, BranchHandle failures crash the workflow by default.
- * Use `.match()` with `{ complete, failure }` handlers for explicit recovery.
- * `.next()` and `for await` only see successful data events — a failure triggers
- * workflow termination and LIFO compensation.
+ * **`for await...of`** — the primary iteration surface.
+ * Yields `SelectDataUnion<M>` (successful data values) until all handles are exhausted.
+ * Any branch failure auto-terminates the workflow and triggers LIFO compensation.
+ * Use this for simple "process everything, fail on any error" patterns.
  *
- * BranchHandle (one-shot) produces exactly one event.
- * Multi-shot handles (ChannelHandle, StreamIteratorHandle) can produce multiple events.
+ * **`.match()`** — the lower-level, key-aware API.
+ * Waits for the first event matching a provided handler map.
+ * Handlers can be plain functions (failure crashes workflow) or
+ * `{ complete, failure }` objects for BranchHandle keys for explicit recovery.
+ * Returns `{ ok: false, status: "exhausted" }` when all handles resolve without matching.
  *
  * For collection handles (BranchHandle[], Map<K, BranchHandle>), each element
  * produces its own event with an `innerKey`.
  *
- * Returns { status: 'exhausted' } when all one-shot handles have resolved.
- *
- * Implements AsyncIterable — can be used with `for await...of`.
- *
  * @typeParam M - The handle record type.
  */
 export interface Selection<M extends Record<string, SelectableHandle>>
-  extends AsyncIterable<SelectEvent<M>> {
-  /**
-   * Wait for the next event from any handle in the selection.
-   * Returns { status: 'exhausted' } when all handles have resolved.
-   * If a branch fails without a `failure` handler, the workflow auto-terminates.
-   */
-  next(): Promise<SelectNextResultNoTimeout<M>>;
-
-  /**
-   * Wait for the next event with a timeout (in seconds).
-   */
-  next(timeoutSeconds: number): Promise<SelectNextResult<M>>;
-
+  extends AsyncIterable<SelectDataUnion<M>> {
   /**
    * Wait for the first event matching a handler.
    *
@@ -1445,12 +1336,6 @@ export interface Selection<M extends Record<string, SelectableHandle>>
     handlers: H,
   ): Promise<SelectMatchResult<MatchReturn<M, H>>>;
 
-  /** Handlers + timeout. */
-  match<H extends MatchHandlers<M>>(
-    handlers: H,
-    timeoutSeconds: number,
-  ): Promise<SelectMatchResultWithTimeout<MatchReturn<M, H>>>;
-
   /** Handlers + default for unhandled events. */
   match<H extends MatchHandlers<M>, TDefault>(
     handlers: H,
@@ -1458,17 +1343,6 @@ export interface Selection<M extends Record<string, SelectableHandle>>
       event: UnhandledSelectEvent<M, H>,
     ) => Promise<TDefault> | TDefault,
   ): Promise<SelectMatchResult<MatchReturn<M, H> | Awaited<TDefault>>>;
-
-  /** Handlers + default + timeout. */
-  match<H extends MatchHandlers<M>, TDefault>(
-    handlers: H,
-    defaultHandler: (
-      event: UnhandledSelectEvent<M, H>,
-    ) => Promise<TDefault> | TDefault,
-    timeoutSeconds: number,
-  ): Promise<
-    SelectMatchResultWithTimeout<MatchReturn<M, H> | Awaited<TDefault>>
-  >;
 
   /**
    * Live set of unresolved handle keys.
@@ -1482,30 +1356,19 @@ export interface Selection<M extends Record<string, SelectableHandle>>
 
 /**
  * A selection in CompensationContext.
- * Failures are always visible in events — no `failure` handlers needed.
- * Compensation code must handle all outcomes explicitly.
  *
- * Since compensation closures return result unions (CompensationStepResult, WorkflowResult),
- * failures are encoded in the data — branch handles do not reject.
+ * **`for await...of`** — yields `SelectDataUnion<M>` until all handles are exhausted.
+ * Any branch failure auto-terminates the compensation scope.
+ *
+ * **`.match()`** — key-aware, one-event-at-a-time API with explicit `{ complete, failure }`
+ * handlers for granular recovery during compensation.
  */
 export interface CompensationSelection<M extends Record<string, SelectableHandle>>
-  extends AsyncIterable<SelectEvent<M>> {
-  /** Wait for the next event. */
-  next(): Promise<SelectNextResultNoTimeout<M>>;
-
-  /** Wait for the next event with a timeout (in seconds). */
-  next(timeoutSeconds: number): Promise<SelectNextResult<M>>;
-
+  extends AsyncIterable<SelectDataUnion<M>> {
   /** Pattern-match on events. */
   match<H extends MatchHandlers<M>>(
     handlers: H,
   ): Promise<SelectMatchResult<MatchReturn<M, H>>>;
-
-  /** Handlers + timeout. */
-  match<H extends MatchHandlers<M>>(
-    handlers: H,
-    timeoutSeconds: number,
-  ): Promise<SelectMatchResultWithTimeout<MatchReturn<M, H>>>;
 
   /** Handlers + default. */
   match<H extends MatchHandlers<M>, TDefault>(
@@ -1514,17 +1377,6 @@ export interface CompensationSelection<M extends Record<string, SelectableHandle
       event: UnhandledSelectEvent<M, H>,
     ) => Promise<TDefault> | TDefault,
   ): Promise<SelectMatchResult<MatchReturn<M, H> | Awaited<TDefault>>>;
-
-  /** Handlers + default + timeout. */
-  match<H extends MatchHandlers<M>, TDefault>(
-    handlers: H,
-    defaultHandler: (
-      event: UnhandledSelectEvent<M, H>,
-    ) => Promise<TDefault> | TDefault,
-    timeoutSeconds: number,
-  ): Promise<
-    SelectMatchResultWithTimeout<MatchReturn<M, H> | Awaited<TDefault>>
-  >;
 
   /** Live set of unresolved handle keys. */
   readonly remaining: ReadonlySet<keyof M & string>;
