@@ -135,8 +135,7 @@ export const compensationHooksWorkflow = defineWorkflow({
             ts: compCtx.timestamp,
           });
 
-          while (true) {
-            const resolution = await compCtx.channels.operatorResolution.receive();
+          for await (const resolution of compCtx.channels.operatorResolution) {
             if (resolution.action === "retry_cancel") {
               result = await compCtx.steps
                 .cancelFlight(args.destination, args.customerId)

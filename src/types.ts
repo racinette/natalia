@@ -919,15 +919,23 @@ export interface CompensationChildWorkflowAccessor<
 
 /**
  * Channel handle on ctx.channels.
- * Can be used directly for receive, or passed into select.
+ * Can be used directly for receive, passed into select, or async-iterated.
  * T is the decoded type (z.output<Schema>).
  */
-export interface ChannelHandle<T> {
+export interface ChannelHandle<T> extends AsyncIterable<T> {
   /**
    * Receive a message from this channel (FIFO order).
    * Blocks until a message arrives. Returns the decoded value directly.
    */
   receive(): Promise<T>;
+
+  /**
+   * Async iteration over channel messages.
+   *
+   * Example:
+   * `for await (const msg of ctx.channels.approval) { ... }`
+   */
+  [Symbol.asyncIterator](): AsyncIterableIterator<T>;
 }
 
 /**

@@ -522,6 +522,11 @@ Async communication between workflows.
 const msg = await ctx.channels.payment.receive();
 // msg is the decoded value (z.output<Schema>) — no wrapper
 
+// Async iteration over channel messages
+for await (const paymentMsg of ctx.channels.payment) {
+  console.log(paymentMsg);
+}
+
 // Time-bounded receive: use ctx.sleep() + ctx.select() for an explicit race
 const result = await ctx.scope(
   { payment: ctx.channels.payment.receive() }, // shorthand
