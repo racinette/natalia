@@ -181,7 +181,8 @@ export function defineWorkflow<
   TStreams extends StreamDefinitions = Record<string, never>,
   TEvents extends EventDefinitions = Record<string, never>,
   TSteps extends StepDefinitions = Record<string, never>,
-  TWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
   TResultSchema extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
     void,
     void
@@ -199,7 +200,8 @@ export function defineWorkflow<
   streams?: TStreams;
   events?: TEvents;
   steps?: TSteps;
-  workflows?: TWorkflows;
+  childWorkflows?: TChildWorkflows;
+  foreignWorkflows?: TForeignWorkflows;
   patches?: TPatches;
   rng?: TRng;
   result?: TResultSchema;
@@ -218,7 +220,8 @@ export function defineWorkflow<
       TStreams,
       TEvents,
       TSteps,
-      TWorkflows,
+      TChildWorkflows,
+      TForeignWorkflows,
       TPatches,
       TRng
     >;
@@ -231,7 +234,8 @@ export function defineWorkflow<
       TStreams,
       TEvents,
       TSteps,
-      TWorkflows,
+      TChildWorkflows,
+      TForeignWorkflows,
       TPatches,
       TRng
     >;
@@ -244,7 +248,8 @@ export function defineWorkflow<
       TStreams,
       TEvents,
       TSteps,
-      TWorkflows,
+      TChildWorkflows,
+      TForeignWorkflows,
       TPatches,
       TRng
     >,
@@ -256,7 +261,8 @@ export function defineWorkflow<
   TStreams,
   TEvents,
   TSteps,
-  TWorkflows,
+  TChildWorkflows,
+  TForeignWorkflows,
   TResultSchema,
   TArgs,
   TPatches,
@@ -336,26 +342,56 @@ export function defineWorkflow<
     }
   }
 
-  // Validate workflows
-  const workflows = config.workflows ?? ({} as TWorkflows);
-  if (config.workflows !== undefined) {
+  // Validate childWorkflows
+  const childWorkflows =
+    config.childWorkflows ?? ({} as TChildWorkflows);
+  if (config.childWorkflows !== undefined) {
     if (
-      typeof config.workflows !== "object" ||
-      Array.isArray(config.workflows)
+      typeof config.childWorkflows !== "object" ||
+      Array.isArray(config.childWorkflows)
     ) {
-      throw new Error("workflows must be an object");
+      throw new Error("childWorkflows must be an object");
     }
-    for (const [name, wf] of Object.entries(config.workflows)) {
+    for (const [name, wf] of Object.entries(config.childWorkflows)) {
       if (!wf || typeof wf !== "object") {
         throw new Error(
-          `Workflow '${name}' must be a valid workflow definition`,
+          `Child workflow '${name}' must be a valid workflow definition`,
         );
       }
       if (!wf.name || typeof wf.name !== "string") {
-        throw new Error(`Workflow '${name}' must have a name`);
+        throw new Error(`Child workflow '${name}' must have a name`);
       }
       if (typeof wf.execute !== "function") {
-        throw new Error(`Workflow '${name}' must have execute function`);
+        throw new Error(
+          `Child workflow '${name}' must have execute function`,
+        );
+      }
+    }
+  }
+
+  // Validate foreignWorkflows
+  const foreignWorkflows =
+    config.foreignWorkflows ?? ({} as TForeignWorkflows);
+  if (config.foreignWorkflows !== undefined) {
+    if (
+      typeof config.foreignWorkflows !== "object" ||
+      Array.isArray(config.foreignWorkflows)
+    ) {
+      throw new Error("foreignWorkflows must be an object");
+    }
+    for (const [name, wf] of Object.entries(config.foreignWorkflows)) {
+      if (!wf || typeof wf !== "object") {
+        throw new Error(
+          `Foreign workflow '${name}' must be a valid workflow definition`,
+        );
+      }
+      if (!wf.name || typeof wf.name !== "string") {
+        throw new Error(`Foreign workflow '${name}' must have a name`);
+      }
+      if (typeof wf.execute !== "function") {
+        throw new Error(
+          `Foreign workflow '${name}' must have execute function`,
+        );
       }
     }
   }
@@ -451,7 +487,8 @@ export function defineWorkflow<
     streams,
     events,
     steps,
-    workflows,
+    childWorkflows,
+    foreignWorkflows,
     patches,
     rng,
   } as WorkflowDefinition<
@@ -460,7 +497,8 @@ export function defineWorkflow<
     TStreams,
     TEvents,
     TSteps,
-    TWorkflows,
+    TChildWorkflows,
+    TForeignWorkflows,
     TResultSchema,
     TArgs,
     TPatches,

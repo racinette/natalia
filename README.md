@@ -423,6 +423,21 @@ Child workflow access is split by semantics:
 - **`ctx.childWorkflows.*`** — structured invocation, lifecycle managed by parent.
 - **`ctx.foreignWorkflows.*`** — message-only handles to existing workflow instances.
 
+This split is enforced at definition-time too:
+
+```typescript
+const checkoutWorkflow = defineWorkflow({
+  name: "checkout",
+  childWorkflows: {
+    payment: paymentWorkflow, // callable as ctx.childWorkflows.payment(...)
+  },
+  foreignWorkflows: {
+    campaign: campaignWorkflow, // handle via ctx.foreignWorkflows.campaign.get(id)
+  },
+  // ...
+});
+```
+
 ```typescript
 // Sequential — childWorkflows call returns WorkflowCall<T>
 const result = await ctx.childWorkflows

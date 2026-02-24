@@ -155,7 +155,7 @@ export type StepDefinitions = Record<string, StepDefinition<any[], any>>;
  */
 export type WorkflowDefinitions = Record<
   string,
-  WorkflowDefinition<any, any, any, any, any, any, any, any, any, any>
+  WorkflowDefinition<any, any, any, any, any, any, any, any, any, any, any>
 >;
 
 // =============================================================================
@@ -828,6 +828,7 @@ export interface ChildWorkflowAccessor<
     any,
     any,
     any,
+    any,
     any
   >,
   TCompCtx = unknown,
@@ -871,6 +872,7 @@ export interface ForeignWorkflowAccessor<
     any,
     any,
     any,
+    any,
     any
   >,
 > {
@@ -891,6 +893,7 @@ export interface ForeignWorkflowAccessor<
  */
 export interface CompensationChildWorkflowAccessor<
   W extends WorkflowDefinition<
+    any,
     any,
     any,
     any,
@@ -1613,7 +1616,8 @@ export interface CompensationContext<
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
-  TWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
 > extends BaseContext<TState, TChannels, TStreams, TEvents, TPatches, TRng> {
@@ -1639,7 +1643,9 @@ export interface CompensationContext<
    * Must handle all outcomes (complete, failed, terminated).
    */
   readonly childWorkflows: {
-    [K in keyof TWorkflows]: CompensationChildWorkflowAccessor<TWorkflows[K]>;
+    [K in keyof TChildWorkflows]: CompensationChildWorkflowAccessor<
+      TChildWorkflows[K]
+    >;
   };
 
   // ---------------------------------------------------------------------------
@@ -1757,7 +1763,8 @@ export type CompensationCallback<
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
-  TWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
 > = (
@@ -1767,7 +1774,8 @@ export type CompensationCallback<
     TStreams,
     TEvents,
     TSteps,
-    TWorkflows,
+    TChildWorkflows,
+    TForeignWorkflows,
     TPatches,
     TRng
   >,
@@ -1806,7 +1814,8 @@ export interface WorkflowContext<
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
-  TWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
 > extends BaseContext<TState, TChannels, TStreams, TEvents, TPatches, TRng> {
@@ -1832,7 +1841,8 @@ export interface WorkflowContext<
             TStreams,
             TEvents,
             TSteps,
-            TWorkflows,
+            TChildWorkflows,
+            TForeignWorkflows,
             TPatches,
             TRng
           >
@@ -1847,15 +1857,16 @@ export interface WorkflowContext<
    * - `ForeignWorkflowHandle` when called with `{ detached: true }`
    */
   readonly childWorkflows: {
-    [K in keyof TWorkflows]: ChildWorkflowAccessor<
-      TWorkflows[K],
+    [K in keyof TChildWorkflows]: ChildWorkflowAccessor<
+      TChildWorkflows[K],
       CompensationContext<
         TState,
         TChannels,
         TStreams,
         TEvents,
         TSteps,
-        TWorkflows,
+        TChildWorkflows,
+        TForeignWorkflows,
         TPatches,
         TRng
       >
@@ -1868,7 +1879,9 @@ export interface WorkflowContext<
    * No lifecycle, events, streams, or compensation (prevents tight coupling).
    */
   readonly foreignWorkflows: {
-    [K in keyof TWorkflows]: ForeignWorkflowAccessor<TWorkflows[K]>;
+    [K in keyof TForeignWorkflows]: ForeignWorkflowAccessor<
+      TForeignWorkflows[K]
+    >;
   };
 
   /**
@@ -2012,7 +2025,8 @@ export interface WorkflowContext<
       TStreams,
       TEvents,
       TSteps,
-      TWorkflows,
+      TChildWorkflows,
+      TForeignWorkflows,
       TPatches,
       TRng
     >,
@@ -2258,7 +2272,8 @@ export interface WorkflowDefinition<
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
-  TWorkflows extends WorkflowDefinitions,
+  TChildWorkflows extends WorkflowDefinitions,
+  TForeignWorkflows extends WorkflowDefinitions,
   TResultSchema extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
     void,
     void
@@ -2288,8 +2303,11 @@ export interface WorkflowDefinition<
   /** Step definitions */
   readonly steps?: TSteps;
 
-  /** Child workflow definitions */
-  readonly workflows?: TWorkflows;
+  /** Child workflow definitions (for ctx.childWorkflows) */
+  readonly childWorkflows?: TChildWorkflows;
+
+  /** Foreign workflow definitions (for ctx.foreignWorkflows) */
+  readonly foreignWorkflows?: TForeignWorkflows;
 
   /**
    * Patch definitions for safe workflow evolution.
@@ -2334,7 +2352,8 @@ export interface WorkflowDefinition<
       TStreams,
       TEvents,
       TSteps,
-      TWorkflows,
+      TChildWorkflows,
+      TForeignWorkflows,
       TPatches,
       TRng
     >;
@@ -2352,7 +2371,8 @@ export interface WorkflowDefinition<
       TStreams,
       TEvents,
       TSteps,
-      TWorkflows,
+      TChildWorkflows,
+      TForeignWorkflows,
       TPatches,
       TRng
     >;
@@ -2371,7 +2391,8 @@ export interface WorkflowDefinition<
       TStreams,
       TEvents,
       TSteps,
-      TWorkflows,
+      TChildWorkflows,
+      TForeignWorkflows,
       TPatches,
       TRng
     >,
@@ -2414,6 +2435,7 @@ export type InferWorkflowResult<W> =
     any,
     any,
     any,
+    any,
     infer TResultSchema,
     any,
     any,
@@ -2429,6 +2451,7 @@ export type InferWorkflowChannels<W> =
   W extends WorkflowDefinition<
     any,
     infer TChannels,
+    any,
     any,
     any,
     any,
@@ -2455,6 +2478,7 @@ export type InferWorkflowStreams<W> =
     any,
     any,
     any,
+    any,
     any
   >
     ? TStreams
@@ -2474,6 +2498,7 @@ export type InferWorkflowEvents<W> =
     any,
     any,
     any,
+    any,
     any
   >
     ? TEvents
@@ -2484,6 +2509,7 @@ export type InferWorkflowEvents<W> =
  */
 export type InferWorkflowArgs<W> =
   W extends WorkflowDefinition<
+    any,
     any,
     any,
     any,
@@ -2516,6 +2542,7 @@ export type InferWorkflowArgsInput<W> = W extends {
 export type InferWorkflowState<W> =
   W extends WorkflowDefinition<
     infer TState,
+    any,
     any,
     any,
     any,

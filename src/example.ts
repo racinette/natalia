@@ -669,7 +669,8 @@ const PaymentOrchestrationArgs = z.object({
 export const paymentOrchestrationWorkflow = defineWorkflow({
   name: "paymentOrchestration",
   args: PaymentOrchestrationArgs,
-  workflows: { payment: paymentWorkflow, campaignWorker },
+  childWorkflows: { payment: paymentWorkflow, campaignWorker },
+  foreignWorkflows: { campaignWorker },
   result: z.object({
     receiptId: z.string().nullable(),
     campaignStarted: z.boolean(),
