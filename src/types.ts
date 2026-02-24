@@ -88,10 +88,7 @@ export type RngDefinitions = Record<
 export interface PatchAccessor {
   /** Boolean form — await the accessor directly for active/inactive */
   then<R1 = boolean, R2 = never>(
-    onfulfilled?:
-      | ((value: boolean) => R1 | PromiseLike<R1>)
-      | null
-      | undefined,
+    onfulfilled?: ((value: boolean) => R1 | PromiseLike<R1>) | null | undefined,
     onrejected?: ((reason: any) => R2 | PromiseLike<R2>) | null | undefined,
   ): Promise<R1 | R2>;
   /** Callback form with default — runs callback if active, returns default otherwise */
@@ -586,7 +583,9 @@ export interface StepCall<
   /**
    * Override the step's retry policy.
    */
-  retry(policy: RetryPolicyOptions): StepCall<T, TFail, HasCompensation, TCompCtx>;
+  retry(
+    policy: RetryPolicyOptions,
+  ): StepCall<T, TFail, HasCompensation, TCompCtx>;
 
   /**
    * Handle step failure explicitly — the workflow does NOT auto-terminate.
@@ -607,7 +606,9 @@ export interface StepCall<
    * Transform the success result.
    * The callback return value replaces T in the resolved type.
    */
-  complete<R>(cb: (data: T) => R): StepCall<Awaited<R>, TFail, HasCompensation, TCompCtx>;
+  complete<R>(
+    cb: (data: T) => R,
+  ): StepCall<Awaited<R>, TFail, HasCompensation, TCompCtx>;
 
   then<R1 = T | TFail, R2 = never>(
     onfulfilled?:
@@ -660,7 +661,7 @@ export interface CompensationStepCall<T> {
 export interface ForeignWorkflowHandle<
   TChannels extends ChannelDefinitions = Record<string, never>,
 > {
-  readonly workflowId: string;
+  readonly id: string;
 
   /**
    * Channels for sending messages to this workflow.
@@ -813,7 +814,7 @@ export interface CompensationWorkflowCall<T> {
 /**
  * Callable child workflow accessor on `ctx.childWorkflows` in WorkflowContext.
  *
- * Call it with `{ workflowId, args }` to get a `WorkflowCall<T>`.
+ * Call it with `{ id, args }` to get a `WorkflowCall<T>`.
  * Call it with `{ detached: true }` to start detached and get a foreign handle.
  * Chain builders before awaiting:
  * - `.compensate()` — register compensation
@@ -840,17 +841,12 @@ export interface ChildWorkflowAccessor<
   TCompCtx = unknown,
 > {
   (options: {
-    workflowId: string;
+    id: string;
     args?: InferWorkflowArgsInput<W>;
     detached?: false | undefined;
-  }): WorkflowCall<
-    InferWorkflowResult<W>,
-    never,
-    false,
-    TCompCtx
-  >;
+  }): WorkflowCall<InferWorkflowResult<W>, never, false, TCompCtx>;
   (options: {
-    workflowId: string;
+    id: string;
     args?: InferWorkflowArgsInput<W>;
     detached: true;
   }): Promise<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
@@ -859,7 +855,7 @@ export interface ChildWorkflowAccessor<
 /**
  * Foreign workflow accessor on `ctx.foreignWorkflows` in WorkflowContext.
  *
- * Use `.get(workflowId)` to obtain a `ForeignWorkflowHandle` for an existing
+ * Use `.get(id)` to obtain a `ForeignWorkflowHandle` for an existing
  * (non-child) workflow instance. Only `channels.send()` is available — no
  * events, streams, or lifecycle (prevents tight coupling).
  *
@@ -884,9 +880,9 @@ export interface ForeignWorkflowAccessor<
    * Get a limited handle to an existing workflow instance.
    * Only channels.send() is available (fire-and-forget).
    *
-   * @param workflowId - The workflow instance ID.
+   * @param id - The workflow instance ID.
    */
-  get(workflowId: string): ForeignWorkflowHandle<InferWorkflowChannels<W>>;
+  get(id: string): ForeignWorkflowHandle<InferWorkflowChannels<W>>;
 }
 
 /**
@@ -911,7 +907,7 @@ export interface CompensationChildWorkflowAccessor<
   >,
 > {
   (options: {
-    workflowId: string;
+    id: string;
     args?: InferWorkflowArgsInput<W>;
   }): CompensationWorkflowCall<InferWorkflowResult<W>>;
 }
@@ -1108,9 +1104,7 @@ export type HandleGroup<T, K = any> =
  */
 export type ScopeEntries = Record<
   string,
-  | ScopeEntryValue<any>
-  | ScopeEntryValue<any>[]
-  | Map<any, ScopeEntryValue<any>>
+  ScopeEntryValue<any> | ScopeEntryValue<any>[] | Map<any, ScopeEntryValue<any>>
 >;
 
 /**
@@ -1172,11 +1166,21 @@ export type HandleSelectEvent<K extends string, H> =
     : H extends BranchHandle<infer T>[]
       ?
           | { key: K; innerKey: number; status: "complete"; data: T }
-          | { key: K; innerKey: number; status: "failed"; failure: BranchFailureInfo }
+          | {
+              key: K;
+              innerKey: number;
+              status: "failed";
+              failure: BranchFailureInfo;
+            }
       : H extends Map<infer MK, BranchHandle<infer T>>
         ?
             | { key: K; innerKey: MK; status: "complete"; data: T }
-            | { key: K; innerKey: MK; status: "failed"; failure: BranchFailureInfo }
+            | {
+                key: K;
+                innerKey: MK;
+                status: "failed";
+                failure: BranchFailureInfo;
+              }
         : H extends ChannelHandle<infer T>
           ? { key: K; data: T }
           : never;
@@ -1322,8 +1326,9 @@ export type UnhandledSelectEvent<
  *
  * @typeParam M - The handle record type.
  */
-export interface Selection<M extends Record<string, SelectableHandle>>
-  extends AsyncIterable<SelectDataUnion<M>> {
+export interface Selection<
+  M extends Record<string, SelectableHandle>,
+> extends AsyncIterable<SelectDataUnion<M>> {
   /**
    * Wait for the first event matching a handler.
    *
@@ -1361,8 +1366,9 @@ export interface Selection<M extends Record<string, SelectableHandle>>
  * **`.match()`** — key-aware, one-event-at-a-time API with explicit `{ complete, failure }`
  * handlers for granular recovery during compensation.
  */
-export interface CompensationSelection<M extends Record<string, SelectableHandle>>
-  extends AsyncIterable<SelectDataUnion<M>> {
+export interface CompensationSelection<
+  M extends Record<string, SelectableHandle>,
+> extends AsyncIterable<SelectDataUnion<M>> {
   /** Pattern-match on events. */
   match<H extends MatchHandlers<M>>(
     handlers: H,
@@ -1420,31 +1426,33 @@ type BranchInnerKey<H> =
  * For plain function handlers, failure auto-terminates the workflow.
  * For `{ complete, failure }` handlers, failure is handled explicitly.
  */
-export type ForEachHandlerEntry<H extends SelectableHandle> =
-  H extends BranchHandle<any> | BranchHandle<any>[] | Map<any, BranchHandle<any>>
-    ? BranchInnerKey<H> extends never
-      ? // Single BranchHandle
-          | ((data: BranchData<H>) => Promise<void> | void)
-            | {
-                complete: (data: BranchData<H>) => Promise<void> | void;
-                failure: (failure: BranchFailureInfo) => Promise<void> | void;
-              }
-      : // Collection BranchHandle (array or map)
-          | ((
-                data: BranchData<H>,
-                innerKey: BranchInnerKey<H>,
-              ) => Promise<void> | void)
-            | {
-                complete: (
-                  data: BranchData<H>,
-                  innerKey: BranchInnerKey<H>,
-                ) => Promise<void> | void;
-                failure: (
-                  failure: BranchFailureInfo,
-                  innerKey: BranchInnerKey<H>,
-                ) => Promise<void> | void;
-              }
-    : never;
+export type ForEachHandlerEntry<H extends SelectableHandle> = H extends
+  | BranchHandle<any>
+  | BranchHandle<any>[]
+  | Map<any, BranchHandle<any>>
+  ? BranchInnerKey<H> extends never
+    ? // Single BranchHandle
+        | ((data: BranchData<H>) => Promise<void> | void)
+        | {
+            complete: (data: BranchData<H>) => Promise<void> | void;
+            failure: (failure: BranchFailureInfo) => Promise<void> | void;
+          }
+    : // Collection BranchHandle (array or map)
+        | ((
+            data: BranchData<H>,
+            innerKey: BranchInnerKey<H>,
+          ) => Promise<void> | void)
+        | {
+            complete: (
+              data: BranchData<H>,
+              innerKey: BranchInnerKey<H>,
+            ) => Promise<void> | void;
+            failure: (
+              failure: BranchFailureInfo,
+              innerKey: BranchInnerKey<H>,
+            ) => Promise<void> | void;
+          }
+  : never;
 
 /**
  * A map handler entry for a branch handle or collection.
@@ -1455,28 +1463,27 @@ export type ForEachHandlerEntry<H extends SelectableHandle> =
  * - Array → array of transformed values
  * - Map → Map of transformed values
  */
-export type MapHandlerEntry<H extends SelectableHandle> =
-  H extends BranchHandle<any> | BranchHandle<any>[] | Map<any, BranchHandle<any>>
-    ? BranchInnerKey<H> extends never
-      ? // Single BranchHandle
-          | ((data: BranchData<H>) => any)
-            | {
-                complete: (data: BranchData<H>) => any;
-                failure: (failure: BranchFailureInfo) => any;
-              }
-      : // Collection BranchHandle
-          | ((data: BranchData<H>, innerKey: BranchInnerKey<H>) => any)
-            | {
-                complete: (
-                  data: BranchData<H>,
-                  innerKey: BranchInnerKey<H>,
-                ) => any;
-                failure: (
-                  failure: BranchFailureInfo,
-                  innerKey: BranchInnerKey<H>,
-                ) => any;
-              }
-    : never;
+export type MapHandlerEntry<H extends SelectableHandle> = H extends
+  | BranchHandle<any>
+  | BranchHandle<any>[]
+  | Map<any, BranchHandle<any>>
+  ? BranchInnerKey<H> extends never
+    ? // Single BranchHandle
+        | ((data: BranchData<H>) => any)
+        | {
+            complete: (data: BranchData<H>) => any;
+            failure: (failure: BranchFailureInfo) => any;
+          }
+    : // Collection BranchHandle
+        | ((data: BranchData<H>, innerKey: BranchInnerKey<H>) => any)
+        | {
+            complete: (data: BranchData<H>, innerKey: BranchInnerKey<H>) => any;
+            failure: (
+              failure: BranchFailureInfo,
+              innerKey: BranchInnerKey<H>,
+            ) => any;
+          }
+  : never;
 
 /**
  * Mirror the map output structure to match the input collection structure.
@@ -1738,7 +1745,9 @@ export interface CompensationContext<
     handles: M,
     callbacks: C,
   ): Promise<{
-    [K in keyof M & string]: Awaited<ReturnType<C[K] extends (...args: any[]) => any ? C[K] : never>>;
+    [K in keyof M & string]: Awaited<
+      ReturnType<C[K] extends (...args: any[]) => any ? C[K] : never>
+    >;
   }>;
 
   /**
@@ -1888,7 +1897,7 @@ export interface WorkflowContext<
 
   /**
    * Foreign workflow accessors — message-only handles to existing workflow instances.
-   * Use `.get(workflowId)` to get a `ForeignWorkflowHandle` with `channels.send()` only.
+   * Use `.get(id)` to get a `ForeignWorkflowHandle` with `channels.send()` only.
    * No lifecycle, events, streams, or compensation (prevents tight coupling).
    */
   readonly foreignWorkflows: {
@@ -2176,7 +2185,7 @@ export interface WorkflowHandleExternal<
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
 > {
-  readonly workflowId: string;
+  readonly id: string;
 
   /**
    * Channels for sending messages.
@@ -2261,9 +2270,7 @@ export interface RetentionSettings {
  * Provides the initial state for each workflow instance.
  * State is NOT persisted to the database — it is derived from replay.
  */
-export type StateFactory<
-  TState,
-> = () => TState;
+export type StateFactory<TState> = () => TState;
 
 // =============================================================================
 // WORKFLOW DEFINITION
@@ -2429,7 +2436,7 @@ export interface WorkflowDefinition<
  */
 export interface StartWorkflowOptions<TArgsInput> {
   /** Unique workflow instance ID */
-  workflowId: string;
+  id: string;
   /** Timeout in seconds */
   timeoutSeconds?: number;
   /** Workflow arguments — must be z.input<ArgSchema> (encoded) */

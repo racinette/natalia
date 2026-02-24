@@ -5,7 +5,7 @@ import { sendEmail } from "./shared";
 /**
  * Showcases:
  * - minimal step execution
- * - workflowId/timestamp/date/logger
+ * - id/timestamp/date/logger
  * - streams.write + events.set + sleep
  */
 export const heartbeatWorkflow = defineWorkflow({
@@ -16,7 +16,7 @@ export const heartbeatWorkflow = defineWorkflow({
 
   async execute(ctx) {
     ctx.logger.info("Heartbeat started", {
-      workflowId: ctx.workflowId,
+      id: ctx.workflowId,
       ts: ctx.timestamp,
       date: ctx.date.toISOString(),
     });

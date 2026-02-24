@@ -21,7 +21,7 @@ export async function engineLevelApiShowcase(
 
   // start + wait shortcut
   const quickOrder = await engine.workflows.order.execute({
-    workflowId: "order-quick-demo",
+    id: "order-quick-demo",
     args: {
       destination: "Paris",
       checkIn: "2027-01-10",
@@ -37,7 +37,7 @@ export async function engineLevelApiShowcase(
 
   // start + handle manipulation
   const handle = await engine.workflows.compensationHooks.start({
-    workflowId: "comp-hooks-demo",
+    id: "comp-hooks-demo",
     args: {
       destination: "Paris",
       checkIn: "2027-02-01",
@@ -78,7 +78,7 @@ export async function engineLevelApiShowcase(
     break;
   }
 
-  // get existing handle by workflowId
+  // get existing handle by id
   const sameHandle = engine.workflows.compensationHooks.get("comp-hooks-demo");
 
   // operational control
@@ -89,7 +89,10 @@ export async function engineLevelApiShowcase(
     signal: AbortSignal.timeout(180_000),
   });
   if (!finalResult.ok && finalResult.status === "failed") {
-    console.error("Compensation hooks workflow failed:", finalResult.error.message);
+    console.error(
+      "Compensation hooks workflow failed:",
+      finalResult.error.message,
+    );
   }
 
   await engine.runGarbageCollection(100);

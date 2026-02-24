@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { defineWorkflow } from "../workflow";
-import { bookFlight, cancelFlight, bookHotel, cancelHotel, sendEmail } from "./shared";
+import {
+  bookFlight,
+  cancelFlight,
+  bookHotel,
+  cancelHotel,
+  sendEmail,
+} from "./shared";
 
 const OrderArgs = z.object({
   destination: z.string(),
@@ -36,7 +42,7 @@ export const orderWorkflow = defineWorkflow({
   }),
   afterCompensate: async ({ ctx: compCtx, args }) => {
     compCtx.logger.info("Order failed — notifying customer", {
-      workflowId: compCtx.workflowId,
+      id: compCtx.workflowId,
     });
     const result = await compCtx.steps.sendEmail(
       args.customerEmail,

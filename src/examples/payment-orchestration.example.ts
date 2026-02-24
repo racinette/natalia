@@ -27,14 +27,14 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
   rng: { ids: true },
   afterCompensate: async ({ ctx: compCtx }) => {
     compCtx.logger.info("Payment orchestration compensating", {
-      workflowId: compCtx.workflowId,
+      id: compCtx.workflowId,
     });
   },
 
   async execute(ctx, args) {
     const receiptId = await ctx.childWorkflows
       .payment({
-        workflowId: `payment-${ctx.rng.ids.uuidv4()}`,
+        id: `payment-${ctx.rng.ids.uuidv4()}`,
         args: { customerId: args.customerId, amount: args.amount },
       })
       .compensate(async (compCtx, _result) => {
@@ -54,7 +54,7 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
       .complete((data) => data.receiptId);
 
     const campaignHandle = await ctx.childWorkflows.campaignWorker({
-      workflowId: `campaign-${ctx.rng.ids.uuidv4()}`,
+      id: `campaign-${ctx.rng.ids.uuidv4()}`,
       args: { userId: args.customerId },
       detached: true,
     });

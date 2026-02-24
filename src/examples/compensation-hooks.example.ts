@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { defineWorkflow } from "../workflow";
-import { bookFlight, cancelFlight, bookHotel, cancelHotel, sendEmail } from "./shared";
+import {
+  bookFlight,
+  cancelFlight,
+  bookHotel,
+  cancelHotel,
+  sendEmail,
+} from "./shared";
 
 const CompensationHooksArgs = z.object({
   destination: z.string(),
@@ -36,7 +42,10 @@ const OperatorResolution = z.discriminatedUnion("action", [
 export const compensationHooksWorkflow = defineWorkflow({
   name: "compensationHooks",
   args: CompensationHooksArgs,
-  channels: { compAck: CompensationCommand, operatorResolution: OperatorResolution },
+  channels: {
+    compAck: CompensationCommand,
+    operatorResolution: OperatorResolution,
+  },
   streams: {
     compLog: z.object({ msg: z.string(), ts: z.number() }),
     interventionLog: z.object({
@@ -54,7 +63,7 @@ export const compensationHooksWorkflow = defineWorkflow({
   steps: { bookFlight, cancelFlight, bookHotel, cancelHotel, sendEmail },
 
   beforeCompensate: async ({ ctx, args }) => {
-    ctx.logger.info("Compensation starting", { workflowId: ctx.workflowId });
+    ctx.logger.info("Compensation starting", { id: ctx.workflowId });
     await ctx.streams.compLog.write({
       msg: `Compensation started for ${args.destination}`,
       ts: ctx.timestamp,
@@ -95,10 +104,12 @@ export const compensationHooksWorkflow = defineWorkflow({
           { logEntry, auditEntry },
           {
             logEntry: (data) => {
-              if (!data.ok) ctx.logger.warn("Customer notification failed to send");
+              if (!data.ok)
+                ctx.logger.warn("Customer notification failed to send");
             },
             auditEntry: (data) => {
-              if (!data.ok) ctx.logger.warn("Audit notification failed to send");
+              if (!data.ok)
+                ctx.logger.warn("Audit notification failed to send");
             },
           },
         );
