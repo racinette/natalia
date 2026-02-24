@@ -24,11 +24,10 @@ export const quoteAggregationWorkflow = defineWorkflow({
   }),
 
   async execute(ctx, args) {
-    const arrayBranches = args.providers.map(
-      (p) => async () =>
-        ctx.steps.getQuote(p, args.destination).compensate(async (compCtx) => {
-          await compCtx.steps.cancelQuote(p);
-        }),
+    const arrayBranches = args.providers.map((p) =>
+      ctx.steps.getQuote(p, args.destination).compensate(async (compCtx) => {
+        await compCtx.steps.cancelQuote(p);
+      }),
     );
 
     const arrayPrices: number[] = [];

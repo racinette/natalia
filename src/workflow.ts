@@ -12,7 +12,6 @@ import type {
   CompensationContext,
   PatchDefinitions,
   RngDefinitions,
-  RngAccessors,
 } from "./types";
 
 // =============================================================================
@@ -195,7 +194,7 @@ export function defineWorkflow<
   TRng extends RngDefinitions = Record<string, never>,
 >(config: {
   name: string;
-  state?: (ctx: { rng: RngAccessors<TRng> }) => TState;
+  state?: () => TState;
   channels?: TChannels;
   streams?: TStreams;
   events?: TEvents;

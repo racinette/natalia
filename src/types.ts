@@ -2237,13 +2237,10 @@ export interface RetentionSettings {
  *
  * Provides the initial state for each workflow instance.
  * State is NOT persisted to the database — it is derived from replay.
- *
- * The factory receives a limited context with only deterministic utilities.
  */
 export type StateFactory<
   TState,
-  TRng extends RngDefinitions = Record<string, never>,
-> = (ctx: { rng: RngAccessors<TRng> }) => TState;
+> = () => TState;
 
 // =============================================================================
 // WORKFLOW DEFINITION
@@ -2289,7 +2286,7 @@ export interface WorkflowDefinition<
   readonly name: string;
 
   /** State factory — provides initial state for each workflow instance */
-  readonly state?: StateFactory<TState, TRng>;
+  readonly state?: StateFactory<TState>;
 
   /** Channel definitions */
   readonly channels?: TChannels;

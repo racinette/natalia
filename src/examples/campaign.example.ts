@@ -11,7 +11,7 @@ const CampaignWorkflowArgs = z.object({
  * Showcases:
  * - patches (callback + boolean)
  * - full deterministic RNG API
- * - state factory with rng
+ * - state factory defaults (no dependencies)
  * - retention config
  */
 export const campaignWorkflow = defineWorkflow({
@@ -27,9 +27,9 @@ export const campaignWorkflow = defineWorkflow({
     session: true,
     cohort: (userId: string, wave: number) => `cohort:${userId}:${wave}`,
   },
-  state: ({ rng }) => ({
-    sessionId: rng.session.uuidv4(),
-    cohortSeed: rng.cohort("setup", 0).int(1, 100),
+  state: () => ({
+    sessionId: "",
+    cohortSeed: 0,
     launched: false,
     sentCount: 0,
   }),
@@ -47,6 +47,7 @@ export const campaignWorkflow = defineWorkflow({
 
     const sessionRng = ctx.rng.session;
     const campaignId = sessionRng.uuidv4();
+    const initialCohortSeed = ctx.rng.cohort("setup", 0).int(1, 100);
     const batchSize = sessionRng.int(1, 10);
     const threshold = sessionRng.next();
     const runExperiment = sessionRng.bool();
@@ -72,6 +73,7 @@ export const campaignWorkflow = defineWorkflow({
 
     ctx.logger.info("Campaign params computed", {
       campaignId,
+      initialCohortSeed,
       batchSize,
       threshold,
       runExperiment,
@@ -103,6 +105,8 @@ export const campaignWorkflow = defineWorkflow({
       return result.notificationId;
     }, null);
 
+    ctx.state.sessionId = campaignId;
+    ctx.state.cohortSeed = initialCohortSeed;
     ctx.state.launched = true;
     for (const candidate of sampled) {
       await ctx.steps.sendNotification(

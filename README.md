@@ -617,13 +617,16 @@ const workflow = defineWorkflow({
   },
 });
 
-// The factory also receives typed RNG accessors
+// Keep state factory dependency-free (no ctx/rng args)
 const workflow = defineWorkflow({
   rng: { init: true },
-  state: (ctx) => ({
-    id: ctx.rng.init.uuidv4(),
+  state: () => ({
+    id: "",
   }),
-  // ...
+  async execute(ctx) {
+    // Derive RNG-dependent state in workflow logic where call order is explicit.
+    ctx.state.id = ctx.rng.init.uuidv4();
+  },
 });
 ```
 
