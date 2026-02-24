@@ -309,6 +309,10 @@ Use `for await` when you want to process events as they arrive and failures are 
 
 Waits for the **first** event matching a provided handler map. Handlers can be plain functions or `{ complete, failure }` objects for branch handle keys. The optional second argument is a default handler for unhandled events.
 
+Default handler forms:
+- Plain function: happy path only (receives completion events only). Unhandled failures still terminate the workflow.
+- `{ complete, failure }`: explicit handling for unhandled completion/failure events.
+
 ```typescript
 // Drive a loop: one event per iteration, explicit failure recovery
 while (sel.remaining.size > 0) {
@@ -325,8 +329,14 @@ while (sel.remaining.size > 0) {
       // Channel handler — plain function (channels don't fail)
       cancel: (data) => ({ ok: false as const, id: null }),
     },
-    // Optional default — fires for "hotel" and any other unhandled keys
-    (event) => ({ ok: false as const, id: null }),
+    // Optional default object — only for unhandled keys
+    {
+      complete: (event) => ({ ok: true as const, id: event.data.id }),
+      failure: async (event) => {
+        await event.failure.compensate();
+        return { ok: false as const, id: null };
+      },
+    },
   );
 
   if (result.status === "exhausted") break;
@@ -334,7 +344,7 @@ while (sel.remaining.size > 0) {
 }
 ```
 
-`match()` overloads: handlers only, or handlers + default handler.
+`match()` overloads: handlers only, or handlers + default handler (plain function or `{ complete, failure }`).
 
 #### Time-bounded step/child patterns (`scope + sleep`)
 
@@ -404,7 +414,7 @@ Process all branch handles concurrently. Callbacks receive successful data `T` d
 Collection handles (Array, Map) pass `innerKey` as a second argument to callbacks.
 
 ```typescript
-// forEach — { complete, failure } for flight, plain function default
+// forEach — { complete, failure } for flight, plain default for unhandled keys
 await ctx.forEach(
   { flight: flightHandle, hotel: hotelHandle, car: carHandle },
   {
@@ -417,16 +427,16 @@ await ctx.forEach(
       },
     },
   },
-  // Positional default — only receives "hotel" | "car" (type-narrowed)
-  (key, data) => {
-    ctx.logger.info(`${key} completed`);
+  // Plain default — only receives completion events for "hotel" | "car"
+  (event) => {
+    ctx.logger.info(`${event.key} completed`);
   },
 );
 
-// map — { complete, failure } for specific keys
+// map — { complete, failure } for specific keys, default object for unhandled failures
 // Return type mirrors collection structure: array → array, map → map
 const ids = await ctx.map(
-  { flight: flightHandle, hotel: hotelHandle },
+  { flight: flightHandle, hotel: hotelHandle, car: carHandle },
   {
     flight: {
       complete: (data) => data.id,
@@ -437,8 +447,15 @@ const ids = await ctx.map(
     },
     hotel: (data) => data.id,
   },
+  {
+    complete: (event) => event.data.id,
+    failure: async (event) => {
+      await event.failure.compensate();
+      return "FAILED";
+    },
+  },
 );
-// ids: { flight: string, hotel: string }
+// ids: { flight: string, hotel: string, car: string }
 
 // forEach with a Map collection — innerKey is the Map's key
 await ctx.forEach(
@@ -1022,6 +1039,8 @@ await engine.shutdown();
 Examples are split into focused files under `src/examples/`.
 
 - Workflow-internal API examples: scopes, selection, compensation, channels, patches, child/foreign workflows.
+- Concurrency-focused example: `src/examples/concurrency-primitives.example.ts` demonstrates dynamic Map fan-out, cheapest-flight selection across variable providers (up to 3 hops), concurrent hotel reservation race, and child/foreign workflow orchestration in one realistic flow.
+- Default-callback-focused example: `src/examples/onboarding-verification.example.ts` demonstrates 5 parallel identity methods, a 1-hour deadline race, 3-of-5 threshold gating, and default `{ complete, failure }` handling for unhandled verification branches.
 - Engine-level API example: `src/examples/engine-level-api.example.ts` demonstrates `engine.start()`, `engine.workflows.*.start/execute/get`, handle channels/streams/events/lifecycle operations, `setRetention()`, `sigterm()`, `runGarbageCollection()`, and `engine.shutdown()`.
 
 ## Project Structure

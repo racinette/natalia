@@ -75,10 +75,7 @@ export const channelRaceWorkflow = defineWorkflow({
           {
             booking2: {
               complete: (data) => ({ type: "booked" as const, id: data.id }),
-              failure: async (failure) => {
-                await failure.compensate();
-                return { type: "failed" as const, id: null };
-              },
+              failure: async () => ({ type: "failed" as const, id: null }),
             },
           },
           (event) => ({

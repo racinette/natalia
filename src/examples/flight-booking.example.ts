@@ -84,32 +84,33 @@ export const flightBookingWorkflow = defineWorkflow({
       async ({ primary, backup }) => {
         const sel = ctx.select({ primary, backup });
         while (sel.remaining.size > 0) {
-          const result = await sel.match({
-            primary: {
-              complete: (data) => ({
-                ok: true as const,
-                id: data.id,
-                dest: args.destination,
-              }),
-              failure: async ({ compensate }) => {
-                ctx.logger.warn("Primary hotel failed — falling back");
-                await compensate();
-                return { ok: false as const, id: null, dest: null };
+          const result = await sel.match(
+            {
+              primary: {
+                complete: (data) => ({
+                  ok: true as const,
+                  id: data.id,
+                  dest: args.destination,
+                }),
+                failure: async ({ compensate }) => {
+                  ctx.logger.warn("Primary hotel failed — falling back");
+                  await compensate();
+                  return { ok: false as const, id: null, dest: null };
+                },
               },
             },
-            backup: {
-              complete: (data) => ({
+            {
+              complete: (event) => ({
                 ok: true as const,
-                id: data.id,
+                id: event.data.id,
                 dest: args.backupDestination,
               }),
-              failure: async (failure) => {
+              failure: async () => {
                 ctx.logger.error("Backup hotel also failed");
-                await failure.compensate();
                 return { ok: false as const, id: null, dest: null };
               },
             },
-          });
+          );
 
           if (result.status === "exhausted") break;
           if (result.data.ok) {

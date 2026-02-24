@@ -45,10 +45,7 @@ export const scopeSleepRaceWorkflow = defineWorkflow({
         const result = await sel.match({
           flight: {
             complete: () => "booked" as const,
-            failure: async (failure) => {
-              await failure.compensate();
-              return "timed_out" as const;
-            },
+            failure: async () => "timed_out" as const,
           },
           timer: () => "timed_out" as const,
         });
@@ -73,10 +70,7 @@ export const scopeSleepRaceWorkflow = defineWorkflow({
         const result = await sel.match({
           payment: {
             complete: () => "completed" as const,
-            failure: async (failure) => {
-              await failure.compensate();
-              return "timed_out" as const;
-            },
+            failure: async () => "timed_out" as const,
           },
           timer: () => "timed_out" as const,
         });

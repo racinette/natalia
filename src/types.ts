@@ -1327,6 +1327,40 @@ export type UnhandledSelectEvent<
   >;
 }[Exclude<keyof M & string, keyof H & string>];
 
+/**
+ * Unhandled select events that represent successful completion only.
+ * For plain default callbacks — failures still auto-terminate.
+ */
+export type UnhandledSelectCompleteEvent<
+  M extends Record<string, SelectableHandle>,
+  H extends Partial<Record<keyof M & string, any>>,
+> = Exclude<UnhandledSelectEvent<M, H>, { status: "failed" }>;
+
+/**
+ * Unhandled select events that represent branch failures.
+ * For `{ complete, failure }` default callbacks.
+ */
+export type UnhandledSelectFailureEvent<
+  M extends Record<string, SelectableHandle>,
+  H extends Partial<Record<keyof M & string, any>>,
+> = Extract<UnhandledSelectEvent<M, H>, { status: "failed" }>;
+
+/**
+ * Default handler entry for unhandled events in selection/forEach/map.
+ *
+ * - Plain function: happy path only (receives completion events only).
+ * - Object form: explicit `{ complete, failure }` handling.
+ */
+type DefaultUnhandledHandlerEntry<
+  M extends Record<string, SelectableHandle>,
+  H extends Partial<Record<keyof M & string, any>>,
+> =
+  | ((event: UnhandledSelectCompleteEvent<M, H>) => any)
+  | {
+      complete: (event: UnhandledSelectCompleteEvent<M, H>) => any;
+      failure: (event: UnhandledSelectFailureEvent<M, H>) => any;
+    };
+
 // =============================================================================
 // SELECTION (WorkflowContext)
 // =============================================================================
@@ -1365,12 +1399,10 @@ export interface Selection<
   ): Promise<SelectMatchResult<MatchReturn<M, H>>>;
 
   /** Handlers + default for unhandled events. */
-  match<H extends MatchHandlers<M>, TDefault>(
+  match<H extends MatchHandlers<M>, D extends DefaultUnhandledHandlerEntry<M, H>>(
     handlers: H,
-    defaultHandler: (
-      event: UnhandledSelectEvent<M, H>,
-    ) => Promise<TDefault> | TDefault,
-  ): Promise<SelectMatchResult<MatchReturn<M, H> | Awaited<TDefault>>>;
+    defaultHandler: D,
+  ): Promise<SelectMatchResult<MatchReturn<M, H> | ExtractHandlerReturn<D>>>;
 
   /**
    * Live set of unresolved handle keys.
@@ -1400,12 +1432,10 @@ export interface CompensationSelection<
   ): Promise<SelectMatchResult<MatchReturn<M, H>>>;
 
   /** Handlers + default. */
-  match<H extends MatchHandlers<M>, TDefault>(
+  match<H extends MatchHandlers<M>, D extends DefaultUnhandledHandlerEntry<M, H>>(
     handlers: H,
-    defaultHandler: (
-      event: UnhandledSelectEvent<M, H>,
-    ) => Promise<TDefault> | TDefault,
-  ): Promise<SelectMatchResult<MatchReturn<M, H> | Awaited<TDefault>>>;
+    defaultHandler: D,
+  ): Promise<SelectMatchResult<MatchReturn<M, H> | ExtractHandlerReturn<D>>>;
 
   /** Live set of unresolved handle keys. */
   readonly remaining: ReadonlySet<keyof M & string>;
@@ -1989,19 +2019,19 @@ export interface WorkflowContext<
   /**
    * Process branch results with partial callbacks and a default.
    * The default only fires for keys NOT explicitly covered.
+   * Plain default callback handles completion only; for failure handling
+   * use `{ complete, failure }`.
    */
   forEach<
     M extends Record<string, SelectableHandle>,
     C extends Partial<{
       [K in keyof M & string]: ForEachHandlerEntry<M[K]>;
     }>,
+    D extends DefaultUnhandledHandlerEntry<M, C>,
   >(
     handles: M,
     callbacks: C,
-    defaultCallback: (
-      key: Exclude<keyof M & string, keyof C & string>,
-      data: any,
-    ) => Promise<void> | void,
+    defaultCallback: D,
   ): Promise<void>;
 
   // ---------------------------------------------------------------------------
@@ -2038,18 +2068,15 @@ export interface WorkflowContext<
     C extends Partial<{
       [K in keyof M & string]: MapHandlerEntry<M[K]>;
     }>,
-    TDefault,
+    D extends DefaultUnhandledHandlerEntry<M, C>,
   >(
     handles: M,
     callbacks: C,
-    defaultCallback: (
-      key: Exclude<keyof M & string, keyof C & string>,
-      data: any,
-    ) => Promise<TDefault> | TDefault,
+    defaultCallback: D,
   ): Promise<{
     [K in keyof M & string]: K extends keyof C
       ? MapOutputFor<M[K], C[K]>
-      : Awaited<TDefault>;
+      : MapOutputFor<M[K], D>;
   }>;
 
   // ---------------------------------------------------------------------------
