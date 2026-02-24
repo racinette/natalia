@@ -7,18 +7,18 @@ A type-safe, Postgres-backed durable execution engine for TypeScript.
 - **A library, not a bible.** Gradual adoption, lightweight in-process durable execution without additional infrastructure.
 - **Postgres backed.** No additional infra needed, only a Postgres instance.
 - **Fully typed.** Everything is type safe thanks to standard schema support (Zod v4, etc.).
-- **Happy-path workflow code.** `.execute()` returns `T` directly. Failures auto-terminate the workflow and trigger compensation — no `if (!result.ok) throw` boilerplate. `.tryExecute()` / `.tryJoin()` available when explicit error handling is needed.
-- **One compensation callback per handle.** Defined at `.start()` or `.execute()` time. Full `CompensationContext` with structured concurrency.
-- **Structured concurrency.** Every concurrent handle lives inside a `ctx.scope()`. Handles with `compensate` are compensated on scope exit; handles without are settled.
+- **Callable thenable model.** Steps return `StepCall<T>` — a thenable you can await directly or chain builders on: `.compensate()`, `.retry()`, `.failure()`, `.complete()`. No `.execute()` / `.start()` split.
+- **Closure-based structured concurrency.** Scope entries are plain `async () => T` closures. Collections (Array, Map) are supported natively for dynamic fan-out.
+- **One compensation callback per handle.** Defined via `.compensate(cb)` builder. Full `CompensationContext` with structured concurrency.
 - **The actor model.** Workflows are independent and decoupled from each other.
 - **State is not stored.** Workflow state is derived from replay — keeps workflows modifiable.
 
 ## Philosophy
 
-- **Happy path by default, explicit when needed** — Workflow code describes business intent, not error handling plumbing. The engine handles retries, compensation, and cleanup. `tryExecute()` / `tryJoin()` opt in to explicit error handling for individual operations.
+- **Happy path by default, explicit when needed** — Workflow code describes business intent, not error handling plumbing. The engine handles retries, compensation, and cleanup. `.failure(cb)` opts in to explicit error handling for individual operations.
 - **Explicit over implicit** — No decorators, no global state, no magic.
-- **Structured concurrency** — Every concurrent handle has a declared lifecycle boundary (scope). Handles with `compensate` are compensated; handles without are settled.
-- **Sound compensation** — One callback per handle. `onFailure` with a single flat failure parameter for explicit failure recovery. Virtual event loop for concurrent compensation execution.
+- **Structured concurrency** — Every concurrent branch lives inside a `ctx.scope()` closure. Branches with compensated steps are compensated on exit; others are settled.
+- **Sound compensation** — One callback per handle via `.compensate(cb)` builder. `{ complete, failure }` handler entries for explicit failure recovery. Virtual event loop for concurrent compensation execution.
 - **Type safety** — Full TypeScript inference with standard schemas. Impossible states are unrepresentable.
 - **Deterministic replay** — Global sequence ordering for reproducible execution.
 
@@ -33,84 +33,67 @@ const bookFlight = defineStep({
   name: "bookFlight",
   execute: async ({ signal }, destination: string, customerId: string) => {
     const res = await fetch("https://api.flights.com/book", { signal });
-    return await res.json();
+    return res.json();
   },
   schema: FlightBookingSchema,
   retryPolicy: { maxAttempts: 3, intervalSeconds: 2 },
 });
 ```
 
-**In `WorkflowContext`:** `.execute()` returns `T` directly — the decoded step result. If the step fails, the workflow is automatically terminated and compensations run.
+**In `WorkflowContext`:** calling a step returns a `StepCall<T>` thenable. Await it directly (happy path — failure auto-terminates the workflow) or chain builders before awaiting:
 
 ```typescript
-// .execute() returns T directly — no ok/status checking
-const flight = await ctx.steps.bookFlight.execute("Paris", "cust-1");
+// Happy path — await directly
+const flight = await ctx.steps.bookFlight("Paris", "cust-1");
 // flight is { id: string, price: number } — the decoded result
 
-// With compensation callback
-const flight = await ctx.steps.bookFlight.execute("Paris", "cust-1", {
-  compensate: async (compCtx, result) => {
+// With compensation
+const flight = await ctx.steps
+  .bookFlight("Paris", "cust-1")
+  .compensate(async (compCtx, result) => {
     // result is StepCompensationResult: "complete" | "failed" | "terminated"
-    await compCtx.steps.cancelFlight.execute("Paris", "cust-1");
-  },
-});
+    if (result.status === "complete") {
+      await compCtx.steps.cancelFlight("Paris", "cust-1");
+    }
+  });
+
+// With retry override
+const flight = await ctx.steps
+  .bookFlight("Paris", "cust-1")
+  .retry({ maxAttempts: 5, intervalSeconds: 3 });
 ```
 
-**`.tryExecute()` / `.tryJoin()` — explicit error handling:** When you need to observe step failures without auto-terminating the workflow, use the `try` variants. They accept `{ onComplete, onFailure }` callbacks — the same pattern used by `match`, `forEach`, and `map`:
-
-- **With `compensate`:** `onFailure` receives failure info with `compensate()` merged in for eager discharge.
-- **Without `compensate`:** `onFailure` receives plain failure info — no `compensate()` (full type safety).
+**`.failure()` / `.complete()` — explicit error handling:** When you need to observe step failures without auto-terminating the workflow, chain `.failure(cb)`. Optionally `.complete(cb)` to transform the success result:
 
 ```typescript
-// With compensate — onFailure gets { reason, errors, compensate }
-const flightId = await ctx.steps.bookFlight.tryExecute("Paris", "cust-1", {
-  compensate: async (compCtx, result) => {
+// With .compensate() — failure handler receives failure.compensate()
+const flightId = await ctx.steps
+  .bookFlight("Paris", "cust-1")
+  .compensate(async (compCtx, result) => {
     if (result.status === "complete") {
-      await compCtx.steps.cancelFlight.execute("Paris", "cust-1");
+      await compCtx.steps.cancelFlight("Paris", "cust-1");
     }
-  },
-  onComplete: (data) => data.id,
-  onFailure: async (failure) => {
+  })
+  .failure(async (failure) => {
     // Eagerly discharge — runs in compensation mode (SIGTERM-resilient)
     await failure.compensate();
     return null;
     // Or: don't call it — engine runs it at LIFO unwinding (safe default)
-  },
-});
+  })
+  .complete((data) => data.id);
 
-// Without compensate — onFailure gets { reason, errors } (no compensate)
-const carId = await ctx.steps.reserveCar.tryExecute("Paris", "dates", {
-  onComplete: (data) => data.id,
-  onFailure: (failure) => {
-    // failure.compensate would be a type error — not available
-    return null;
-  },
-});
+// Without .compensate() — failure handler receives plain StepFailureInfo
+const carId = await ctx.steps
+  .reserveCar("Paris", "dates")
+  .failure(() => null)
+  .complete((data) => data.id);
 ```
 
-Same for handles inside a scope — `.tryJoin()` callback shape depends on `HasCompensation`:
-
-```typescript
-const data = await ctx.scope({
-  // .start() with compensate → StepHandle<T, true>
-  flight: ctx.steps.bookFlight.start("Paris", "cust-1", { compensate: ... }),
-}, async ({ flight }) => {
-  // tryJoin's onFailure includes compensate() because HasCompensation = true
-  return await flight.tryJoin({
-    onComplete: (data) => data,
-    onFailure: async (failure) => {
-      await failure.compensate();
-      return null;
-    },
-  });
-});
-```
-
-**In `CompensationContext`:** `.execute()` returns `CompensationStepResult<T>` — a discriminated union that compensation code must handle gracefully. `.start()` returns a `ScopeEntry<CompensationStepHandle<T>>` for concurrent compensation within scopes.
+**In `CompensationContext`:** calling a step returns a `CompensationStepCall<T>` that resolves to `CompensationStepResult<T>` — a discriminated union that compensation code must handle gracefully.
 
 ```typescript
 // Sequential compensation
-const cancelResult = await compCtx.steps.cancelFlight.execute("Paris", "cust-1");
+const cancelResult = await compCtx.steps.cancelFlight("Paris", "cust-1");
 if (!cancelResult.ok) {
   compCtx.logger.error("Failed to cancel flight", {
     reason: cancelResult.status,
@@ -119,89 +102,117 @@ if (!cancelResult.ok) {
 }
 
 // Concurrent compensation with scope
-await compCtx.scope({
-  cancel: compCtx.steps.cancelFlight.start("Paris", "cust-1"),
-  notify: compCtx.steps.sendEmail.start("customer@example.com", "Cancelled", "..."),
-}, async ({ cancel, notify }) => {
-  const cancelResult = await cancel.join(); // CompensationStepResult<T>
-  const notifyResult = await notify.join(); // CompensationStepResult<T>
-});
+await compCtx.scope(
+  {
+    cancel: async () => compCtx.steps.cancelFlight("Paris", "cust-1"),
+    notify: async () =>
+      compCtx.steps.sendEmail("customer@example.com", "Cancelled", "..."),
+  },
+  async ({ cancel, notify }) => {
+    const cancelResult = await cancel; // CompensationStepResult<T>
+    const notifyResult = await notify; // CompensationStepResult<T>
+  },
+);
 ```
 
-`"terminated"` is NOT included in `CompensationStepResult` — the only way to terminate during compensation is SIGKILL, which tears down the process immediately. Compensation code never observes that status.
+`"terminated"` is NOT included in `CompensationStepResult` — the only way to terminate during compensation is SIGKILL, which tears down the process immediately.
 
-Steps have no lifecycle control — they are function calls, not processes. They run to completion based on their retry policy and timeout. The `signal: AbortSignal` in the step's execute function is only aborted by workflow-level SIGTERM/SIGKILL.
+Steps have no lifecycle control — they are function calls, not processes. They run to completion based on their retry policy and timeout.
 
 ### Structured Concurrency (`ctx.scope()`)
 
-Every concurrent handle (step or child workflow) must exist within a **scope** — a lexical boundary that manages handle lifecycle.
-
-**Core rules:**
-1. `.start()` is only available within scope declarations. You cannot call `ctx.steps.X.start()` directly.
-2. `.execute()` remains available on `ctx` directly — it's sequential, self-contained, no scope needed.
-3. When the scope callback exits:
-   - Handles with a `compensate` callback that weren't consumed → compensation runs
-   - Handles without `compensate` that weren't consumed → settled (waited for, result ignored)
-4. On error (callback throws): all unjoined handles with `compensate` are compensated.
+Every concurrent branch must exist within a **scope** — a lexical boundary that manages branch lifecycle. Entries are plain `async () => T` closures (or collections of closures). The scope callback receives awaitable `BranchHandle<T>` values.
 
 ```typescript
-const winner = await ctx.scope({
-  flight: ctx.steps.bookFlight.start("Paris", "cust-1", {
-    compensate: async (compCtx, result) => {
-      if (result.status === "complete") {
-        await compCtx.steps.cancelFlight.execute("Paris", "cust-1");
-      }
-    },
-  }),
-  hotel: ctx.steps.bookHotel.start(city, checkIn, checkOut, {
-    compensate: async (compCtx, result) => {
-      await compCtx.steps.cancelHotel.execute(city, checkIn, checkOut);
-    },
-  }),
-}, async ({ flight, hotel }) => {
-  // flight, hotel are StepHandle<T> — materialized by the scope
-  const sel = ctx.select({ flight, hotel });
-  const first = await sel.next();
-  return first.data;
-  // Scope exits → loser's compensation callback fires
-});
+const winner = await ctx.scope(
+  {
+    flight: async () =>
+      ctx.steps
+        .bookFlight("Paris", "cust-1")
+        .compensate(async (compCtx, result) => {
+          if (result.status === "complete") {
+            await compCtx.steps.cancelFlight("Paris", "cust-1");
+          }
+        }),
+    hotel: async () =>
+      ctx.steps
+        .bookHotel(city, checkIn, checkOut)
+        .compensate(async (compCtx, result) => {
+          await compCtx.steps.cancelHotel(city, checkIn, checkOut);
+        }),
+  },
+  async ({ flight, hotel }) => {
+    // flight, hotel are BranchHandle<T> — await them or pass to select/forEach/map
+    const sel = ctx.select({ flight, hotel });
+    const first = await sel.next();
+    return first.data;
+    // Scope exits → loser's compensation callback fires
+  },
+);
 ```
 
 The scope resolves to whatever the callback returns. Cleanup happens after the callback returns but before the scope's promise resolves.
 
+**Dynamic fan-out with collections:** Scope entries can also be arrays or Maps of closures for parallel dispatch over unknown-at-definition-time sets:
+
+```typescript
+// Build a Map of closures dynamically
+const providers = new Map<string, () => Promise<Quote>>();
+for (const p of args.providerCodes) {
+  providers.set(p, async () => ctx.steps.getQuote(p, args.destination));
+}
+
+const result = await ctx.scope(
+  { flight: async () => ctx.steps.bookFlight(...), quotes: providers },
+  async ({ flight, quotes }) => {
+    // flight: BranchHandle<Flight>
+    // quotes: Map<string, BranchHandle<Quote>>
+    const mapped = await ctx.map(
+      { flight, quotes },
+      {
+        flight: { complete: (d) => d.id, failure: () => null },
+        quotes: { complete: (d, innerKey) => d.price, failure: () => Infinity },
+      },
+    );
+    // mapped.flight: string | null | undefined
+    // mapped.quotes: Map<string, number | undefined>
+    return mapped;
+  },
+);
+```
+
 ### Scope Exit Behavior
 
-The presence of a `compensate` callback determines what happens to unjoined handles when a scope exits:
+The presence of a `.compensate()` builder determines what happens to unjoined branches when a scope exits:
 
-| Condition | Has `compensate` | No `compensate` |
-|-----------|------------------|-----------------|
-| Normal exit (callback returns) | Compensation runs | Settled (wait, ignore result) |
-| Error exit (callback throws) | Compensation runs | Settled (wait, ignore result) |
-
-This replaces the previous five `unjoined` strategies with a single, clear rule: **compensate if callback exists, settle if not.**
+| Condition                      | Branch has compensated steps | No compensated steps          |
+| ------------------------------ | ---------------------------- | ----------------------------- |
+| Normal exit (callback returns) | Compensation runs            | Settled (wait, ignore result) |
+| Error exit (callback throws)   | Compensation runs            | Settled (wait, ignore result) |
 
 ### Compensation Model
 
-Each handle has at most **one compensation callback**, defined at `.start()` or `.execute()` time. The callback receives a full `CompensationContext` and the step's outcome.
+Each handle has at most **one compensation callback**, registered via the `.compensate(cb)` builder before awaiting. The callback receives a full `CompensationContext` and the step's outcome.
 
 ```typescript
-const flight = await ctx.steps.bookFlight.execute("Paris", "cust-1", {
-  compensate: async (compCtx, result) => {
+const flight = await ctx.steps
+  .bookFlight("Paris", "cust-1")
+  .compensate(async (compCtx, result) => {
     // result: StepCompensationResult<T>
     //   | { status: "complete"; data: T; errors: StepErrorAccessor }
     //   | { status: "failed"; reason: ...; errors: StepErrorAccessor }
     //   | { status: "terminated"; errors: StepErrorAccessor }
     if (result.status === "complete") {
-      await compCtx.steps.cancelFlight.execute("Paris", "cust-1");
+      await compCtx.steps.cancelFlight("Paris", "cust-1");
     }
-  },
-});
+  });
 ```
 
 Properties:
-- **Full `CompensationContext`** — has steps, workflows, channels, streams, events, scope, select, forEach, map.
+
+- **Full `CompensationContext`** — has steps, childWorkflows, channels, streams, events, scope, select, forEach, map.
 - **Has access to the outcome** — can branch on `result.status`.
-- **Pushed onto the LIFO compensation stack** at start/execute time.
+- **Pushed onto the LIFO compensation stack** at call time.
 - **Virtual event loop** — when multiple compensation callbacks from the same scope need to run, the engine transparently interleaves their execution at durable operation `await` points for concurrency, while keeping each callback's code sequential.
 
 #### `addCompensation()` (general purpose)
@@ -214,123 +225,57 @@ ctx.addCompensation(async (compCtx) => {
 });
 ```
 
-### `onFailure` — Explicit Failure Handling
+### `.failure()` / `.complete()` — Explicit Failure Handling
 
-Concurrency primitives (`match`, `forEach`, `map`) and sequential try variants (`tryExecute`, `tryJoin`) share a unified `onFailure` model. The callback receives a **single flat failure object** — with `compensate()` merged in when the handle was started with compensation.
+The `.failure(cb)` builder on `StepCall` / `WorkflowCall` provides explicit failure handling without auto-terminating the workflow. Chain after `.compensate()` if needed — the failure handler receives `compensate()` for eager discharge when compensation was registered.
 
 ```typescript
+// { complete, failure } pattern for forEach and map handlers
 await ctx.forEach(
   { flight: flightHandle, hotel: hotelHandle },
   {
     flight: {
-      onComplete: (data) => { ctx.state.flightId = data.id; },
-      onFailure: async (failure) => {
-        // failure: { reason, errors, compensate } (compensate present because handle had it)
-        ctx.logger.error("Flight failed", { reason: failure.reason });
-        // Explicitly run compensation to discharge SAGA obligation
+      complete: (data) => {
+        ctx.state.flightId = data.id;
+      },
+      failure: async (failure) => {
+        // failure: BranchFailureInfo with compensate() (if branch had compensated steps)
         await failure.compensate();
       },
     },
-    hotel: (data) => { ctx.state.hotelId = data.id; },
+    hotel: (data) => {
+      ctx.state.hotelId = data.id;
+    },
     // Plain function → failure crashes the workflow (happy-path default)
   },
 );
 ```
 
-**`onFailure` semantics:**
-- Receives a **single parameter**: the failure info object, optionally augmented with `compensate()`.
-- `failure.compensate()` invokes the handle's compensation callback explicitly. Calling it **switches the context to compensation mode** (SIGTERM-resilient) — the callback runs to completion. Then the obligation is discharged from the LIFO stack.
+**`.failure()` semantics:**
+
+- Receives a **`BranchFailureInfo`** with `compensate()` for eager discharge.
+- `failure.compensate()` invokes the registered compensation callback, **switches the context to compensation mode** (SIGTERM-resilient), runs the callback to completion, then discharges it from the LIFO stack.
 - If `failure.compensate()` is NOT called, the compensation still runs at scope exit / LIFO unwinding (safe default).
-- If no `compensate` was registered at `.start()` / `.execute()` time, the failure object does NOT include `compensate()` — full type safety.
-- For `map` and `match`, `onFailure` can return a fallback value.
-- **Step failure info:** `StepFailureInfo` — `{ reason: "attempts_exhausted" | "timeout", errors: StepErrorAccessor }`.
-- **Child workflow failure info:** `ChildWorkflowFailureInfo` — discriminated union: `{ status: "failed", error: WorkflowExecutionError } | { status: "terminated" }`. This lets the developer distinguish between a child that threw an error and one that was terminated by an administrator.
+- For `map` and `match`, the `failure` callback can return a fallback value.
+- **Step failure info:** `StepFailureInfo` — `{ reason: "attempts_exhausted" | "timeout", errors: StepErrorAccessor }` — passed directly to `.failure(cb)` on a `StepCall`.
+- **Child workflow failure info:** `ChildWorkflowFailureInfo` — discriminated union: `{ status: "failed", error: WorkflowExecutionError } | { status: "terminated" }` — passed to `.failure(cb)` on a `WorkflowCall`.
 
-**Handler shapes:**
+**Handler shapes for concurrency primitives:**
+
 - `(data) => ...` — plain function. Receives successful data `T`. Failure crashes the workflow.
-- `{ onComplete, onFailure }` — explicit handling. `onComplete` receives `T`; `onFailure` receives a flat failure info object.
-
-### `tryExecute` / `tryJoin` — Proportional Error Handling
-
-The `try` variants provide the same explicit `onFailure` model for **sequential** operations (direct `.execute()` or `.join()` calls). They accept `{ onComplete, onFailure }` callbacks — the same unified pattern used by `match`, `forEach`, and `map`.
-
-**Type safety:** Whether `onFailure`'s parameter includes `compensate()` depends on whether `compensate` was provided:
-
-| Method | `onFailure` parameter |
-|---|---|
-| `tryExecute` with `compensate` | `{ reason, errors, compensate }` |
-| `tryExecute` without `compensate` | `{ reason, errors }` |
-| `tryJoin` on handle started with `compensate` | `{ reason, errors, compensate }` |
-| `tryJoin` on handle started without `compensate` | `{ reason, errors }` |
-
-Return type is `Promise<Awaited<R1> | Awaited<R2>>` where `R1` and `R2` are independently inferred from each callback's return type. This allows `onComplete` and `onFailure` to return different types (including async vs sync).
-
-Timeout overloads on `tryJoin` add an `onTimeout` callback.
-
-**Compensation semantics (same model as `onFailure` everywhere):**
-- Compensation is registered on the LIFO stack **before** execution (SIGTERM during execution → covered).
-- On success → stays on LIFO (standard SAGA).
-- On failure/terminated → **stays on LIFO**. `onFailure` receives `failure.compensate()`:
-  - `await failure.compensate()` → switches to compensation mode (SIGTERM-resilient), runs callback to completion, discharges from LIFO.
-  - Don't call it → engine runs it after `onFailure` returns / at scope exit (safe default).
-- Steps don't have `"terminated"` — they are function calls with no external lifecycle control.
-- Child workflows include `"terminated"` — admin-initiated kills (`ChildWorkflowFailureInfo`).
-
-**Handle type parameter:** `.start()` with `compensate` produces `StepHandle<T, true>` / `ChildWorkflowHandle<..., true>`. Without → `false`. This tracks at the type level whether `onFailure`'s parameter includes `compensate()`.
-
-```typescript
-// Step: tryExecute WITH compensate — onFailure gets { reason, errors, compensate }
-const flightId = await ctx.steps.bookFlight.tryExecute("Paris", "cust-1", {
-  compensate: async (compCtx, result) => { ... },
-  onComplete: (data) => data.id,
-  onFailure: async (failure) => {
-    await failure.compensate(); // eager discharge — or don't call it (safe default)
-    return null;
-  },
-});
-
-// Step: tryExecute WITHOUT compensate — { reason, errors } only
-const carId = await ctx.steps.reserveCar.tryExecute("Paris", "dates", {
-  onComplete: (data) => data.id,
-  onFailure: (failure) => {
-    // failure.compensate would be a type error — not available
-    return null;
-  },
-});
-
-// Child workflow: tryExecute WITH compensate
-const paymentStatus = await ctx.workflows.payment.tryExecute({
-  workflowId: "pay-123",
-  args: { amount: 100 },
-  compensate: async (compCtx, result) => { ... },
-  onComplete: (data) => `paid:${data.receiptId}`,
-  onFailure: async (failure) => {
-    if (failure.status === "terminated") {
-      await failure.compensate(); // admin killed the child — eager discharge
-    }
-    // Don't call failure.compensate() for "failed" — let LIFO handle it
-    return failure.status;
-  },
-});
-
-// tryJoin with timeout — adds onTimeout callback
-const result = await flightHandle.tryJoin(30, {
-  onComplete: (data) => data,
-  onFailure: async (failure) => {
-    await failure.compensate();
-    return null;
-  },
-  onTimeout: () => null, // step still running, no compensation to discharge
-});
-```
+- `{ complete, failure }` — explicit handling for branch handles.
 
 ### Select (Concurrency Primitive)
 
-The `select` primitive multiplexes multiple handles and yields events as they arrive. In the happy-path model, step/child failures crash the workflow — the handle is removed from the selection.
+The `select` primitive multiplexes multiple handles and yields events as they arrive. In the happy-path model, branch failures crash the workflow by default.
 
 ```typescript
 // Inside a scope callback:
-const sel = ctx.select({ flight: flightHandle, hotel: hotelHandle, abort: ctx.channels.abort });
+const sel = ctx.select({
+  flight: flightHandle,
+  hotel: hotelHandle,
+  abort: ctx.channels.abort,
+});
 ```
 
 #### Manual iteration (`next`)
@@ -357,17 +302,17 @@ switch (event.key) {
 }
 ```
 
-#### Pattern matching (`match`) with default and onFailure
+#### Pattern matching (`match`) with default and failure handlers
 
-Handlers can be plain functions or `{ onComplete, onFailure }` objects for step/child keys. The second positional argument is a default handler for unhandled keys.
+Handlers can be plain functions or `{ complete, failure }` objects for branch handle keys. The second positional argument is a default handler for unhandled keys.
 
 ```typescript
 const result = await sel.match(
   {
-    // { onComplete, onFailure } for explicit failure handling
+    // { complete, failure } for explicit failure handling
     flight: {
-      onComplete: (data) => ({ type: "booking" as const, id: data.id }),
-      onFailure: async (failure) => {
+      complete: (data) => ({ type: "booking" as const, id: data.id }),
+      failure: async (failure) => {
         await failure.compensate();
         return { type: "booking" as const, id: "FAILED" };
       },
@@ -405,44 +350,51 @@ console.log(sel.remaining); // ReadonlySet<'flight' | 'hotel' | 'abort'>
 
 ### Select Event Types
 
-Since step/child failures crash the workflow (happy-path model), select events are simplified:
+Since branch failures crash the workflow by default (happy-path model), select events carry the data directly. Collection handles include an `innerKey`:
 
-| Handle Type | Event Shape |
-|---|---|
-| Step / Child Workflow | `{ key: K; data: T }` |
-| Channel | `{ key: K; data: T }` |
-| Stream Iterator | `{ key: K; status: "record"; data: T; offset: number } \| { key: K; status: "closed" }` |
-| Lifecycle / User Event | `{ key: K; status: "set" } \| { key: K; status: "never" }` |
+| Handle Type                     | Event Shape                                                                             |
+| ------------------------------- | --------------------------------------------------------------------------------------- |
+| `BranchHandle<T>` (single)      | `{ key: K; data: T }`                                                                   |
+| `BranchHandle<T>[]` (array)     | `{ key: K; innerKey: number; data: T }`                                                 |
+| `Map<K, BranchHandle<T>>` (map) | `{ key: K; innerKey: K; data: T }`                                                      |
+| Channel                         | `{ key: K; data: T }`                                                                   |
+| Stream Iterator                 | `{ key: K; status: "record"; data: T; offset: number } \| { key: K; status: "closed" }` |
+| Lifecycle / User Event          | `{ key: K; status: "set" } \| { key: K; status: "never" }`                              |
 
-No `ok` field — for steps, channels, and children, the event IS the data.
+### forEach / map (Batch Processing)
 
-### forEach / map (One-Shot Batch Processing)
+Process all branch handles concurrently. Callbacks receive successful data `T` directly (plain function) or use `{ complete, failure }` for explicit failure handling.
 
-Process all one-shot handles (StepHandle, ChildWorkflowHandle) concurrently. Callbacks receive successful data `T` directly (plain function) or a flat failure object (`{ onComplete, onFailure }`).
+Collection handles (Array, Map) pass `innerKey` as a second argument to callbacks.
 
 ```typescript
-// forEach — { onComplete, onFailure } for flight, plain function default
+// forEach — { complete, failure } for flight, plain function default
 await ctx.forEach(
   { flight: flightHandle, hotel: hotelHandle, car: carHandle },
   {
     flight: {
-      onComplete: (data) => { ctx.state.flightId = data.id; },
-      onFailure: async (failure) => {
+      complete: (data) => {
+        ctx.state.flightId = data.id;
+      },
+      failure: async (failure) => {
         await failure.compensate();
       },
     },
   },
   // Positional default — only receives "hotel" | "car" (type-narrowed)
-  (key, data) => { ctx.logger.info(`${key} completed`); },
+  (key, data) => {
+    ctx.logger.info(`${key} completed`);
+  },
 );
 
-// map — { onComplete, onFailure } for specific keys
+// map — { complete, failure } for specific keys
+// Return type mirrors collection structure: array → array, map → map
 const ids = await ctx.map(
   { flight: flightHandle, hotel: hotelHandle },
   {
     flight: {
-      onComplete: (data) => data.id,
-      onFailure: async (failure) => {
+      complete: (data) => data.id,
+      failure: async (failure) => {
         await failure.compensate();
         return "FAILED"; // fallback value
       },
@@ -451,56 +403,80 @@ const ids = await ctx.map(
   },
 );
 // ids: { flight: string | undefined, hotel: string | undefined }
+
+// forEach with a Map collection — innerKey is the Map's key
+await ctx.forEach(
+  { quotes: quotesMap }, // Map<string, BranchHandle<Quote>>
+  {
+    quotes: {
+      complete: (data, innerKey) => {
+        ctx.state.quotes[innerKey] = data.price;
+      },
+      failure: (_failure, innerKey) => {
+        ctx.logger.warn(`Quote failed for ${innerKey}`);
+      },
+    },
+  },
+);
 ```
 
 ### Child Workflows
 
-Child workflows in workflow code have no lifecycle control (`sigterm()` / `sigkill()` are removed). Lifecycle management is handled by scopes.
+Child workflow access is split by semantics:
+
+- **`ctx.childWorkflows.*`** — structured invocation, lifecycle managed by parent.
+- **`ctx.foreignWorkflows.*`** — message-only handles to existing workflow instances.
 
 ```typescript
-// Sequential — returns T directly
-const result = await ctx.workflows.payment.execute({
-  workflowId: `payment-${ctx.rng.paymentId.uuidv4()}`,
-  args: { amount: 100, customerId: "cust-123" },
-  compensate: async (compCtx, result) => { /* ... */ },
-});
-// result is the decoded workflow result — T directly
+// Sequential — childWorkflows call returns WorkflowCall<T>
+const result = await ctx.childWorkflows
+  .payment({
+    workflowId: `payment-${ctx.rng.paymentId.uuidv4()}`,
+    args: { amount: 100, customerId: "cust-123" },
+  })
+  .compensate(async (compCtx, result) => {
+    /* ... */
+  });
+// result is the decoded workflow result T directly
 
-// Concurrent — via scope
-const data = await ctx.scope({
-  child: ctx.workflows.payment.start({
-    workflowId: "payment-1",
-    args: { amount: 100 },
-    compensate: async (compCtx, result) => { /* ... */ },
-  }),
-}, async ({ child }) => {
-  return await child.join();
-});
+// Concurrent — via scope closure
+const receiptId = await ctx.scope(
+  {
+    child: async () => {
+      const result = await ctx.childWorkflows.payment({
+        workflowId: "payment-1",
+        args: { amount: 100, customerId: "cust-123" },
+      });
+      return result.receiptId;
+    },
+  },
+  async ({ child }) => await child,
+);
 
-// Detached — fire-and-forget, no scope required
-const handle = await ctx.workflows.notifications.startDetached({
-  workflowId: `notify-${ctx.rng.notifyId.uuidv4()}`,
-  args: { type: "booking-confirmed", customerId: "cust-123" },
-});
-// handle is limited: only channels.send() available
+// Detached — .detached() switches to messaging mode, no scope required
+const notifier = await ctx.childWorkflows
+  .emailCampaign({
+    workflowId: `campaign-${ctx.rng.campaignId.uuidv4()}`,
+    args: { customerId: "cust-123" },
+  })
+  .detached(); // → DetachedWorkflowCall<TChannels> → ForeignWorkflowHandle
+await notifier.channels.commands.send({ type: "nudge" });
 // The child runs independently — not terminated when parent fails
 
-// Child interaction (in scope)
-// child.channels.confirm.send({ approved: true }); // Send messages
-// child.lifecycle.complete.wait();                   // Observe lifecycle
-// child.events.processed.wait();                     // Observe events
-// child.streams.auditLog.iterator(0);                // Read streams
-
-// Get a handle to a non-child workflow (limited — only channels.send)
-const otherHandle = ctx.workflows.order.get("order-123");
-await otherHandle.channels.payment.send({ amount: 500 });
+// Access an existing (non-child) workflow via foreign handle
+const existing = ctx.foreignWorkflows.emailCampaign.get("campaign-existing-id");
+await existing.channels.commands.send({ type: "nudge" });
 ```
 
-**`startDetached()`** is the ONLY way to start concurrent work without a scope. The child is not managed by structured concurrency, not compensated when the parent fails, and not terminated when the parent is signaled.
+**Builder exclusivity on `WorkflowCall`:**
+
+- **Result mode**: chain `.compensate()`, `.failure()`, `.complete()` — `.detached()` is no longer available.
+- **Detached mode**: chain `.detached()` — result/compensation builders are no longer available.
 
 **Engine-level handles (`WorkflowHandleExternal`) retain `sigterm()` and `sigkill()`** — these are operational concerns for engine callers.
 
 **Signal semantics:**
+
 - **SIGTERM**: Current step terminates → `beforeCompensate` hook → compensations (LIFO) → `afterCompensate` hook. NOOP if already compensating.
 - **SIGKILL**: Immediate termination. No compensation, no hooks.
 
@@ -509,18 +485,21 @@ await otherHandle.channels.payment.send({ amount: 500 });
 Both extend a shared `BaseContext` with channels, streams, events, patches, sleep, rng, logger, timestamp, and date.
 
 **`WorkflowContext`** (happy-path):
-- Steps: `.execute()` returns `T` directly, `.start()` returns `ScopeEntry<StepHandle>`
-- Workflows: `.execute()` returns `T` directly, `.start()` returns `ScopeEntry<ChildWorkflowHandle>`
+
+- Steps: calling a step returns `StepCall<T>` — chain `.compensate()`, `.retry()`, `.failure()`, `.complete()` before awaiting
+- Child workflows: `ctx.childWorkflows.*` returns `WorkflowCall<T>` (result mode or detached mode)
+- Foreign workflows: `ctx.foreignWorkflows.*` returns `ForeignWorkflowHandle` (channels.send only)
 - Has `scope()`, `select()`, `forEach()`, `map()`, `addCompensation()`
-- Concurrency primitives support `{ onComplete, onFailure }` handlers with unified single-param model
+- Concurrency primitives support `{ complete, failure }` handlers
 
 **`CompensationContext`** (defensive, full structured concurrency):
-- Steps: `.execute()` returns `CompensationStepResult<T>`, `.start()` returns `ScopeEntry<CompensationStepHandle>`
-- Workflows: `.execute()` returns `WorkflowResult<T>`, `.start()` returns `ScopeEntry<CompensationChildWorkflowHandle>`
+
+- Steps: calling a step returns `CompensationStepCall<T>` — resolves to `CompensationStepResult<T>` (must handle ok/!ok)
+- Child workflows: `ctx.childWorkflows.*` returns `CompensationWorkflowCall<T>` — resolves to `WorkflowResult<T>`
 - Has `scope()`, `select()`, `forEach()`, `map()` — all with failures visible in result types
 - No `addCompensation()` (prevents nesting)
-- No compensation callbacks on `.start()` or handlers (can't nest compensations)
-- All unjoined handles are settled on compensation scope exit
+- No `.compensate()` builders or `{ complete, failure }` handlers (can't nest compensations)
+- All unjoined branches are settled on compensation scope exit
 
 **Virtual event loop:** When multiple compensation callbacks from the same scope need to run, the engine transparently interleaves their execution at durable operation `await` points. Each callback looks like normal sequential code — the engine handles concurrency and determinism via global sequence ordering and advisory locks.
 
@@ -542,8 +521,8 @@ const msg = await ctx.channels.payment.receive();
 // msg is the decoded value directly — no wrapper, no discriminated union
 console.log(msg);
 
-// From another workflow — send (fire-and-forget)
-const handle = ctx.workflows.order.get("order-123");
+// From another workflow — send via foreign handle
+const handle = ctx.foreignWorkflows.order.get("order-123");
 await handle.channels.payment.send({ amount: 100 });
 
 // External — send with result
@@ -646,12 +625,12 @@ const workflow = defineWorkflow({
   async execute(ctx) {
     // Callback form — adding new code
     const fraudResult = await ctx.patches.antifraud(async () => {
-      return await ctx.steps.fraudCheck.execute(args.flightId);
+      return await ctx.steps.fraudCheck(args.flightId);
     }, null);
 
     // Boolean form — removing old code
     if (!(await ctx.patches.removeLegacyEmail())) {
-      await ctx.steps.sendLegacyEmail.execute(...);
+      await ctx.steps.sendLegacyEmail(...);
     }
   },
 });
@@ -692,48 +671,6 @@ Available methods on `DeterministicRNG`:
 | `.weightedSample(items, count)`  | Weighted random sample          |
 | `.bytes(length)`                 | Random bytes                    |
 
-### Suspension (Runtime Options)
-
-Blocking primitives can optionally suspend the workflow — evicting it from memory and replaying when the wait condition is satisfied.
-
-#### `ctx.sleep()` — `SleepRuntimeOptions`
-
-```typescript
-await ctx.sleep(86400 * 7, { suspend: true }); // Suspend immediately
-await ctx.sleep(5);                              // Short sleep — no suspension
-```
-
-#### `ctx.channels.receive()` — `ChannelReceiveRuntimeOptions`
-
-```typescript
-// Stay hot for 10 minutes, then suspend
-const decision = await ctx.channels.approval.receive(86400 * 3, {
-  suspendAfter: 600,
-});
-```
-
-#### `streamIterator.read()` — `StreamIteratorReadRuntimeOptions`
-
-```typescript
-const entry = await iterator.read(86400, { suspendAfter: 0 }); // Suspend immediately
-```
-
-#### `childWorkflowHandle.join()` and `ctx.workflows.execute()` — `ChildWorkflowJoinRuntimeOptions`
-
-```typescript
-const result = await childHandle.join({ suspendAfter: 30 });
-```
-
-**`suspendAfter` values:**
-
-| Value               | Behavior                                                  |
-| ------------------- | --------------------------------------------------------- |
-| `"never"` (default) | Never suspend — stay in memory for the entire wait        |
-| `0`                 | Suspend immediately when the call blocks                  |
-| `N > 0`             | Stay in memory for N seconds ("hot window"), then suspend |
-
-**NOT suspendable:** `stepHandle.join()` (steps execute in-process), `select.next()` / `select.match()` (hold live handle references).
-
 ### Error Observability
 
 Failed steps and workflows expose detailed error information.
@@ -743,9 +680,9 @@ Failed steps and workflows expose detailed error information.
 ```typescript
 interface StepExecutionError {
   readonly message: string;
-  readonly type: string;       // error class name
-  readonly attempt: number;    // 1-indexed
-  readonly timestamp: number;  // epoch ms
+  readonly type: string; // error class name
+  readonly attempt: number; // 1-indexed
+  readonly timestamp: number; // epoch ms
   readonly details?: Record<string, unknown>;
 }
 ```
@@ -762,7 +699,7 @@ interface StepErrorAccessor {
 }
 ```
 
-**`WorkflowExecutionError`** — workflow-level error (without `attempt`):
+**`WorkflowExecutionError`** — for failed child workflows (engine-level and compensation context):
 
 ```typescript
 interface WorkflowExecutionError {
@@ -773,180 +710,139 @@ interface WorkflowExecutionError {
 }
 ```
 
-Engine-level results include error information:
-
-```typescript
-const result = await engine.workflows.travel.execute({ workflowId: "...", args: { ... } });
-if (!result.ok && result.status === "failed") {
-  console.log(result.error.message);  // WorkflowExecutionError
-  console.log(result.error.type);
-}
-```
-
 ## Type System: Input vs Output
 
 Every schema has **input** (encoded for DB) and **output** (decoded for runtime) types:
 
-| Context                               | Type               | Reason           |
-| ------------------------------------- | ------------------ | ---------------- |
-| Step execute **returns**              | `z.input<Schema>`  | Encoded to JSONB |
-| Step `.execute()` / `.join()` **returns** | `z.output<Schema>` | Decoded from DB  |
-| Channel **send** accepts              | `z.input<Schema>`  | Saved to DB      |
-| Channel **receive** returns           | `z.output<Schema>` | Decoded from DB  |
-| Stream **write** accepts              | `z.input<Schema>`  | Saved to DB      |
-| Stream **read** returns               | `z.output<Schema>` | Decoded from DB  |
-| Workflow **execute** returns          | `z.input<Schema>`  | Saved to DB      |
-| Workflow **getResult** returns        | `z.output<Schema>` | Decoded from DB  |
+| Context                        | Type               | Reason           |
+| ------------------------------ | ------------------ | ---------------- |
+| Step execute **returns**       | `z.input<Schema>`  | Encoded to JSONB |
+| Step call **resolves**         | `z.output<Schema>` | Decoded from DB  |
+| Channel **send** accepts       | `z.input<Schema>`  | Saved to DB      |
+| Channel **receive** returns    | `z.output<Schema>` | Decoded from DB  |
+| Stream **write** accepts       | `z.input<Schema>`  | Saved to DB      |
+| Stream **read** returns        | `z.output<Schema>` | Decoded from DB  |
+| Workflow **execute** returns   | `z.input<Schema>`  | Saved to DB      |
+| Workflow **getResult** returns | `z.output<Schema>` | Decoded from DB  |
 
 ## Result Types
 
 ### Workflow-Internal (happy-path model)
 
-Step and child workflow results in `WorkflowContext` are **not discriminated unions** — `.execute()` and `.join()` return `T` directly. Failure auto-terminates the workflow.
+Step and child workflow calls in `WorkflowContext` resolve to `T` directly when awaited without a `.failure()` builder. Failure auto-terminates the workflow.
 
-Timeout overloads on `.join()` return a discriminated union since timeout is an expected outcome:
+### Workflow-Internal (builder-based error handling)
 
-```typescript
-type StepJoinResultWithTimeout<T> =
-  | { status: "complete"; data: T }
-  | { status: "timeout" };
-```
+`.failure(cb)` and `.complete(cb)` on `StepCall` / `WorkflowCall` let you handle outcomes explicitly. The call resolves to `T | TFail` where `TFail` is the `failure` callback's return type.
 
-### Workflow-Internal (try variants — callback-based)
+**`failure.compensate()` semantics (unified across all `failure` surfaces):**
 
-`tryExecute()` and `tryJoin()` accept `{ onComplete, onFailure }` callbacks. The workflow does NOT auto-terminate — the developer handles outcomes explicitly inside the callbacks. No result unions are returned; instead, the return value of whichever callback fires becomes the method's return value.
-
-**Return type:** `Promise<Awaited<R1> | Awaited<R2>>` where `R1` and `R2` are independently inferred from each callback's return type. Async callbacks are automatically unwrapped via `Awaited`.
-
-**`onFailure` receives a single flat parameter:**
-
-```typescript
-// With compensate — failure includes compensate()
-onFailure: (failure: StepFailureInfo & { compensate: () => Promise<void> }) => R;
-
-// Without compensate — plain failure info
-onFailure: (failure: StepFailureInfo) => R;
-```
-
-For child workflows, `failure` is `ChildWorkflowFailureInfo` (discriminated: `"failed" | "terminated"`), optionally augmented with `compensate()`.
-
-Timeout overloads on `tryJoin` add an `onTimeout: () => R` callback.
-
-**`failure.compensate()` semantics (unified across all `onFailure` surfaces):**
 - Calling it switches to compensation mode (SIGTERM-resilient), runs the callback to completion, discharges from LIFO.
-- Not calling it → engine runs it after `onFailure` returns / at scope exit (safe default).
-- Same mechanism in `match`/`forEach`/`map` and `tryExecute`/`tryJoin`.
+- Not calling it → engine runs it after `failure` returns / at scope exit (safe default).
+- Same mechanism in `match`/`forEach`/`map` failure handlers and `.failure()` builder.
 
 ### Compensation-Internal
 
-`CompensationStepResult<T>` — steps inside `CompensationContext` (via `.execute()` or `.join()` on `CompensationStepHandle`):
+`CompensationStepResult<T>` — steps inside `CompensationContext`:
 
 ```typescript
 type CompensationStepResult<T> =
-  | { ok: true;  status: "complete";   data: T;  errors: StepErrorAccessor }
-  | { ok: false; status: "failed";     reason: "attempts_exhausted" | "timeout"; errors: StepErrorAccessor };
+  | { ok: true; status: "complete"; data: T; errors: StepErrorAccessor }
+  | {
+      ok: false;
+      status: "failed";
+      reason: "attempts_exhausted" | "timeout";
+      errors: StepErrorAccessor;
+    };
 ```
 
 No `"terminated"` — the only way to terminate during compensation is SIGKILL, which tears down the process immediately.
 
 ### Channel, Stream, Event Results (unchanged)
 
-| Type                          | Success    | Failure Statuses                               |
-| ----------------------------- | ---------- | ---------------------------------------------- |
-| `ChannelReceiveResult`        | `received` | `timeout`                                      |
-| `ChannelSendResult`           | `sent`     | `not_found`                                    |
-| `StreamReadResult`            | `received` | `closed`, `timeout`, `not_found`               |
-| `StreamIteratorReadResult`    | `record`   | `closed`, `timeout`                            |
-| `EventWaitResult`             | `set`      | `never`, `timeout`                             |
-| `EventCheckResult`            | `set`      | `not_set`, `never`, `not_found`                |
-| `SignalResult`                | `sent`     | `already_finished`, `not_found`                |
-| `SelectMatchResult`           | `matched`  | `exhausted`                                    |
-| `SelectMatchResultWithTimeout`| `matched`  | `exhausted`, `timeout`                         |
+| Type                           | Success    | Failure Statuses                 |
+| ------------------------------ | ---------- | -------------------------------- |
+| `ChannelReceiveResult`         | `received` | `timeout`                        |
+| `ChannelSendResult`            | `sent`     | `not_found`                      |
+| `StreamReadResult`             | `received` | `closed`, `timeout`, `not_found` |
+| `StreamIteratorReadResult`     | `record`   | `closed`, `timeout`              |
+| `EventWaitResult`              | `set`      | `never`, `timeout`               |
+| `EventCheckResult`             | `set`      | `not_set`, `never`, `not_found`  |
+| `SignalResult`                 | `sent`     | `already_finished`, `not_found`  |
+| `SelectMatchResult`            | `matched`  | `exhausted`                      |
+| `SelectMatchResultWithTimeout` | `matched`  | `exhausted`, `timeout`           |
 
 ### Engine-Level Results
 
 Engine-level types retain full result unions since engine callers need to handle all outcomes:
 
-| Type                         | Success    | Failure Statuses                               |
-| ---------------------------- | ---------- | ---------------------------------------------- |
-| `WorkflowResult`             | `complete` | `failed` (with `error`), `terminated`          |
-| `WorkflowResultExternal`     | `complete` | `failed` (with `error`), `terminated`, `timeout`, `not_found` |
+| Type                     | Success    | Failure Statuses                                              |
+| ------------------------ | ---------- | ------------------------------------------------------------- |
+| `WorkflowResult`         | `complete` | `failed` (with `error`), `terminated`                         |
+| `WorkflowResultExternal` | `complete` | `failed` (with `error`), `terminated`, `timeout`, `not_found` |
 
 ### Timeout-Free Overloads
 
 When a blocking primitive is called **without** a timeout, the return type excludes the `timeout` status entirely:
 
-**Happy-path (auto-terminates on failure):**
-- `StepHandle.join()` → `T` vs `StepJoinResultWithTimeout<T>` (with timeout)
-- `ChildWorkflowHandle.join()` → `T` vs `ChildWorkflowJoinResultWithTimeout<T>`
+**Channels:**
 
-**Try variants (callback-based — return type is `Awaited<R1> | Awaited<R2>` from callbacks):**
-- `StepHandle.tryJoin({ onComplete, onFailure })` → `Awaited<R1> | Awaited<R2>` (with timeout: `Awaited<R1> | Awaited<R2> | Awaited<R3>`)
-- `ChildWorkflowHandle.tryJoin({ onComplete, onFailure })` → `Awaited<R1> | Awaited<R2>` (with timeout: `Awaited<R1> | Awaited<R2> | Awaited<R3>`)
-- `onFailure`'s parameter includes `compensate()` only when `HasCompensation = true` on the handle
+- `ChannelHandle.receive()` → `T` directly vs `ChannelReceiveResult<T>` (with timeout)
 
-**Compensation (failures always explicit):**
-- `CompensationStepHandle.join()` → `CompensationStepResult<T>` vs `CompensationStepJoinResultWithTimeout<T>`
-- `CompensationChildWorkflowHandle.join()` → `WorkflowResult<T>` vs `CompensationChildWorkflowJoinResultWithTimeout<T>`
+**Streams:**
 
-**Other:**
+- `StreamIteratorHandle.read()` → `StreamIteratorReadResultNoTimeout<T>` vs `StreamIteratorReadResult<T>`
+- `StreamReaderAccessor.read()` → `StreamReadResultNoTimeout<T>` vs `StreamReadResult<T>`
+
+**Events:**
+
+- `EventAccessor.wait()` → `EventWaitResultNoTimeout` vs `EventWaitResult`
+
+**Select:**
+
 - `Selection.next()` → `SelectNextResultNoTimeout` vs `SelectNextResult`
 - `Selection.match()` → `SelectMatchResult` vs `SelectMatchResultWithTimeout`
-- `ChannelHandle.receive()` → `T` directly vs `ChannelReceiveResult` (with timeout)
-- `EventAccessor.wait()` → `EventWaitResultNoTimeout` vs `EventWaitResult`
-- `StreamIteratorHandle.read()` → `StreamIteratorReadResultNoTimeout` vs `StreamIteratorReadResult`
-- `StreamReaderAccessor.read()` → `StreamReadResultNoTimeout` vs `StreamReadResult`
 
 ## Visibility Rules
 
 ### Inside Workflow (`WorkflowContext`)
 
-| Resource                       | Operations                                                            |
-| ------------------------------ | --------------------------------------------------------------------- |
-| `ctx.steps.*`                  | `.execute()` → `T`, `.tryExecute({ onComplete, onFailure })` → `Awaited<R1> \| Awaited<R2>`, `.start()` → `ScopeEntry<StepHandle<T, bool>>` |
-| `ctx.channels.*`               | `.receive(options?)` / `.receive(timeout, options?)`                  |
-| `ctx.streams.*`                | `.write()`                                                            |
-| `ctx.events.*`                 | `.set()`                                                              |
-| `ctx.workflows.*`              | `.start()` → `ScopeEntry<ChildWorkflowHandle<..., bool>>`, `.execute()` → `T`, `.tryExecute({ onComplete, onFailure })` → `Awaited<R1> \| Awaited<R2>`, `.startDetached()`, `.get()` |
-| `ctx.patches.*`                | `()` → boolean, `(callback, default?)` → callback result or default  |
-| `ctx.scope()`                  | Structured concurrency boundary                                       |
-| `ctx.select()`                 | Multiplex handles (`.next()`, `.match()`, async iteration)            |
-| `ctx.forEach()`                | Process one-shot handles concurrently                                 |
-| `ctx.map()`                    | Transform one-shot handle results concurrently                        |
-| `ctx.addCompensation()`        | Register LIFO compensation callback                                   |
-| `ctx.sleep(seconds, options?)` | Durable sleep                                                         |
-| `ctx.rng.*`                    | Typed deterministic RNG streams                                       |
-| `ctx.timestamp` / `ctx.date`   | Deterministic time                                                    |
-| `ctx.logger`                   | Replay-aware logger                                                   |
+| Resource                     | Operations                                                                                             |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `ctx.steps.*`                | `(args)` → `StepCall<T>` — chain `.compensate()`, `.retry()`, `.failure()`, `.complete()` before await |
+| `ctx.channels.*`             | `.receive()` / `.receive(timeout)`                                                                     |
+| `ctx.streams.*`              | `.write()`                                                                                             |
+| `ctx.events.*`               | `.set()`                                                                                               |
+| `ctx.childWorkflows.*`       | `(options)` → `WorkflowCall<T>` — chain builders or `.detached()`                                      |
+| `ctx.foreignWorkflows.*`     | `.get(workflowId)` → `ForeignWorkflowHandle` (channels.send only)                                      |
+| `ctx.patches.*`              | `()` → boolean, `(callback, default?)` → callback result or default                                    |
+| `ctx.scope()`                | Structured concurrency boundary — accepts closures and collections                                     |
+| `ctx.select()`               | Multiplex handles (`.next()`, `.match()`, async iteration)                                             |
+| `ctx.forEach()`              | Process branch handles concurrently; `{ complete, failure }` handlers                                  |
+| `ctx.map()`                  | Transform branch handle results; collection structure mirrored                                         |
+| `ctx.addCompensation()`      | Register LIFO compensation callback                                                                    |
+| `ctx.sleep(seconds)`         | Durable sleep                                                                                          |
+| `ctx.rng.*`                  | Typed deterministic RNG streams                                                                        |
+| `ctx.timestamp` / `ctx.date` | Deterministic time                                                                                     |
+| `ctx.logger`                 | Replay-aware logger                                                                                    |
 
 ### Inside Compensation (`CompensationContext`)
 
-| Resource                       | Operations                                                            |
-| ------------------------------ | --------------------------------------------------------------------- |
-| `ctx.steps.*`                  | `.execute()` → `CompensationStepResult<T>`, `.start()` → `ScopeEntry<CompensationStepHandle>` |
-| `ctx.channels.*`               | `.receive()`                                                          |
-| `ctx.streams.*`                | `.write()`                                                            |
-| `ctx.events.*`                 | `.set()`                                                              |
-| `ctx.workflows.*`              | `.execute()` → `WorkflowResult<T>`, `.start()` → `ScopeEntry<CompensationChildWorkflowHandle>`, `.get()` → limited handle |
-| `ctx.scope()`                  | Structured concurrency boundary (all unjoined handles settled)        |
-| `ctx.select()`                 | Multiplex handles — failures visible in events                        |
-| `ctx.forEach()`                | Process one-shot handles — callbacks receive result unions             |
-| `ctx.map()`                    | Transform one-shot handle results — callbacks receive result unions    |
-| `ctx.sleep()` / `ctx.rng.*`   | Same as WorkflowContext                                               |
-| `ctx.logger`                   | Replay-aware logger                                                   |
+| Resource                    | Operations                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------ |
+| `ctx.steps.*`               | `(args)` → `CompensationStepCall<T>` — resolves to `CompensationStepResult<T>` |
+| `ctx.channels.*`            | `.receive()`                                                                   |
+| `ctx.streams.*`             | `.write()`                                                                     |
+| `ctx.events.*`              | `.set()`                                                                       |
+| `ctx.childWorkflows.*`      | `(options)` → `CompensationWorkflowCall<T>` — resolves to `WorkflowResult<T>`  |
+| `ctx.scope()`               | Structured concurrency boundary — all unjoined branches settled                |
+| `ctx.select()`              | Multiplex handles                                                              |
+| `ctx.forEach()`             | Process branch results — plain callbacks, data carries result unions           |
+| `ctx.map()`                 | Transform branch results — plain callbacks                                     |
+| `ctx.sleep()` / `ctx.rng.*` | Same as WorkflowContext                                                        |
+| `ctx.logger`                | Replay-aware logger                                                            |
 
-### Parent → Child Workflow (`ChildWorkflowHandle`)
-
-| Resource          | Operations                                |
-| ----------------- | ----------------------------------------- |
-| `.join(options?)`  | Wait for result (supports `suspendAfter`) |
-| `.tryJoin(options?)`| Wait with result union — type depends on `HasCompensation` |
-| `.channels.*`     | `.send()` (fire-and-forget)               |
-| `.lifecycle.*`    | `.wait()`, `.get()`                       |
-| `.events.*`       | `.wait()`, `.get()`                       |
-| `.streams.*`      | `.read()`, `.iterator()`, `.isOpen()`     |
-
-### Parent → Non-Child Workflow (`.get()` handle)
+### `ForeignWorkflowHandle`
 
 | Resource      | Operations                       |
 | ------------- | -------------------------------- |
@@ -954,11 +850,11 @@ When a blocking primitive is called **without** a timeout, the return type exclu
 
 ### External (`engine.workflows.*`)
 
-| Resource   | Operations                                            |
-| ---------- | ----------------------------------------------------- |
-| `.start()` | Start workflow, returns `WorkflowHandleExternal`      |
+| Resource     | Operations                                            |
+| ------------ | ----------------------------------------------------- |
+| `.start()`   | Start workflow, returns `WorkflowHandleExternal`      |
 | `.execute()` | Start + wait for result (sugar for start + getResult) |
-| `.get()`   | Get handle to existing workflow                       |
+| `.get()`     | Get handle to existing workflow                       |
 
 ### External Handle (`WorkflowHandleExternal`)
 
@@ -1021,8 +917,8 @@ const helloWorkflow = defineWorkflow({
   retention: 86400 * 7,
 
   async execute(ctx) {
-    // .execute() returns T directly — no result checking needed
-    const result = await ctx.steps.greet.execute("World");
+    // Call step directly — returns T, no .execute() method needed
+    const result = await ctx.steps.greet("World");
     return { message: result.greeting };
   },
 });
@@ -1070,51 +966,27 @@ Work in Progress — Public API design complete. Internal implementation pending
 - Type definitions with standard schema support
 - `defineStep()` — flat structure with `execute`, `schema`, `retryPolicy`
 - `defineWorkflow()` with full type safety
-- **Happy-path model** — `.execute()` returns `T` directly, failures auto-terminate
-- **Structured concurrency** via `ctx.scope()` — `.start()` only inside scopes, `ScopeEntry` branded type
-- **One compensation callback per handle** — defined at `.start()` or `.execute()` time, full `CompensationContext` with result
-- **Scope exit behavior** — handles with `compensate` → compensated; without → settled
-- **Unified `onFailure`** — `{ onComplete, onFailure }` handler entries; `onFailure` receives a single flat failure object with `compensate()` merged in when applicable
+- **Callable thenable model** — steps and child workflows return `StepCall<T>` / `WorkflowCall<T>` thenables with builder chains
+- **Closure-based structured concurrency** via `ctx.scope()` — entries are `async () => T` closures; collections (Array, Map) supported for dynamic fan-out
+- **One compensation callback per handle** — defined via `.compensate(cb)` builder, full `CompensationContext` with result
+- **Scope exit behavior** — branches with compensated steps → compensated; others → settled
+- **Unified failure model** — `.failure(cb)` / `{ complete, failure }` handler entries; `failure.compensate()` for eager discharge
 - **Virtual event loop** — engine interleaves concurrent compensation callbacks transparently
 - `BaseContext` / `WorkflowContext` / `CompensationContext` hierarchy
-- **CompensationContext with full structured concurrency** — `scope()`, `select()`, `forEach()`, `map()`, `.start()` returning handles, failures always explicit in result types
-- `CompensationStepResult<T>` for defensive compensation code (no `"terminated"` — only `"complete"` and `"failed"`)
-- `CompensationStepHandle` / `CompensationChildWorkflowHandle` for concurrent compensation operations
+- **CompensationContext with full structured concurrency** — `scope()`, `select()`, `forEach()`, `map()`, failures always explicit in result types
+- `CompensationStepResult<T>` for defensive compensation code
+- **`ctx.childWorkflows.*` / `ctx.foreignWorkflows.*`** split — structured vs message-only access
+- **`.detached()`** on `WorkflowCall` for fire-and-forget child workflows
+- **Builder exclusivity** on `WorkflowCall` — result mode and detached mode are mutually exclusive at the type level
+- **Collection support** — Array and Map of closures/handles in scope/select/forEach/map; callbacks receive `innerKey` for collections
 - Error observability — `StepExecutionError`, `StepErrorAccessor`, `WorkflowExecutionError`
-- `ctx.select()` — happy-path events, positional default handler, `{ onComplete, onFailure }` handler entries (unified single-param)
-- `ctx.forEach()` / `ctx.map()` — positional default handler with type narrowing, `{ onComplete, onFailure }` handler entries (unified single-param)
-- `startDetached()` for fire-and-forget child workflows outside scopes
 - Channel receive without timeout returns `T` directly (no wrapper)
-- Child workflow handles without lifecycle control (no `sigterm()` / `sigkill()`)
 - Engine-level handles retain `sigterm()`, `sigkill()`, `getResult()` with `WorkflowExecutionError`
 - Lifecycle events with "never" semantics
 - Stream iterators (streams close implicitly on workflow termination)
 - Patches for safe workflow code evolution
-- Suspension via per-primitive runtime options
 - Typed deterministic RNG (`ctx.rng.*`)
 - Consistent timeout-free overloads
-
-### Removed from previous API
-
-- `StepCompensation<TArgs>` (start-time step reference) — replaced by full compensation callbacks
-- Five `unjoined` strategies (`kill`, `settle`, `join`, `terminate`, `compensate`) — replaced by single rule: compensate if callback exists, settle if not
-- `{ on, compensate }` handler entries on match/forEach/map — replaced by `{ onComplete, onFailure }` with single flat failure param
-- Join-time compensation (separate compensation definition at `.join()`) — compensation is now defined once at `.start()` / `.execute()` time only
-- `StepResult<T>` / `StepJoinResult<T>` — replaced by happy-path `T` return
-- `WorkflowResult<T>` for child `.execute()` — replaced by `T` return
-- `StepHandle.sigkill()` — steps have no lifecycle control
-- `ChildWorkflowHandle.sigterm()` / `.sigkill()` — removed from workflow code
-- `"terminated"` from workflow-visible step types (stays in compensation types)
-- `ok` field from `HandleSelectEvent` for step/child handles
-- `_default` key convention in handlers (replaced by positional default with proper type narrowing)
-- `CompensationStepObject.run()` (renamed to `.execute()`)
-- `"terminated"` from `CompensationStepResult` (only SIGKILL can terminate during compensation — invisible)
-- `ChannelReceiveResultNoTimeout` wrapper (channel receive without timeout returns `T` directly)
-- `defineTransaction()` — transactions leaked storage semantics
-- Queries — replaced by streams + events
-- `cancelSchema` — replaced by signals
-- Step-level compensations — replaced by callback model
-- `stream.close()` — streams close implicitly
 
 ## License
 

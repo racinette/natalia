@@ -26,13 +26,17 @@ import type {
  * - Are automatically retried on failure per their retry policy
  * - Have their results cached for deterministic replay
  *
- * In `WorkflowContext`, `.execute()` returns the decoded result `T` directly —
- * failures auto-terminate the workflow and trigger compensation (happy-path model).
+ * In `WorkflowContext`, calling a step returns a `StepCall<T>` thenable.
+ * Await it directly for the happy path (failure auto-terminates the workflow),
+ * or chain builder methods before awaiting:
+ * - `.compensate(cb)` — register compensation callback
+ * - `.retry(policy)` — override retry policy
+ * - `.failure(cb)` — handle failure explicitly without auto-terminating
+ * - `.complete(cb)` — transform success result
  *
- * In `CompensationContext`, `.execute()` returns `CompensationStepResult<T>` — a
- * discriminated union that compensation code must handle gracefully.
- * `.start()` returns a `ScopeEntry<CompensationStepHandle<T>>` for concurrent
- * execution within compensation scopes.
+ * In `CompensationContext`, calling a step returns a `CompensationStepCall<T>`
+ * thenable that resolves to `CompensationStepResult<T>` — a discriminated union
+ * that compensation code must handle gracefully.
  *
  * LOGGING: Use your own application logger (console.log, Winston, Pino, etc.)
  * inside step implementations. Workflow-level logging is separate via ctx.logger.
@@ -52,13 +56,13 @@ import type {
  *       body: JSON.stringify({ destination, customerId }),
  *       signal,
  *     });
- *     return await res.json();
+ *     return res.json();
  *   },
  *   schema: FlightBookingResult,
  *   retryPolicy: { maxAttempts: 3, intervalSeconds: 2 },
  * });
  *
- * // Compensation step — used in compensation callbacks
+ * // Compensation step — used in .compensate() callbacks
  * const cancelFlight = defineStep({
  *   name: 'cancelFlight',
  *   execute: async ({ signal }, destination: string, customerId: string) => {
@@ -67,9 +71,9 @@ import type {
  *       body: JSON.stringify({ destination, customerId }),
  *       signal,
  *     });
- *     return undefined;
+ *     return { ok: true };
  *   },
- *   schema: z.undefined(),
+ *   schema: z.object({ ok: z.boolean() }),
  *   retryPolicy: { maxAttempts: 20, intervalSeconds: 5 },
  * });
  * ```
@@ -118,25 +122,26 @@ export function defineStep<
  * - Signal milestones via events
  * - Execute durable operations via steps
  *
- * **Happy-path model:** `.execute()` returns the decoded result `T` directly.
- * Failures auto-terminate the workflow and trigger compensation in LIFO order.
- * No `if (!result.ok) throw` boilerplate.
+ * **Callable thenable model:** Steps and child workflows are called directly and
+ * return thenables (`StepCall<T>`, `WorkflowCall<T>`). Chain builder methods before
+ * awaiting: `.compensate(cb)`, `.retry(policy)`, `.failure(cb)`, `.complete(cb)`.
+ * Failure auto-terminates the workflow unless `.failure(cb)` is used.
  *
- * **Compensation:** Each handle has at most one compensation callback, defined
- * at `.start()` or `.execute()` time. Compensation runs in LIFO order when
- * the workflow fails. `ctx.addCompensation()` provides general-purpose cleanup.
+ * **Compensation:** Register per-step via `.compensate(cb)` builder.
+ * `ctx.addCompensation(cb)` provides general-purpose cleanup.
+ * All compensations run in LIFO order when the workflow fails.
  *
- * **Structured concurrency:** All concurrent handles must exist within a
- * `ctx.scope()` declaration. `.start()` is only available inside scopes.
- * Handles with a `compensate` callback are compensated on scope exit;
- * handles without are settled (waited for, result ignored).
+ * **Structured concurrency:** All concurrent branches run as closures inside
+ * `ctx.scope()`. Collections (Array, Map) are supported for dynamic fan-out.
+ * Branches with compensated steps are compensated on scope exit.
  *
  * **Failure handling:** Concurrency primitives (match, forEach, map) support
- * `{ onComplete, onFailure }` handlers for explicit failure recovery without
+ * `{ complete, failure }` handlers for explicit failure recovery without
  * crashing the workflow.
  *
- * **Detached children:** `startDetached()` fires off a child workflow without
- * a scope — the only way to start concurrent work without structured concurrency.
+ * **Child workflows:** `ctx.childWorkflows.*` for structured invocation;
+ * `ctx.foreignWorkflows.*` for message-only access to existing instances.
+ * Use `.detached()` on a child workflow call for fire-and-forget mode.
  *
  * @example
  * ```typescript
@@ -147,27 +152,25 @@ export function defineStep<
  *   result: z.object({ bookingId: z.string() }),
  *
  *   async execute(ctx, args) {
- *     // .execute() returns T directly — failure auto-compensates
- *     const flight = await ctx.steps.bookFlight.execute(args.destination, args.customerId, {
- *       compensate: async (compCtx, result) => {
+ *     // Call step directly — failure auto-compensates
+ *     const flight = await ctx.steps
+ *       .bookFlight(args.destination, args.customerId)
+ *       .compensate(async (compCtx, result) => {
  *         if (result.status === 'complete') {
- *           await compCtx.steps.cancelFlight.execute(args.destination, args.customerId);
+ *           await compCtx.steps.cancelFlight(args.destination, args.customerId);
  *         }
- *       },
- *     });
+ *       });
  *
- *     // Concurrent with scope and compensation callback
- *     const winner = await ctx.scope({
- *       a: ctx.steps.bookHotel.start(args.city, args.checkIn, args.checkOut, {
- *         compensate: async (compCtx, result) => {
+ *     // Concurrent with scope — closures as branches
+ *     const hotel = await ctx.scope({
+ *       a: async () => ctx.steps
+ *         .bookHotel(args.city, args.checkIn, args.checkOut)
+ *         .compensate(async (compCtx, result) => {
  *           if (result.status === 'complete') {
- *             await compCtx.steps.cancelHotel.execute(args.city, args.checkIn, args.checkOut);
+ *             await compCtx.steps.cancelHotel(args.city, args.checkIn, args.checkOut);
  *           }
- *         },
- *       }),
- *     }, async ({ a }) => {
- *       return await a.join();
- *     });
+ *         }),
+ *     }, async ({ a }) => await a);
  *
  *     return { bookingId: flight.id };
  *   },

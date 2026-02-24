@@ -73,7 +73,7 @@ export type RngDefinitions = Record<
  * Use for removing code or complex restructuring:
  * ```typescript
  * if (!await ctx.patches.removeLegacyEmail()) {
- *   await ctx.steps.sendLegacyEmail.execute(...);
+ *   await ctx.steps.sendLegacyEmail(...);
  * }
  * ```
  *
@@ -81,7 +81,7 @@ export type RngDefinitions = Record<
  * Use for adding new code paths (90% of the time):
  * ```typescript
  * const result = await ctx.patches.antifraud(async () => {
- *   return await ctx.steps.fraudCheck.execute(flightId);
+ *   return await ctx.steps.fraudCheck(flightId);
  * }, null);
  * ```
  */
@@ -261,44 +261,6 @@ export type ChildWorkflowCompensationResult<T> =
   | { status: "terminated" };
 
 // =============================================================================
-// RESULT TYPES — STEP JOIN (TIMEOUT OVERLOADS)
-// =============================================================================
-
-/**
- * Result of step join with timeout.
- * Timeout is an expected outcome (not a failure), so there's no `ok` field.
- * Used when `.join(timeoutSeconds)` is called on a StepHandle.
- */
-export type StepJoinResultWithTimeout<T> =
-  | { status: "complete"; data: T }
-  | { status: "timeout" };
-
-/**
- * Result of child workflow join with timeout.
- * Timeout is an expected outcome (not a failure), so there's no `ok` field.
- * Used when `.join(timeoutSeconds)` is called on a ChildWorkflowHandle.
- */
-export type ChildWorkflowJoinResultWithTimeout<T> =
-  | { status: "complete"; data: T }
-  | { status: "timeout" };
-
-/**
- * Result of step join with timeout in CompensationContext.
- * Includes all CompensationStepResult outcomes plus timeout.
- */
-export type CompensationStepJoinResultWithTimeout<T> =
-  | CompensationStepResult<T>
-  | { ok: false; status: "timeout" };
-
-/**
- * Result of child workflow join with timeout in CompensationContext.
- * Includes all WorkflowResult outcomes plus timeout.
- */
-export type CompensationChildWorkflowJoinResultWithTimeout<T> =
-  | WorkflowResult<T>
-  | { ok: false; status: "timeout" };
-
-// =============================================================================
 // RESULT TYPES — ENGINE LEVEL (with error info)
 // =============================================================================
 
@@ -324,7 +286,7 @@ export type WorkflowResultExternal<TResult> =
   | { ok: false; status: "not_found" };
 
 // =============================================================================
-// RESULT TYPES — CHANNELS, STREAMS, EVENTS (unchanged)
+// RESULT TYPES — CHANNELS, STREAMS, EVENTS
 // =============================================================================
 
 /**
@@ -452,109 +414,6 @@ export interface ExternalWaitOptions {
 }
 
 // =============================================================================
-// RUNTIME OPTIONS (BLOCKING PRIMITIVES)
-// =============================================================================
-//
-// Runtime options control suspension behavior at blocking points. Suspension
-// evicts the workflow from memory; when the wait condition is satisfied, the
-// workflow is replayed from the execution log to resume.
-//
-// Suspension is only available on primitives whose wait condition can be fully
-// described as a single database-level predicate with no in-process
-// dependencies:
-//   - ctx.sleep()                      — timer expiry
-//   - ctx.channels.[name].receive()    — message arrival on a channel
-//   - streamIterator.read()            — record written at a stream offset
-//   - childWorkflowHandle.join()       — child workflow reaches terminal state
-//
-// NOT available on:
-//   - stepHandle.join()                — steps execute in-process
-//   - select.next() / select.match()   — select holds live handle references
-// =============================================================================
-
-/**
- * Runtime options for `ctx.sleep()`.
- */
-export interface SleepRuntimeOptions {
-  /**
-   * If true, the workflow is suspended (evicted from memory) for the duration
-   * of the sleep. When the timer fires, the workflow is replayed from the
-   * execution log to resume.
-   *
-   * @default false (workflow stays in memory)
-   */
-  suspend?: boolean;
-}
-
-/**
- * Runtime options for `ctx.channels.[name].receive()`.
- */
-export interface ChannelReceiveRuntimeOptions {
-  /**
-   * Controls when the workflow is suspended while waiting for a message.
-   *
-   * - `"never"` — Never suspend. The workflow stays in memory for the entire
-   *   wait. This is the default.
-   * - `0` — Suspend immediately. The workflow is evicted as soon as the
-   *   receive call blocks.
-   * - `number > 0` — Stay in memory for N seconds (the "hot window"), then
-   *   suspend if no message has arrived. Use this when the message is likely
-   *   to arrive quickly on the hot path but has a long tail timeout.
-   *
-   * @example
-   * ```typescript
-   * // Decision timeout is 3 days, but usually arrives within minutes.
-   * // Stay hot for 10 minutes. If still waiting after that, suspend.
-   * const decision = await ctx.channels.approval.receive(86400 * 3, {
-   *   suspendAfter: 600,
-   * });
-   * ```
-   *
-   * @default "never"
-   */
-  suspendAfter?: "never" | 0 | number;
-}
-
-/**
- * Runtime options for `streamIterator.read()`.
- */
-export interface StreamIteratorReadRuntimeOptions {
-  /**
-   * Controls when the workflow is suspended while waiting for a stream record.
-   *
-   * - `"never"` — Never suspend. The workflow stays in memory for the entire
-   *   wait. This is the default.
-   * - `0` — Suspend immediately. The workflow is evicted as soon as the
-   *   read call blocks.
-   * - `number > 0` — Stay in memory for N seconds, then suspend if no record
-   *   has arrived at the current offset.
-   *
-   * @default "never"
-   */
-  suspendAfter?: "never" | 0 | number;
-}
-
-/**
- * Runtime options for `childWorkflowHandle.join()`.
- */
-export interface ChildWorkflowJoinRuntimeOptions {
-  /**
-   * Controls when the parent workflow is suspended while waiting for the
-   * child workflow to reach a terminal state.
-   *
-   * - `"never"` — Never suspend. The parent stays in memory for the entire
-   *   wait. This is the default.
-   * - `0` — Suspend immediately. The parent is evicted as soon as the join
-   *   call blocks. Use when the child is expected to be long-running.
-   * - `number > 0` — Stay in memory for N seconds (in case the child
-   *   finishes quickly), then suspend if the child is still running.
-   *
-   * @default "never"
-   */
-  suspendAfter?: "never" | 0 | number;
-}
-
-// =============================================================================
 // LOGGER
 // =============================================================================
 
@@ -628,12 +487,12 @@ export type RngAccessors<TRng extends RngDefinitions> = {
 };
 
 // =============================================================================
-// FAILURE INFO TYPES (for onFailure handlers)
+// FAILURE INFO TYPES
 // =============================================================================
 
 /**
- * Failure information for a step, passed to `onFailure` handlers on
- * concurrency primitives (match, forEach, map).
+ * Failure information for a step, passed to `.failure()` builder callbacks
+ * and concurrency primitive failure handlers.
  */
 export interface StepFailureInfo {
   readonly reason: "attempts_exhausted" | "timeout";
@@ -641,7 +500,7 @@ export interface StepFailureInfo {
 }
 
 /**
- * Failure information for a child workflow, passed to `onFailure` handlers.
+ * Failure information for a child workflow, passed to `.failure()` builder callbacks.
  * Discriminated union — the child may have failed (threw an error) or been
  * terminated externally by an administrator.
  */
@@ -652,15 +511,14 @@ export type ChildWorkflowFailureInfo =
 /**
  * Augment a failure info type with a `compensate()` handle.
  *
- * `compensate()` invokes the compensation callback defined at `.start()` or
- * `.execute()` / `.tryExecute()` time. Calling it explicitly discharges the
- * SAGA obligation for this handle — the engine will NOT run the compensation
- * again at scope exit.
+ * `compensate()` invokes the compensation callback registered via `.compensate()`.
+ * Calling it explicitly discharges the SAGA obligation for this handle — the engine
+ * will NOT run the compensation again at scope exit.
  *
  * **Context switch:** Calling `compensate()` transparently switches the
  * execution context to compensation mode (SIGTERM-resilient). The compensation
  * callback runs to completion even if SIGTERM arrives mid-execution. Control
- * returns to the `onFailure` handler in normal WorkflowContext after.
+ * returns to the `failure` handler in normal WorkflowContext after.
  *
  * If `compensate()` is NOT called, the engine still runs the compensation at
  * scope exit / LIFO unwinding (the safe default).
@@ -673,547 +531,420 @@ export type WithCompensation<T> = T & {
 };
 
 /**
- * Extract the failure info type for a handle.
- * Steps get StepFailureInfo, child workflows get ChildWorkflowFailureInfo.
- */
-export type HandleFailureInfo<H> =
-  H extends StepHandle<any, any>
-    ? StepFailureInfo
-    : H extends ChildWorkflowHandle<any, any, any, any, any>
-      ? ChildWorkflowFailureInfo
-      : never;
-
-/**
- * Extract the `onFailure` callback parameter type for a handle.
+ * Failure information for a scope branch, passed to `failure` callbacks in
+ * forEach, map, and match handlers.
  *
- * If the handle has `HasCompensation = true`, the failure info is augmented
- * with `compensate()`. Otherwise, it's plain failure info.
- *
- * This type is used by `tryJoin()`, `match()`, `forEach()`, and `map()` to
- * provide a unified single-parameter `onFailure` callback.
+ * Includes `compensate()` to eagerly discharge the LIFO compensation obligation
+ * for any compensated steps registered within this branch. If not called, the
+ * engine runs compensations at scope exit (safe default).
  */
-export type HandleOnFailureParam<H> =
-  H extends StepHandle<any, true> | ChildWorkflowHandle<any, any, any, any, true>
-    ? WithCompensation<HandleFailureInfo<H>>
-    : HandleFailureInfo<H>;
-
-// =============================================================================
-// STEP OPTIONS (unified for .execute() and .start())
-// =============================================================================
-
-/**
- * Options for step `.execute()` and `.start()` in WorkflowContext.
- *
- * Each handle has exactly one compensation callback, defined here.
- * No override mechanics — this is the only place compensation is specified.
- *
- * @typeParam T - The decoded step result type.
- * @typeParam TCompCtx - The CompensationContext type for this workflow.
- */
-export interface StepOptions<T, TCompCtx> {
-  /** Override the step's default retry policy */
-  retryPolicy?: RetryPolicyOptions;
-  /**
-   * Compensation callback — runs during LIFO unwinding when the workflow fails.
-   * Receives the step's outcome (complete, failed, or terminated) so the
-   * callback can decide what to undo.
-   *
-   * Also invocable explicitly via `tools.compensate()` in `onFailure` handlers.
-   * When invoked explicitly, the context switches to compensation mode
-   * (SIGTERM-resilient) — the callback runs to completion.
-   */
-  compensate?: (
-    ctx: TCompCtx,
-    result: StepCompensationResult<T>,
-  ) => Promise<void>;
-}
-
-/**
- * Step options with `compensate` required.
- * Used for overload resolution — when `compensate` is present, return types
- * include `compensate()` handles and `HasCompensation` is `true`.
- */
-export interface StepOptionsWithCompensation<T, TCompCtx> {
-  retryPolicy?: RetryPolicyOptions;
-  compensate: (
-    ctx: TCompCtx,
-    result: StepCompensationResult<T>,
-  ) => Promise<void>;
-}
-
-/**
- * Step options without `compensate`.
- * Used for overload resolution — explicitly forbids `compensate` so TypeScript
- * selects the correct overload.
- */
-export interface StepOptionsWithoutCompensation {
-  retryPolicy?: RetryPolicyOptions;
-  compensate?: never;
+export interface BranchFailureInfo {
+  compensate(): Promise<void>;
 }
 
 // =============================================================================
-// CHILD WORKFLOW START & JOIN OPTIONS
+// STEP CALL — THENABLE BUILDER (WorkflowContext)
 // =============================================================================
 
 /**
- * Options for starting a child workflow from within a workflow context.
- */
-export interface StartChildWorkflowOptions<TArgsInput> {
-  /** Unique workflow instance ID for the child */
-  workflowId: string;
-  /** Timeout in seconds for the child workflow */
-  timeoutSeconds?: number;
-  /** Workflow arguments — must be z.input<ArgSchema> */
-  args?: TArgsInput;
-}
-
-/**
- * Scope start options for a child workflow.
- * Optionally includes a compensation callback. No unjoined strategy —
- * the presence of `compensate` determines scope exit behavior.
- */
-export interface ChildWorkflowScopeStartOptions<
-  TArgsInput,
-  TResult,
-  TCompCtx,
-> extends StartChildWorkflowOptions<TArgsInput> {
-  /**
-   * Compensation callback — runs during LIFO unwinding.
-   * If present, scope exit compensates unjoined handles.
-   * If absent, scope exit settles (waits for completion, ignores result).
-   */
-  compensate?: (
-    ctx: TCompCtx,
-    result: ChildWorkflowCompensationResult<TResult>,
-  ) => Promise<void>;
-}
-
-/**
- * Scope start options with `compensate` required.
- * Used for overload resolution — produces `ChildWorkflowHandle<..., true>`.
- */
-export interface ChildWorkflowScopeStartOptionsWithCompensation<
-  TArgsInput,
-  TResult,
-  TCompCtx,
-> extends StartChildWorkflowOptions<TArgsInput> {
-  compensate: (
-    ctx: TCompCtx,
-    result: ChildWorkflowCompensationResult<TResult>,
-  ) => Promise<void>;
-}
-
-/**
- * Scope start options without `compensate`.
- * Used for overload resolution — produces `ChildWorkflowHandle<..., false>`.
- */
-export interface ChildWorkflowScopeStartOptionsWithoutCompensation<
-  TArgsInput,
-> extends StartChildWorkflowOptions<TArgsInput> {
-  compensate?: never;
-}
-
-/**
- * Options for child workflow `.execute()` in WorkflowContext.
- * Combines start options, runtime options, and compensation.
- */
-export interface RunChildWorkflowOptions<TArgsInput, TResult, TCompCtx>
-  extends StartChildWorkflowOptions<TArgsInput>,
-    ChildWorkflowJoinRuntimeOptions {
-  /**
-   * Compensation callback — runs during LIFO unwinding.
-   */
-  compensate?: (
-    ctx: TCompCtx,
-    result: ChildWorkflowCompensationResult<TResult>,
-  ) => Promise<void>;
-}
-
-/**
- * Options for `.join()` on a ChildWorkflowHandle.
- * Runtime options only — no compensation (defined at start time).
- */
-export type ChildWorkflowJoinOptions = ChildWorkflowJoinRuntimeOptions;
-
-// =============================================================================
-// TRY OPTIONS — CALLBACK-BASED EXPLICIT ERROR HANDLING
-// =============================================================================
-
-// --- Steps -------------------------------------------------------------------
-
-/**
- * Options for `tryExecute()` on a step WITH a `compensate` callback.
+ * Thenable returned by calling a step in WorkflowContext.
  *
- * The `onFailure` handler receives `tools` with `compensate()` for eager
- * discharge. If `compensate()` is not called within `onFailure`, the engine
- * runs it at scope exit / LIFO unwinding (safe default).
+ * Chain builder methods before awaiting:
+ * - `.compensate()` — register compensation callback (switches HasCompensation to true)
+ * - `.retry()` — override retry policy
+ * - `.failure()` — handle failure explicitly instead of auto-terminating; return TFail
+ * - `.complete()` — transform success result
  *
- * Two type parameters allow `onComplete` and `onFailure` to return different
- * types (including async vs sync). The return type is `Awaited<R1> | Awaited<R2>`.
+ * Await the call to resolve to `T | TFail` (happy path when no `.failure()` is
+ * chained auto-terminates the workflow on failure).
  *
  * @typeParam T - Decoded step result type (z.output<Schema>).
- * @typeParam R1 - Return type of `onComplete`.
- * @typeParam R2 - Return type of `onFailure`.
+ * @typeParam TFail - Return type of the `.failure()` callback (never if not used).
+ * @typeParam HasCompensation - Whether `.compensate()` has been called.
  * @typeParam TCompCtx - The CompensationContext type for this workflow.
  */
-export interface StepTryOptionsWithCompensation<T, R1, R2, TCompCtx> {
-  retryPolicy?: RetryPolicyOptions;
-  compensate: (
-    ctx: TCompCtx,
-    result: StepCompensationResult<T>,
-  ) => Promise<void>;
-  onComplete: (data: T) => R1;
-  onFailure: (failure: WithCompensation<StepFailureInfo>) => R2;
-}
-
-/**
- * Options for `tryExecute()` on a step WITHOUT a `compensate` callback.
- *
- * The `onFailure` handler does NOT receive `tools` — there is no compensation
- * to discharge. Full type safety: `tools.compensate()` is not callable.
- *
- * @typeParam T - Decoded step result type.
- * @typeParam R1 - Return type of `onComplete`.
- * @typeParam R2 - Return type of `onFailure`.
- */
-export interface StepTryOptionsWithoutCompensation<T, R1, R2> {
-  retryPolicy?: RetryPolicyOptions;
-  compensate?: never;
-  onComplete: (data: T) => R1;
-  onFailure: (failure: StepFailureInfo) => R2;
-}
-
-// --- Child workflows ---------------------------------------------------------
-
-/**
- * Options for `tryExecute()` on a child workflow WITH a `compensate` callback.
- *
- * Same callback model as step try options. `onFailure` receives
- * `ChildWorkflowFailureInfo` (discriminated: "failed" | "terminated").
- *
- * @typeParam TArgsInput - Workflow argument input type.
- * @typeParam TResult - Decoded workflow result type.
- * @typeParam R1 - Return type of `onComplete`.
- * @typeParam R2 - Return type of `onFailure`.
- * @typeParam TCompCtx - The CompensationContext type for this workflow.
- */
-export interface ChildWorkflowTryExecuteOptionsWithCompensation<
-  TArgsInput,
-  TResult,
-  R1,
-  R2,
-  TCompCtx,
-> extends StartChildWorkflowOptions<TArgsInput>,
-    ChildWorkflowJoinRuntimeOptions {
-  compensate: (
-    ctx: TCompCtx,
-    result: ChildWorkflowCompensationResult<TResult>,
-  ) => Promise<void>;
-  onComplete: (data: TResult) => R1;
-  onFailure: (failure: WithCompensation<ChildWorkflowFailureInfo>) => R2;
-}
-
-/**
- * Options for `tryExecute()` on a child workflow WITHOUT a `compensate` callback.
- *
- * `onFailure` receives plain `ChildWorkflowFailureInfo` — no `compensate()`.
- *
- * @typeParam TArgsInput - Workflow argument input type.
- * @typeParam TResult - Decoded workflow result type.
- * @typeParam R1 - Return type of `onComplete`.
- * @typeParam R2 - Return type of `onFailure`.
- */
-export interface ChildWorkflowTryExecuteOptionsWithoutCompensation<
-  TArgsInput,
-  TResult,
-  R1,
-  R2,
-> extends StartChildWorkflowOptions<TArgsInput>,
-    ChildWorkflowJoinRuntimeOptions {
-  compensate?: never;
-  onComplete: (data: TResult) => R1;
-  onFailure: (failure: ChildWorkflowFailureInfo) => R2;
-}
-
-// =============================================================================
-// SCOPE TYPES
-// =============================================================================
-
-/** @internal Brand symbol for ScopeEntry type safety */
-declare const scopeEntryBrand: unique symbol;
-
-/**
- * A branded promise representing a pending handle creation within a scope.
- *
- * ScopeEntry can only be produced by `.start()` on step objects or workflow
- * accessors, and can only be consumed by `ctx.scope()`. This enforces that
- * every concurrent handle has a declared lifecycle boundary.
- *
- * At runtime, a ScopeEntry is just a Promise. The brand exists only at the
- * type level for enforcement.
- */
-export type ScopeEntry<H> = Promise<H> & {
-  readonly [scopeEntryBrand]: true;
-};
-
-/**
- * Extract the handle type from a ScopeEntry.
- */
-export type InferScopeHandle<E> = E extends ScopeEntry<infer H> ? H : never;
-
-// =============================================================================
-// STEP HANDLE (WorkflowContext)
-// =============================================================================
-
-/**
- * Handle to a started step execution.
- * Created via `.start()` inside a scope declaration. Used to join or pass into
- * select, forEach, map.
- *
- * Steps are function calls, not processes — they have no lifecycle control.
- * They run to completion based on their retry policy and timeout. The
- * `signal: AbortSignal` in the step's execute function is only aborted by
- * workflow-level SIGTERM/SIGKILL.
- *
- * In the happy-path model, `.join()` returns T directly. If the step fails,
- * the workflow is automatically terminated and compensations run.
- *
- * `.tryJoin()` accepts `{ onComplete, onFailure }` callbacks for explicit
- * error handling without auto-terminating. `onFailure` receives a single
- * failure info object — with `compensate()` merged in when compensation
- * was registered at `.start()` time.
- *
- * @typeParam T - The decoded step result type (z.output<Schema>).
- * @typeParam HasCompensation - Whether a `compensate` callback was registered
- *   at `.start()` time. Controls whether `onFailure`'s parameter includes
- *   `compensate()`.
- */
-export interface StepHandle<T, HasCompensation extends boolean = false> {
-  /**
-   * Wait for the step to complete and return its result directly.
-   * If the step fails, the workflow auto-terminates and compensations run.
-   */
-  join(): Promise<T>;
-
-  /**
-   * Wait for the step with a timeout (in seconds).
-   * Returns a discriminated union since timeout is an expected outcome.
-   * The step continues running — timeout does NOT cancel or fail it.
-   *
-   * @param timeoutSeconds - Timeout in seconds.
-   */
-  join(timeoutSeconds: number): Promise<StepJoinResultWithTimeout<T>>;
-
-  /**
-   * Wait for the step and handle the result via callbacks.
-   * The workflow does NOT auto-terminate on failure — the developer handles
-   * both outcomes explicitly.
-   *
-   * `onFailure` receives a single object with failure info. If the handle
-   * was started with `compensate`, the object includes `compensate()` for
-   * eager discharge. If not called, the engine runs compensation at scope
-   * exit (safe default).
-   *
-   * Returns the value produced by whichever callback fires.
-   */
-  tryJoin<R1, R2>(
-    options: {
-      onComplete: (data: T) => R1;
-      onFailure: (
-        failure: HasCompensation extends true
-          ? WithCompensation<StepFailureInfo>
-          : StepFailureInfo,
-      ) => R2;
-    },
-  ): Promise<Awaited<R1> | Awaited<R2>>;
-
-  /**
-   * Wait for the step with a timeout and handle all outcomes via callbacks.
-   * Adds `onTimeout` for the timeout case — the step continues running.
-   *
-   * @param timeoutSeconds - Timeout in seconds.
-   */
-  tryJoin<R1, R2, R3>(
-    timeoutSeconds: number,
-    options: {
-      onComplete: (data: T) => R1;
-      onFailure: (
-        failure: HasCompensation extends true
-          ? WithCompensation<StepFailureInfo>
-          : StepFailureInfo,
-      ) => R2;
-      onTimeout: () => R3;
-    },
-  ): Promise<Awaited<R1> | Awaited<R2> | Awaited<R3>>;
-}
-
-// =============================================================================
-// COMPENSATION STEP HANDLE (CompensationContext)
-// =============================================================================
-
-/**
- * Handle to a started step execution in CompensationContext.
- * Created via `.start()` inside a compensation scope. Returns Go-style
- * result unions — compensation code must handle failures explicitly.
- *
- * @typeParam T - The decoded step result type.
- */
-export interface CompensationStepHandle<T> {
-  /**
-   * Wait for the step to complete. Returns a result union with `ok` —
-   * compensation code must check the result.
-   */
-  join(): Promise<CompensationStepResult<T>>;
-
-  /**
-   * Wait for the step with a timeout (in seconds).
-   * Adds `{ ok: false, status: "timeout" }` to the result union.
-   */
-  join(
-    timeoutSeconds: number,
-  ): Promise<CompensationStepJoinResultWithTimeout<T>>;
-}
-
-// =============================================================================
-// STEP OBJECTS (CONTEXT-SPECIFIC)
-// =============================================================================
-
-/**
- * Step object on `ctx.steps` in WorkflowContext.
- *
- * - `.execute()` returns T directly (happy path). Failure auto-terminates the workflow.
- * - `.tryExecute()` accepts `{ onComplete, onFailure }` callbacks for explicit
- *   error handling. With `compensate` → `onFailure` includes `compensate()`. Returns R.
- * - `.start()` returns a ScopeEntry — can only be used inside `ctx.scope()`.
- *   With `compensate` → `StepHandle<T, true>`.
- *   Without → `StepHandle<T, false>`.
- *
- * @typeParam TArgs - Step argument types.
- * @typeParam T - Decoded step result type (z.output<Schema>).
- * @typeParam TCompCtx - The CompensationContext type for this workflow.
- */
-export interface WorkflowStepObject<
-  TArgs extends unknown[],
+export interface StepCall<
   T,
-  TCompCtx,
+  TFail = never,
+  HasCompensation extends boolean = false,
+  TCompCtx = unknown,
 > {
-  // --- execute (happy path) --------------------------------------------------
-
   /**
-   * Run the step sequentially — start and immediately join.
-   * Returns T directly. If the step fails, the workflow auto-terminates.
+   * Register a compensation callback for this step.
+   * Runs during LIFO unwinding when the workflow fails.
+   * May be invoked explicitly via `failure.compensate()` for eager discharge.
    */
-  execute(...args: TArgs): Promise<T>;
+  compensate(
+    cb: (ctx: TCompCtx, result: StepCompensationResult<T>) => Promise<void>,
+  ): StepCall<T, TFail, true, TCompCtx>;
 
   /**
-   * Run the step with options (retry policy override and/or compensation).
-   * Returns T directly.
+   * Override the step's retry policy.
    */
-  execute(
-    ...args: [...TArgs, options: StepOptions<T, TCompCtx>]
-  ): Promise<T>;
-
-  // --- tryExecute (explicit error handling, callback-based) ------------------
+  retry(policy: RetryPolicyOptions): StepCall<T, TFail, HasCompensation, TCompCtx>;
 
   /**
-   * Run the step with compensation and handle the result via callbacks.
-   * `onFailure` receives failure info with `compensate()` for eager discharge.
-   * If `compensate()` is not called, the engine runs it at scope exit.
+   * Handle step failure explicitly — the workflow does NOT auto-terminate.
+   * The callback return value becomes TFail in the resolved union.
    *
-   * Returns the value produced by whichever callback fires.
+   * If `.compensate()` was called, the failure object includes `compensate()`
+   * for eager discharge. If not called, compensation still runs at scope exit.
    */
-  tryExecute<R1, R2>(
-    ...args: [
-      ...TArgs,
-      options: StepTryOptionsWithCompensation<T, R1, R2, TCompCtx>,
-    ]
-  ): Promise<Awaited<R1> | Awaited<R2>>;
+  failure<R>(
+    cb: (
+      failure: HasCompensation extends true
+        ? WithCompensation<StepFailureInfo>
+        : StepFailureInfo,
+    ) => R,
+  ): StepCall<T, Awaited<R>, HasCompensation, TCompCtx>;
 
   /**
-   * Run the step without compensation and handle the result via callbacks.
-   * `onFailure` receives plain failure info — no `compensate()`.
-   *
-   * Returns the value produced by whichever callback fires.
+   * Transform the success result.
+   * The callback return value replaces T in the resolved type.
    */
-  tryExecute<R1, R2>(
-    ...args: [
-      ...TArgs,
-      options: StepTryOptionsWithoutCompensation<T, R1, R2>,
-    ]
-  ): Promise<Awaited<R1> | Awaited<R2>>;
+  complete<R>(cb: (data: T) => R): StepCall<Awaited<R>, TFail, HasCompensation, TCompCtx>;
 
-  // --- start (scope-only, concurrent) ----------------------------------------
+  then<R1 = T | TFail, R2 = never>(
+    onfulfilled?:
+      | ((value: T | TFail) => R1 | PromiseLike<R1>)
+      | null
+      | undefined,
+    onrejected?: ((reason: any) => R2 | PromiseLike<R2>) | null | undefined,
+  ): Promise<R1 | R2>;
+}
+
+// =============================================================================
+// COMPENSATION STEP CALL — THENABLE (CompensationContext)
+// =============================================================================
+
+/**
+ * Thenable returned by calling a step in CompensationContext.
+ *
+ * Always resolves to `CompensationStepResult<T>` — compensation code MUST
+ * handle both ok and !ok cases gracefully.
+ *
+ * Only `.retry()` is available — no `.compensate()` (can't nest compensations),
+ * no `.failure()` (failures are in the result union).
+ *
+ * @typeParam T - Decoded step result type (z.output<Schema>).
+ */
+export interface CompensationStepCall<T> {
+  /**
+   * Override the step's retry policy.
+   */
+  retry(policy: RetryPolicyOptions): CompensationStepCall<T>;
+
+  then<R1 = CompensationStepResult<T>, R2 = never>(
+    onfulfilled?:
+      | ((value: CompensationStepResult<T>) => R1 | PromiseLike<R1>)
+      | null
+      | undefined,
+    onrejected?: ((reason: any) => R2 | PromiseLike<R2>) | null | undefined,
+  ): Promise<R1 | R2>;
+}
+
+// =============================================================================
+// FOREIGN WORKFLOW HANDLE
+// =============================================================================
+
+/**
+ * A limited handle to an existing (non-child) workflow instance.
+ * Only channels.send() is available — prevents tight coupling.
+ * Send is fire-and-forget: returns void, no delivery confirmation.
+ */
+export interface ForeignWorkflowHandle<
+  TChannels extends ChannelDefinitions = Record<string, never>,
+> {
+  readonly workflowId: string;
 
   /**
-   * Start the step with compensation within a scope declaration.
-   * Returns a `ScopeEntry<StepHandle<T, true>>` — `tryJoin()`'s `onFailure`
-   * will include `compensate()` on the failure object.
-   *
-   * Unjoined handles with `compensate` are compensated on scope exit.
+   * Channels for sending messages to this workflow.
+   * Fire-and-forget: returns void.
    */
-  start(
-    ...args: [
-      ...TArgs,
-      options: StepOptionsWithCompensation<T, TCompCtx>,
-    ]
-  ): ScopeEntry<StepHandle<T, true>>;
+  readonly channels: {
+    [K in keyof TChannels]: {
+      send(data: StandardSchemaV1.InferInput<TChannels[K]>): Promise<void>;
+    };
+  };
+}
+
+// =============================================================================
+// WORKFLOW CALL — THENABLE BUILDER (WorkflowContext)
+// =============================================================================
+
+/**
+ * Thenable returned after applying at least one result-mode builder
+ * (`.compensate()`, `.failure()`, `.complete()`) on a `WorkflowCall`.
+ *
+ * Result mode and detached mode are mutually exclusive:
+ * once a result builder is applied, `.detached()` is no longer available.
+ *
+ * @typeParam T - Decoded child workflow result type.
+ * @typeParam TFail - Return type of the `.failure()` callback (never if not used).
+ * @typeParam HasCompensation - Whether `.compensate()` has been called.
+ * @typeParam TCompCtx - The CompensationContext type for the parent workflow.
+ */
+export interface WorkflowCallResult<
+  T,
+  TFail = never,
+  HasCompensation extends boolean = false,
+  TCompCtx = unknown,
+> {
+  /**
+   * Register a compensation callback for this child workflow invocation.
+   * Runs during LIFO unwinding when the parent workflow fails.
+   */
+  compensate(
+    cb: (
+      ctx: TCompCtx,
+      result: ChildWorkflowCompensationResult<T>,
+    ) => Promise<void>,
+  ): WorkflowCallResult<T, TFail, true, TCompCtx>;
 
   /**
-   * Start the step concurrently within a scope declaration (no compensation).
-   * Returns a `ScopeEntry<StepHandle<T, false>>`.
-   *
-   * Unjoined handles without `compensate` are settled on scope exit
-   * (waited for, result ignored).
+   * Handle child workflow failure explicitly — the parent does NOT auto-terminate.
    */
-  start(...args: TArgs): ScopeEntry<StepHandle<T, false>>;
+  failure<R>(
+    cb: (
+      failure: HasCompensation extends true
+        ? WithCompensation<ChildWorkflowFailureInfo>
+        : ChildWorkflowFailureInfo,
+    ) => R,
+  ): WorkflowCallResult<T, Awaited<R>, HasCompensation, TCompCtx>;
 
   /**
-   * Start the step with a retry policy override (no compensation).
+   * Transform the child workflow's success result.
    */
-  start(
-    ...args: [
-      ...TArgs,
-      options: StepOptionsWithoutCompensation,
-    ]
-  ): ScopeEntry<StepHandle<T, false>>;
+  complete<R>(
+    cb: (data: T) => R,
+  ): WorkflowCallResult<Awaited<R>, TFail, HasCompensation, TCompCtx>;
+
+  then<R1 = T | TFail, R2 = never>(
+    onfulfilled?:
+      | ((value: T | TFail) => R1 | PromiseLike<R1>)
+      | null
+      | undefined,
+    onrejected?: ((reason: any) => R2 | PromiseLike<R2>) | null | undefined,
+  ): Promise<R1 | R2>;
 }
 
 /**
- * Step object on `ctx.steps` in CompensationContext.
+ * Thenable returned by calling a child workflow accessor in WorkflowContext.
  *
- * - `.execute()` returns CompensationStepResult<T> — compensation code MUST
- *   handle failures gracefully (can't crash the compensation chain).
- * - `.start()` returns a ScopeEntry for use inside `compCtx.scope()`.
+ * Supports two mutually exclusive modes:
  *
- * @typeParam TArgs - Step argument types.
- * @typeParam T - Decoded step result type (z.output<Schema>).
+ * **Structured result mode** — chain `.compensate()`, `.failure()`, `.complete()`,
+ * then await. The parent awaits the child's terminal result.
+ *
+ * **Detached messaging mode** — chain `.detached()`, then await. The child runs
+ * independently; the result is a `ForeignWorkflowHandle` for message passing only.
+ *
+ * Builder exclusivity is enforced at the type level: applying a result builder
+ * returns `WorkflowCallResult` (no `.detached()`), and calling `.detached()` returns
+ * `DetachedWorkflowCall` (no result builders).
+ *
+ * @typeParam T - Decoded child workflow result type.
+ * @typeParam TFail - Return type of `.failure()` callback (never if not used).
+ * @typeParam HasCompensation - Whether `.compensate()` has been called.
+ * @typeParam TCompCtx - The CompensationContext type for the parent workflow.
+ * @typeParam TChannels - Channel definitions of the child workflow (for `.detached()`).
  */
-export interface CompensationStepObject<TArgs extends unknown[], T> {
+export interface WorkflowCall<
+  T,
+  TFail = never,
+  HasCompensation extends boolean = false,
+  TCompCtx = unknown,
+  TChannels extends ChannelDefinitions = Record<string, never>,
+> {
   /**
-   * Execute the step sequentially. Returns a result with `ok` for explicit
-   * error handling — compensation must not crash.
+   * Register a compensation callback — enters result mode (no `.detached()` after this).
    */
-  execute(...args: TArgs): Promise<CompensationStepResult<T>>;
+  compensate(
+    cb: (
+      ctx: TCompCtx,
+      result: ChildWorkflowCompensationResult<T>,
+    ) => Promise<void>,
+  ): WorkflowCallResult<T, TFail, true, TCompCtx>;
 
   /**
-   * Execute the step with a retry policy override.
+   * Handle child workflow failure explicitly — enters result mode (no `.detached()` after this).
    */
-  execute(
-    ...args: [...TArgs, options: { retryPolicy?: RetryPolicyOptions }]
-  ): Promise<CompensationStepResult<T>>;
+  failure<R>(
+    cb: (
+      failure: HasCompensation extends true
+        ? WithCompensation<ChildWorkflowFailureInfo>
+        : ChildWorkflowFailureInfo,
+    ) => R,
+  ): WorkflowCallResult<T, Awaited<R>, HasCompensation, TCompCtx>;
 
   /**
-   * Start the step concurrently within a compensation scope.
-   * Returns a ScopeEntry that resolves into a CompensationStepHandle.
+   * Transform the child workflow's success result — enters result mode.
    */
-  start(...args: TArgs): ScopeEntry<CompensationStepHandle<T>>;
+  complete<R>(
+    cb: (data: T) => R,
+  ): WorkflowCallResult<Awaited<R>, TFail, HasCompensation, TCompCtx>;
 
   /**
-   * Start the step with a retry policy override within a compensation scope.
+   * Switch to detached mode — the child runs independently of the parent's lifecycle.
+   *
+   * No scope required. No compensation. The child is NOT terminated when the parent fails.
+   * Resolves to a `ForeignWorkflowHandle` for fire-and-forget message passing.
    */
-  start(
-    ...args: [...TArgs, options: { retryPolicy?: RetryPolicyOptions }]
-  ): ScopeEntry<CompensationStepHandle<T>>;
+  detached(): DetachedWorkflowCall<TChannels>;
+
+  then<R1 = T | TFail, R2 = never>(
+    onfulfilled?:
+      | ((value: T | TFail) => R1 | PromiseLike<R1>)
+      | null
+      | undefined,
+    onrejected?: ((reason: any) => R2 | PromiseLike<R2>) | null | undefined,
+  ): Promise<R1 | R2>;
+}
+
+// =============================================================================
+// COMPENSATION WORKFLOW CALL — THENABLE (CompensationContext)
+// =============================================================================
+
+/**
+ * Thenable returned by calling a child workflow accessor in CompensationContext.
+ * Always resolves to `WorkflowResult<T>` — compensation code MUST handle all outcomes.
+ *
+ * @typeParam T - Decoded child workflow result type.
+ */
+export interface CompensationWorkflowCall<T> {
+  then<R1 = WorkflowResult<T>, R2 = never>(
+    onfulfilled?:
+      | ((value: WorkflowResult<T>) => R1 | PromiseLike<R1>)
+      | null
+      | undefined,
+    onrejected?: ((reason: any) => R2 | PromiseLike<R2>) | null | undefined,
+  ): Promise<R1 | R2>;
+}
+
+// =============================================================================
+// DETACHED WORKFLOW CALL — THENABLE
+// =============================================================================
+
+/**
+ * Thenable returned by `.detached()` on a `WorkflowCall`.
+ * Resolves to a `ForeignWorkflowHandle` for fire-and-forget channel messaging.
+ *
+ * @typeParam TChannels - Channel definitions of the child workflow.
+ */
+export interface DetachedWorkflowCall<
+  TChannels extends ChannelDefinitions = Record<string, never>,
+> {
+  then<R1 = ForeignWorkflowHandle<TChannels>, R2 = never>(
+    onfulfilled?:
+      | ((value: ForeignWorkflowHandle<TChannels>) => R1 | PromiseLike<R1>)
+      | null
+      | undefined,
+    onrejected?: ((reason: any) => R2 | PromiseLike<R2>) | null | undefined,
+  ): Promise<R1 | R2>;
+}
+
+// =============================================================================
+// WORKFLOW ACCESSORS (CONTEXT-SPECIFIC)
+// =============================================================================
+
+/**
+ * Callable child workflow accessor on `ctx.childWorkflows` in WorkflowContext.
+ *
+ * Call it with `{ workflowId, args, timeoutSeconds? }` to get a `WorkflowCall<T>`.
+ * Chain builders before awaiting:
+ * - `.compensate()` — register compensation
+ * - `.failure()` — explicit failure handling
+ * - `.complete()` — transform success result
+ * - `.detached()` — fire-and-forget mode, resolves to foreign handle
+ *
+ * @typeParam W - The child workflow definition.
+ * @typeParam TCompCtx - The parent workflow's CompensationContext type.
+ */
+export interface ChildWorkflowAccessor<
+  W extends WorkflowDefinition<
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any
+  >,
+  TCompCtx = unknown,
+> {
+  (options: {
+    workflowId: string;
+    args?: InferWorkflowArgsInput<W>;
+    timeoutSeconds?: number;
+  }): WorkflowCall<
+    InferWorkflowResult<W>,
+    never,
+    false,
+    TCompCtx,
+    InferWorkflowChannels<W>
+  >;
+}
+
+/**
+ * Foreign workflow accessor on `ctx.foreignWorkflows` in WorkflowContext.
+ *
+ * Use `.get(workflowId)` to obtain a `ForeignWorkflowHandle` for an existing
+ * (non-child) workflow instance. Only `channels.send()` is available — no
+ * events, streams, or lifecycle (prevents tight coupling).
+ *
+ * @typeParam W - The workflow definition (for channel type inference).
+ */
+export interface ForeignWorkflowAccessor<
+  W extends WorkflowDefinition<
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any
+  >,
+> {
+  /**
+   * Get a limited handle to an existing workflow instance.
+   * Only channels.send() is available (fire-and-forget).
+   *
+   * @param workflowId - The workflow instance ID.
+   */
+  get(workflowId: string): ForeignWorkflowHandle<InferWorkflowChannels<W>>;
+}
+
+/**
+ * Callable child workflow accessor on `ctx.childWorkflows` in CompensationContext.
+ * Returns full `WorkflowResult<T>` — compensation code must handle all outcomes.
+ *
+ * @typeParam W - The child workflow definition.
+ */
+export interface CompensationChildWorkflowAccessor<
+  W extends WorkflowDefinition<
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any
+  >,
+> {
+  (options: {
+    workflowId: string;
+    args?: InferWorkflowArgsInput<W>;
+    timeoutSeconds?: number;
+  }): CompensationWorkflowCall<InferWorkflowResult<W>>;
 }
 
 // =============================================================================
@@ -1228,27 +959,17 @@ export interface CompensationStepObject<TArgs extends unknown[], T> {
 export interface ChannelHandle<T> {
   /**
    * Receive a message from this channel (FIFO order).
-   * Blocks until a message arrives. Returns the decoded value directly —
-   * there is no discriminated union since the only possible outcome is
-   * receiving a message.
-   *
-   * @param options - Optional runtime options controlling suspension behavior.
-   * @returns Decoded message (z.output type).
+   * Blocks until a message arrives. Returns the decoded value directly.
    */
-  receive(options?: ChannelReceiveRuntimeOptions): Promise<T>;
+  receive(): Promise<T>;
 
   /**
    * Receive a message from this channel with a timeout (in seconds).
    * Returns { ok: false, status: 'timeout' } if no message arrives within
    * the timeout.
    * @param timeoutSeconds - Timeout in seconds.
-   * @param options - Optional runtime options controlling suspension behavior.
-   * @returns Decoded message or timeout result.
    */
-  receive(
-    timeoutSeconds: number,
-    options?: ChannelReceiveRuntimeOptions,
-  ): Promise<ChannelReceiveResult<T>>;
+  receive(timeoutSeconds: number): Promise<ChannelReceiveResult<T>>;
 }
 
 /**
@@ -1314,8 +1035,6 @@ export interface LifecycleEventAccessor {
 
   /**
    * Wait for the lifecycle event to be set, with a timeout (in seconds).
-   * Returns { ok: false, status: 'timeout' } if the event is not set within
-   * the timeout.
    */
   wait(timeoutSeconds: number): Promise<EventWaitResult>;
 
@@ -1338,8 +1057,6 @@ export interface EventAccessorReadonly {
 
   /**
    * Wait for the event to be set, with a timeout (in seconds).
-   * Returns { ok: false, status: 'timeout' } if the event is not set within
-   * the timeout.
    */
   wait(timeoutSeconds: number): Promise<EventWaitResult>;
 
@@ -1374,23 +1091,16 @@ export interface StreamIteratorHandle<T> {
   /**
    * Read the next record from the stream.
    * Blocks until a record is available or the stream is closed.
-   * @param options - Optional runtime options controlling suspension behavior.
    */
-  read(
-    options?: StreamIteratorReadRuntimeOptions,
-  ): Promise<StreamIteratorReadResultNoTimeout<T>>;
+  read(): Promise<StreamIteratorReadResultNoTimeout<T>>;
 
   /**
    * Read the next record from the stream with a timeout (in seconds).
    * Returns { ok: false, status: 'timeout' } if no record arrives within
    * the timeout.
    * @param timeoutSeconds - Timeout in seconds.
-   * @param options - Optional runtime options controlling suspension behavior.
    */
-  read(
-    timeoutSeconds: number,
-    options?: StreamIteratorReadRuntimeOptions,
-  ): Promise<StreamIteratorReadResult<T>>;
+  read(timeoutSeconds: number): Promise<StreamIteratorReadResult<T>>;
 }
 
 /**
@@ -1409,8 +1119,6 @@ export interface StreamReaderAccessor<T> {
 
   /**
    * Read a record at the given offset with a timeout (in seconds).
-   * Returns { ok: false, status: 'timeout' } if the record is not available
-   * within the timeout.
    * @param offset - The stream offset to read from.
    * @param timeoutSeconds - Timeout in seconds.
    */
@@ -1430,679 +1138,173 @@ export interface StreamReaderAccessor<T> {
 }
 
 // =============================================================================
-// CHILD WORKFLOW HANDLE (INTERNAL — parent-child, WorkflowContext)
+// SCOPE TYPES — CLOSURES AND BRANCH HANDLES
 // =============================================================================
 
 /**
- * Handle to a child workflow started from within a workflow context.
- * Provides lifecycle observation, channel communication, event watching,
- * and stream reading.
+ * A scope branch — an async closure that runs on the virtual event loop.
+ * Passed into `ctx.scope()` entries. The engine interleaves branch execution
+ * at durable yield points (step calls, child workflow calls, channel receives, etc.).
  *
- * **No sigterm/sigkill** — workflow code uses transactional semantics
- * (scopes) instead of non-deterministic signals.
- * Signals are only available on engine-level handles.
- *
- * In the happy-path model, `.join()` returns T directly. If the child fails,
- * the parent workflow auto-terminates and compensations run.
- *
- * @typeParam TResult - Decoded result type.
- * @typeParam TChannels - Channel definitions of the child workflow.
- * @typeParam TStreams - Stream definitions of the child workflow.
- * @typeParam TEvents - Event definitions of the child workflow.
- * @typeParam HasCompensation - Whether a `compensate` callback was registered
- *   at `.start()` time. Controls whether `tryJoin()`'s `onFailure` parameter
- *   includes `compensate()`.
+ * @typeParam T - The resolved value type of the branch.
  */
-export interface ChildWorkflowHandle<
-  TResult,
-  TChannels extends ChannelDefinitions = Record<string, never>,
-  TStreams extends StreamDefinitions = Record<string, never>,
-  TEvents extends EventDefinitions = Record<string, never>,
-  HasCompensation extends boolean = false,
-> {
-  readonly workflowId: string;
+export type ScopeBranch<T> = () => Promise<T>;
 
-  /**
-   * Wait for the child workflow to reach a terminal state.
-   * Returns TResult directly. If the child fails or is terminated, the parent
-   * auto-terminates and compensations run.
-   *
-   * @param options - Optional runtime options.
-   */
-  join(options?: ChildWorkflowJoinOptions): Promise<TResult>;
+/**
+ * A handle to a running scope branch — awaitable in the scope callback.
+ * Resolves to T when the branch completes successfully.
+ *
+ * `BranchHandle<T>` values are produced by `ctx.scope()` and can be:
+ * - Directly awaited: `const result = await flight`
+ * - Passed into `ctx.select()`, `ctx.forEach()`, `ctx.map()`
+ * - Accumulated into collections for dynamic fan-out
+ *
+ * @typeParam T - The resolved value type.
+ */
+export interface BranchHandle<T> extends Promise<T> {}
 
-  /**
-   * Wait for the child workflow with a timeout (in seconds).
-   * Returns a discriminated union since timeout is an expected outcome.
-   * Timeout does NOT cancel the child — it continues running in the background.
-   *
-   * @param timeoutSeconds - Timeout in seconds.
-   * @param options - Optional runtime options.
-   */
-  join(
-    timeoutSeconds: number,
-    options?: ChildWorkflowJoinOptions,
-  ): Promise<ChildWorkflowJoinResultWithTimeout<TResult>>;
+/**
+ * A group of branch handles — single, array, or map.
+ * Used as input to `ctx.select()`, `ctx.forEach()`, and `ctx.map()`.
+ *
+ * - Single: `BranchHandle<T>` — one branch
+ * - Array: `BranchHandle<T>[]` — N parallel branches
+ * - Map: `Map<K, BranchHandle<T>>` — keyed parallel branches
+ *
+ * @typeParam T - The branch value type.
+ * @typeParam K - The map key type (only relevant for Map variant).
+ */
+export type HandleGroup<T, K = any> =
+  | BranchHandle<T>
+  | BranchHandle<T>[]
+  | Map<K, BranchHandle<T>>;
 
-  /**
-   * Wait for the child workflow and handle the result via callbacks.
-   * The workflow does NOT auto-terminate on failure or termination —
-   * the developer handles all outcomes explicitly.
-   *
-   * `onFailure` receives a single object with failure info. If the handle
-   * was started with `compensate`, the object includes `compensate()` for
-   * eager discharge. If not called, the engine runs compensation at scope
-   * exit (safe default).
-   *
-   * Returns the value produced by whichever callback fires.
-   *
-   * @param options - Callbacks and optional runtime options.
-   */
-  tryJoin<R1, R2>(
-    options: {
-      onComplete: (data: TResult) => R1;
-      onFailure: (
-        failure: HasCompensation extends true
-          ? WithCompensation<ChildWorkflowFailureInfo>
-          : ChildWorkflowFailureInfo,
-      ) => R2;
-    } & ChildWorkflowJoinRuntimeOptions,
-  ): Promise<Awaited<R1> | Awaited<R2>>;
+/**
+ * Valid entry values for `ctx.scope()` declarations.
+ * Each entry is a closure (single) or a collection of closures (array/map).
+ */
+export type ScopeEntries = Record<
+  string,
+  | (() => Promise<any>)
+  | (() => Promise<any>)[]
+  | Map<any, () => Promise<any>>
+>;
 
-  /**
-   * Wait for the child workflow with a timeout and handle all outcomes
-   * via callbacks. Adds `onTimeout` for the timeout case — the child
-   * continues running in the background.
-   *
-   * @param timeoutSeconds - Timeout in seconds.
-   * @param options - Callbacks and optional runtime options.
-   */
-  tryJoin<R1, R2, R3>(
-    timeoutSeconds: number,
-    options: {
-      onComplete: (data: TResult) => R1;
-      onFailure: (
-        failure: HasCompensation extends true
-          ? WithCompensation<ChildWorkflowFailureInfo>
-          : ChildWorkflowFailureInfo,
-      ) => R2;
-      onTimeout: () => R3;
-    } & ChildWorkflowJoinRuntimeOptions,
-  ): Promise<Awaited<R1> | Awaited<R2> | Awaited<R3>>;
-
-  /**
-   * Channels for sending messages TO the child workflow.
-   * Fire-and-forget: returns void, no confirmation of receipt.
-   */
-  readonly channels: {
-    [K in keyof TChannels]: {
-      send(data: StandardSchemaV1.InferInput<TChannels[K]>): Promise<void>;
-    };
-  };
-
-  /**
-   * Engine-managed lifecycle events of the child workflow.
-   */
-  readonly lifecycle: LifecycleEvents;
-
-  /**
-   * User-defined events of the child workflow (read-only).
-   */
-  readonly events: {
-    [K in keyof TEvents]: EventAccessorReadonly;
-  };
-
-  /**
-   * Streams of the child workflow (read-only).
-   */
-  readonly streams: {
-    [K in keyof TStreams]: StreamReaderAccessor<
-      StandardSchemaV1.InferOutput<TStreams[K]>
-    >;
-  };
-}
+/**
+ * Maps scope entry closures to their corresponding branch handle types,
+ * preserving collection structure (single → BranchHandle, array → array, map → map).
+ */
+export type ScopeHandles<E extends ScopeEntries> = {
+  [K in keyof E]: E[K] extends () => Promise<infer T>
+    ? BranchHandle<T>
+    : E[K] extends (infer U)[]
+      ? U extends () => Promise<infer T>
+        ? BranchHandle<T>[]
+        : never
+      : E[K] extends Map<infer MK, infer V>
+        ? V extends () => Promise<infer T>
+          ? Map<MK, BranchHandle<T>>
+          : never
+        : never;
+};
 
 // =============================================================================
-// COMPENSATION CHILD WORKFLOW HANDLE (CompensationContext)
+// SELECT — HANDLE TYPES
 // =============================================================================
 
 /**
- * Handle to a child workflow started in CompensationContext.
- * Returns Go-style result unions — compensation code must handle failures.
- *
- * @typeParam TResult - Decoded result type.
- * @typeParam TChannels - Channel definitions of the child workflow.
- * @typeParam TStreams - Stream definitions of the child workflow.
- * @typeParam TEvents - Event definitions of the child workflow.
- */
-export interface CompensationChildWorkflowHandle<
-  TResult,
-  TChannels extends ChannelDefinitions = Record<string, never>,
-  TStreams extends StreamDefinitions = Record<string, never>,
-  TEvents extends EventDefinitions = Record<string, never>,
-> {
-  readonly workflowId: string;
-
-  /**
-   * Wait for the child workflow to reach a terminal state.
-   * Returns a full result union — compensation code must handle all outcomes.
-   */
-  join(
-    options?: ChildWorkflowJoinRuntimeOptions,
-  ): Promise<WorkflowResult<TResult>>;
-
-  /**
-   * Wait with a timeout (in seconds).
-   */
-  join(
-    timeoutSeconds: number,
-    options?: ChildWorkflowJoinRuntimeOptions,
-  ): Promise<CompensationChildWorkflowJoinResultWithTimeout<TResult>>;
-
-  /** Channels for sending messages TO the child workflow. */
-  readonly channels: {
-    [K in keyof TChannels]: {
-      send(data: StandardSchemaV1.InferInput<TChannels[K]>): Promise<void>;
-    };
-  };
-
-  /** Engine-managed lifecycle events of the child workflow. */
-  readonly lifecycle: LifecycleEvents;
-
-  /** User-defined events of the child workflow (read-only). */
-  readonly events: {
-    [K in keyof TEvents]: EventAccessorReadonly;
-  };
-
-  /** Streams of the child workflow (read-only). */
-  readonly streams: {
-    [K in keyof TStreams]: StreamReaderAccessor<
-      StandardSchemaV1.InferOutput<TStreams[K]>
-    >;
-  };
-}
-
-/**
- * Handle to another (non-child) workflow from within a workflow context.
- *
- * SEVERELY LIMITED by design:
- * - Only channels.send() available
- * - No events, streams, lifecycle (prevents tight coupling)
- * - send() is fire-and-forget — returns void
- */
-export interface WorkflowHandleInternal<TChannels extends ChannelDefinitions> {
-  readonly workflowId: string;
-
-  /**
-   * Channels for sending messages to this workflow.
-   * Fire-and-forget: returns void, workflow is oblivious to receiver existence.
-   */
-  readonly channels: {
-    [K in keyof TChannels]: {
-      /**
-       * Send a message to this channel.
-       * @param data - Message data (z.input type — encoded).
-       */
-      send(data: StandardSchemaV1.InferInput<TChannels[K]>): Promise<void>;
-    };
-  };
-}
-
-// =============================================================================
-// WORKFLOW ACCESSOR (WorkflowContext)
-// =============================================================================
-
-/**
- * Accessor for child workflows on `ctx.workflows` in WorkflowContext.
- * Provides `.start()` (scope-only), `.execute()` (sequential happy-path),
- * `.tryExecute()` (sequential explicit), `.startDetached()` (fire-and-forget),
- * and `.get()`.
- *
- * In the happy-path model, `.execute()` returns T directly. Failure
- * auto-terminates the parent workflow.
- *
- * `.tryExecute()` accepts `{ onComplete, onFailure }` callbacks for explicit
- * error handling without auto-termination. With `compensate`, `onFailure`'s
- * parameter includes `compensate()`. Returns R.
- *
- * @typeParam W - The child workflow definition type.
- * @typeParam TCompCtx - The CompensationContext type for the parent workflow.
- */
-export interface WorkflowAccessor<
-  W extends WorkflowDefinition<
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any
-  >,
-  TCompCtx = unknown,
-> {
-  // --- start (scope-only, concurrent) ----------------------------------------
-
-  /**
-   * Start a child workflow with compensation within a scope declaration.
-   * Returns a `ScopeEntry<ChildWorkflowHandle<..., true>>` —
-   * `tryJoin()`'s `onFailure` will include `compensate()` on the failure object.
-   *
-   * Unjoined handles with `compensate` are compensated on scope exit.
-   */
-  start(
-    options: ChildWorkflowScopeStartOptionsWithCompensation<
-      InferWorkflowArgsInput<W>,
-      InferWorkflowResult<W>,
-      TCompCtx
-    >,
-  ): ScopeEntry<
-    ChildWorkflowHandle<
-      InferWorkflowResult<W>,
-      InferWorkflowChannels<W>,
-      InferWorkflowStreams<W>,
-      InferWorkflowEvents<W>,
-      true
-    >
-  >;
-
-  /**
-   * Start a child workflow within a scope declaration (no compensation).
-   * Returns a `ScopeEntry<ChildWorkflowHandle<..., false>>`.
-   *
-   * Unjoined handles without `compensate` are settled on scope exit.
-   */
-  start(
-    options: ChildWorkflowScopeStartOptionsWithoutCompensation<
-      InferWorkflowArgsInput<W>
-    >,
-  ): ScopeEntry<
-    ChildWorkflowHandle<
-      InferWorkflowResult<W>,
-      InferWorkflowChannels<W>,
-      InferWorkflowStreams<W>,
-      InferWorkflowEvents<W>,
-      false
-    >
-  >;
-
-  // --- execute (happy path) --------------------------------------------------
-
-  /**
-   * Start a child workflow and immediately join it (convenience for
-   * start + join). Returns T directly — failure auto-terminates the parent.
-   *
-   * Supports `suspendAfter` to control when the parent workflow is suspended
-   * while waiting for the child. Supports compensation callback.
-   *
-   * @param options - Start options plus runtime options and optional compensation.
-   */
-  execute(
-    options: RunChildWorkflowOptions<
-      InferWorkflowArgsInput<W>,
-      InferWorkflowResult<W>,
-      TCompCtx
-    >,
-  ): Promise<InferWorkflowResult<W>>;
-
-  // --- tryExecute (explicit error handling, callback-based) ------------------
-
-  /**
-   * Start a child workflow and immediately join it, handling the result via
-   * callbacks. `onFailure` receives failure info with `compensate()` for
-   * eager discharge. If not called, engine runs it at scope exit.
-   *
-   * Returns the value produced by whichever callback fires.
-   */
-  tryExecute<R1, R2>(
-    options: ChildWorkflowTryExecuteOptionsWithCompensation<
-      InferWorkflowArgsInput<W>,
-      InferWorkflowResult<W>,
-      R1,
-      R2,
-      TCompCtx
-    >,
-  ): Promise<Awaited<R1> | Awaited<R2>>;
-
-  /**
-   * Start a child workflow and immediately join it, handling the result via
-   * callbacks. `onFailure` receives plain failure info — no `compensate()`.
-   *
-   * Returns the value produced by whichever callback fires.
-   */
-  tryExecute<R1, R2>(
-    options: ChildWorkflowTryExecuteOptionsWithoutCompensation<
-      InferWorkflowArgsInput<W>,
-      InferWorkflowResult<W>,
-      R1,
-      R2
-    >,
-  ): Promise<Awaited<R1> | Awaited<R2>>;
-
-  // --- startDetached, get ----------------------------------------------------
-
-  /**
-   * Start a detached child workflow — fire-and-forget.
-   *
-   * The child runs independently of the parent's lifecycle:
-   * - No scope required — the child is not managed by structured concurrency.
-   * - No compensation — the parent's LIFO stack does not include this child.
-   * - The child is NOT terminated when the parent fails or is signaled.
-   *
-   * Returns a limited handle for sending messages to the child.
-   * This is the ONLY way to start concurrent work without a scope.
-   *
-   * @param options - Start options (workflowId, args, timeoutSeconds).
-   */
-  startDetached(
-    options: StartChildWorkflowOptions<InferWorkflowArgsInput<W>>,
-  ): Promise<WorkflowHandleInternal<InferWorkflowChannels<W>>>;
-
-  /**
-   * Get a handle to an existing (non-child) workflow instance.
-   * Only channels.send() is available (fire-and-forget).
-   *
-   * @param workflowId - The workflow instance ID.
-   */
-  get(workflowId: string): WorkflowHandleInternal<InferWorkflowChannels<W>>;
-}
-
-/**
- * Accessor for child workflows on `ctx.workflows` in CompensationContext.
- * Returns full result unions (compensation code must handle all outcomes).
- * Now supports `.start()` for concurrent child workflows in compensation scopes.
- *
- * @typeParam W - The child workflow definition type.
- */
-export interface CompensationWorkflowAccessor<
-  W extends WorkflowDefinition<
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any
-  >,
-> {
-  /**
-   * Start a child workflow and immediately join it.
-   * Returns full WorkflowResult — compensation must handle failures gracefully.
-   *
-   * @param options - Start options plus runtime options.
-   */
-  execute(
-    options: StartChildWorkflowOptions<InferWorkflowArgsInput<W>> &
-      ChildWorkflowJoinRuntimeOptions,
-  ): Promise<WorkflowResult<InferWorkflowResult<W>>>;
-
-  /**
-   * Start a child workflow concurrently within a compensation scope.
-   * Returns a ScopeEntry that resolves into a CompensationChildWorkflowHandle.
-   *
-   * @param options - Start options (workflowId, args, timeoutSeconds).
-   */
-  start(
-    options: StartChildWorkflowOptions<InferWorkflowArgsInput<W>>,
-  ): ScopeEntry<
-    CompensationChildWorkflowHandle<
-      InferWorkflowResult<W>,
-      InferWorkflowChannels<W>,
-      InferWorkflowStreams<W>,
-      InferWorkflowEvents<W>
-    >
-  >;
-
-  /**
-   * Get a handle to an existing (non-child) workflow instance.
-   * Only channels.send() is available (fire-and-forget).
-   *
-   * @param workflowId - The workflow instance ID.
-   */
-  get(workflowId: string): WorkflowHandleInternal<InferWorkflowChannels<W>>;
-}
-
-// =============================================================================
-// ONE-SHOT HANDLE HELPERS (for forEach / map)
-// =============================================================================
-
-/**
- * Handle types that resolve exactly once (WorkflowContext).
- * Used as constraints for forEach() and map().
- */
-export type OneShotHandle =
-  | StepHandle<any, any>
-  | ChildWorkflowHandle<any, any, any, any, any>;
-
-/**
- * Handle types that resolve exactly once (CompensationContext).
- */
-export type CompensationOneShotHandle =
-  | CompensationStepHandle<any>
-  | CompensationChildWorkflowHandle<any, any, any, any>;
-
-/**
- * Extract the data type from a one-shot handle.
- * In the happy-path model, this is just T (the successful result).
- */
-export type HandleData<H> =
-  H extends StepHandle<infer T, any>
-    ? T
-    : H extends ChildWorkflowHandle<infer T, any, any, any, any>
-      ? T
-      : never;
-
-/**
- * Extract the compensation-context result type from a compensation one-shot handle.
- */
-export type CompensationHandleResult<H> =
-  H extends CompensationStepHandle<infer T>
-    ? CompensationStepResult<T>
-    : H extends CompensationChildWorkflowHandle<infer T, any, any, any>
-      ? WorkflowResult<T>
-      : never;
-
-// =============================================================================
-// SELECT — HANDLE TYPES (WorkflowContext)
-// =============================================================================
-
-/**
- * Handle types that can be passed into ctx.select() (WorkflowContext).
+ * Handle types that can be passed into ctx.select() (WorkflowContext and CompensationContext).
+ * Includes BranchHandle collections for dynamic fan-out.
  */
 export type SelectableHandle =
-  | StepHandle<any, any>
-  | ChildWorkflowHandle<any, any, any, any, any>
-  | ChannelHandle<any>
-  | StreamIteratorHandle<any>
-  | LifecycleEventAccessor
-  | EventAccessorReadonly;
-
-/**
- * Handle types that can be passed into compCtx.select() (CompensationContext).
- */
-export type CompensationSelectableHandle =
-  | CompensationStepHandle<any>
-  | CompensationChildWorkflowHandle<any, any, any, any>
+  | BranchHandle<any>
+  | BranchHandle<any>[]
+  | Map<any, BranchHandle<any>>
   | ChannelHandle<any>
   | StreamIteratorHandle<any>
   | LifecycleEventAccessor
   | EventAccessorReadonly;
 
 // =============================================================================
-// SELECT — EVENT TYPES (WorkflowContext, happy-path)
+// SELECT — EVENT TYPES (WorkflowContext)
 // =============================================================================
 
 /**
- * Map a handle type to its select event result type (WorkflowContext).
+ * Map a handle type to its select event result type.
  *
- * In the happy-path model:
- * - Step/child handles: only successful data (failures crash the workflow
- *   unless handled by onFailure in match/forEach/map)
- * - Channels: data only (always succeed)
- * - Streams: record or closed
- * - Events: set or never
- *
- * No `ok` field. No `handle` field.
+ * - BranchHandle: `{ key, data: T }`
+ * - BranchHandle[]: `{ key, innerKey: number, data: T }`
+ * - Map<K, BranchHandle>: `{ key, innerKey: K, data: T }`
+ * - Channels: `{ key, data: T }`
+ * - Streams: `{ key, status: "record", data, offset }` or `{ key, status: "closed" }`
+ * - Events: `{ key, status: "set" | "never" }`
  */
 export type HandleSelectEvent<K extends string, H> =
-  H extends StepHandle<infer T, any>
+  H extends BranchHandle<infer T>
     ? { key: K; data: T }
-    : H extends ChildWorkflowHandle<infer T, any, any, any, any>
-      ? { key: K; data: T }
-      : H extends ChannelHandle<infer T>
-        ? { key: K; data: T }
-        : H extends StreamIteratorHandle<infer T>
-          ?
-              | { key: K; status: "record"; data: T; offset: number }
-              | { key: K; status: "closed" }
-          : H extends LifecycleEventAccessor
+    : H extends BranchHandle<infer T>[]
+      ? { key: K; innerKey: number; data: T }
+      : H extends Map<infer MK, BranchHandle<infer T>>
+        ? { key: K; innerKey: MK; data: T }
+        : H extends ChannelHandle<infer T>
+          ? { key: K; data: T }
+          : H extends StreamIteratorHandle<infer T>
             ?
-                | { key: K; status: "set" }
-                | { key: K; status: "never" }
-            : H extends EventAccessorReadonly
-              ?
-                  | { key: K; status: "set" }
-                  | { key: K; status: "never" }
-              : never;
+                | { key: K; status: "record"; data: T; offset: number }
+                | { key: K; status: "closed" }
+            : H extends LifecycleEventAccessor
+              ? { key: K; status: "set" } | { key: K; status: "never" }
+              : H extends EventAccessorReadonly
+                ? { key: K; status: "set" } | { key: K; status: "never" }
+                : never;
 
 /**
- * What a match handler receives for a specific key (WorkflowContext).
+ * What a match handler receives for a specific key.
  *
- * For steps, children, and channels: the data value T directly.
- * For streams: a status-discriminated union (no key field needed in handler).
- * For events: a status-discriminated union.
+ * - BranchHandle<T>: `T` directly
+ * - BranchHandle<T>[]: `{ data: T; innerKey: number }`
+ * - Map<K, BranchHandle<T>>: `{ data: T; innerKey: K }`
+ * - Channels: `T` directly
+ * - Streams / Events: status-discriminated union
  */
 export type HandleMatchData<H> =
-  H extends StepHandle<infer T, any>
+  H extends BranchHandle<infer T>
     ? T
-    : H extends ChildWorkflowHandle<infer T, any, any, any, any>
-      ? T
-      : H extends ChannelHandle<infer T>
-        ? T
-        : H extends StreamIteratorHandle<infer T>
-          ?
-              | { status: "record"; data: T; offset: number }
-              | { status: "closed" }
-          : H extends LifecycleEventAccessor
-            ? { status: "set" } | { status: "never" }
-            : H extends EventAccessorReadonly
-              ? { status: "set" } | { status: "never" }
-              : never;
-
-// =============================================================================
-// SELECT — EVENT TYPES (CompensationContext, failures visible)
-// =============================================================================
-
-/**
- * Map a handle type to its select event result type (CompensationContext).
- *
- * In compensation context, step/child failures are visible in the event union.
- * Channels, streams, events are unchanged.
- */
-export type CompensationHandleSelectEvent<K extends string, H> =
-  H extends CompensationStepHandle<infer T>
-    ?
-        | { key: K; ok: true; status: "complete"; data: T; errors: StepErrorAccessor }
-        | { key: K; ok: false; status: "failed"; reason: "attempts_exhausted" | "timeout"; errors: StepErrorAccessor }
-    : H extends CompensationChildWorkflowHandle<infer T, any, any, any>
-      ?
-          | { key: K; ok: true; status: "complete"; data: T }
-          | { key: K; ok: false; status: "failed"; error: WorkflowExecutionError }
-          | { key: K; ok: false; status: "terminated" }
-      : H extends ChannelHandle<infer T>
-        ? { key: K; data: T }
-        : H extends StreamIteratorHandle<infer T>
-          ?
-              | { key: K; status: "record"; data: T; offset: number }
-              | { key: K; status: "closed" }
-          : H extends LifecycleEventAccessor
+    : H extends BranchHandle<infer T>[]
+      ? { data: T; innerKey: number }
+      : H extends Map<infer MK, BranchHandle<infer T>>
+        ? { data: T; innerKey: MK }
+        : H extends ChannelHandle<infer T>
+          ? T
+          : H extends StreamIteratorHandle<infer T>
             ?
-                | { key: K; status: "set" }
-                | { key: K; status: "never" }
-            : H extends EventAccessorReadonly
-              ?
-                  | { key: K; status: "set" }
-                  | { key: K; status: "never" }
-              : never;
-
-/**
- * What a compensation match handler receives for a specific key.
- *
- * For steps: CompensationStepResult<T> (must handle failures).
- * For child workflows: WorkflowResult<T> (must handle failures).
- * For channels/streams/events: same as WorkflowContext.
- */
-export type CompensationHandleMatchData<H> =
-  H extends CompensationStepHandle<infer T>
-    ? CompensationStepResult<T>
-    : H extends CompensationChildWorkflowHandle<infer T, any, any, any>
-      ? WorkflowResult<T>
-      : H extends ChannelHandle<infer T>
-        ? T
-        : H extends StreamIteratorHandle<infer T>
-          ?
-              | { status: "record"; data: T; offset: number }
-              | { status: "closed" }
-          : H extends LifecycleEventAccessor
-            ? { status: "set" } | { status: "never" }
-            : H extends EventAccessorReadonly
+                | { status: "record"; data: T; offset: number }
+                | { status: "closed" }
+            : H extends LifecycleEventAccessor
               ? { status: "set" } | { status: "never" }
-              : never;
-
-// =============================================================================
-// SELECT — RESULT UNIONS
-// =============================================================================
+              : H extends EventAccessorReadonly
+                ? { status: "set" } | { status: "never" }
+                : never;
 
 /**
- * Union of all possible events from a select record (WorkflowContext).
+ * Union of all possible events from a select record.
  */
 export type SelectEvent<M extends Record<string, SelectableHandle>> = {
   [K in keyof M & string]: HandleSelectEvent<K, M[K]>;
 }[keyof M & string];
 
 /**
- * Union of all possible events from a select record (CompensationContext).
- */
-export type CompensationSelectEvent<
-  M extends Record<string, CompensationSelectableHandle>,
-> = {
-  [K in keyof M & string]: CompensationHandleSelectEvent<K, M[K]>;
-}[keyof M & string];
-
-/**
- * Result of Selection.next() without a timeout (WorkflowContext).
+ * Result of Selection.next() without a timeout.
  */
 export type SelectNextResultNoTimeout<
   M extends Record<string, SelectableHandle>,
 > = SelectEvent<M> | { key: null; status: "exhausted" };
 
 /**
- * Result of Selection.next() with a timeout (WorkflowContext).
+ * Result of Selection.next() with a timeout.
  */
 export type SelectNextResult<M extends Record<string, SelectableHandle>> =
   | SelectEvent<M>
-  | { key: null; status: "timeout" }
-  | { key: null; status: "exhausted" };
-
-/**
- * Result of CompensationSelection.next() without a timeout.
- */
-export type CompensationSelectNextResultNoTimeout<
-  M extends Record<string, CompensationSelectableHandle>,
-> = CompensationSelectEvent<M> | { key: null; status: "exhausted" };
-
-/**
- * Result of CompensationSelection.next() with a timeout.
- */
-export type CompensationSelectNextResult<
-  M extends Record<string, CompensationSelectableHandle>,
-> =
-  | CompensationSelectEvent<M>
   | { key: null; status: "timeout" }
   | { key: null; status: "exhausted" };
 
@@ -2112,7 +1314,6 @@ export type CompensationSelectNextResult<
 
 /**
  * Result of Selection.match().
- * Wraps the handler return value in a discriminated union.
  */
 export type SelectMatchResult<T> =
   | { ok: true; status: "matched"; data: T }
@@ -2120,75 +1321,60 @@ export type SelectMatchResult<T> =
 
 /**
  * Result of Selection.match() with a timeout.
- * Includes "timeout" status — distinguishable from any handler return value.
  */
 export type SelectMatchResultWithTimeout<T> =
   | SelectMatchResult<T>
   | { ok: false; status: "timeout" };
 
 /**
- * Extract the return type from a handler entry (plain function or { onComplete }).
+ * Extract the return type from a match/forEach/map handler entry.
+ * Supports plain functions and `{ complete, failure }` objects.
  */
-type ExtractHandlerReturn<H> =
-  H extends (...args: any[]) => infer R
-    ? Awaited<R>
-    : H extends { onComplete: (...args: any[]) => infer R; onFailure: (...args: any[]) => infer R2 }
-      ? Awaited<R> | Awaited<R2>
-      : H extends { onComplete: (...args: any[]) => infer R }
-        ? Awaited<R>
-        : never;
-
-/**
- * Extract handler return type for compensation context (plain functions only).
- */
-type ExtractCompensationHandlerReturn<H> =
-  H extends (...args: any[]) => infer R
-    ? Awaited<R>
-    : never;
+type ExtractHandlerReturn<H> = H extends (...args: any[]) => infer R
+  ? Awaited<R>
+  : H extends {
+        complete: (...args: any[]) => infer R;
+        failure: (...args: any[]) => infer R2;
+      }
+    ? Awaited<R> | Awaited<R2>
+    : H extends { complete: (...args: any[]) => infer R }
+      ? Awaited<R>
+      : never;
 
 // =============================================================================
-// MATCH HANDLER ENTRY TYPES (WorkflowContext)
+// MATCH HANDLER ENTRY TYPES
 // =============================================================================
 
 /**
- * A match handler entry for a specific key (WorkflowContext).
+ * A match handler entry for a specific key.
  *
- * For compensatable handles (StepHandle, ChildWorkflowHandle), the handler can
- * be either a plain function or an `{ onComplete, onFailure }` object.
+ * For BranchHandle keys (single or collection), the handler can be either a plain
+ * function (failure auto-terminates workflow) or a `{ complete, failure }` object
+ * for explicit failure recovery.
  *
- * - Plain function: receives successful data. If the step/child fails,
- *   the workflow crashes (auto-terminates and compensations run).
- * - `{ onComplete, onFailure }`: explicit handling. `onFailure` receives a
- *   single failure info object — with `compensate()` merged in when the
- *   handle was started with compensation.
- *
- * For non-compensatable handles (channels, streams, events), only a plain
- * function is allowed.
+ * For channels, streams, and events, only a plain function is allowed.
  */
-export type MatchHandlerEntry<
-  H extends SelectableHandle,
-> = H extends StepHandle<any, any> | ChildWorkflowHandle<any, any, any, any, any>
+export type MatchHandlerEntry<H extends SelectableHandle> = H extends
+  | BranchHandle<any>
+  | BranchHandle<any>[]
+  | Map<any, BranchHandle<any>>
   ?
       | ((data: HandleMatchData<H>) => any)
       | {
-          onComplete: (data: HandleMatchData<H>) => any;
-          onFailure: (failure: HandleOnFailureParam<H>) => any;
+          complete: (data: HandleMatchData<H>) => any;
+          failure: (failure: BranchFailureInfo) => any;
         }
   : (data: HandleMatchData<H>) => any;
 
 /**
- * Handler map for Selection.match() (WorkflowContext).
- * Each key's handler type depends on the handle type for that key.
+ * Handler map for Selection.match().
  */
-export type MatchHandlers<
-  M extends Record<string, SelectableHandle>,
-> = {
+export type MatchHandlers<M extends Record<string, SelectableHandle>> = {
   [K in keyof M & string]?: MatchHandlerEntry<M[K]>;
 };
 
 /**
  * Return type of Selection.match().
- * Union of all provided handler return types (awaited).
  */
 export type MatchReturn<
   M extends Record<string, SelectableHandle>,
@@ -2199,57 +1385,12 @@ export type MatchReturn<
 
 /**
  * Union of select events from keys NOT present in the handler map.
- * Used to type the default handler — ensures exhaustive type narrowing.
  */
 export type UnhandledSelectEvent<
   M extends Record<string, SelectableHandle>,
   H extends Partial<Record<keyof M & string, any>>,
 > = {
   [K in Exclude<keyof M & string, keyof H & string>]: HandleSelectEvent<
-    K,
-    M[K]
-  >;
-}[Exclude<keyof M & string, keyof H & string>];
-
-// =============================================================================
-// MATCH HANDLER ENTRY TYPES (CompensationContext)
-// =============================================================================
-
-/**
- * A match handler entry for a specific key (CompensationContext).
- * Always a plain function — no onFailure (failures are visible in the data).
- */
-export type CompensationMatchHandlerEntry<
-  H extends CompensationSelectableHandle,
-> = (data: CompensationHandleMatchData<H>) => any;
-
-/**
- * Handler map for CompensationSelection.match().
- */
-export type CompensationMatchHandlers<
-  M extends Record<string, CompensationSelectableHandle>,
-> = {
-  [K in keyof M & string]?: CompensationMatchHandlerEntry<M[K]>;
-};
-
-/**
- * Return type of CompensationSelection.match().
- */
-export type CompensationMatchReturn<
-  M extends Record<string, CompensationSelectableHandle>,
-  H extends CompensationMatchHandlers<M>,
-> = {
-  [K in keyof H & string]: ExtractCompensationHandlerReturn<H[K]>;
-}[keyof H & string];
-
-/**
- * Union of compensation select events from keys NOT present in the handler map.
- */
-export type UnhandledCompensationSelectEvent<
-  M extends Record<string, CompensationSelectableHandle>,
-  H extends Partial<Record<keyof M & string, any>>,
-> = {
-  [K in Exclude<keyof M & string, keyof H & string>]: CompensationHandleSelectEvent<
     K,
     M[K]
   >;
@@ -2263,28 +1404,29 @@ export type UnhandledCompensationSelectEvent<
  * A selection — multiplexes multiple handles and yields events as they arrive.
  * Events are ordered by global_sequence for deterministic replay.
  *
- * In the happy-path model, step/child failures crash the workflow by default.
- * Use `.match()` with `{ onComplete, onFailure }` handlers for explicit
- * failure recovery. `.next()` and `for await` only see successful events —
- * a failure triggers workflow termination and LIFO compensation.
+ * In the happy-path model, BranchHandle failures crash the workflow by default.
+ * Use `.match()` with `{ complete, failure }` handlers for explicit recovery.
+ * `.next()` and `for await` only see successful data events — a failure triggers
+ * workflow termination and LIFO compensation.
  *
- * One-shot handles (StepHandle, ChildWorkflowHandle, events) produce exactly one event.
+ * BranchHandle (one-shot) produces exactly one event.
  * Multi-shot handles (ChannelHandle, StreamIteratorHandle) can produce multiple events.
  *
- * Returns { status: 'exhausted' } when all one-shot handles have resolved and
- * no multi-shot handles remain active.
+ * For collection handles (BranchHandle[], Map<K, BranchHandle>), each element
+ * produces its own event with an `innerKey`.
+ *
+ * Returns { status: 'exhausted' } when all one-shot handles have resolved.
  *
  * Implements AsyncIterable — can be used with `for await...of`.
  *
  * @typeParam M - The handle record type.
  */
-export interface Selection<
-  M extends Record<string, SelectableHandle>,
-> extends AsyncIterable<SelectEvent<M>> {
+export interface Selection<M extends Record<string, SelectableHandle>>
+  extends AsyncIterable<SelectEvent<M>> {
   /**
    * Wait for the next event from any handle in the selection.
    * Returns { status: 'exhausted' } when all handles have resolved.
-   * If a step/child fails, the workflow auto-terminates.
+   * If a branch fails without a `failure` handler, the workflow auto-terminates.
    */
   next(): Promise<SelectNextResultNoTimeout<M>>;
 
@@ -2297,9 +1439,7 @@ export interface Selection<
    * Wait for the first event matching a handler.
    *
    * Handlers can be plain functions (failure crashes workflow) or
-   * `{ onComplete, onFailure }` objects for step/child workflow keys.
-   * `onFailure` receives a single failure info object with `compensate()`
-   * merged in when the handle was started with compensation.
+   * `{ complete, failure }` objects for BranchHandle keys.
    */
   match<H extends MatchHandlers<M>>(
     handlers: H,
@@ -2314,15 +1454,21 @@ export interface Selection<
   /** Handlers + default for unhandled events. */
   match<H extends MatchHandlers<M>, TDefault>(
     handlers: H,
-    defaultHandler: (event: UnhandledSelectEvent<M, H>) => Promise<TDefault> | TDefault,
+    defaultHandler: (
+      event: UnhandledSelectEvent<M, H>,
+    ) => Promise<TDefault> | TDefault,
   ): Promise<SelectMatchResult<MatchReturn<M, H> | Awaited<TDefault>>>;
 
   /** Handlers + default + timeout. */
   match<H extends MatchHandlers<M>, TDefault>(
     handlers: H,
-    defaultHandler: (event: UnhandledSelectEvent<M, H>) => Promise<TDefault> | TDefault,
+    defaultHandler: (
+      event: UnhandledSelectEvent<M, H>,
+    ) => Promise<TDefault> | TDefault,
     timeoutSeconds: number,
-  ): Promise<SelectMatchResultWithTimeout<MatchReturn<M, H> | Awaited<TDefault>>>;
+  ): Promise<
+    SelectMatchResultWithTimeout<MatchReturn<M, H> | Awaited<TDefault>>
+  >;
 
   /**
    * Live set of unresolved handle keys.
@@ -2335,81 +1481,167 @@ export interface Selection<
 // =============================================================================
 
 /**
- * A selection in CompensationContext — failures are always visible in events.
- * No `onFailure` handlers — failures appear in the event type directly.
+ * A selection in CompensationContext.
+ * Failures are always visible in events — no `failure` handlers needed.
  * Compensation code must handle all outcomes explicitly.
+ *
+ * Since compensation closures return result unions (CompensationStepResult, WorkflowResult),
+ * failures are encoded in the data — branch handles do not reject.
  */
-export interface CompensationSelection<
-  M extends Record<string, CompensationSelectableHandle>,
-> extends AsyncIterable<CompensationSelectEvent<M>> {
-  /** Wait for the next event (includes failures). */
-  next(): Promise<CompensationSelectNextResultNoTimeout<M>>;
+export interface CompensationSelection<M extends Record<string, SelectableHandle>>
+  extends AsyncIterable<SelectEvent<M>> {
+  /** Wait for the next event. */
+  next(): Promise<SelectNextResultNoTimeout<M>>;
 
   /** Wait for the next event with a timeout (in seconds). */
-  next(timeoutSeconds: number): Promise<CompensationSelectNextResult<M>>;
+  next(timeoutSeconds: number): Promise<SelectNextResult<M>>;
 
-  /** Pattern-match on events. Handlers receive full result unions for steps/children. */
-  match<H extends CompensationMatchHandlers<M>>(
+  /** Pattern-match on events. */
+  match<H extends MatchHandlers<M>>(
     handlers: H,
-  ): Promise<SelectMatchResult<CompensationMatchReturn<M, H>>>;
+  ): Promise<SelectMatchResult<MatchReturn<M, H>>>;
 
   /** Handlers + timeout. */
-  match<H extends CompensationMatchHandlers<M>>(
+  match<H extends MatchHandlers<M>>(
     handlers: H,
     timeoutSeconds: number,
-  ): Promise<SelectMatchResultWithTimeout<CompensationMatchReturn<M, H>>>;
+  ): Promise<SelectMatchResultWithTimeout<MatchReturn<M, H>>>;
 
   /** Handlers + default. */
-  match<H extends CompensationMatchHandlers<M>, TDefault>(
+  match<H extends MatchHandlers<M>, TDefault>(
     handlers: H,
-    defaultHandler: (event: UnhandledCompensationSelectEvent<M, H>) => Promise<TDefault> | TDefault,
-  ): Promise<SelectMatchResult<CompensationMatchReturn<M, H> | Awaited<TDefault>>>;
+    defaultHandler: (
+      event: UnhandledSelectEvent<M, H>,
+    ) => Promise<TDefault> | TDefault,
+  ): Promise<SelectMatchResult<MatchReturn<M, H> | Awaited<TDefault>>>;
 
   /** Handlers + default + timeout. */
-  match<H extends CompensationMatchHandlers<M>, TDefault>(
+  match<H extends MatchHandlers<M>, TDefault>(
     handlers: H,
-    defaultHandler: (event: UnhandledCompensationSelectEvent<M, H>) => Promise<TDefault> | TDefault,
+    defaultHandler: (
+      event: UnhandledSelectEvent<M, H>,
+    ) => Promise<TDefault> | TDefault,
     timeoutSeconds: number,
-  ): Promise<SelectMatchResultWithTimeout<CompensationMatchReturn<M, H> | Awaited<TDefault>>>;
+  ): Promise<
+    SelectMatchResultWithTimeout<MatchReturn<M, H> | Awaited<TDefault>>
+  >;
 
   /** Live set of unresolved handle keys. */
   readonly remaining: ReadonlySet<keyof M & string>;
 }
 
 // =============================================================================
-// forEach / map — HANDLER ENTRY TYPES (WorkflowContext)
+// forEach / map — HANDLER ENTRY TYPES
 // =============================================================================
 
 /**
- * A forEach handler entry for a specific one-shot handle key (WorkflowContext).
- *
- * Can be a plain function (receives data T directly, failure crashes workflow)
- * or an `{ onComplete, onFailure }` object for explicit failure handling.
- * `onFailure` receives a single failure info object — with `compensate()`
- * merged in when the handle was started with compensation.
+ * Extract data type from a branch handle or collection.
+ * For collections, this is the element's data type (innerKey is separate).
  */
-export type ForEachHandlerEntry<H extends OneShotHandle> =
-  | ((data: HandleData<H>) => Promise<void> | void)
-  | {
-      onComplete: (data: HandleData<H>) => Promise<void> | void;
-      onFailure: (failure: HandleOnFailureParam<H>) => Promise<void> | void;
-    };
+type BranchData<H> =
+  H extends BranchHandle<infer T>
+    ? T
+    : H extends BranchHandle<infer T>[]
+      ? T
+      : H extends Map<any, BranchHandle<infer T>>
+        ? T
+        : never;
 
 /**
- * A map handler entry for a specific one-shot handle key (WorkflowContext).
- *
- * Can be a plain function (receives data T, returns transformed value,
- * failure crashes workflow) or an `{ onComplete, onFailure }` object.
- * `onFailure` receives a single failure info object — with `compensate()`
- * merged in when the handle was started with compensation. Its return value
- * becomes the fallback in the result map.
+ * Extract the inner key type for collection handles.
+ * Single BranchHandle has no innerKey (never).
  */
-export type MapHandlerEntry<H extends OneShotHandle> =
-  | ((data: HandleData<H>) => any)
-  | {
-      onComplete: (data: HandleData<H>) => any;
-      onFailure: (failure: HandleOnFailureParam<H>) => any;
-    };
+type BranchInnerKey<H> =
+  H extends BranchHandle<any>
+    ? never
+    : H extends BranchHandle<any>[]
+      ? number
+      : H extends Map<infer K, BranchHandle<any>>
+        ? K
+        : never;
+
+/**
+ * A forEach handler entry for a branch handle or collection.
+ *
+ * - Single `BranchHandle<T>`: plain `(data: T) => void` or `{ complete, failure }`
+ * - `BranchHandle<T>[]`: receives `(data: T, innerKey: number)` per element
+ * - `Map<K, BranchHandle<T>>`: receives `(data: T, innerKey: K)` per entry
+ *
+ * For plain function handlers, failure auto-terminates the workflow.
+ * For `{ complete, failure }` handlers, failure is handled explicitly.
+ */
+export type ForEachHandlerEntry<H extends SelectableHandle> =
+  H extends BranchHandle<any> | BranchHandle<any>[] | Map<any, BranchHandle<any>>
+    ? BranchInnerKey<H> extends never
+      ? // Single BranchHandle
+          | ((data: BranchData<H>) => Promise<void> | void)
+            | {
+                complete: (data: BranchData<H>) => Promise<void> | void;
+                failure: (failure: BranchFailureInfo) => Promise<void> | void;
+              }
+      : // Collection BranchHandle (array or map)
+          | ((
+                data: BranchData<H>,
+                innerKey: BranchInnerKey<H>,
+              ) => Promise<void> | void)
+            | {
+                complete: (
+                  data: BranchData<H>,
+                  innerKey: BranchInnerKey<H>,
+                ) => Promise<void> | void;
+                failure: (
+                  failure: BranchFailureInfo,
+                  innerKey: BranchInnerKey<H>,
+                ) => Promise<void> | void;
+              }
+    : never;
+
+/**
+ * A map handler entry for a branch handle or collection.
+ * Same structure as ForEachHandlerEntry but returns a value instead of void.
+ *
+ * `ctx.map()` return type mirrors the collection structure:
+ * - Single → single transformed value
+ * - Array → array of transformed values
+ * - Map → Map of transformed values
+ */
+export type MapHandlerEntry<H extends SelectableHandle> =
+  H extends BranchHandle<any> | BranchHandle<any>[] | Map<any, BranchHandle<any>>
+    ? BranchInnerKey<H> extends never
+      ? // Single BranchHandle
+          | ((data: BranchData<H>) => any)
+            | {
+                complete: (data: BranchData<H>) => any;
+                failure: (failure: BranchFailureInfo) => any;
+              }
+      : // Collection BranchHandle
+          | ((data: BranchData<H>, innerKey: BranchInnerKey<H>) => any)
+            | {
+                complete: (
+                  data: BranchData<H>,
+                  innerKey: BranchInnerKey<H>,
+                ) => any;
+                failure: (
+                  failure: BranchFailureInfo,
+                  innerKey: BranchInnerKey<H>,
+                ) => any;
+              }
+    : never;
+
+/**
+ * Mirror the map output structure to match the input collection structure.
+ * - BranchHandle<T> → ExtractHandlerReturn<C>
+ * - BranchHandle<T>[] → ExtractHandlerReturn<C>[]
+ * - Map<K, BranchHandle<T>> → Map<K, ExtractHandlerReturn<C>>
+ */
+type MapOutputFor<H, C> =
+  H extends BranchHandle<any>
+    ? ExtractHandlerReturn<C> | undefined
+    : H extends BranchHandle<any>[]
+      ? (ExtractHandlerReturn<C> | undefined)[]
+      : H extends Map<infer K, BranchHandle<any>>
+        ? Map<K, ExtractHandlerReturn<C> | undefined>
+        : never;
 
 // =============================================================================
 // forEach / map — HANDLER ENTRY TYPES (CompensationContext)
@@ -2417,19 +1649,30 @@ export type MapHandlerEntry<H extends OneShotHandle> =
 
 /**
  * A forEach handler entry for CompensationContext.
- * Always a plain function — receives result unions (must handle failures).
+ * Plain function — receives the branch data directly (already a result union).
+ * No `complete`/`failure` split — the result union encodes success/failure.
  */
-export type CompensationForEachHandlerEntry<
-  H extends CompensationOneShotHandle,
-> = (result: CompensationHandleResult<H>) => Promise<void> | void;
+export type CompensationForEachHandlerEntry<H extends SelectableHandle> =
+  H extends BranchHandle<any>
+    ? (data: BranchData<H>) => Promise<void> | void
+    : H extends BranchHandle<any>[]
+      ? (data: BranchData<H>, innerKey: number) => Promise<void> | void
+      : H extends Map<infer K, BranchHandle<any>>
+        ? (data: BranchData<H>, innerKey: K) => Promise<void> | void
+        : never;
 
 /**
  * A map handler entry for CompensationContext.
- * Always a plain function — receives result unions (must handle failures).
+ * Plain function — receives the branch data directly.
  */
-export type CompensationMapHandlerEntry<
-  H extends CompensationOneShotHandle,
-> = (result: CompensationHandleResult<H>) => any;
+export type CompensationMapHandlerEntry<H extends SelectableHandle> =
+  H extends BranchHandle<any>
+    ? (data: BranchData<H>) => any
+    : H extends BranchHandle<any>[]
+      ? (data: BranchData<H>, innerKey: number) => any
+      : H extends Map<infer K, BranchHandle<any>>
+        ? (data: BranchData<H>, innerKey: K) => any
+        : never;
 
 // =============================================================================
 // BASE CONTEXT (shared between WorkflowContext and CompensationContext)
@@ -2438,7 +1681,6 @@ export type CompensationMapHandlerEntry<
 /**
  * Base context shared between WorkflowContext and CompensationContext.
  * Contains all primitives that are identical between the two contexts.
- * Steps and workflows are NOT included — they differ per context.
  */
 export interface BaseContext<
   TState,
@@ -2494,13 +1736,11 @@ export interface BaseContext<
   /**
    * Durable sleep.
    * @param seconds - Duration in seconds.
-   * @param options - Optional runtime options controlling suspension behavior.
    */
-  sleep(seconds: number, options?: SleepRuntimeOptions): Promise<void>;
+  sleep(seconds: number): Promise<void>;
 
   /**
    * Deterministic random utilities.
-   * Each key corresponds to an RNG stream declared in the workflow definition.
    */
   readonly rng: RngAccessors<TRng>;
 
@@ -2519,14 +1759,13 @@ export interface BaseContext<
  * afterCompensate).
  *
  * Key differences from WorkflowContext:
- * - Steps return `CompensationStepResult<T>` (must handle failures gracefully)
- * - `.start()` on steps returns `ScopeEntry<CompensationStepHandle<T>>` — for
- *   use inside `compCtx.scope()`
- * - Has `scope()`, `select()`, `forEach()`, `map()` — same structured
- *   concurrency primitives but with failures always visible in result types
- * - No `addCompensation()` (prevents nested compensation chains)
- * - No compensation callbacks on `.start()` or handlers (can't nest compensations)
- * - Workflows return full `WorkflowResult<T>` (must handle all outcomes)
+ * - Steps return `CompensationStepResult<T>` via `CompensationStepCall<T>` —
+ *   compensation code MUST handle failures gracefully.
+ * - Has `scope()`, `select()`, `forEach()`, `map()` — same closure-based structured
+ *   concurrency but failures are always visible in result types.
+ * - `childWorkflows` return `CompensationWorkflowCall<T>` → `WorkflowResult<T>`.
+ * - No `addCompensation()` (prevents nested compensation chains).
+ * - No `foreignWorkflows` accessor (fire-and-forget not needed in compensation).
  *
  * The engine transparently interleaves compensation callbacks from the same
  * scope via a virtual event loop. Each callback looks like normal sequential
@@ -2544,130 +1783,130 @@ export interface CompensationContext<
 > extends BaseContext<TState, TChannels, TStreams, TEvents, TPatches, TRng> {
   /**
    * Steps for durable operations.
-   * `.execute()` returns `CompensationStepResult<T>` — must handle failures gracefully.
-   * `.start()` returns `ScopeEntry<CompensationStepHandle<T>>` for use in `scope()`.
+   * Calling a step returns `CompensationStepCall<T>` — awaits to `CompensationStepResult<T>`.
+   * Must handle failures gracefully — compensation cannot crash.
    */
   readonly steps: {
     [K in keyof TSteps]: TSteps[K] extends StepDefinition<
       infer TArgs,
       infer TResultSchema
     >
-      ? CompensationStepObject<TArgs, StandardSchemaV1.InferOutput<TResultSchema>>
+      ? (
+          ...args: TArgs
+        ) => CompensationStepCall<StandardSchemaV1.InferOutput<TResultSchema>>
       : never;
   };
 
   /**
    * Child workflows.
-   * `.execute()` returns full `WorkflowResult<T>` — must handle all outcomes.
-   * `.start()` returns `ScopeEntry<CompensationChildWorkflowHandle>` for use in `scope()`.
+   * Calling an accessor returns `CompensationWorkflowCall<T>` — awaits to `WorkflowResult<T>`.
+   * Must handle all outcomes (complete, failed, terminated).
    */
-  readonly workflows: {
-    [K in keyof TWorkflows]: CompensationWorkflowAccessor<TWorkflows[K]>;
+  readonly childWorkflows: {
+    [K in keyof TWorkflows]: CompensationChildWorkflowAccessor<TWorkflows[K]>;
   };
 
   // ---------------------------------------------------------------------------
-  // scope — structured concurrency in compensation
+  // scope — structured concurrency in compensation (closure-based)
   // ---------------------------------------------------------------------------
 
   /**
    * Create a scope for structured concurrency in compensation.
    *
-   * On scope exit, all unjoined handles are settled (waited for, result ignored).
-   * No per-handle compensation — compensation cannot nest.
+   * Entries are async closures (or collections of closures). The engine runs
+   * them on a virtual event loop, interleaving at durable yield points.
+   *
+   * On scope exit, all running branches are awaited to completion.
+   * No per-branch compensation — compensation cannot nest.
    */
-  scope<R, E extends Record<string, ScopeEntry<any>>>(
+  scope<R, E extends ScopeEntries>(
     entries: E,
-    callback: (
-      handles: {
-        [K in keyof E]: E[K] extends ScopeEntry<infer H> ? H : never;
-      },
-    ) => Promise<R>,
+    callback: (handles: ScopeHandles<E>) => Promise<R>,
   ): Promise<R>;
 
   // ---------------------------------------------------------------------------
-  // select — multiplexed waiting with failures visible
+  // select — multiplexed waiting
   // ---------------------------------------------------------------------------
 
   /**
    * Create a selection for concurrent waiting in compensation.
-   * Events include failure outcomes — compensation code must handle them.
    */
-  select<M extends Record<string, CompensationSelectableHandle>>(
+  select<M extends Record<string, SelectableHandle>>(
     handles: M,
   ): CompensationSelection<M>;
 
   // ---------------------------------------------------------------------------
-  // forEach — process all one-shot handle results
+  // forEach — process all branch results
   // ---------------------------------------------------------------------------
 
   /**
-   * Process all one-shot handle results as they arrive.
-   * Callbacks receive full result unions (CompensationStepResult / WorkflowResult).
+   * Process all branch results as they arrive.
+   * In compensation context, branches return result unions — handle all outcomes.
    * Every handle must have a callback.
    */
-  forEach<H extends Record<string, CompensationOneShotHandle>>(
-    handles: H,
+  forEach<M extends Record<string, SelectableHandle>>(
+    handles: M,
     callbacks: {
-      [K in keyof H & string]: CompensationForEachHandlerEntry<H[K]>;
+      [K in keyof M & string]: CompensationForEachHandlerEntry<M[K]>;
     },
   ): Promise<void>;
 
   /**
-   * Process all one-shot handle results with partial callbacks and a default.
+   * Process all branch results with partial callbacks and a default.
    */
   forEach<
-    H extends Record<string, CompensationOneShotHandle>,
+    M extends Record<string, SelectableHandle>,
     C extends Partial<{
-      [K in keyof H & string]: CompensationForEachHandlerEntry<H[K]>;
+      [K in keyof M & string]: CompensationForEachHandlerEntry<M[K]>;
     }>,
   >(
-    handles: H,
+    handles: M,
     callbacks: C,
     defaultCallback: (
-      key: Exclude<keyof H & string, keyof C & string>,
-      result: CompensationHandleResult<H[Exclude<keyof H & string, keyof C & string>]>,
+      key: Exclude<keyof M & string, keyof C & string>,
+      data: any,
     ) => Promise<void> | void,
   ): Promise<void>;
 
   // ---------------------------------------------------------------------------
-  // map — collect transformed results from all one-shot handles
+  // map — collect transformed results
   // ---------------------------------------------------------------------------
 
   /**
-   * Collect transformed results from all one-shot handles.
-   * Callbacks receive full result unions. Every handle must have a callback.
+   * Collect transformed results from all branch handles.
+   * Every handle must have a callback.
    */
   map<
-    H extends Record<string, CompensationOneShotHandle>,
+    M extends Record<string, SelectableHandle>,
     C extends {
-      [K in keyof H & string]: CompensationMapHandlerEntry<H[K]>;
+      [K in keyof M & string]: CompensationMapHandlerEntry<M[K]>;
     },
   >(
-    handles: H,
+    handles: M,
     callbacks: C,
   ): Promise<{
-    [K in keyof H & string]: ExtractCompensationHandlerReturn<C[K]> | undefined;
+    [K in keyof M & string]: Awaited<ReturnType<C[K] extends (...args: any[]) => any ? C[K] : never>> | undefined;
   }>;
 
   /**
    * Collect transformed results with partial callbacks and a default.
    */
   map<
-    H extends Record<string, CompensationOneShotHandle>,
+    M extends Record<string, SelectableHandle>,
     C extends Partial<{
-      [K in keyof H & string]: CompensationMapHandlerEntry<H[K]>;
+      [K in keyof M & string]: CompensationMapHandlerEntry<M[K]>;
     }>,
     TDefault,
   >(
-    handles: H,
+    handles: M,
     callbacks: C,
     defaultCallback: (
-      key: Exclude<keyof H & string, keyof C & string>,
-      result: CompensationHandleResult<H[Exclude<keyof H & string, keyof C & string>]>,
+      key: Exclude<keyof M & string, keyof C & string>,
+      data: any,
     ) => Promise<TDefault> | TDefault,
   ): Promise<{
-    [K in keyof H & string]: K extends keyof C
-      ? ExtractCompensationHandlerReturn<C[K]> | undefined
+    [K in keyof M & string]: K extends keyof C
+      ? Awaited<ReturnType<C[K] extends (...args: any[]) => any ? C[K] : never>> | undefined
       : Awaited<TDefault> | undefined;
   }>;
 }
@@ -2705,17 +1944,25 @@ export type CompensationCallback<
 /**
  * Workflow context provided to the execute function.
  *
- * Implements the happy-path model: step/child `.execute()` returns T directly.
- * If a step or child workflow fails, the workflow auto-terminates and
- * compensations run in LIFO order.
+ * Implements the happy-path model: calling a step or child workflow returns a
+ * thenable (`StepCall<T>` or `WorkflowCall<T>`) that resolves to T directly.
+ * Failure auto-terminates the workflow and triggers LIFO compensation.
  *
- * Structured concurrency via `ctx.scope()`: every concurrent handle has a
- * declared lifecycle boundary. On scope exit, handles with `compensate` are
- * compensated; handles without are settled.
+ * Builder pattern for explicit control:
+ * - `.compensate(cb)` — register compensation callback
+ * - `.retry(policy)` — override retry policy
+ * - `.failure(cb)` — handle failure without auto-termination
+ * - `.complete(cb)` — transform success result
  *
- * Compensation is defined once per handle at `.start()` or `.execute()` time.
- * No override mechanics. `onFailure` on concurrency primitive handlers provides
- * explicit failure recovery with access to the `compensate()` tool.
+ * Structured concurrency via `ctx.scope()`: every concurrent branch runs inside
+ * a closure. Branches with compensated steps are compensated on scope exit.
+ *
+ * Dynamic fan-out: scope entries accept collections (arrays, Maps) of closures.
+ * `ctx.select()`, `ctx.forEach()`, `ctx.map()` accept HandleGroup collections.
+ *
+ * Child workflow access is split by semantics:
+ * - `ctx.childWorkflows.*` — structured invocation (lifecycle managed, compensation supported)
+ * - `ctx.foreignWorkflows.*` — message-only access to existing workflow instances
  */
 export interface WorkflowContext<
   TState,
@@ -2729,17 +1976,20 @@ export interface WorkflowContext<
 > extends BaseContext<TState, TChannels, TStreams, TEvents, TPatches, TRng> {
   /**
    * Steps for durable operations.
-   * `.execute()` returns T directly (happy path). Failure auto-terminates.
-   * `.start()` returns a ScopeEntry — must be used inside `ctx.scope()`.
+   * Calling a step returns a `StepCall<T>` thenable — chain builders before awaiting.
+   * Without `.failure()`, failure auto-terminates the workflow.
    */
   readonly steps: {
     [K in keyof TSteps]: TSteps[K] extends StepDefinition<
       infer TArgs,
       infer TResultSchema
     >
-      ? WorkflowStepObject<
-          TArgs,
+      ? (
+          ...args: TArgs
+        ) => StepCall<
           StandardSchemaV1.InferOutput<TResultSchema>,
+          never,
+          false,
           CompensationContext<
             TState,
             TChannels,
@@ -2755,12 +2005,13 @@ export interface WorkflowContext<
   };
 
   /**
-   * Child workflows.
-   * `.execute()` returns T directly (happy path). Failure auto-terminates.
-   * `.start()` returns a ScopeEntry — must be used inside `ctx.scope()`.
+   * Child workflow accessors — structured invocation (lifecycle managed by parent).
+   * Calling an accessor returns a `WorkflowCall<T>` thenable.
+   * Supports `.compensate()`, `.failure()`, `.complete()` (result mode)
+   * or `.detached()` (detached mode — mutually exclusive).
    */
-  readonly workflows: {
-    [K in keyof TWorkflows]: WorkflowAccessor<
+  readonly childWorkflows: {
+    [K in keyof TWorkflows]: ChildWorkflowAccessor<
       TWorkflows[K],
       CompensationContext<
         TState,
@@ -2776,134 +2027,137 @@ export interface WorkflowContext<
   };
 
   /**
+   * Foreign workflow accessors — message-only handles to existing workflow instances.
+   * Use `.get(workflowId)` to get a `ForeignWorkflowHandle` with `channels.send()` only.
+   * No lifecycle, events, streams, or compensation (prevents tight coupling).
+   */
+  readonly foreignWorkflows: {
+    [K in keyof TWorkflows]: ForeignWorkflowAccessor<TWorkflows[K]>;
+  };
+
+  /**
    * Create a selection for concurrent waiting.
    * Pass a record of named handles — use `event.key` to discriminate results.
    *
-   * Step/child failures crash the workflow by default (happy-path model).
-   * Use `.match()` with `{ onComplete, onFailure }` handlers for recovery.
+   * Branch failures crash the workflow by default (happy-path model).
+   * Use `.match()` with `{ complete, failure }` handlers for recovery.
    */
-  select<M extends Record<string, SelectableHandle>>(
-    handles: M,
-  ): Selection<M>;
+  select<M extends Record<string, SelectableHandle>>(handles: M): Selection<M>;
 
   // ---------------------------------------------------------------------------
-  // scope — structured concurrency primitive
+  // scope — structured concurrency (closure-based)
   // ---------------------------------------------------------------------------
 
   /**
    * Create a scope for structured concurrency.
    *
-   * Every concurrent handle (step or child workflow) must exist within a scope.
-   * `.start()` returns ScopeEntry values that the scope resolves into handles.
-   * The callback receives the materialized handles.
+   * Entries are async closures (or collections of closures). The engine runs
+   * them on a virtual event loop, interleaving at durable yield points.
+   * The callback receives `BranchHandle<T>` values (matching the closure structure)
+   * which can be directly awaited or passed into select/forEach/map.
    *
-   * When the callback exits:
-   * - Handles with a `compensate` callback that weren't consumed → compensation runs
-   * - Handles without `compensate` that weren't consumed → settled (wait, ignore result)
-   * - On error (callback throws): all unjoined handles with `compensate` are compensated
+   * Scope exit behavior:
+   * - Branches with compensated steps that weren't consumed → compensation runs
+   * - Branches without compensation that weren't consumed → awaited, result ignored
+   * - On error (callback throws): all unresolved compensated branches are compensated
    *
-   * The scope resolves to whatever the callback returns. Cleanup happens
-   * after the callback returns but before the scope's promise resolves.
+   * Entries can be single closures or collections:
+   * - `flight: async () => T` → callback receives `BranchHandle<T>`
+   * - `providers: Array<() => Promise<T>>` → callback receives `BranchHandle<T>[]`
+   * - `quotes: Map<K, () => Promise<T>>` → callback receives `Map<K, BranchHandle<T>>`
    */
-  scope<R, E extends Record<string, ScopeEntry<any>>>(
+  scope<R, E extends ScopeEntries>(
     entries: E,
-    callback: (
-      handles: {
-        [K in keyof E]: E[K] extends ScopeEntry<infer H> ? H : never;
-      },
-    ) => Promise<R>,
+    callback: (handles: ScopeHandles<E>) => Promise<R>,
   ): Promise<R>;
 
   // ---------------------------------------------------------------------------
-  // forEach — process all one-shot handle results as they arrive
+  // forEach — process all branch results as they arrive
   // ---------------------------------------------------------------------------
 
   /**
-   * Process all one-shot handle results as they arrive.
-   * In the happy-path model, plain callbacks receive successful data (T).
-   * If a step/child fails and the handler is a plain function, the workflow
-   * auto-terminates (failure crashes workflow).
+   * Process all branch results as they arrive.
+   * Plain callbacks receive successful data (T) and failure auto-terminates.
+   * Use `{ complete, failure }` handlers for explicit failure recovery.
    *
-   * Use `{ onComplete, onFailure }` handlers for explicit failure recovery.
-   *
-   * Only accepts StepHandle and ChildWorkflowHandle.
+   * Accepts `HandleGroup` inputs: single BranchHandles, arrays, and Maps.
+   * For collections, callbacks receive `(data, innerKey)`.
    */
-  forEach<H extends Record<string, OneShotHandle>>(
-    handles: H,
+  forEach<M extends Record<string, SelectableHandle>>(
+    handles: M,
     callbacks: {
-      [K in keyof H & string]: ForEachHandlerEntry<H[K]>;
+      [K in keyof M & string]: ForEachHandlerEntry<M[K]>;
     },
   ): Promise<void>;
 
   /**
-   * Process all one-shot handle results with partial callbacks and a default.
-   * The default only receives keys NOT explicitly covered by callbacks.
+   * Process branch results with partial callbacks and a default.
+   * The default only fires for keys NOT explicitly covered.
    */
   forEach<
-    H extends Record<string, OneShotHandle>,
+    M extends Record<string, SelectableHandle>,
     C extends Partial<{
-      [K in keyof H & string]: ForEachHandlerEntry<H[K]>;
+      [K in keyof M & string]: ForEachHandlerEntry<M[K]>;
     }>,
   >(
-    handles: H,
+    handles: M,
     callbacks: C,
     defaultCallback: (
-      key: Exclude<keyof H & string, keyof C & string>,
-      data: HandleData<H[Exclude<keyof H & string, keyof C & string>]>,
+      key: Exclude<keyof M & string, keyof C & string>,
+      data: any,
     ) => Promise<void> | void,
   ): Promise<void>;
 
   // ---------------------------------------------------------------------------
-  // map — collect transformed results from all one-shot handles
+  // map — collect transformed results from all branches
   // ---------------------------------------------------------------------------
 
   /**
-   * Collect transformed results from all one-shot handles.
-   * Plain callbacks receive successful data (T) and return a transformed value.
-   * If a step/child fails and the handler is a plain function, the workflow
-   * auto-terminates (failure crashes workflow).
+   * Collect transformed results from all branch handles.
+   * Plain callbacks receive successful data and return a transformed value.
+   * Use `{ complete, failure }` handlers for explicit failure recovery.
    *
-   * Use `{ onComplete, onFailure }` handlers for explicit failure recovery.
-   * `onFailure` return value becomes the fallback in the result.
-   *
-   * Only accepts StepHandle and ChildWorkflowHandle.
+   * The return type mirrors the input structure:
+   * - Single BranchHandle → single value
+   * - BranchHandle[] → value[]
+   * - Map<K, BranchHandle> → Map<K, value>
    */
   map<
-    H extends Record<string, OneShotHandle>,
+    M extends Record<string, SelectableHandle>,
     C extends {
-      [K in keyof H & string]: MapHandlerEntry<H[K]>;
+      [K in keyof M & string]: MapHandlerEntry<M[K]>;
     },
   >(
-    handles: H,
+    handles: M,
     callbacks: C,
   ): Promise<{
-    [K in keyof H & string]: ExtractHandlerReturn<C[K]> | undefined;
+    [K in keyof M & string]: MapOutputFor<M[K], C[K]>;
   }>;
 
   /**
    * Collect transformed results with partial callbacks and a default.
    */
   map<
-    H extends Record<string, OneShotHandle>,
+    M extends Record<string, SelectableHandle>,
     C extends Partial<{
-      [K in keyof H & string]: MapHandlerEntry<H[K]>;
+      [K in keyof M & string]: MapHandlerEntry<M[K]>;
     }>,
     TDefault,
   >(
-    handles: H,
+    handles: M,
     callbacks: C,
     defaultCallback: (
-      key: Exclude<keyof H & string, keyof C & string>,
-      data: HandleData<H[Exclude<keyof H & string, keyof C & string>]>,
+      key: Exclude<keyof M & string, keyof C & string>,
+      data: any,
     ) => Promise<TDefault> | TDefault,
   ): Promise<{
-    [K in keyof H & string]: K extends keyof C
-      ? ExtractHandlerReturn<C[K]> | undefined
+    [K in keyof M & string]: K extends keyof C
+      ? MapOutputFor<M[K], C[K]>
       : Awaited<TDefault> | undefined;
   }>;
 
   // ---------------------------------------------------------------------------
-  // addCompensation — Layer 3: general purpose
+  // addCompensation — general purpose LIFO registration
   // ---------------------------------------------------------------------------
 
   /**
@@ -3152,14 +2406,15 @@ export type StateFactory<
  * They communicate via channels, output data via streams, signal milestones via
  * events, and execute durable operations via steps.
  *
- * In the happy-path model, the workflow author writes the happy path.
- * Step/child failures auto-terminate the workflow and trigger compensation.
- * Compensation runs in LIFO order. Each handle has at most one compensation
- * callback, defined at `.start()` or `.execute()` time.
+ * **Callable thenable model:** Steps and child workflows are called directly and
+ * return thenables (`StepCall<T>`, `WorkflowCall<T>`) that can be awaited
+ * immediately or chained with builder methods before awaiting.
  *
- * The engine interleaves compensation callbacks from the same scope via a
- * virtual event loop for concurrent execution. The developer writes normal
- * sequential code inside each compensation callback.
+ * **Compensation:** Register per-step/workflow via `.compensate(cb)` builder.
+ * `addCompensation(cb)` provides general-purpose cleanup. Runs LIFO on failure.
+ *
+ * **Structured concurrency:** All concurrent branches run as closures inside
+ * `ctx.scope()`. Collections (Array, Map) are supported for dynamic fan-out.
  */
 export interface WorkflowDefinition<
   TState,
