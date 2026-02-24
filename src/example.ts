@@ -8,7 +8,7 @@
  *                                  channels.receive(), addCompensation(), state
  *   3. flightBookingWorkflow     — scope, for-await race, nested scope, sel.remaining, .match() loop
  *   4. quoteAggregationWorkflow  — Array/Map fan-out, forEach with innerKey, map collection mirroring
- *   5. paymentOrchestrationWorkflow — childWorkflows (.compensate, .failure, .complete, .detached),
+ *   5. paymentOrchestrationWorkflow — childWorkflows (.compensate, .failure, .complete, detached option),
  *                                    foreignWorkflows.get(), addCompensation()
  *   6. channelRaceWorkflow       — channels.receive() standalone, select({branch, channel}) for-await,
  *                                  .match() with default handler
@@ -647,7 +647,7 @@ export const quoteAggregationWorkflow = defineWorkflow({
 
 // =============================================================================
 // 5. paymentOrchestrationWorkflow
-//    Covers: childWorkflows (.compensate, .failure, .complete, .detached),
+//    Covers: childWorkflows (.compensate, .failure, .complete, detached option),
 //            foreignWorkflows.get(), addCompensation()
 // =============================================================================
 
@@ -700,13 +700,12 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
       })
       .complete((data) => data.receiptId);
 
-    // .detached() — fire-and-forget; mutually exclusive with result builders
-    const campaignHandle = await ctx.childWorkflows
-      .campaignWorker({
-        workflowId: `campaign-${ctx.rng.ids.uuidv4()}`,
-        args: { userId: args.customerId },
-      })
-      .detached();
+    // detached option — fire-and-forget child, returns ForeignWorkflowHandle directly
+    const campaignHandle = await ctx.childWorkflows.campaignWorker({
+      workflowId: `campaign-${ctx.rng.ids.uuidv4()}`,
+      args: { userId: args.customerId },
+      detached: true,
+    });
 
     // ForeignWorkflowHandle: channels.send() only — no lifecycle coupling
     const foreign = ctx.foreignWorkflows.campaignWorker.get(

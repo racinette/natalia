@@ -29,8 +29,9 @@
  * - forEach / map: Batch processing with { complete, failure } handlers; collection-aware
  *     (BranchHandle, BranchHandle[], Map<K, BranchHandle>) — innerKey identifies element.
  * - Child workflows: ctx.childWorkflows.* — structured invocation (WorkflowCall<T> thenable).
- *     Supports .compensate(), .failure(), .complete() (result mode) or .detached() (messaging mode).
- *     Result mode and detached mode are mutually exclusive.
+ *     Supports .compensate(), .failure(), .complete() in result mode.
+ *     Use call option `{ detached: true }` for fire-and-forget messaging mode
+ *     which returns a ForeignWorkflowHandle directly.
  * - Foreign workflows: ctx.foreignWorkflows.* — message-only handles to existing instances.
  *     Only channels.send() is available — no lifecycle coupling.
  * - Channels: Async message passing (input) — ctx.channels.receive() blocks until a message arrives.

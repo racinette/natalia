@@ -442,13 +442,12 @@ const receiptId = await ctx.scope(
   async ({ child }) => await child,
 );
 
-// Detached — .detached() switches to messaging mode, no scope required
-const notifier = await ctx.childWorkflows
-  .emailCampaign({
-    workflowId: `campaign-${ctx.rng.campaignId.uuidv4()}`,
-    args: { customerId: "cust-123" },
-  })
-  .detached(); // → DetachedWorkflowCall<TChannels> → ForeignWorkflowHandle
+// Detached — pass detached: true in call options, no scope required
+const notifier = await ctx.childWorkflows.emailCampaign({
+  workflowId: `campaign-${ctx.rng.campaignId.uuidv4()}`,
+  args: { customerId: "cust-123" },
+  detached: true,
+}); // → ForeignWorkflowHandle
 await notifier.channels.commands.send({ type: "nudge" });
 // The child runs independently — not terminated when parent fails
 
@@ -457,10 +456,10 @@ const existing = ctx.foreignWorkflows.emailCampaign.get("campaign-existing-id");
 await existing.channels.commands.send({ type: "nudge" });
 ```
 
-**Builder exclusivity on `WorkflowCall`:**
+**Detached option behavior on `childWorkflows`:**
 
-- **Result mode**: chain `.compensate()`, `.failure()`, `.complete()` — `.detached()` is no longer available.
-- **Detached mode**: chain `.detached()` — result/compensation builders are no longer available.
+- **Result mode** (default): call without `detached` (or with `detached: false`) and chain `.compensate()`, `.failure()`, `.complete()`.
+- **Detached mode**: call with `detached: true` and await `ForeignWorkflowHandle` directly (no result builders).
 
 **Engine-level handles (`WorkflowHandleExternal`) retain `sigterm()` and `sigkill()`** — these are operational concerns for engine callers.
 
@@ -476,7 +475,7 @@ Both extend a shared `BaseContext` with channels, streams, events, patches, slee
 **`WorkflowContext`** (happy-path):
 
 - Steps: calling a step returns `StepCall<T>` — chain `.compensate()`, `.retry()`, `.failure()`, `.complete()` before awaiting
-- Child workflows: `ctx.childWorkflows.*` returns `WorkflowCall<T>` (result mode or detached mode)
+- Child workflows: `ctx.childWorkflows.*` returns `WorkflowCall<T>` by default, or `ForeignWorkflowHandle` when called with `{ detached: true }`
 - Foreign workflows: `ctx.foreignWorkflows.*` returns `ForeignWorkflowHandle` (channels.send only)
 - Has `scope()`, `select()`, `forEach()`, `map()`, `addCompensation()`
 - Concurrency primitives support `{ complete, failure }` handlers
@@ -795,7 +794,7 @@ Workflow-internal blocking operations (`channels.receive()`, `select`, `sleep`) 
 | `ctx.channels.*`             | `.receive()` — blocks until message arrives; returns `T` directly                                      |
 | `ctx.streams.*`              | `.write()`                                                                                             |
 | `ctx.events.*`               | `.set()`                                                                                               |
-| `ctx.childWorkflows.*`       | `(options)` → `WorkflowCall<T>` — chain builders or `.detached()`                                      |
+| `ctx.childWorkflows.*`       | `(options)` → `WorkflowCall<T>` by default; with `detached: true` → `ForeignWorkflowHandle`            |
 | `ctx.foreignWorkflows.*`     | `.get(workflowId)` → `ForeignWorkflowHandle` (channels.send only, fire-and-forget)                     |
 | `ctx.patches.*`              | `()` → boolean, `(callback, default?)` → callback result or default                                    |
 | `ctx.scope()`                | Structured concurrency boundary — accepts closures and collections                                     |
@@ -960,8 +959,8 @@ Work in Progress — Public API design complete. Internal implementation pending
 - **CompensationContext with full structured concurrency** — `scope()`, `select()`, `forEach()`, `map()`, `CompensationStepCall.retry()`; failures always explicit in result types
 - `CompensationStepResult<T>` for defensive compensation code
 - **`ctx.childWorkflows.*` / `ctx.foreignWorkflows.*`** split — structured vs message-only access
-- **`.detached()`** on `WorkflowCall` for fire-and-forget child workflows
-- **Builder exclusivity** on `WorkflowCall` — result mode and detached mode are mutually exclusive at the type level
+- **Detached child start via call options** — `ctx.childWorkflows.name({ workflowId, args, detached: true })` returns `ForeignWorkflowHandle`
+- **Simplified typing model** — detached vs result mode is selected at call-site options instead of builder chaining
 - **Collection support** — Array and Map of closures/handles in scope/select/forEach/map; callbacks receive `innerKey` for collections
 - Error observability — `StepExecutionError`, `StepErrorAccessor`, `WorkflowExecutionError`
 - Channel receive returns `T` directly (no wrapper, no timeout overload)

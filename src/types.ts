@@ -675,9 +675,6 @@ export interface ForeignWorkflowHandle<
  * Thenable returned after applying at least one result-mode builder
  * (`.compensate()`, `.failure()`, `.complete()`) on a `WorkflowCall`.
  *
- * Result mode and detached mode are mutually exclusive:
- * once a result builder is applied, `.detached()` is no longer available.
- *
  * @typeParam T - Decoded child workflow result type.
  * @typeParam TFail - Return type of the `.failure()` callback (never if not used).
  * @typeParam HasCompensation - Whether `.compensate()` has been called.
@@ -730,33 +727,24 @@ export interface WorkflowCallResult<
 /**
  * Thenable returned by calling a child workflow accessor in WorkflowContext.
  *
- * Supports two mutually exclusive modes:
+ * Structured result mode for child workflow calls.
  *
- * **Structured result mode** — chain `.compensate()`, `.failure()`, `.complete()`,
- * then await. The parent awaits the child's terminal result.
- *
- * **Detached messaging mode** — chain `.detached()`, then await. The child runs
- * independently; the result is a `ForeignWorkflowHandle` for message passing only.
- *
- * Builder exclusivity is enforced at the type level: applying a result builder
- * returns `WorkflowCallResult` (no `.detached()`), and calling `.detached()` returns
- * `DetachedWorkflowCall` (no result builders).
+ * Call the accessor with `{ detached: true }` to use detached messaging mode instead,
+ * which returns a `ForeignWorkflowHandle` directly from the accessor call.
  *
  * @typeParam T - Decoded child workflow result type.
  * @typeParam TFail - Return type of `.failure()` callback (never if not used).
  * @typeParam HasCompensation - Whether `.compensate()` has been called.
  * @typeParam TCompCtx - The CompensationContext type for the parent workflow.
- * @typeParam TChannels - Channel definitions of the child workflow (for `.detached()`).
  */
 export interface WorkflowCall<
   T,
   TFail = never,
   HasCompensation extends boolean = false,
   TCompCtx = unknown,
-  TChannels extends ChannelDefinitions = Record<string, never>,
 > {
   /**
-   * Register a compensation callback — enters result mode (no `.detached()` after this).
+   * Register a compensation callback.
    */
   compensate(
     cb: (
@@ -766,7 +754,7 @@ export interface WorkflowCall<
   ): WorkflowCallResult<T, TFail, true, TCompCtx>;
 
   /**
-   * Handle child workflow failure explicitly — enters result mode (no `.detached()` after this).
+   * Handle child workflow failure explicitly.
    */
   failure<R>(
     cb: (
@@ -782,14 +770,6 @@ export interface WorkflowCall<
   complete<R>(
     cb: (data: T) => R,
   ): WorkflowCallResult<Awaited<R>, TFail, HasCompensation, TCompCtx>;
-
-  /**
-   * Switch to detached mode — the child runs independently of the parent's lifecycle.
-   *
-   * No scope required. No compensation. The child is NOT terminated when the parent fails.
-   * Resolves to a `ForeignWorkflowHandle` for fire-and-forget message passing.
-   */
-  detached(): DetachedWorkflowCall<TChannels>;
 
   then<R1 = T | TFail, R2 = never>(
     onfulfilled?:
@@ -821,28 +801,6 @@ export interface CompensationWorkflowCall<T> {
 }
 
 // =============================================================================
-// DETACHED WORKFLOW CALL — THENABLE
-// =============================================================================
-
-/**
- * Thenable returned by `.detached()` on a `WorkflowCall`.
- * Resolves to a `ForeignWorkflowHandle` for fire-and-forget channel messaging.
- *
- * @typeParam TChannels - Channel definitions of the child workflow.
- */
-export interface DetachedWorkflowCall<
-  TChannels extends ChannelDefinitions = Record<string, never>,
-> {
-  then<R1 = ForeignWorkflowHandle<TChannels>, R2 = never>(
-    onfulfilled?:
-      | ((value: ForeignWorkflowHandle<TChannels>) => R1 | PromiseLike<R1>)
-      | null
-      | undefined,
-    onrejected?: ((reason: any) => R2 | PromiseLike<R2>) | null | undefined,
-  ): Promise<R1 | R2>;
-}
-
-// =============================================================================
 // WORKFLOW ACCESSORS (CONTEXT-SPECIFIC)
 // =============================================================================
 
@@ -850,11 +808,11 @@ export interface DetachedWorkflowCall<
  * Callable child workflow accessor on `ctx.childWorkflows` in WorkflowContext.
  *
  * Call it with `{ workflowId, args, timeoutSeconds? }` to get a `WorkflowCall<T>`.
+ * Call it with `{ detached: true }` to start detached and get a foreign handle.
  * Chain builders before awaiting:
  * - `.compensate()` — register compensation
  * - `.failure()` — explicit failure handling
  * - `.complete()` — transform success result
- * - `.detached()` — fire-and-forget mode, resolves to foreign handle
  *
  * @typeParam W - The child workflow definition.
  * @typeParam TCompCtx - The parent workflow's CompensationContext type.
@@ -878,13 +836,19 @@ export interface ChildWorkflowAccessor<
     workflowId: string;
     args?: InferWorkflowArgsInput<W>;
     timeoutSeconds?: number;
+    detached?: false | undefined;
   }): WorkflowCall<
     InferWorkflowResult<W>,
     never,
     false,
-    TCompCtx,
-    InferWorkflowChannels<W>
+    TCompCtx
   >;
+  (options: {
+    workflowId: string;
+    args?: InferWorkflowArgsInput<W>;
+    timeoutSeconds?: number;
+    detached: true;
+  }): Promise<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
 }
 
 /**
@@ -1858,9 +1822,9 @@ export interface WorkflowContext<
 
   /**
    * Child workflow accessors — structured invocation (lifecycle managed by parent).
-   * Calling an accessor returns a `WorkflowCall<T>` thenable.
-   * Supports `.compensate()`, `.failure()`, `.complete()` (result mode)
-   * or `.detached()` (detached mode — mutually exclusive).
+   * Calling an accessor returns:
+   * - `WorkflowCall<T>` by default (result mode with builders)
+   * - `ForeignWorkflowHandle` when called with `{ detached: true }`
    */
   readonly childWorkflows: {
     [K in keyof TWorkflows]: ChildWorkflowAccessor<

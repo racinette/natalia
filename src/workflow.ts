@@ -141,7 +141,7 @@ export function defineStep<
  *
  * **Child workflows:** `ctx.childWorkflows.*` for structured invocation;
  * `ctx.foreignWorkflows.*` for message-only access to existing instances.
- * Use `.detached()` on a child workflow call for fire-and-forget mode.
+ * Use child call option `{ detached: true }` for fire-and-forget mode.
  *
  * @example
  * ```typescript
