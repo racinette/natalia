@@ -22,6 +22,7 @@ export async function engineLevelApiShowcase(
   // start + wait shortcut
   const quickOrder = await engine.workflows.order.execute({
     id: "order-quick-demo",
+    seed: "order-quick-seed-v1",
     args: {
       destination: "Paris",
       checkIn: "2027-01-10",
@@ -38,6 +39,7 @@ export async function engineLevelApiShowcase(
   // start + handle manipulation
   const handle = await engine.workflows.compensationHooks.start({
     id: "comp-hooks-demo",
+    seed: "comp-hooks-seed-v1",
     args: {
       destination: "Paris",
       checkIn: "2027-02-01",

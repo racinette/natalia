@@ -482,7 +482,8 @@ const checkoutWorkflow = defineWorkflow({
 // Sequential — childWorkflows call returns WorkflowCall<T>
 const result = await ctx.childWorkflows
   .payment({
-    workflowId: `payment-${ctx.rng.paymentId.uuidv4()}`,
+    id: `payment-${ctx.rng.paymentId.uuidv4()}`,
+    seed: "payment-seed-cust-123",
     args: { amount: 100, customerId: "cust-123" },
   })
   .compensate(async (compCtx, result) => {
@@ -495,7 +496,8 @@ const receiptId = await ctx.scope(
   {
     child: async () => {
       const result = await ctx.childWorkflows.payment({
-        workflowId: "payment-1",
+        id: "payment-1",
+        seed: "payment-seed-1",
         args: { amount: 100, customerId: "cust-123" },
       });
       return result.receiptId;
@@ -506,7 +508,8 @@ const receiptId = await ctx.scope(
 
 // Detached — pass detached: true in call options, no scope required
 const notifier = await ctx.childWorkflows.emailCampaign({
-  workflowId: `campaign-${ctx.rng.campaignId.uuidv4()}`,
+  id: `campaign-${ctx.rng.campaignId.uuidv4()}`,
+  seed: "campaign-seed",
   args: { customerId: "cust-123" },
   detached: true,
 }); // → ForeignWorkflowHandle
@@ -903,7 +906,7 @@ Workflow-internal blocking operations (`channels.receive()`, `select`, `sleep`) 
 
 | Resource     | Operations                                            |
 | ------------ | ----------------------------------------------------- |
-| `.start()`   | Start workflow, returns `WorkflowHandleExternal`      |
+| `.start()`   | Start workflow (`id`, optional `seed`), returns `WorkflowHandleExternal` |
 | `.execute()` | Start + wait for result (sugar for start + getResult) |
 | `.get()`     | Get handle to existing workflow                       |
 
@@ -938,7 +941,8 @@ const workflow = defineWorkflow({
 
 // Override at start time
 await engine.workflows.order.start({
-  workflowId: "vip-order",
+  id: "vip-order",
+  seed: "vip-order-seed-v1",
   retention: 86400 * 365 * 5,
 });
 

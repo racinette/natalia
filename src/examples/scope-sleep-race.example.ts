@@ -63,6 +63,7 @@ export const scopeSleepRaceWorkflow = defineWorkflow({
       {
         payment: ctx.childWorkflows.payment({
           id: `payment-${ctx.rng.ids.uuidv4()}`,
+          seed: `payment-race-${args.customerId}`,
           args: { customerId: args.customerId, amount: args.amount },
         }),
         timer: ctx.sleep(45).then(() => "timed_out" as const),

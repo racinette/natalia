@@ -814,7 +814,7 @@ export interface CompensationWorkflowCall<T> {
 /**
  * Callable child workflow accessor on `ctx.childWorkflows` in WorkflowContext.
  *
- * Call it with `{ id, args }` to get a `WorkflowCall<T>`.
+ * Call it with `{ id, args, seed? }` to get a `WorkflowCall<T>`.
  * Call it with `{ detached: true }` to start detached and get a foreign handle.
  * Chain builders before awaiting:
  * - `.compensate()` — register compensation
@@ -843,11 +843,15 @@ export interface ChildWorkflowAccessor<
   (options: {
     id: string;
     args?: InferWorkflowArgsInput<W>;
+    /** Optional deterministic RNG seed override for the child workflow instance. */
+    seed?: string;
     detached?: false | undefined;
   }): WorkflowCall<InferWorkflowResult<W>, never, false, TCompCtx>;
   (options: {
     id: string;
     args?: InferWorkflowArgsInput<W>;
+    /** Optional deterministic RNG seed override for the child workflow instance. */
+    seed?: string;
     detached: true;
   }): Promise<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
 }
@@ -909,6 +913,8 @@ export interface CompensationChildWorkflowAccessor<
   (options: {
     id: string;
     args?: InferWorkflowArgsInput<W>;
+    /** Optional deterministic RNG seed override for the child workflow instance. */
+    seed?: string;
   }): CompensationWorkflowCall<InferWorkflowResult<W>>;
 }
 
@@ -2437,6 +2443,8 @@ export interface WorkflowDefinition<
 export interface StartWorkflowOptions<TArgsInput> {
   /** Unique workflow instance ID */
   id: string;
+  /** Optional deterministic RNG seed override for this workflow instance. */
+  seed?: string;
   /** Timeout in seconds */
   timeoutSeconds?: number;
   /** Workflow arguments — must be z.input<ArgSchema> (encoded) */

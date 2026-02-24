@@ -35,6 +35,7 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
     const receiptId = await ctx.childWorkflows
       .payment({
         id: `payment-${ctx.rng.ids.uuidv4()}`,
+        seed: `payment-seed-${args.customerId}`,
         args: { customerId: args.customerId, amount: args.amount },
       })
       .compensate(async (compCtx, _result) => {
@@ -55,6 +56,7 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
 
     const campaignHandle = await ctx.childWorkflows.campaignWorker({
       id: `campaign-${ctx.rng.ids.uuidv4()}`,
+      seed: `campaign-seed-${args.customerId}`,
       args: { userId: args.customerId },
       detached: true,
     });
