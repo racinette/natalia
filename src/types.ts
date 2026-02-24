@@ -2113,12 +2113,17 @@ export interface LifecycleEventsExternal {
  * Uses AbortSignal for runtime wait cancellation.
  * T is the decoded type (z.output<Schema>).
  */
-export interface StreamIteratorHandleExternal<T> {
+export interface StreamIteratorHandleExternal<T> extends AsyncIterable<T> {
   /**
    * Read the next record from the stream.
    * @param options - Optional wait options with AbortSignal.
    */
   read(options?: ExternalWaitOptions): Promise<StreamIteratorReadResult<T>>;
+
+  /**
+   * Iterate stream records sequentially.
+   */
+  [Symbol.asyncIterator](): AsyncIterableIterator<T>;
 }
 
 /**
@@ -2126,7 +2131,7 @@ export interface StreamIteratorHandleExternal<T> {
  * Uses AbortSignal for runtime wait cancellation.
  * T is the decoded type (z.output<Schema>).
  */
-export interface StreamReaderAccessorExternal<T> {
+export interface StreamReaderAccessorExternal<T> extends AsyncIterable<T> {
   /**
    * Read a record at the given offset (random access).
    * @param offset - The stream offset to read from.
@@ -2151,6 +2156,11 @@ export interface StreamReaderAccessorExternal<T> {
    * Check if the stream is still open.
    */
   isOpen(): Promise<StreamOpenResult>;
+
+  /**
+   * Iterate stream records from offset 0.
+   */
+  [Symbol.asyncIterator](): AsyncIterableIterator<T>;
 }
 
 /**

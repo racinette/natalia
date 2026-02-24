@@ -997,6 +997,13 @@ const result2 = await handle.getResult();
 await engine.shutdown();
 ```
 
+## Example Workflows
+
+Examples are split into focused files under `src/examples/`.
+
+- Workflow-internal API examples: scopes, selection, compensation, channels, patches, child/foreign workflows.
+- Engine-level API example: `src/examples/engine-level-api.example.ts` demonstrates `engine.start()`, `engine.workflows.*.start/execute/get`, handle channels/streams/events/lifecycle operations, `setRetention()`, `sigterm()`, `runGarbageCollection()`, and `engine.shutdown()`.
+
 ## Project Structure
 
 ```
