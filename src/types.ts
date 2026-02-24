@@ -813,7 +813,7 @@ export interface CompensationWorkflowCall<T> {
 /**
  * Callable child workflow accessor on `ctx.childWorkflows` in WorkflowContext.
  *
- * Call it with `{ workflowId, args, timeoutSeconds? }` to get a `WorkflowCall<T>`.
+ * Call it with `{ workflowId, args }` to get a `WorkflowCall<T>`.
  * Call it with `{ detached: true }` to start detached and get a foreign handle.
  * Chain builders before awaiting:
  * - `.compensate()` — register compensation
@@ -842,7 +842,6 @@ export interface ChildWorkflowAccessor<
   (options: {
     workflowId: string;
     args?: InferWorkflowArgsInput<W>;
-    timeoutSeconds?: number;
     detached?: false | undefined;
   }): WorkflowCall<
     InferWorkflowResult<W>,
@@ -853,7 +852,6 @@ export interface ChildWorkflowAccessor<
   (options: {
     workflowId: string;
     args?: InferWorkflowArgsInput<W>;
-    timeoutSeconds?: number;
     detached: true;
   }): Promise<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
 }
@@ -915,7 +913,6 @@ export interface CompensationChildWorkflowAccessor<
   (options: {
     workflowId: string;
     args?: InferWorkflowArgsInput<W>;
-    timeoutSeconds?: number;
   }): CompensationWorkflowCall<InferWorkflowResult<W>>;
 }
 
@@ -1257,7 +1254,7 @@ type ExtractHandlerReturn<H> = H extends (...args: any[]) => infer R
  * function (failure auto-terminates workflow) or a `{ complete, failure }` object
  * for explicit failure recovery.
  *
- * For channels, streams, and events, only a plain function is allowed.
+ * For channel handles, only a plain function is allowed.
  */
 export type MatchHandlerEntry<H extends SelectableHandle> = H extends
   | BranchHandle<any>
@@ -1489,11 +1486,11 @@ export type MapHandlerEntry<H extends SelectableHandle> =
  */
 type MapOutputFor<H, C> =
   H extends BranchHandle<any>
-    ? ExtractHandlerReturn<C> | undefined
+    ? ExtractHandlerReturn<C>
     : H extends BranchHandle<any>[]
-      ? (ExtractHandlerReturn<C> | undefined)[]
+      ? ExtractHandlerReturn<C>[]
       : H extends Map<infer K, BranchHandle<any>>
-        ? Map<K, ExtractHandlerReturn<C> | undefined>
+        ? Map<K, ExtractHandlerReturn<C>>
         : never;
 
 // =============================================================================
@@ -1741,7 +1738,7 @@ export interface CompensationContext<
     handles: M,
     callbacks: C,
   ): Promise<{
-    [K in keyof M & string]: Awaited<ReturnType<C[K] extends (...args: any[]) => any ? C[K] : never>> | undefined;
+    [K in keyof M & string]: Awaited<ReturnType<C[K] extends (...args: any[]) => any ? C[K] : never>>;
   }>;
 
   /**
@@ -1762,8 +1759,8 @@ export interface CompensationContext<
     ) => Promise<TDefault> | TDefault,
   ): Promise<{
     [K in keyof M & string]: K extends keyof C
-      ? Awaited<ReturnType<C[K] extends (...args: any[]) => any ? C[K] : never>> | undefined
-      : Awaited<TDefault> | undefined;
+      ? Awaited<ReturnType<C[K] extends (...args: any[]) => any ? C[K] : never>>
+      : Awaited<TDefault>;
   }>;
 }
 
@@ -1812,10 +1809,12 @@ export type CompensationCallback<
  * - `.failure(cb)` — handle failure without auto-termination
  * - `.complete(cb)` — transform success result
  *
- * Structured concurrency via `ctx.scope()`: every concurrent branch runs inside
- * a closure. Branches with compensated steps are compensated on scope exit.
+ * Structured concurrency via `ctx.scope()`: every concurrent branch runs as a
+ * closure or direct thenable entry. Branches with compensated steps are
+ * compensated on scope exit.
  *
- * Dynamic fan-out: scope entries accept collections (arrays, Maps) of closures.
+ * Dynamic fan-out: scope entries accept collections (arrays, Maps) of closures
+ * and/or thenables.
  * `ctx.select()`, `ctx.forEach()`, `ctx.map()` accept HandleGroup collections.
  *
  * Child workflow access is split by semantics:
@@ -2016,7 +2015,7 @@ export interface WorkflowContext<
   ): Promise<{
     [K in keyof M & string]: K extends keyof C
       ? MapOutputFor<M[K], C[K]>
-      : Awaited<TDefault> | undefined;
+      : Awaited<TDefault>;
   }>;
 
   // ---------------------------------------------------------------------------

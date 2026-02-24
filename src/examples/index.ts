@@ -10,6 +10,7 @@ export { paymentOrchestrationWorkflow } from "./payment-orchestration.example";
 export { channelRaceWorkflow } from "./channel-race.example";
 export { campaignWorkflow } from "./campaign.example";
 export { compensationHooksWorkflow } from "./compensation-hooks.example";
+export { scopeSleepRaceWorkflow } from "./scope-sleep-race.example";
 
 // Shared helper workflows/steps (optional imports for composing custom examples).
 export { paymentWorkflow, campaignWorker } from "./shared";

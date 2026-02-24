@@ -180,8 +180,8 @@ const result = await ctx.scope(
         quotes: { complete: (d, innerKey) => d.price, failure: () => Infinity },
       },
     );
-    // mapped.flight: string | null | undefined
-    // mapped.quotes: Map<string, number | undefined>
+    // mapped.flight: string | null
+    // mapped.quotes: Map<string, number>
     return mapped;
   },
 );
@@ -336,6 +336,46 @@ while (sel.remaining.size > 0) {
 
 `match()` overloads: handlers only, or handlers + default handler.
 
+#### Time-bounded step/child patterns (`scope + sleep`)
+
+Workflow-internal APIs intentionally avoid timeout parameters for step/child waits.
+Model time bounds explicitly by racing work against a durable sleep branch:
+
+```typescript
+// Step race: step result vs timer
+const stepRace = await ctx.scope(
+  {
+    flight: ctx.steps.bookFlight(dest, customerId),
+    timer: ctx.sleep(30).then(() => "timed_out" as const),
+  },
+  async ({ flight, timer }) => {
+    const result = await ctx.select({ flight, timer }).match({
+      flight: { complete: () => "booked" as const, failure: () => "timed_out" as const },
+      timer: () => "timed_out" as const,
+    });
+    return result.status === "exhausted" ? "timed_out" : result.data;
+  },
+);
+
+// Child workflow race: child completion vs timer
+const childRace = await ctx.scope(
+  {
+    payment: ctx.childWorkflows.payment({
+      workflowId: "payment-1",
+      args: { amount: 100, customerId: "cust-1" },
+    }),
+    timer: ctx.sleep(45).then(() => "timed_out" as const),
+  },
+  async ({ payment, timer }) => {
+    const result = await ctx.select({ payment, timer }).match({
+      payment: { complete: () => "completed" as const, failure: () => "timed_out" as const },
+      timer: () => "timed_out" as const,
+    });
+    return result.status === "exhausted" ? "timed_out" : result.data;
+  },
+);
+```
+
 #### Remaining handles
 
 ```typescript
@@ -398,7 +438,7 @@ const ids = await ctx.map(
     hotel: (data) => data.id,
   },
 );
-// ids: { flight: string | undefined, hotel: string | undefined }
+// ids: { flight: string, hotel: string }
 
 // forEach with a Map collection — innerKey is the Map's key
 await ctx.forEach(
