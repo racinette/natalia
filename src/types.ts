@@ -214,6 +214,14 @@ export interface WorkflowExecutionError {
   readonly details?: Record<string, unknown>;
 }
 
+/**
+ * Reason for workflow termination (non-failure terminal path).
+ */
+export type WorkflowTerminationReason =
+  | "deadline_exceeded"
+  | "terminated_by_signal"
+  | "terminated_by_parent";
+
 // =============================================================================
 // RESULT TYPES — STEP (COMPENSATION)
 // =============================================================================
@@ -261,7 +269,7 @@ export type CompensationStepResult<T> =
 export type ChildWorkflowCompensationResult<T> =
   | { status: "complete"; data: T }
   | { status: "failed"; error: WorkflowExecutionError }
-  | { status: "terminated" };
+  | { status: "terminated"; reason: WorkflowTerminationReason };
 
 // =============================================================================
 // RESULT TYPES — ENGINE LEVEL (with error info)
@@ -275,7 +283,11 @@ export type ChildWorkflowCompensationResult<T> =
 export type WorkflowResult<T> =
   | { ok: true; status: "complete"; data: T }
   | { ok: false; status: "failed"; error: WorkflowExecutionError }
-  | { ok: false; status: "terminated" };
+  | {
+      ok: false;
+      status: "terminated";
+      reason: WorkflowTerminationReason;
+    };
 
 /**
  * Result of getting a workflow's result (engine level).
@@ -284,7 +296,11 @@ export type WorkflowResult<T> =
 export type WorkflowResultExternal<TResult> =
   | { ok: true; status: "complete"; data: TResult }
   | { ok: false; status: "failed"; error: WorkflowExecutionError }
-  | { ok: false; status: "terminated" }
+  | {
+      ok: false;
+      status: "terminated";
+      reason: WorkflowTerminationReason;
+    }
   | { ok: false; status: "timeout" }
   | { ok: false; status: "not_found" };
 
@@ -497,11 +513,14 @@ export interface StepFailureInfo {
 /**
  * Failure information for a child workflow, passed to `.failure()` builder callbacks.
  * Discriminated union — the child may have failed (threw an error) or been
- * terminated externally by an administrator.
+ * terminated for a non-failure reason (signal, parent termination, deadline).
  */
 export type ChildWorkflowFailureInfo =
   | { readonly status: "failed"; readonly error: WorkflowExecutionError }
-  | { readonly status: "terminated" };
+  | {
+      readonly status: "terminated";
+      readonly reason: WorkflowTerminationReason;
+    };
 
 /**
  * Augment a failure info type with a `compensate()` handle.
@@ -2445,8 +2464,8 @@ export interface StartWorkflowOptions<TArgsInput> {
   id: string;
   /** Optional deterministic RNG seed override for this workflow instance. */
   seed?: string;
-  /** Timeout in seconds */
-  timeoutSeconds?: number;
+  /** Workflow deadline in seconds from start time. */
+  deadlineSeconds?: number;
   /** Workflow arguments — must be z.input<ArgSchema> (encoded) */
   args?: TArgsInput;
   /**

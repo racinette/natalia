@@ -267,7 +267,7 @@ await ctx.forEach(
 - If neither is called, the compensation still runs at scope exit / LIFO unwinding (safe default).
 - For `map` and `match`, the `failure` callback can return a fallback value.
 - **Step failure info:** `StepFailureInfo` — `{ reason: "attempts_exhausted" | "timeout", errors: StepErrorAccessor }` — passed directly to `.failure(cb)` on a `StepCall`.
-- **Child workflow failure info:** `ChildWorkflowFailureInfo` — discriminated union: `{ status: "failed", error: WorkflowExecutionError } | { status: "terminated" }` — passed to `.failure(cb)` on a `WorkflowCall`.
+- **Child workflow failure info:** `ChildWorkflowFailureInfo` — discriminated union: `{ status: "failed", error: WorkflowExecutionError } | { status: "terminated", reason: WorkflowTerminationReason }` — passed to `.failure(cb)` on a `WorkflowCall`.
 
 **Handler shapes for concurrency primitives:**
 
@@ -844,8 +844,10 @@ Engine-level types retain full result unions since engine callers need to handle
 
 | Type                     | Success    | Failure Statuses                                              |
 | ------------------------ | ---------- | ------------------------------------------------------------- |
-| `WorkflowResult`         | `complete` | `failed` (with `error`), `terminated`                         |
-| `WorkflowResultExternal` | `complete` | `failed` (with `error`), `terminated`, `timeout`, `not_found` |
+| `WorkflowResult`         | `complete` | `failed` (with `error`), `terminated` (with `reason`)          |
+| `WorkflowResultExternal` | `complete` | `failed` (with `error`), `terminated` (with `reason`), `timeout`, `not_found` |
+
+`WorkflowTerminationReason` values: `"deadline_exceeded" | "terminated_by_signal" | "terminated_by_parent"`.
 
 ### Timeout-Free Variants
 
@@ -906,7 +908,7 @@ Workflow-internal blocking operations (`channels.receive()`, `select`, `sleep`) 
 
 | Resource     | Operations                                            |
 | ------------ | ----------------------------------------------------- |
-| `.start()`   | Start workflow (`id`, optional `seed`), returns `WorkflowHandleExternal` |
+| `.start()`   | Start workflow (`id`, optional `seed`, optional `deadlineSeconds`), returns `WorkflowHandleExternal` |
 | `.execute()` | Start + wait for result (sugar for start + getResult) |
 | `.get()`     | Get handle to existing workflow                       |
 

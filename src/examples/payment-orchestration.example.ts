@@ -47,7 +47,9 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
             error: failure.error.message,
           });
         } else {
-          ctx.logger.error("Payment workflow terminated");
+          ctx.logger.error("Payment workflow terminated", {
+            reason: failure.reason,
+          });
         }
         await failure.compensate();
         return null;

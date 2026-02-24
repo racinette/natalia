@@ -23,6 +23,7 @@ export async function engineLevelApiShowcase(
   const quickOrder = await engine.workflows.order.execute({
     id: "order-quick-demo",
     seed: "order-quick-seed-v1",
+    deadlineSeconds: 300,
     args: {
       destination: "Paris",
       checkIn: "2027-01-10",
@@ -40,6 +41,7 @@ export async function engineLevelApiShowcase(
   const handle = await engine.workflows.compensationHooks.start({
     id: "comp-hooks-demo",
     seed: "comp-hooks-seed-v1",
+    deadlineSeconds: 600,
     args: {
       destination: "Paris",
       checkIn: "2027-02-01",
@@ -94,6 +96,11 @@ export async function engineLevelApiShowcase(
     console.error(
       "Compensation hooks workflow failed:",
       finalResult.error.message,
+    );
+  } else if (!finalResult.ok && finalResult.status === "terminated") {
+    console.error(
+      "Compensation hooks workflow terminated:",
+      finalResult.reason,
     );
   }
 

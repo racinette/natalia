@@ -50,7 +50,7 @@ export interface EngineWorkflowAccessor<
   /**
    * Start a new instance of this workflow.
    *
-   * @param options - Start options (id, args, seed, timeout, retention).
+   * @param options - Start options (id, args, seed, deadlineSeconds, retention).
    * @returns External handle to the workflow.
    *
    * @example
@@ -77,7 +77,7 @@ export interface EngineWorkflowAccessor<
    * start + getResult). Waits indefinitely for the workflow to reach
    * a terminal state.
    *
-   * @param options - Start options (id, args, seed, timeout, retention).
+   * @param options - Start options (id, args, seed, deadlineSeconds, retention).
    * @returns The workflow result.
    *
    * @example
