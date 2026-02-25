@@ -386,6 +386,17 @@ const childRace = await ctx.scope(
 );
 ```
 
+Use `sleepUntil` when your workflow works with explicit target instants:
+
+```typescript
+let nextRunAt = ctx.timestamp;
+while (true) {
+  nextRunAt += 10 * 60 * 1000;
+  await ctx.sleepUntil(nextRunAt);
+  await ctx.steps.runTick();
+}
+```
+
 #### Remaining handles
 
 ```typescript
@@ -479,6 +490,7 @@ Child workflow access is split by semantics:
 
 - **`ctx.childWorkflows.*`** — structured invocation, lifecycle managed by parent.
 - **`ctx.foreignWorkflows.*`** — message-only handles to existing workflow instances.
+- Child starts also accept optional immutable `metadata` for audit/filtering.
 
 This split is enforced at definition-time too:
 
@@ -500,6 +512,7 @@ const checkoutWorkflow = defineWorkflow({
 const result = await ctx.childWorkflows
   .payment({
     id: `payment-${ctx.rng.paymentId.uuidv4()}`,
+    metadata: { tenantId: "tenant-acme", correlationId: "req-42" },
     seed: "payment-seed-cust-123",
     args: { amount: 100, customerId: "cust-123" },
   })
@@ -514,6 +527,7 @@ const receiptId = await ctx.scope(
     child: async () => {
       const result = await ctx.childWorkflows.payment({
         id: "payment-1",
+        metadata: { tenantId: "tenant-acme" },
         seed: "payment-seed-1",
         args: { amount: 100, customerId: "cust-123" },
       });
@@ -526,6 +540,7 @@ const receiptId = await ctx.scope(
 // Detached — pass detached: true in call options, no scope required
 const notifier = await ctx.childWorkflows.emailCampaign({
   id: `campaign-${ctx.rng.campaignId.uuidv4()}`,
+  metadata: { tenantId: "tenant-acme" },
   seed: "campaign-seed",
   args: { customerId: "cust-123" },
   detached: true,
@@ -866,6 +881,19 @@ Engine-level types retain full result unions since engine callers need to handle
 
 `WorkflowTerminationReason` values: `"deadline_exceeded" | "terminated_by_signal" | "terminated_by_parent"`.
 
+### Policy Scope Matrix
+
+| Policy            | Applies To  | Purpose                                                                                     |
+| ----------------- | ----------- | ------------------------------------------------------------------------------------------- |
+| `retryPolicy`     | Steps only  | Controls retry attempts/backoff/step timeout before a **step** is considered failed.       |
+| `deadlineSeconds` | Workflows   | Sets a runtime deadline for a **workflow**; expiry terminates with reason `deadline_exceeded`. |
+| `retention`       | Workflows   | Controls how long terminal workflow records stay in DB before garbage collection.           |
+
+Notes:
+- Child workflows inherit retention from their parent by default.
+- Workflows are not retried as a unit; retry is step-scoped.
+- Retention affects persistence lifecycle, not execution semantics.
+
 ### Timeout-Free Variants
 
 Some external-facing blocking primitives exclude the `timeout` status when called without a timeout argument:
@@ -886,7 +914,7 @@ Workflow-internal blocking operations (`channels.receive()`, `select`, `sleep`) 
 | `ctx.channels.*`             | `.receive()` — blocks until message arrives; returns `T` directly                                      |
 | `ctx.streams.*`              | `.write()`                                                                                             |
 | `ctx.events.*`               | `.set()`                                                                                               |
-| `ctx.childWorkflows.*`       | `(options)` → `WorkflowCall<T>` by default; with `detached: true` → `ForeignWorkflowHandle`            |
+| `ctx.childWorkflows.*`       | `(options)` → `WorkflowCall<T>` by default; supports optional `metadata`; with `detached: true` → `ForeignWorkflowHandle` |
 | `ctx.foreignWorkflows.*`     | `.get(id)` → `ForeignWorkflowHandle` (channels.send only, fire-and-forget)                             |
 | `ctx.patches.*`              | `await ctx.patches.name` → boolean, `(callback, default?)` → callback result or default                |
 | `ctx.scope()`                | Structured concurrency boundary — accepts closures and collections                                     |
@@ -894,7 +922,8 @@ Workflow-internal blocking operations (`channels.receive()`, `select`, `sleep`) 
 | `ctx.forEach()`              | Process branch handles concurrently; `{ complete, failure }` handlers; collection-aware                |
 | `ctx.map()`                  | Transform branch handle results; collection structure mirrored; `{ complete, failure }` handlers       |
 | `ctx.addCompensation()`      | Register LIFO compensation callback                                                                    |
-| `ctx.sleep(seconds)`         | Durable sleep                                                                                          |
+| `ctx.sleep(seconds)`         | Durable relative sleep                                                                                 |
+| `ctx.sleepUntil(target)`     | Durable sleep until target `Date` / epoch milliseconds                                                |
 | `ctx.rng.*`                  | Typed deterministic RNG streams                                                                        |
 | `ctx.timestamp` / `ctx.date` | Deterministic time                                                                                     |
 | `ctx.logger`                 | Replay-aware logger                                                                                    |
@@ -925,7 +954,7 @@ Workflow-internal blocking operations (`channels.receive()`, `select`, `sleep`) 
 
 | Resource     | Operations                                            |
 | ------------ | ----------------------------------------------------- |
-| `.start()`   | Start workflow (`id`, optional `seed`, optional `deadlineSeconds`), returns `WorkflowHandleExternal` |
+| `.start()`   | Start workflow (`id`, optional `metadata`, optional `seed`, optional `deadlineSeconds`), returns `WorkflowHandleExternal` |
 | `.execute()` | Start + wait for result (sugar for start + getResult) |
 | `.get()`     | Get handle to existing workflow                       |
 

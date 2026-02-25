@@ -167,6 +167,10 @@ const PaymentArgs = z.object({
   customerId: z.string(),
   amount: z.number(),
 });
+const PaymentMetadata = z.object({
+  tenantId: z.string(),
+  correlationId: z.string().optional(),
+});
 
 const PaymentWorkflowResult = z.object({ receiptId: z.string() });
 const AbortCommand = z.object({ type: z.literal("abort") });
@@ -174,6 +178,7 @@ const AbortCommand = z.object({ type: z.literal("abort") });
 export const paymentWorkflow = defineWorkflow({
   name: "payment",
   args: PaymentArgs,
+  metadata: PaymentMetadata,
   result: PaymentWorkflowResult,
   channels: { abort: AbortCommand },
   steps: { chargeCustomer, refundCustomer },
@@ -190,11 +195,16 @@ export const paymentWorkflow = defineWorkflow({
 });
 
 const CampaignArgs = z.object({ userId: z.string() });
+const CampaignWorkerMetadata = z.object({
+  tenantId: z.string(),
+  correlationId: z.string().optional(),
+});
 const NudgeCommand = z.object({ type: z.literal("nudge") });
 
 export const campaignWorker = defineWorkflow({
   name: "campaignWorker",
   args: CampaignArgs,
+  metadata: CampaignWorkerMetadata,
   channels: { nudge: NudgeCommand },
 
   async execute(ctx, args) {

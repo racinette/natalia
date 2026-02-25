@@ -158,7 +158,7 @@ export type StepDefinitions = Record<string, StepDefinition<any[], any>>;
  */
 export type WorkflowDefinitions = Record<
   string,
-  WorkflowDefinition<any, any, any, any, any, any, any, any, any, any, any>
+  WorkflowDefinition<any, any, any, any, any, any, any, any, any, any, any, any>
 >;
 
 // =============================================================================
@@ -855,6 +855,7 @@ export interface ChildWorkflowAccessor<
     any,
     any,
     any,
+    any,
     any
   >,
   TCompCtx = unknown,
@@ -862,6 +863,8 @@ export interface ChildWorkflowAccessor<
   (options: {
     id: string;
     args?: InferWorkflowArgsInput<W>;
+    /** Optional immutable metadata for this child workflow instance. */
+    metadata?: InferWorkflowMetadataInput<W>;
     /** Optional deterministic RNG seed override for the child workflow instance. */
     seed?: string;
     detached?: false | undefined;
@@ -869,6 +872,8 @@ export interface ChildWorkflowAccessor<
   (options: {
     id: string;
     args?: InferWorkflowArgsInput<W>;
+    /** Optional immutable metadata for this child workflow instance. */
+    metadata?: InferWorkflowMetadataInput<W>;
     /** Optional deterministic RNG seed override for the child workflow instance. */
     seed?: string;
     detached: true;
@@ -886,6 +891,7 @@ export interface ChildWorkflowAccessor<
  */
 export interface ForeignWorkflowAccessor<
   W extends WorkflowDefinition<
+    any,
     any,
     any,
     any,
@@ -926,12 +932,15 @@ export interface CompensationChildWorkflowAccessor<
     any,
     any,
     any,
+    any,
     any
   >,
 > {
   (options: {
     id: string;
     args?: InferWorkflowArgsInput<W>;
+    /** Optional immutable metadata for this child workflow instance. */
+    metadata?: InferWorkflowMetadataInput<W>;
     /** Optional deterministic RNG seed override for the child workflow instance. */
     seed?: string;
   }): CompensationWorkflowCall<InferWorkflowResult<W>>;
@@ -1399,7 +1408,10 @@ export interface Selection<
   ): Promise<SelectMatchResult<MatchReturn<M, H>>>;
 
   /** Handlers + default for unhandled events. */
-  match<H extends MatchHandlers<M>, D extends DefaultUnhandledHandlerEntry<M, H>>(
+  match<
+    H extends MatchHandlers<M>,
+    D extends DefaultUnhandledHandlerEntry<M, H>,
+  >(
     handlers: H,
     defaultHandler: D,
   ): Promise<SelectMatchResult<MatchReturn<M, H> | ExtractHandlerReturn<D>>>;
@@ -1432,7 +1444,10 @@ export interface CompensationSelection<
   ): Promise<SelectMatchResult<MatchReturn<M, H>>>;
 
   /** Handlers + default. */
-  match<H extends MatchHandlers<M>, D extends DefaultUnhandledHandlerEntry<M, H>>(
+  match<
+    H extends MatchHandlers<M>,
+    D extends DefaultUnhandledHandlerEntry<M, H>,
+  >(
     handlers: H,
     defaultHandler: D,
   ): Promise<SelectMatchResult<MatchReturn<M, H> | ExtractHandlerReturn<D>>>;
@@ -1650,6 +1665,12 @@ export interface BaseContext<
    * @param seconds - Duration in seconds.
    */
   sleep(seconds: number): Promise<void>;
+
+  /**
+   * Durable sleep until a target instant.
+   * @param target - Target time as Date or epoch milliseconds.
+   */
+  sleepUntil(target: Date | number): Promise<void>;
 
   /**
    * Deterministic random utilities.
@@ -2361,6 +2382,10 @@ export interface WorkflowDefinition<
     void,
     void
   >,
+  TMetadata extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+    void,
+    void
+  >,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
 > {
@@ -2409,7 +2434,13 @@ export interface WorkflowDefinition<
   readonly result?: TResultSchema;
 
   /** Arguments schema (optional) */
-  readonly args?: StandardSchemaV1<unknown, unknown>;
+  readonly args?: TArgs;
+
+  /**
+   * Optional immutable metadata schema for workflow instances.
+   * Metadata is provided at start time and persisted for audit/filtering.
+   */
+  readonly metadata?: TMetadata;
 
   /**
    * Workflow retention policy for garbage collection.
@@ -2486,7 +2517,7 @@ export interface WorkflowDefinition<
 /**
  * Options for starting a workflow at engine level.
  */
-export interface StartWorkflowOptions<TArgsInput> {
+export interface StartWorkflowOptions<TArgsInput, TMetadataInput = void> {
   /** Unique workflow instance ID */
   id: string;
   /** Optional deterministic RNG seed override for this workflow instance. */
@@ -2495,6 +2526,11 @@ export interface StartWorkflowOptions<TArgsInput> {
   deadlineSeconds?: number;
   /** Workflow arguments — must be z.input<ArgSchema> (encoded) */
   args?: TArgsInput;
+  /**
+   * Optional immutable metadata for this workflow instance.
+   * Must satisfy the workflow's metadata schema if defined.
+   */
+  metadata?: TMetadataInput;
   /**
    * Override retention policy for this workflow instance.
    */
@@ -2520,6 +2556,7 @@ export type InferWorkflowResult<W> =
     infer TResultSchema,
     any,
     any,
+    any,
     any
   >
     ? StandardSchemaV1.InferOutput<TResultSchema>
@@ -2532,6 +2569,7 @@ export type InferWorkflowChannels<W> =
   W extends WorkflowDefinition<
     any,
     infer TChannels,
+    any,
     any,
     any,
     any,
@@ -2560,6 +2598,7 @@ export type InferWorkflowStreams<W> =
     any,
     any,
     any,
+    any,
     any
   >
     ? TStreams
@@ -2574,6 +2613,7 @@ export type InferWorkflowEvents<W> =
     any,
     any,
     infer TEvents,
+    any,
     any,
     any,
     any,
@@ -2600,6 +2640,7 @@ export type InferWorkflowArgs<W> =
     any,
     infer TArgs,
     any,
+    any,
     any
   >
     ? TArgs
@@ -2618,11 +2659,24 @@ export type InferWorkflowArgsInput<W> = W extends {
   : void;
 
 /**
+ * Extract metadata input type from workflow definition (encoded — z.input).
+ * Used for StartWorkflowOptions.metadata.
+ */
+export type InferWorkflowMetadataInput<W> = W extends {
+  metadata?: infer TMetadataSchema;
+}
+  ? TMetadataSchema extends StandardSchemaV1<unknown, unknown>
+    ? StandardSchemaV1.InferInput<TMetadataSchema>
+    : void
+  : void;
+
+/**
  * Extract state type from workflow definition.
  */
 export type InferWorkflowState<W> =
   W extends WorkflowDefinition<
     infer TState,
+    any,
     any,
     any,
     any,

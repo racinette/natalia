@@ -1,4 +1,5 @@
 import type { WorkflowEngine } from "../engine";
+import { campaignWorkflow } from "./campaign.example";
 import { compensationHooksWorkflow } from "./compensation-hooks.example";
 import { orderWorkflow } from "./order.example";
 
@@ -15,6 +16,7 @@ export async function engineLevelApiShowcase(
   engine: WorkflowEngine<{
     compensationHooks: typeof compensationHooksWorkflow;
     order: typeof orderWorkflow;
+    campaign: typeof campaignWorkflow;
   }>,
 ): Promise<void> {
   await engine.start();
@@ -36,6 +38,19 @@ export async function engineLevelApiShowcase(
   if (!quickOrder.ok && quickOrder.status === "failed") {
     console.error("Order failed:", quickOrder.error.message);
   }
+
+  // metadata is optional but strongly typed when schema is defined
+  await engine.workflows.campaign.execute({
+    id: "campaign-with-metadata-demo",
+    metadata: {
+      tenantId: "tenant-acme",
+      correlationId: "req-42",
+    },
+    args: {
+      userId: "cust-123",
+      candidates: ["user-a", "user-b", "user-c"],
+    },
+  });
 
   // start + handle manipulation
   const handle = await engine.workflows.compensationHooks.start({

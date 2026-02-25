@@ -190,6 +190,10 @@ export function defineWorkflow<
     void,
     void
   >,
+  TMetadata extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+    void,
+    void
+  >,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
 >(config: {
@@ -205,6 +209,7 @@ export function defineWorkflow<
   rng?: TRng;
   result?: TResultSchema;
   args?: TArgs;
+  metadata?: TMetadata;
   retention?:
     | number
     | {
@@ -264,6 +269,7 @@ export function defineWorkflow<
   TForeignWorkflows,
   TResultSchema,
   TArgs,
+  TMetadata,
   TPatches,
   TRng
 > {
@@ -342,8 +348,7 @@ export function defineWorkflow<
   }
 
   // Validate childWorkflows
-  const childWorkflows =
-    config.childWorkflows ?? ({} as TChildWorkflows);
+  const childWorkflows = config.childWorkflows ?? ({} as TChildWorkflows);
   if (config.childWorkflows !== undefined) {
     if (
       typeof config.childWorkflows !== "object" ||
@@ -361,16 +366,13 @@ export function defineWorkflow<
         throw new Error(`Child workflow '${name}' must have a name`);
       }
       if (typeof wf.execute !== "function") {
-        throw new Error(
-          `Child workflow '${name}' must have execute function`,
-        );
+        throw new Error(`Child workflow '${name}' must have execute function`);
       }
     }
   }
 
   // Validate foreignWorkflows
-  const foreignWorkflows =
-    config.foreignWorkflows ?? ({} as TForeignWorkflows);
+  const foreignWorkflows = config.foreignWorkflows ?? ({} as TForeignWorkflows);
   if (config.foreignWorkflows !== undefined) {
     if (
       typeof config.foreignWorkflows !== "object" ||
@@ -408,6 +410,17 @@ export function defineWorkflow<
       !("~standard" in config.args)
     ) {
       throw new Error("args must be a standard schema");
+    }
+  }
+
+  // Validate metadata schema if provided
+  if (config.metadata !== undefined) {
+    if (
+      !config.metadata ||
+      typeof config.metadata !== "object" ||
+      !("~standard" in config.metadata)
+    ) {
+      throw new Error("metadata must be a standard schema");
     }
   }
 
@@ -500,6 +513,7 @@ export function defineWorkflow<
     TForeignWorkflows,
     TResultSchema,
     TArgs,
+    TMetadata,
     TPatches,
     TRng
   >;

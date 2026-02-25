@@ -60,6 +60,10 @@ export const scopeSleepRaceWorkflow = defineWorkflow({
       {
         payment: ctx.childWorkflows.payment({
           id: `payment-${ctx.rng.ids.uuidv4()}`,
+          metadata: {
+            tenantId: `tenant-${args.customerId}`,
+            correlationId: `corr-payment-race-${args.customerId}`,
+          },
           seed: `payment-race-${args.customerId}`,
           args: { customerId: args.customerId, amount: args.amount },
         }),

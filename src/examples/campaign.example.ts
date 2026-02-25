@@ -7,6 +7,11 @@ const CampaignWorkflowArgs = z.object({
   candidates: z.array(z.string()),
 });
 
+const CampaignMetadata = z.object({
+  tenantId: z.string(),
+  correlationId: z.string().optional(),
+});
+
 /**
  * Showcases:
  * - patches (callback + boolean)
@@ -17,6 +22,7 @@ const CampaignWorkflowArgs = z.object({
 export const campaignWorkflow = defineWorkflow({
   name: "campaign",
   args: CampaignWorkflowArgs,
+  metadata: CampaignMetadata,
   steps: { sendNotification },
   streams: { events: z.object({ type: z.string(), data: z.unknown() }) },
   patches: {
@@ -108,6 +114,10 @@ export const campaignWorkflow = defineWorkflow({
     ctx.state.sessionId = campaignId;
     ctx.state.cohortSeed = initialCohortSeed;
     ctx.state.launched = true;
+
+    // Explicitly schedule the next wave checkpoint on the deterministic clock.
+    await ctx.sleepUntil(new Date(ctx.timestamp + 10 * 60 * 1000));
+
     for (const candidate of sampled) {
       await ctx.steps.sendNotification(
         candidate,

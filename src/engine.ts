@@ -8,6 +8,7 @@ import type {
   InferWorkflowStreams,
   InferWorkflowEvents,
   InferWorkflowArgsInput,
+  InferWorkflowMetadataInput,
   WorkflowDefinitions,
   WorkflowResult,
   ExternalWaitOptions,
@@ -50,19 +51,23 @@ export interface EngineWorkflowAccessor<
   /**
    * Start a new instance of this workflow.
    *
-   * @param options - Start options (id, args, seed, deadlineSeconds, retention).
+   * @param options - Start options (id, args, metadata, seed, deadlineSeconds, retention).
    * @returns External handle to the workflow.
    *
    * @example
    * ```typescript
    * const handle = await engine.workflows.order.start({
    *   id: 'order-123',
+   *   metadata: { tenantId: 'tenant-acme', correlationId: 'req-42' },
    *   args: { customerId: 'cust-456', items: [...] },
    * });
    * ```
    */
   start(
-    options: StartWorkflowOptions<InferWorkflowArgsInput<W>>,
+    options: StartWorkflowOptions<
+      InferWorkflowArgsInput<W>,
+      InferWorkflowMetadataInput<W>
+    >,
   ): Promise<
     WorkflowHandleExternal<
       InferWorkflowResult<W>,
@@ -77,13 +82,14 @@ export interface EngineWorkflowAccessor<
    * start + getResult). Waits indefinitely for the workflow to reach
    * a terminal state.
    *
-   * @param options - Start options (id, args, seed, deadlineSeconds, retention).
+   * @param options - Start options (id, args, metadata, seed, deadlineSeconds, retention).
    * @returns The workflow result.
    *
    * @example
    * ```typescript
    * const result = await engine.workflows.order.execute({
    *   id: 'order-123',
+   *   metadata: { tenantId: 'tenant-acme', correlationId: 'req-42' },
    *   args: { customerId: 'cust-456', items: [...] },
    * });
    * if (result.ok) {
@@ -94,7 +100,10 @@ export interface EngineWorkflowAccessor<
    * ```
    */
   execute(
-    options: StartWorkflowOptions<InferWorkflowArgsInput<W>>,
+    options: StartWorkflowOptions<
+      InferWorkflowArgsInput<W>,
+      InferWorkflowMetadataInput<W>
+    >,
   ): Promise<WorkflowResult<InferWorkflowResult<W>>>;
 
   /**
@@ -222,6 +231,7 @@ export interface WorkflowEngineConfig<
  *
  * const handle = await engine.workflows.order.start({
  *   id: 'order-123',
+ *   metadata: { tenantId: 'tenant-acme', correlationId: 'req-42' },
  *   args: { customerId: 'cust-456', items: [...] },
  * });
  *

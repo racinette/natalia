@@ -35,6 +35,10 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
     const receiptId = await ctx.childWorkflows
       .payment({
         id: `payment-${ctx.rng.ids.uuidv4()}`,
+        metadata: {
+          tenantId: `tenant-${args.customerId}`,
+          correlationId: `corr-payment-${args.customerId}`,
+        },
         seed: `payment-seed-${args.customerId}`,
         args: { customerId: args.customerId, amount: args.amount },
       })
@@ -58,6 +62,10 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
 
     const campaignHandle = await ctx.childWorkflows.campaignWorker({
       id: `campaign-${ctx.rng.ids.uuidv4()}`,
+      metadata: {
+        tenantId: `tenant-${args.customerId}`,
+        correlationId: `corr-campaign-${args.customerId}`,
+      },
       seed: `campaign-seed-${args.customerId}`,
       args: { userId: args.customerId },
       detached: true,

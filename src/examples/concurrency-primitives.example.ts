@@ -284,6 +284,10 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
         const paymentReceiptId = await ctx.childWorkflows
           .payment({
             id: `payment-${ctx.rng.ids.uuidv4()}`,
+            metadata: {
+              tenantId: `tenant-${args.customerId}`,
+              correlationId: `corr-payment-${args.customerId}`,
+            },
             seed: `trip-payment-${args.customerId}`,
             args: { customerId: args.customerId, amount: totalPrice },
           })
@@ -303,6 +307,10 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
 
         const campaign = await ctx.childWorkflows.campaignWorker({
           id: `campaign-${ctx.rng.ids.uuidv4()}`,
+          metadata: {
+            tenantId: `tenant-${args.customerId}`,
+            correlationId: `corr-campaign-${args.customerId}`,
+          },
           seed: `trip-campaign-${args.customerId}`,
           args: { userId: args.customerId },
           detached: true,
