@@ -462,6 +462,21 @@ export interface ExternalWaitOptions {
 // =============================================================================
 
 /**
+ * Options for cron-like schedule creation.
+ */
+export interface ScheduleOptions {
+  /** IANA timezone identifier (default: UTC). */
+  timezone?: string;
+  /**
+   * Explicit schedule anchor time.
+   *
+   * The first emitted tick is the first schedule point STRICTLY after this
+   * instant (never equal), preventing duplicate boundary ticks during handoff.
+   */
+  resumeAt?: Date | number;
+}
+
+/**
  * One deterministic schedule tick produced by `ScheduleHandle`.
  */
 export interface ScheduleTick {
@@ -2056,10 +2071,12 @@ export interface WorkflowContext<
    * Create a cron-like schedule handle for recurring execution.
    *
    * The first tick is computed from `ctx.timestamp` (workflow creation time),
-   * and subsequent ticks advance from the previous scheduled tick via pure
-   * schedule math. No wall-clock access is required in workflow code.
+   * unless `options.resumeAt` is provided. With `options.resumeAt`, the first
+   * tick is the first schedule point strictly after the anchor instant (never
+   * equal), then subsequent ticks advance from previous schedule points via
+   * pure schedule math. No wall-clock access is required in workflow code.
    */
-  schedule(expression: string, timezone?: string): ScheduleHandle;
+  schedule(expression: string, options?: ScheduleOptions): ScheduleHandle;
 
   // ---------------------------------------------------------------------------
   // scope — structured concurrency (closure-based)

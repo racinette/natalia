@@ -580,18 +580,25 @@ await existing.channels.commands.send({ type: "nudge" });
 
 ### Cron-Like Workflows
 
-Use `ctx.schedule(cron, timezone?)` to model recurring jobs as durable workflow logic.
+Use `ctx.schedule(cron, { timezone?, resumeAt? })` to model recurring jobs as durable workflow logic.
 
 Why this works in a durable/replayable model:
 
 - `schedule.sleep()` yields deterministic tick metadata (`scheduledAt`, `nextScheduledAt`, `secondsUntilNext`, `index`) computed from schedule math.
 - The scheduler workflow can safely replay and regenerate the same tick sequence.
+- `resumeAt` lets a successor scheduler continue cadence from an explicit anchor (for rotation/continue-as-new patterns).
+- The first emitted tick is always the first schedule point **strictly after** `resumeAt` (never equal), preventing duplicate boundary ticks at handoff.
 - Detached child workflows can use `deadlineUntil: tick.nextScheduledAt`; if `deadlineUntil` is already before the workflow's current timestamp at start, the workflow is terminated immediately (`deadline_exceeded`) and user code/effects do not run.
 - Detached children can override `retention` independently, so scheduler and job lifecycles are decoupled.
 - You can set a very small `retention.terminated` window for detached jobs so late/missed ticks are garbage-collected quickly.
 
 ```typescript
-const schedule = ctx.schedule("0 9 * * 1-5", "America/New_York");
+const schedule = ctx.schedule("0 9 * * 1-5", {
+  timezone: "America/New_York",
+  // Optional handoff anchor from previous scheduler instance.
+  // First tick is strictly after this instant.
+  resumeAt: args.resumeAt ? new Date(args.resumeAt) : undefined,
+});
 
 for await (const tick of schedule) {
   // Step-level deadline tied to this schedule window
@@ -986,6 +993,7 @@ Workflow-internal blocking operations (`channels.receive()`, `select`, `sleep`) 
 | `ctx.forEach()`              | Process branch handles concurrently; `{ complete, failure }` handlers; collection-aware                |
 | `ctx.map()`                  | Transform branch handle results; collection structure mirrored; `{ complete, failure }` handlers       |
 | `ctx.addCompensation()`      | Register LIFO compensation callback                                                                    |
+| `ctx.schedule(cron, { timezone?, resumeAt? })` | Durable cron-like schedule handle; first tick is strictly after `resumeAt` when provided |
 | `ctx.sleep(seconds)`         | Durable relative sleep                                                                                 |
 | `ctx.sleepUntil(target)`     | Durable sleep until target `Date` / epoch milliseconds                                                |
 | `ctx.rng.*`                  | Typed deterministic RNG streams                                                                        |

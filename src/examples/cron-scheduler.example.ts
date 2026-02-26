@@ -27,6 +27,7 @@ export const dailyReportJobWorkflow = defineWorkflow({
 
 const DailyReportSchedulerArgs = z.object({
   userId: z.string(),
+  resumeAt: z.string().datetime().optional(),
 });
 
 /**
@@ -35,6 +36,7 @@ const DailyReportSchedulerArgs = z.object({
  * - step-level deadlineUntil via .retry(...) override
  * - deadlineUntil + retention override on detached child workflow calls
  * - fast-forward over missed ticks without custom lateness logic
+ * - optional resumeAt handoff anchor for scheduler rotation/continue-as-new
  */
 export const dailyReportSchedulerWorkflow = defineWorkflow({
   name: "dailyReportScheduler",
@@ -44,7 +46,10 @@ export const dailyReportSchedulerWorkflow = defineWorkflow({
   rng: { ids: true },
 
   async execute(ctx, args) {
-    const schedule = ctx.schedule("0 9 * * 1-5", "America/New_York");
+    const schedule = ctx.schedule("0 9 * * 1-5", {
+      timezone: "America/New_York",
+      resumeAt: args.resumeAt ? new Date(args.resumeAt) : undefined,
+    });
 
     for await (const tick of schedule) {
       await ctx.steps.sendNotification(
