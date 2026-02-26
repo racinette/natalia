@@ -27,7 +27,7 @@ export const dailyReportJobWorkflow = defineWorkflow({
 
 const DailyReportSchedulerArgs = z.object({
   userId: z.string(),
-  resumeAt: z.string().datetime().optional(),
+  resumeAt: z.iso.datetime().optional(),
 });
 
 /**
@@ -52,14 +52,16 @@ export const dailyReportSchedulerWorkflow = defineWorkflow({
     });
 
     for await (const tick of schedule) {
-      await ctx.steps.sendNotification(
-        args.userId,
-        `Preparing daily report for ${tick.scheduledAt.toISOString()}`,
-      ).retry({
-        maxAttempts: 5,
-        intervalSeconds: 10,
-        deadlineUntil: tick.nextScheduledAt,
-      });
+      await ctx.steps
+        .sendNotification(
+          args.userId,
+          `Preparing daily report for ${tick.scheduledAt.toISOString()}`,
+        )
+        .retry({
+          maxAttempts: 5,
+          intervalSeconds: 10,
+          deadlineUntil: tick.nextScheduledAt,
+        });
 
       await ctx.childWorkflows.job({
         id: `daily-report-${ctx.rng.ids.uuidv4()}`,
