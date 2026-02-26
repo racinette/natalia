@@ -175,6 +175,25 @@ export type WorkflowDefinitions = Record<
   WorkflowDefinition<any, any, any, any, any, any, any, any, any, any, any, any>
 >;
 
+/**
+ * Any workflow definition shape.
+ * Useful for avoiding repeated `WorkflowDefinition<any, ...>` constraints.
+ */
+export type AnyWorkflowDefinition = WorkflowDefinition<
+  any,
+  any,
+  any,
+  any,
+  any,
+  any,
+  any,
+  any,
+  any,
+  any,
+  any,
+  any
+>;
+
 // =============================================================================
 // ERROR TYPES
 // =============================================================================
@@ -891,41 +910,52 @@ export interface CompensationWorkflowCall<T> {
  * @typeParam W - The child workflow definition.
  * @typeParam TCompCtx - The parent workflow's CompensationContext type.
  */
+export type ChildWorkflowStartOptions<
+  W extends AnyWorkflowDefinition,
+> = WorkflowInvocationBaseOptions<
+  InferWorkflowArgsInput<W>,
+  InferWorkflowMetadataInput<W>
+> &
+  DeadlineOptions;
+
+/**
+ * Base invocation options for workflow starts/calls.
+ */
+export type WorkflowInvocationBaseOptions<TArgsInput, TMetadataInput> = {
+  id: string;
+  args?: TArgsInput;
+  /** Optional immutable metadata for this workflow instance. */
+  metadata?: TMetadataInput;
+  /** Optional deterministic RNG seed override for the child workflow instance. */
+  seed?: string;
+};
+
+/**
+ * Start options for child workflow calls in compensation context.
+ */
+export type CompensationChildWorkflowStartOptions<
+  W extends AnyWorkflowDefinition,
+> = WorkflowInvocationBaseOptions<
+  InferWorkflowArgsInput<W>,
+  InferWorkflowMetadataInput<W>
+>;
+
+/**
+ * Callable child workflow accessor on `ctx.childWorkflows` in WorkflowContext.
+ *
+ * @typeParam W - The child workflow definition.
+ * @typeParam TCompCtx - The parent workflow's CompensationContext type.
+ */
 export interface ChildWorkflowAccessor<
-  W extends WorkflowDefinition<
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any
-  >,
+  W extends AnyWorkflowDefinition,
   TCompCtx = unknown,
 > {
-  (options: {
-    id: string;
-    args?: InferWorkflowArgsInput<W>;
-    /** Optional immutable metadata for this child workflow instance. */
-    metadata?: InferWorkflowMetadataInput<W>;
-    /** Optional deterministic RNG seed override for the child workflow instance. */
-    seed?: string;
-    detached?: false | undefined;
-  } & DeadlineOptions): WorkflowCall<InferWorkflowResult<W>, never, false, TCompCtx>;
-  (options: {
-    id: string;
-    args?: InferWorkflowArgsInput<W>;
-    /** Optional immutable metadata for this child workflow instance. */
-    metadata?: InferWorkflowMetadataInput<W>;
-    /** Optional deterministic RNG seed override for the child workflow instance. */
-    seed?: string;
-    detached: true;
-  } & DeadlineOptions): Promise<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
+  (
+    options: ChildWorkflowStartOptions<W> & { detached?: false | undefined },
+  ): WorkflowCall<InferWorkflowResult<W>, never, false, TCompCtx>;
+  (
+    options: ChildWorkflowStartOptions<W> & { detached: true },
+  ): Promise<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
 }
 
 /**
@@ -938,20 +968,7 @@ export interface ChildWorkflowAccessor<
  * @typeParam W - The workflow definition (for channel type inference).
  */
 export interface ForeignWorkflowAccessor<
-  W extends WorkflowDefinition<
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any
-  >,
+  W extends AnyWorkflowDefinition,
 > {
   /**
    * Get a limited handle to an existing workflow instance.
@@ -969,29 +986,11 @@ export interface ForeignWorkflowAccessor<
  * @typeParam W - The child workflow definition.
  */
 export interface CompensationChildWorkflowAccessor<
-  W extends WorkflowDefinition<
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any
-  >,
+  W extends AnyWorkflowDefinition,
 > {
-  (options: {
-    id: string;
-    args?: InferWorkflowArgsInput<W>;
-    /** Optional immutable metadata for this child workflow instance. */
-    metadata?: InferWorkflowMetadataInput<W>;
-    /** Optional deterministic RNG seed override for the child workflow instance. */
-    seed?: string;
-  }): CompensationWorkflowCall<InferWorkflowResult<W>>;
+  (
+    options: CompensationChildWorkflowStartOptions<W>,
+  ): CompensationWorkflowCall<InferWorkflowResult<W>>;
 }
 
 // =============================================================================
@@ -2574,23 +2573,13 @@ export interface WorkflowDefinition<
 /**
  * Options for starting a workflow at engine level.
  */
-export type StartWorkflowOptions<TArgsInput, TMetadataInput = void> = {
-  /** Unique workflow instance ID */
-  id: string;
-  /** Optional deterministic RNG seed override for this workflow instance. */
-  seed?: string;
-  /** Workflow arguments — must be z.input<ArgSchema> (encoded) */
-  args?: TArgsInput;
-  /**
-   * Optional immutable metadata for this workflow instance.
-   * Must satisfy the workflow's metadata schema if defined.
-   */
-  metadata?: TMetadataInput;
-  /**
-   * Override retention policy for this workflow instance.
-   */
-  retention?: number | RetentionSettings;
-} & DeadlineOptions;
+export type StartWorkflowOptions<TArgsInput, TMetadataInput = void> =
+  WorkflowInvocationBaseOptions<TArgsInput, TMetadataInput> & {
+    /**
+     * Override retention policy for this workflow instance.
+     */
+    retention?: number | RetentionSettings;
+  } & DeadlineOptions;
 
 // =============================================================================
 // TYPE HELPERS
