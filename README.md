@@ -571,6 +571,48 @@ await existing.channels.commands.send({ type: "nudge" });
 - **SIGTERM**: Current step terminates → `beforeCompensate` hook → compensations (LIFO) → `afterCompensate` hook. NOOP if already compensating.
 - **SIGKILL**: Immediate termination. No compensation, no hooks.
 
+### Cron-Like Workflows
+
+Use `ctx.schedule(cron, timezone?)` to model recurring jobs as durable workflow logic.
+
+Why this works in a durable/replayable model:
+
+- `schedule.sleep()` yields deterministic tick metadata (`scheduledAt`, `nextScheduledAt`, `secondsUntilNext`, `index`) computed from schedule math.
+- The scheduler workflow can safely replay and regenerate the same tick sequence.
+- Detached child workflows can use `deadlineUntil: tick.nextScheduledAt`; if `deadlineUntil` is already before the workflow's current timestamp at start, the workflow is terminated immediately (`deadline_exceeded`) and user code/effects do not run.
+- Detached children can override `retention` independently, so scheduler and job lifecycles are decoupled.
+- You can set a very small `retention.terminated` window for detached jobs so late/missed ticks are garbage-collected quickly.
+
+```typescript
+const schedule = ctx.schedule("0 9 * * 1-5", "America/New_York");
+
+for await (const tick of schedule) {
+  // Step-level deadline tied to this schedule window
+  await ctx.steps
+    .sendNotification("ops@example.com", `Starting tick ${tick.index}`)
+    .retry({
+      maxAttempts: 5,
+      intervalSeconds: 10,
+      deadlineUntil: tick.nextScheduledAt,
+    });
+
+  // Detached child job with independent retention policy
+  await ctx.childWorkflows.dailyReport({
+    id: `daily-report-${tick.index}`,
+    args: { reportDate: tick.scheduledAt.toISOString() },
+    detached: true,
+    deadlineUntil: tick.nextScheduledAt,
+    retention: {
+      complete: 86400 * 7,
+      failed: 86400 * 30,
+      terminated: 60, // aggressively GC instantly-terminated late ticks
+    },
+  });
+}
+```
+
+See `src/examples/cron-scheduler.example.ts` for a complete end-to-end example.
+
 ### CompensationContext vs WorkflowContext
 
 Both extend a shared `BaseContext` with channels, streams, events, patches, sleep, rng, logger, timestamp, and date.
@@ -898,6 +940,8 @@ Engine-level types retain full result unions since engine callers need to handle
 Notes:
 - Child workflows inherit retention from their parent by default.
 - Detached child workflows can override retention at start-time with `retention` in call options.
+- If `deadlineUntil` is already in the past at workflow start, the workflow terminates immediately with `deadline_exceeded`.
+- For detached cron jobs, set a short `retention.terminated` to quickly GC late/missed runs that terminate immediately.
 - Workflows are not retried as a unit; retry is step-scoped.
 - Retention affects persistence lifecycle, not execution semantics.
 
@@ -1075,6 +1119,7 @@ await engine.shutdown();
 Examples are split into focused files under `src/examples/`.
 
 - Workflow-internal API examples: scopes, selection, compensation, channels, patches, child/foreign workflows.
+- Cron-like scheduler example: `src/examples/cron-scheduler.example.ts` demonstrates `ctx.schedule(...)`, step-level `deadlineUntil` retry windows, and detached child workflow starts with `deadlineUntil` + `retention` override.
 - Concurrency-focused example: `src/examples/concurrency-primitives.example.ts` demonstrates dynamic Map fan-out, cheapest-flight selection across variable providers (up to 3 hops), concurrent hotel reservation race, and child/foreign workflow orchestration in one realistic flow.
 - Default-callback-focused example: `src/examples/onboarding-verification.example.ts` demonstrates 5 parallel identity methods, a 1-hour deadline race, 3-of-5 threshold gating, and default `{ complete, failure }` handling for unhandled verification branches.
 - Engine-level API example: `src/examples/engine-level-api.example.ts` demonstrates `engine.start()`, `engine.workflows.*.start/execute/get`, handle channels/streams/events/lifecycle operations, `setRetention()`, `sigterm()`, `runGarbageCollection()`, and `engine.shutdown()`.
