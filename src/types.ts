@@ -104,7 +104,7 @@ export interface PatchAccessor {
 /**
  * Configuration for retry behavior and timeouts.
  */
-export interface RetryPolicyOptions {
+export interface RetryPolicyBaseOptions {
   /** Maximum retry attempts (default: unlimited) */
   maxAttempts?: number;
   /** Initial retry interval in seconds (default: 1) */
@@ -113,9 +113,23 @@ export interface RetryPolicyOptions {
   backoffRate?: number;
   /** Maximum retry interval cap in seconds (default: 300) */
   maxIntervalSeconds?: number;
-  /** Step timeout in seconds (default: no timeout) */
+  /** Per-attempt timeout in seconds (default: no timeout) */
   timeoutSeconds?: number;
 }
+
+/**
+ * Mutually exclusive deadline options.
+ * Provide at most one of `deadlineSeconds` or `deadlineUntil`.
+ */
+export type DeadlineOptions =
+  | { deadlineSeconds: number; deadlineUntil?: never }
+  | { deadlineUntil: Date | number; deadlineSeconds?: never }
+  | { deadlineSeconds?: undefined; deadlineUntil?: undefined };
+
+/**
+ * Retry policy with optional total deadline.
+ */
+export type RetryPolicyOptions = RetryPolicyBaseOptions & DeadlineOptions;
 
 // =============================================================================
 // STEP DEFINITION
@@ -422,6 +436,40 @@ export type SignalResult =
  */
 export interface ExternalWaitOptions {
   signal?: AbortSignal;
+}
+
+// =============================================================================
+// SCHEDULE
+// =============================================================================
+
+/**
+ * One deterministic schedule tick produced by `ScheduleHandle`.
+ */
+export interface ScheduleTick {
+  /** Intended execution time for this tick (pure cron math). */
+  readonly scheduledAt: Date;
+  /** Intended execution time for the next tick. */
+  readonly nextScheduledAt: Date;
+  /** Convenience value: seconds between `scheduledAt` and `nextScheduledAt`. */
+  readonly secondsUntilNext: number;
+  /** 0-based monotonically increasing tick counter. */
+  readonly index: number;
+}
+
+/**
+ * Handle returned by `ctx.schedule()` for cron-like recurring execution.
+ */
+export interface ScheduleHandle extends AsyncIterable<ScheduleTick> {
+  /**
+   * Suspend until the next scheduled tick.
+   * Returns immediately if the next scheduled time is already in the past.
+   */
+  sleep(): Promise<ScheduleTick>;
+  /**
+   * Cancel a pending sleep and stop future iteration.
+   */
+  cancel(): void;
+  [Symbol.asyncIterator](): AsyncIterableIterator<ScheduleTick>;
 }
 
 // =============================================================================
@@ -868,7 +916,7 @@ export interface ChildWorkflowAccessor<
     /** Optional deterministic RNG seed override for the child workflow instance. */
     seed?: string;
     detached?: false | undefined;
-  }): WorkflowCall<InferWorkflowResult<W>, never, false, TCompCtx>;
+  } & DeadlineOptions): WorkflowCall<InferWorkflowResult<W>, never, false, TCompCtx>;
   (options: {
     id: string;
     args?: InferWorkflowArgsInput<W>;
@@ -877,7 +925,7 @@ export interface ChildWorkflowAccessor<
     /** Optional deterministic RNG seed override for the child workflow instance. */
     seed?: string;
     detached: true;
-  }): Promise<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
+  } & DeadlineOptions): Promise<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
 }
 
 /**
@@ -1991,6 +2039,15 @@ export interface WorkflowContext<
    */
   select<M extends Record<string, SelectableHandle>>(handles: M): Selection<M>;
 
+  /**
+   * Create a cron-like schedule handle for recurring execution.
+   *
+   * The first tick is computed from `ctx.timestamp` (workflow creation time),
+   * and subsequent ticks advance from the previous scheduled tick via pure
+   * schedule math. No wall-clock access is required in workflow code.
+   */
+  schedule(expression: string, timezone?: string): ScheduleHandle;
+
   // ---------------------------------------------------------------------------
   // scope — structured concurrency (closure-based)
   // ---------------------------------------------------------------------------
@@ -2517,13 +2574,11 @@ export interface WorkflowDefinition<
 /**
  * Options for starting a workflow at engine level.
  */
-export interface StartWorkflowOptions<TArgsInput, TMetadataInput = void> {
+export type StartWorkflowOptions<TArgsInput, TMetadataInput = void> = {
   /** Unique workflow instance ID */
   id: string;
   /** Optional deterministic RNG seed override for this workflow instance. */
   seed?: string;
-  /** Workflow deadline in seconds from start time. */
-  deadlineSeconds?: number;
   /** Workflow arguments — must be z.input<ArgSchema> (encoded) */
   args?: TArgsInput;
   /**
@@ -2535,7 +2590,7 @@ export interface StartWorkflowOptions<TArgsInput, TMetadataInput = void> {
    * Override retention policy for this workflow instance.
    */
   retention?: number | RetentionSettings;
-}
+} & DeadlineOptions;
 
 // =============================================================================
 // TYPE HELPERS
