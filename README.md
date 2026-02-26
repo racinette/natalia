@@ -571,6 +571,13 @@ await existing.channels.commands.send({ type: "nudge" });
 - **SIGTERM**: Current step terminates → `beforeCompensate` hook → compensations (LIFO) → `afterCompensate` hook. NOOP if already compensating.
 - **SIGKILL**: Immediate termination. No compensation, no hooks.
 
+**Execution result vs compensation lifecycle (important):**
+
+- `execute(...)` and compensation belong to the same workflow instance, but they run in different phases/contexts.
+- As soon as `execute(...)` reaches a terminal workflow status (`complete`, `failed`, or `terminated`), that status/result is observable to workflow result listeners.
+- If compensation is needed, it runs asynchronously after the terminal execute outcome has been recorded.
+- Compensation progress is observable separately through lifecycle events (`compensating`, `compensated`) rather than by delaying `complete/failed/terminated`.
+
 ### Cron-Like Workflows
 
 Use `ctx.schedule(cron, timezone?)` to model recurring jobs as durable workflow logic.
@@ -728,6 +735,12 @@ Engine-managed events available on every workflow handle via `.lifecycle`:
 | `compensated`  | All compensations finish      | Workflow completes successfully |
 | `complete`     | Workflow returns successfully | Failed or terminated            |
 | `failed`       | Workflow throws               | Completed or terminated         |
+
+Terminal execute status and compensation are intentionally decoupled:
+
+- `complete` / `failed` represent the terminal outcome of `execute(...)`.
+- `compensating` / `compensated` represent asynchronous compensation progress after terminal outcome recording.
+- Consumers that need post-compensation guarantees should wait on `lifecycle.compensated` in addition to checking the workflow result.
 
 ### State
 

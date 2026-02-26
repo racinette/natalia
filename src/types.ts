@@ -910,32 +910,29 @@ export interface CompensationWorkflowCall<T> {
  * @typeParam W - The child workflow definition.
  * @typeParam TCompCtx - The parent workflow's CompensationContext type.
  */
-export type ChildWorkflowStartOptions<
-  W extends AnyWorkflowDefinition,
-> = WorkflowInvocationBaseOptions<
-  InferWorkflowArgsInput<W>,
-  InferWorkflowMetadataInput<W>
-> &
-  DeadlineOptions;
+export type ChildWorkflowStartOptions<W extends AnyWorkflowDefinition> =
+  WorkflowInvocationBaseOptions<
+    InferWorkflowArgsInput<W>,
+    InferWorkflowMetadataInput<W>
+  > &
+    DeadlineOptions;
 
 /**
  * Child workflow start options in attached mode.
  * Retention is inherited from the parent workflow.
  */
-export type AttachedChildWorkflowStartOptions<
-  W extends AnyWorkflowDefinition,
-> = ChildWorkflowStartOptions<W> & { detached?: false | undefined };
+export type AttachedChildWorkflowStartOptions<W extends AnyWorkflowDefinition> =
+  ChildWorkflowStartOptions<W> & { detached?: false | undefined };
 
 /**
  * Child workflow start options in detached mode.
  * Detached children may override retention independently from the parent.
  */
-export type DetachedChildWorkflowStartOptions<
-  W extends AnyWorkflowDefinition,
-> = ChildWorkflowStartOptions<W> & {
-  detached: true;
-  retention?: number | RetentionSettings;
-};
+export type DetachedChildWorkflowStartOptions<W extends AnyWorkflowDefinition> =
+  ChildWorkflowStartOptions<W> & {
+    detached: true;
+    retention?: number | RetentionSettings;
+  };
 
 /**
  * Base invocation options for workflow starts/calls.
@@ -969,15 +966,12 @@ export interface ChildWorkflowAccessor<
   W extends AnyWorkflowDefinition,
   TCompCtx = unknown,
 > {
-  (options: AttachedChildWorkflowStartOptions<W>): WorkflowCall<
-    InferWorkflowResult<W>,
-    never,
-    false,
-    TCompCtx
-  >;
-  (options: DetachedChildWorkflowStartOptions<W>): Promise<
-    ForeignWorkflowHandle<InferWorkflowChannels<W>>
-  >;
+  (
+    options: AttachedChildWorkflowStartOptions<W>,
+  ): WorkflowCall<InferWorkflowResult<W>, never, false, TCompCtx>;
+  (
+    options: DetachedChildWorkflowStartOptions<W>,
+  ): Promise<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
 }
 
 /**
@@ -989,9 +983,7 @@ export interface ChildWorkflowAccessor<
  *
  * @typeParam W - The workflow definition (for channel type inference).
  */
-export interface ForeignWorkflowAccessor<
-  W extends AnyWorkflowDefinition,
-> {
+export interface ForeignWorkflowAccessor<W extends AnyWorkflowDefinition> {
   /**
    * Get a limited handle to an existing workflow instance.
    * Only channels.send() is available (fire-and-forget).
@@ -2595,13 +2587,15 @@ export interface WorkflowDefinition<
 /**
  * Options for starting a workflow at engine level.
  */
-export type StartWorkflowOptions<TArgsInput, TMetadataInput = void> =
-  WorkflowInvocationBaseOptions<TArgsInput, TMetadataInput> & {
-    /**
-     * Override retention policy for this workflow instance.
-     */
-    retention?: number | RetentionSettings;
-  } & DeadlineOptions;
+export type StartWorkflowOptions<
+  TArgsInput,
+  TMetadataInput = void,
+> = WorkflowInvocationBaseOptions<TArgsInput, TMetadataInput> & {
+  /**
+   * Override retention policy for this workflow instance.
+   */
+  retention?: number | RetentionSettings;
+} & DeadlineOptions;
 
 // =============================================================================
 // TYPE HELPERS
