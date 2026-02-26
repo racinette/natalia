@@ -544,6 +544,11 @@ const notifier = await ctx.childWorkflows.emailCampaign({
   seed: "campaign-seed",
   args: { customerId: "cust-123" },
   detached: true,
+  retention: {
+    complete: 86400 * 7,
+    failed: 86400 * 30,
+    terminated: 86400 * 7,
+  },
 }); // → ForeignWorkflowHandle
 await notifier.channels.commands.send({ type: "nudge" });
 // The child runs independently — not terminated when parent fails
@@ -557,6 +562,7 @@ await existing.channels.commands.send({ type: "nudge" });
 
 - **Result mode** (default): call without `detached` (or with `detached: false`) and chain `.compensate()`, `.failure()`, `.complete()`.
 - **Detached mode**: call with `detached: true` and await `ForeignWorkflowHandle` directly (no result builders).
+- **Retention override**: detached child starts may set `retention`; attached child starts inherit retention from the parent.
 
 **Engine-level handles (`WorkflowHandleExternal`) retain `sigterm()` and `sigkill()`** — these are operational concerns for engine callers.
 
@@ -891,6 +897,7 @@ Engine-level types retain full result unions since engine callers need to handle
 
 Notes:
 - Child workflows inherit retention from their parent by default.
+- Detached child workflows can override retention at start-time with `retention` in call options.
 - Workflows are not retried as a unit; retry is step-scoped.
 - Retention affects persistence lifecycle, not execution semantics.
 

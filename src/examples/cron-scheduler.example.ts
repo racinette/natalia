@@ -33,7 +33,7 @@ const DailyReportSchedulerArgs = z.object({
  * Showcases:
  * - ctx.schedule() for cron-like durable scheduling
  * - step-level deadlineUntil via .retry(...) override
- * - deadlineUntil on detached child workflow calls
+ * - deadlineUntil + retention override on detached child workflow calls
  * - fast-forward over missed ticks without custom lateness logic
  */
 export const dailyReportSchedulerWorkflow = defineWorkflow({
@@ -64,6 +64,11 @@ export const dailyReportSchedulerWorkflow = defineWorkflow({
         },
         detached: true,
         deadlineUntil: tick.nextScheduledAt,
+        retention: {
+          complete: 7 * 24 * 3600,
+          failed: 30 * 24 * 3600,
+          terminated: 7 * 24 * 3600,
+        },
       });
     }
   },

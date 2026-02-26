@@ -919,6 +919,25 @@ export type ChildWorkflowStartOptions<
   DeadlineOptions;
 
 /**
+ * Child workflow start options in attached mode.
+ * Retention is inherited from the parent workflow.
+ */
+export type AttachedChildWorkflowStartOptions<
+  W extends AnyWorkflowDefinition,
+> = ChildWorkflowStartOptions<W> & { detached?: false | undefined };
+
+/**
+ * Child workflow start options in detached mode.
+ * Detached children may override retention independently from the parent.
+ */
+export type DetachedChildWorkflowStartOptions<
+  W extends AnyWorkflowDefinition,
+> = ChildWorkflowStartOptions<W> & {
+  detached: true;
+  retention?: number | RetentionSettings;
+};
+
+/**
  * Base invocation options for workflow starts/calls.
  */
 export type WorkflowInvocationBaseOptions<TArgsInput, TMetadataInput> = {
@@ -950,12 +969,15 @@ export interface ChildWorkflowAccessor<
   W extends AnyWorkflowDefinition,
   TCompCtx = unknown,
 > {
-  (
-    options: ChildWorkflowStartOptions<W> & { detached?: false | undefined },
-  ): WorkflowCall<InferWorkflowResult<W>, never, false, TCompCtx>;
-  (
-    options: ChildWorkflowStartOptions<W> & { detached: true },
-  ): Promise<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
+  (options: AttachedChildWorkflowStartOptions<W>): WorkflowCall<
+    InferWorkflowResult<W>,
+    never,
+    false,
+    TCompCtx
+  >;
+  (options: DetachedChildWorkflowStartOptions<W>): Promise<
+    ForeignWorkflowHandle<InferWorkflowChannels<W>>
+  >;
 }
 
 /**
