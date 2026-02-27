@@ -1,17 +1,38 @@
 import { z } from "zod";
-import { defineWorkflow } from "../workflow";
+import { defineWorkflow, defineWorkflowHeader } from "../workflow";
 import { sendNotification } from "./shared";
+
+// =============================================================================
+// SCHEMAS
+// =============================================================================
 
 const DailyReportJobArgs = z.object({
   userId: z.string(),
   reportDate: z.string(),
 });
 
-/**
- * Showcases:
- * - a per-tick workflow with no scheduling concerns
- * - regular step execution inside a detached child workflow
- */
+const SchedulerManagerArgs = z.object({
+  userId: z.string(),
+  resumeAt: z.iso.datetime().optional(),
+});
+
+const SchedulerWorkerArgs = z.object({
+  userId: z.string(),
+  managerId: z.string(),
+  resumeAt: z.iso.datetime().optional(),
+  maxTicks: z.number(),
+});
+
+// undefined lastTickAt signals zero progress — manager retries from same resumeAt.
+const WorkerDonePayload = z.object({
+  workerId: z.string(),
+  lastTickAt: z.string().optional(),
+});
+
+// =============================================================================
+// JOB WORKFLOW — one per tick, no scheduling concerns
+// =============================================================================
+
 export const dailyReportJobWorkflow = defineWorkflow({
   name: "dailyReportJob",
   args: DailyReportJobArgs,
@@ -25,25 +46,66 @@ export const dailyReportJobWorkflow = defineWorkflow({
   },
 });
 
-const DailyReportSchedulerArgs = z.object({
-  userId: z.string(),
-  resumeAt: z.iso.datetime().optional(),
+// =============================================================================
+// MANAGER HEADER
+//
+// Captures the manager's public interface — name + channels — before the full
+// definition exists. The worker references this header in its foreignWorkflows,
+// breaking the circular dependency. The manager then spreads the header into
+// its own defineWorkflow call so the name and channel schemas are declared
+// exactly once.
+//
+// In a multi-file project this would live in manager.ts and be imported by
+// worker.ts; the circular dependency resolves naturally at module load time.
+// =============================================================================
+
+const schedulerManagerHeader = defineWorkflowHeader({
+  name: "dailyReportSchedulerManager",
+  channels: { workerDone: WorkerDonePayload },
 });
 
-/**
- * Showcases:
- * - ctx.schedule() for cron-like durable scheduling
- * - step-level deadlineUntil via .retry(...) override
- * - deadlineUntil + retention override on detached child workflow calls
- * - fast-forward over missed ticks without custom lateness logic
- * - optional resumeAt handoff anchor for scheduler rotation/continue-as-new
- */
-export const dailyReportSchedulerWorkflow = defineWorkflow({
-  name: "dailyReportScheduler",
-  args: DailyReportSchedulerArgs,
+// =============================================================================
+// WORKER WORKFLOW
+//
+// Runs a bounded number of ticks, then completes naturally. History is O(maxTicks),
+// so it stays small and is GC'd quickly after the handoff.
+//
+// Showcases:
+// - detached child workflows (workers must not participate in manager compensation)
+// - afterCompensate with foreignWorkflows for guaranteed delivery on failure/SIGTERM
+// - state-based dateSent guard as a secondary defence against double notification
+// - undefined lastTickAt when zero progress was made
+// =============================================================================
+
+export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
+  name: "dailyReportSchedulerWorker",
+  args: SchedulerWorkerArgs,
   steps: { sendNotification },
   childWorkflows: { job: dailyReportJobWorkflow },
+  foreignWorkflows: { manager: schedulerManagerHeader },
   rng: { ids: true },
+  state: () => ({
+    lastTickAt: undefined as string | undefined,
+    dateSent: false,
+  }),
+  retention: {
+    complete: 3600,
+    failed: 86400 * 30,
+    terminated: 3600,
+  },
+
+  // Runs on failure or SIGTERM after all compensations unwind.
+  // The LIFO stack is empty,
+  // but afterCompensate still fires — that is the guarantee we rely on.
+  afterCompensate: async ({ ctx, args }) => {
+    if (ctx.state.dateSent) return;
+    await ctx.foreignWorkflows.manager
+      .get(args.managerId)
+      .channels.workerDone.send({
+        workerId: ctx.workflowId,
+        lastTickAt: ctx.state.lastTickAt,
+      });
+  },
 
   async execute(ctx, args) {
     const schedule = ctx.schedule("0 9 * * 1-5", {
@@ -51,6 +113,7 @@ export const dailyReportSchedulerWorkflow = defineWorkflow({
       resumeAt: args.resumeAt ? new Date(args.resumeAt) : undefined,
     });
 
+    let count = 0;
     for await (const tick of schedule) {
       await ctx.steps
         .sendNotification(
@@ -77,6 +140,82 @@ export const dailyReportSchedulerWorkflow = defineWorkflow({
           terminated: 7 * 24 * 3600,
         },
       });
+
+      ctx.state.lastTickAt = tick.scheduledAt.toISOString();
+      if (++count >= args.maxTicks) break;
+    }
+
+    await ctx.foreignWorkflows.manager
+      .get(args.managerId)
+      .channels.workerDone.send({
+        workerId: ctx.workflowId,
+        lastTickAt: ctx.state.lastTickAt,
+      });
+    ctx.state.dateSent = true;
+  },
+});
+
+// =============================================================================
+// MANAGER WORKFLOW
+//
+// Stable ID, infinite loop. History grows at O(total_ticks / maxTicks) —
+// one child-start + one channel-receive per worker generation.
+// At 1000 ticks/generation on a daily schedule that is roughly one new
+// history entry every 2.7 years.
+//
+// Showcases:
+// - manager/worker split as the idiomatic "continue-as-new" replacement
+// - detached worker start (workers are independent; manager failure must not
+//   trigger their compensation)
+// - workerDone channel with workerId deduplication to drain stale messages
+//   left from a previous manager replay
+// - streams.currentWorker for external consumers that need to observe or
+//   interact with the active scheduler generation
+// - resumeAt advances only when the worker made progress; a zero-progress
+//   worker leaves the anchor unchanged so the next generation retries it
+// =============================================================================
+
+export const dailyReportSchedulerManagerWorkflow = defineWorkflow({
+  ...schedulerManagerHeader,  // name + channels declared once
+  args: SchedulerManagerArgs,
+  streams: {
+    currentWorker: z.object({ workerId: z.string() }),
+  },
+  childWorkflows: { worker: dailyReportSchedulerWorkerWorkflow },
+  rng: { gen: true },
+
+  async execute(ctx, args) {
+    let resumeAt = args.resumeAt;
+
+    while (true) {
+      const workerId = `scheduler-worker-${ctx.rng.gen.uuidv4()}`;
+
+      await ctx.childWorkflows.worker({
+        id: workerId,
+        args: {
+          userId: args.userId,
+          managerId: ctx.workflowId,
+          resumeAt,
+          maxTicks: 1000,
+        },
+        detached: true,
+      });
+
+      // Broadcast the current generation for external observers.
+      await ctx.streams.currentWorker.write({ workerId });
+
+      // Drain stale messages: if the manager replayed after a crash mid-handoff,
+      // the previous worker's message may still be in the channel queue.
+      let msg;
+      do {
+        msg = await ctx.channels.workerDone.receive();
+      } while (msg.workerId !== workerId);
+
+      // No lastTickAt means zero progress — keep the same anchor so the next
+      // worker retries from exactly where this one could not start.
+      if (msg.lastTickAt) {
+        resumeAt = msg.lastTickAt;
+      }
     }
   },
 });

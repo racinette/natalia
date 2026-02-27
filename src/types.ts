@@ -168,12 +168,12 @@ export interface StepDefinition<
 export type StepDefinitions = Record<string, StepDefinition<any[], any>>;
 
 /**
- * Map of workflow definitions for child workflows.
+ * Map of workflow definitions for child/foreign workflow references.
+ * Accepts both full `WorkflowDefinition` objects and lightweight
+ * `WorkflowHeader` descriptors — `WorkflowDefinition` satisfies
+ * `AnyWorkflowHeader` structurally so the two are interchangeable here.
  */
-export type WorkflowDefinitions = Record<
-  string,
-  WorkflowDefinition<any, any, any, any, any, any, any, any, any, any, any, any>
->;
+export type WorkflowDefinitions = Record<string, AnyWorkflowHeader>;
 
 /**
  * Any workflow definition shape.
@@ -193,6 +193,83 @@ export type AnyWorkflowDefinition = WorkflowDefinition<
   any,
   any
 >;
+
+/**
+ * Minimal workflow descriptor — captures only the public interface that other
+ * workflows need to reference: the name, channels (for `foreignWorkflows`),
+ * and args/metadata/result (for `childWorkflows`). Contains no implementation
+ * details (`execute`, `steps`, `state`, etc.).
+ *
+ * Use `defineWorkflowHeader()` to create one. Then:
+ *
+ * - Spread into `defineWorkflow({ ...header, ... })` so the full definition
+ *   inherits the same name and schema declarations — single source of truth.
+ * - Pass directly to `foreignWorkflows` or `childWorkflows` in any workflow
+ *   that needs to reference this one.
+ *
+ * This resolves circular references cleanly: define the header first, use it
+ * in both directions, then fill in the implementations afterward.
+ *
+ * ```typescript
+ * const managerHeader = defineWorkflowHeader({
+ *   name: "scheduler",
+ *   channels: { done: DonePayload },
+ * });
+ *
+ * // worker references manager via header — no circular dep
+ * const workerWorkflow = defineWorkflow({
+ *   ...workerHeader,
+ *   foreignWorkflows: { manager: managerHeader },
+ *   execute: async (ctx, args) => { ... },
+ * });
+ *
+ * // manager spreads its own header + adds full implementation
+ * const managerWorkflow = defineWorkflow({
+ *   ...managerHeader,
+ *   childWorkflows: { worker: workerWorkflow },
+ *   execute: async (ctx, args) => { ... },
+ * });
+ * ```
+ *
+ * A workflow can also reference itself (recursive/fractal workflows):
+ * ```typescript
+ * const treeHeader = defineWorkflowHeader({ name: "tree", args: TreeArgs });
+ * const treeWorkflow = defineWorkflow({
+ *   ...treeHeader,
+ *   childWorkflows: { node: treeHeader },
+ *   execute: async (ctx, args) => { ... },
+ * });
+ * ```
+ */
+export interface WorkflowHeader<
+  TChannels extends ChannelDefinitions = Record<string, never>,
+  TArgs extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+    void,
+    void
+  >,
+  TMetadata extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+    void,
+    void
+  >,
+  TResult extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+    void,
+    void
+  >,
+> {
+  readonly name: string;
+  readonly channels?: TChannels;
+  readonly args?: TArgs;
+  readonly metadata?: TMetadata;
+  readonly result?: TResult;
+}
+
+/**
+ * Any workflow header shape.
+ * Used as the constraint for `childWorkflows` and `foreignWorkflows` entries —
+ * both full `WorkflowDefinition` objects and lightweight `WorkflowHeader`
+ * descriptors satisfy this type.
+ */
+export type AnyWorkflowHeader = WorkflowHeader<any, any, any, any>;
 
 // =============================================================================
 // ERROR TYPES
@@ -925,7 +1002,7 @@ export interface CompensationWorkflowCall<T> {
  * @typeParam W - The child workflow definition.
  * @typeParam TCompCtx - The parent workflow's CompensationContext type.
  */
-export type ChildWorkflowStartOptions<W extends AnyWorkflowDefinition> =
+export type ChildWorkflowStartOptions<W extends AnyWorkflowHeader> =
   WorkflowInvocationBaseOptions<
     InferWorkflowArgsInput<W>,
     InferWorkflowMetadataInput<W>
@@ -936,14 +1013,14 @@ export type ChildWorkflowStartOptions<W extends AnyWorkflowDefinition> =
  * Child workflow start options in attached mode.
  * Retention is inherited from the parent workflow.
  */
-export type AttachedChildWorkflowStartOptions<W extends AnyWorkflowDefinition> =
+export type AttachedChildWorkflowStartOptions<W extends AnyWorkflowHeader> =
   ChildWorkflowStartOptions<W> & { detached?: false | undefined };
 
 /**
  * Child workflow start options in detached mode.
  * Detached children may override retention independently from the parent.
  */
-export type DetachedChildWorkflowStartOptions<W extends AnyWorkflowDefinition> =
+export type DetachedChildWorkflowStartOptions<W extends AnyWorkflowHeader> =
   ChildWorkflowStartOptions<W> & {
     detached: true;
     retention?: number | RetentionSettings;
@@ -965,7 +1042,7 @@ export type WorkflowInvocationBaseOptions<TArgsInput, TMetadataInput> = {
  * Start options for child workflow calls in compensation context.
  */
 export type CompensationChildWorkflowStartOptions<
-  W extends AnyWorkflowDefinition,
+  W extends AnyWorkflowHeader,
 > = WorkflowInvocationBaseOptions<
   InferWorkflowArgsInput<W>,
   InferWorkflowMetadataInput<W>
@@ -978,7 +1055,7 @@ export type CompensationChildWorkflowStartOptions<
  * @typeParam TCompCtx - The parent workflow's CompensationContext type.
  */
 export interface ChildWorkflowAccessor<
-  W extends AnyWorkflowDefinition,
+  W extends AnyWorkflowHeader,
   TCompCtx = unknown,
 > {
   (
@@ -998,7 +1075,7 @@ export interface ChildWorkflowAccessor<
  *
  * @typeParam W - The workflow definition (for channel type inference).
  */
-export interface ForeignWorkflowAccessor<W extends AnyWorkflowDefinition> {
+export interface ForeignWorkflowAccessor<W extends AnyWorkflowHeader> {
   /**
    * Get a limited handle to an existing workflow instance.
    * Only channels.send() is available (fire-and-forget).
@@ -1015,7 +1092,7 @@ export interface ForeignWorkflowAccessor<W extends AnyWorkflowDefinition> {
  * @typeParam W - The child workflow definition.
  */
 export interface CompensationChildWorkflowAccessor<
-  W extends AnyWorkflowDefinition,
+  W extends AnyWorkflowHeader,
 > {
   (
     options: CompensationChildWorkflowStartOptions<W>,
@@ -1815,6 +1892,17 @@ export interface CompensationContext<
   readonly childWorkflows: {
     [K in keyof TChildWorkflows]: CompensationChildWorkflowAccessor<
       TChildWorkflows[K]
+    >;
+  };
+
+  /**
+   * Foreign workflow accessors — message-only handles to existing workflow instances.
+   * Use `.get(id)` to get a `ForeignWorkflowHandle` with `channels.send()` only.
+   * No lifecycle, events, streams, or compensation (prevents tight coupling).
+   */
+  readonly foreignWorkflows: {
+    [K in keyof TForeignWorkflows]: ForeignWorkflowAccessor<
+      TForeignWorkflows[K]
     >;
   };
 
@@ -2619,46 +2707,26 @@ export type StartWorkflowOptions<
 // =============================================================================
 
 /**
- * Extract result type from workflow definition (decoded — z.output).
+ * Extract result type from a workflow definition or header (decoded — z.output).
  */
-export type InferWorkflowResult<W> =
-  W extends WorkflowDefinition<
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    infer TResultSchema,
-    any,
-    any,
-    any,
-    any
-  >
+export type InferWorkflowResult<W> = W extends {
+  result?: infer TResultSchema;
+}
+  ? TResultSchema extends StandardSchemaV1<unknown, unknown>
     ? StandardSchemaV1.InferOutput<TResultSchema>
-    : never;
+    : void
+  : void;
 
 /**
- * Extract channels from workflow definition.
+ * Extract channels from a workflow definition or header.
  */
-export type InferWorkflowChannels<W> =
-  W extends WorkflowDefinition<
-    any,
-    infer TChannels,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any
-  >
+export type InferWorkflowChannels<W> = W extends {
+  channels?: infer TChannels;
+}
+  ? TChannels extends ChannelDefinitions
     ? TChannels
-    : never;
+    : Record<string, never>
+  : Record<string, never>;
 
 /**
  * Extract streams from workflow definition.
@@ -2703,40 +2771,26 @@ export type InferWorkflowEvents<W> =
     : never;
 
 /**
- * Extract args schema from workflow definition (decoded — z.output).
+ * Extract args schema from a workflow definition or header (decoded — z.output).
  */
-export type InferWorkflowArgs<W> =
-  W extends WorkflowDefinition<
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    infer TArgs,
-    any,
-    any,
-    any
-  >
-    ? TArgs
-    : void;
+export type InferWorkflowArgs<W> = W extends { args?: infer TArgs }
+  ? TArgs extends StandardSchemaV1<unknown, unknown>
+    ? StandardSchemaV1.InferOutput<TArgs>
+    : void
+  : void;
 
 /**
- * Extract arg input type from workflow definition (encoded — z.input).
+ * Extract arg input type from a workflow definition or header (encoded — z.input).
  * Used for StartWorkflowOptions.args.
  */
-export type InferWorkflowArgsInput<W> = W extends {
-  args?: infer TArgSchema;
-}
+export type InferWorkflowArgsInput<W> = W extends { args?: infer TArgSchema }
   ? TArgSchema extends StandardSchemaV1<unknown, unknown>
     ? StandardSchemaV1.InferInput<TArgSchema>
     : void
   : void;
 
 /**
- * Extract metadata input type from workflow definition (encoded — z.input).
+ * Extract metadata input type from a workflow definition or header (encoded — z.input).
  * Used for StartWorkflowOptions.metadata.
  */
 export type InferWorkflowMetadataInput<W> = W extends {

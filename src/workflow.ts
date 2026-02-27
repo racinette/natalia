@@ -8,6 +8,7 @@ import type {
   StepDefinitions,
   WorkflowDefinitions,
   WorkflowDefinition,
+  WorkflowHeader,
   WorkflowContext,
   CompensationContext,
   PatchDefinitions,
@@ -105,6 +106,116 @@ export function defineStep<
     schema: config.schema,
     retryPolicy: config.retryPolicy,
   };
+}
+
+// =============================================================================
+// DEFINE WORKFLOW HEADER
+// =============================================================================
+
+/**
+ * Define a minimal workflow descriptor for use in `childWorkflows` and
+ * `foreignWorkflows` references before the full workflow is defined.
+ *
+ * A `WorkflowHeader` captures only the public interface — `name`, optional
+ * `channels`, `args`, `metadata`, and `result` — with no implementation.
+ * Spread it into `defineWorkflow({ ...header, ... })` so the full definition
+ * re-uses the same name and schema declarations without duplication.
+ *
+ * The primary use case is breaking circular references between workflows that
+ * reference each other, and enabling self-referential (recursive) workflows.
+ *
+ * @example
+ * ```typescript
+ * // Break a circular reference: worker ↔ manager
+ * const managerHeader = defineWorkflowHeader({
+ *   name: "schedulerManager",
+ *   channels: { workerDone: WorkerDonePayload },
+ * });
+ *
+ * const workerWorkflow = defineWorkflow({
+ *   ...workerHeader,
+ *   foreignWorkflows: { manager: managerHeader },
+ *   execute: async (ctx, args) => { ... },
+ * });
+ *
+ * const managerWorkflow = defineWorkflow({
+ *   ...managerHeader,           // spreads name + channels
+ *   args: ManagerArgs,          // adds implementation-only fields
+ *   childWorkflows: { worker: workerWorkflow },
+ *   execute: async (ctx, args) => { ... },
+ * });
+ *
+ * // Self-referential workflow (recursive tree)
+ * const treeHeader = defineWorkflowHeader({ name: "tree", args: TreeArgs });
+ * const treeWorkflow = defineWorkflow({
+ *   ...treeHeader,
+ *   childWorkflows: { subtree: treeHeader },
+ *   execute: async (ctx, args) => { ... },
+ * });
+ * ```
+ */
+export function defineWorkflowHeader<
+  TChannels extends ChannelDefinitions = Record<string, never>,
+  TArgs extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+    void,
+    void
+  >,
+  TMetadata extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+    void,
+    void
+  >,
+  TResult extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+    void,
+    void
+  >,
+>(config: {
+  name: string;
+  channels?: TChannels;
+  args?: TArgs;
+  metadata?: TMetadata;
+  result?: TResult;
+}): WorkflowHeader<TChannels, TArgs, TMetadata, TResult> {
+  if (!config.name || typeof config.name !== "string") {
+    throw new Error("Workflow name must be a non-empty string");
+  }
+  if (config.channels !== undefined) {
+    if (typeof config.channels !== "object" || Array.isArray(config.channels)) {
+      throw new Error("channels must be an object");
+    }
+    for (const [name, schema] of Object.entries(config.channels)) {
+      if (!schema || typeof schema !== "object" || !("~standard" in schema)) {
+        throw new Error(`Channel '${name}' must have a standard schema`);
+      }
+    }
+  }
+  if (config.args !== undefined) {
+    if (
+      !config.args ||
+      typeof config.args !== "object" ||
+      !("~standard" in config.args)
+    ) {
+      throw new Error("args must be a standard schema");
+    }
+  }
+  if (config.metadata !== undefined) {
+    if (
+      !config.metadata ||
+      typeof config.metadata !== "object" ||
+      !("~standard" in config.metadata)
+    ) {
+      throw new Error("metadata must be a standard schema");
+    }
+  }
+  if (config.result !== undefined) {
+    if (
+      !config.result ||
+      typeof config.result !== "object" ||
+      !("~standard" in config.result)
+    ) {
+      throw new Error("result must be a standard schema");
+    }
+  }
+  return config as WorkflowHeader<TChannels, TArgs, TMetadata, TResult>;
 }
 
 // =============================================================================
@@ -359,14 +470,11 @@ export function defineWorkflow<
     for (const [name, wf] of Object.entries(config.childWorkflows)) {
       if (!wf || typeof wf !== "object") {
         throw new Error(
-          `Child workflow '${name}' must be a valid workflow definition`,
+          `Child workflow '${name}' must be a valid workflow definition or header`,
         );
       }
       if (!wf.name || typeof wf.name !== "string") {
         throw new Error(`Child workflow '${name}' must have a name`);
-      }
-      if (typeof wf.execute !== "function") {
-        throw new Error(`Child workflow '${name}' must have execute function`);
       }
     }
   }
@@ -383,16 +491,11 @@ export function defineWorkflow<
     for (const [name, wf] of Object.entries(config.foreignWorkflows)) {
       if (!wf || typeof wf !== "object") {
         throw new Error(
-          `Foreign workflow '${name}' must be a valid workflow definition`,
+          `Foreign workflow '${name}' must be a valid workflow definition or header`,
         );
       }
       if (!wf.name || typeof wf.name !== "string") {
         throw new Error(`Foreign workflow '${name}' must have a name`);
-      }
-      if (typeof wf.execute !== "function") {
-        throw new Error(
-          `Foreign workflow '${name}' must have execute function`,
-        );
       }
     }
   }
