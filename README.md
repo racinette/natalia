@@ -578,6 +578,75 @@ await existing.channels.commands.send({ type: "nudge" });
 - If compensation is needed, it runs asynchronously after the terminal execute outcome has been recorded.
 - Compensation progress is observable separately through lifecycle events (`compensating`, `compensated`) rather than by delaying `complete/failed/terminated`.
 
+### Workflow Headers
+
+A `WorkflowHeader` is a minimal descriptor that captures only the public interface of a workflow — the parts other workflows need to reference it: `name`, and optionally `channels` (for `foreignWorkflows`), `args`, `metadata`, and `result` (for `childWorkflows`). It contains no implementation details.
+
+Use `defineWorkflowHeader()` to create one, then:
+
+- **Spread it into `defineWorkflow`** so the full definition inherits the same name and schemas — single source of truth, no duplication.
+- **Pass it directly to `childWorkflows` or `foreignWorkflows`** in any workflow that needs to reference this one before its full definition exists.
+
+**Breaking circular references** is the primary use case. When two workflows reference each other, defining one first is impossible — the type of the second isn't known yet. Headers resolve this:
+
+```typescript
+// Step 1 — declare the manager's public interface
+const managerHeader = defineWorkflowHeader({
+  name: "schedulerManager",
+  channels: { workerDone: WorkerDonePayload },
+});
+
+// Step 2 — worker references manager via header (no circular dep)
+const workerWorkflow = defineWorkflow({
+  ...workerHeader,
+  foreignWorkflows: { manager: managerHeader }, // just a header
+  execute: async (ctx, args) => {
+    await ctx.foreignWorkflows.manager
+      .get(args.managerId)
+      .channels.workerDone.send({ ... });
+  },
+});
+
+// Step 3 — manager spreads its own header + adds full implementation
+const managerWorkflow = defineWorkflow({
+  ...managerHeader,           // name + channels from header
+  args: ManagerArgs,          // implementation-only fields added here
+  childWorkflows: { worker: workerWorkflow },
+  execute: async (ctx, args) => { ... },
+});
+```
+
+In a multi-file project the circular import resolves naturally at module load time — define the header in one file and import it in both. The single-file case is handled exactly as shown above.
+
+**Self-referential (recursive) workflows** are the other natural use case. A workflow that spawns children of its own type — a tree traversal, a recursive task decomposer, a web crawler — simply references its own header:
+
+```typescript
+const treeHeader = defineWorkflowHeader({ name: "tree", args: TreeArgs });
+
+const treeWorkflow = defineWorkflow({
+  ...treeHeader,
+  childWorkflows: { subtree: treeHeader }, // self-reference
+  execute: async (ctx, args) => {
+    for (const child of args.children) {
+      await ctx.childWorkflows.subtree({ id: child.id, args: child, detached: true });
+    }
+  },
+});
+```
+
+**Idempotent child starts as cycle prevention.** When a self-referential workflow uses a content-derived ID (e.g. a URL, a node key) for each child start, the engine's idempotent start semantics automatically prevent duplicate work. If two different paths in the tree both try to start a workflow for the same ID, the second start is a no-op — no explicit visited-set, no coordination needed:
+
+```typescript
+// URL as stable idempotency key — same URL = same ID = engine no-ops the duplicate
+await ctx.childWorkflows.page({
+  id: pageUrl,          // deterministic from content, not from call site
+  args: { url: pageUrl, depth: args.depth + 1, ... },
+  detached: true,
+});
+```
+
+See `src/examples/web-scraper.example.ts` for a complete web crawler built on this pattern.
+
 ### Cron-Like Workflows
 
 Use `ctx.schedule(cron, { timezone?, resumeAt? })` to model recurring jobs as durable workflow logic.
@@ -1140,7 +1209,8 @@ await engine.shutdown();
 Examples are split into focused files under `src/examples/`.
 
 - Workflow-internal API examples: scopes, selection, compensation, channels, patches, child/foreign workflows.
-- Cron-like scheduler example: `src/examples/cron-scheduler.example.ts` demonstrates `ctx.schedule(...)`, step-level `deadlineUntil` retry windows, and detached child workflow starts with `deadlineUntil` + `retention` override.
+- Cron-like scheduler example: `src/examples/cron-scheduler.example.ts` demonstrates the manager/worker split for long-running schedulers — a stable-ID manager loop delegates to bounded-history workers, with `afterCompensate` + `foreignWorkflows` guaranteeing handoff delivery on failure and detached child starts so workers carry no compensation obligation to the manager.
+- Web scraper example: `src/examples/web-scraper.example.ts` demonstrates `defineWorkflowHeader` for self-referential workflows and URL-as-idempotency-key for automatic cycle prevention — no explicit visited-set needed.
 - Concurrency-focused example: `src/examples/concurrency-primitives.example.ts` demonstrates dynamic Map fan-out, cheapest-flight selection across variable providers (up to 3 hops), concurrent hotel reservation race, and child/foreign workflow orchestration in one realistic flow.
 - Default-callback-focused example: `src/examples/onboarding-verification.example.ts` demonstrates 5 parallel identity methods, a 1-hour deadline race, 3-of-5 threshold gating, and default `{ complete, failure }` handling for unhandled verification branches.
 - Engine-level API example: `src/examples/engine-level-api.example.ts` demonstrates `engine.start()`, `engine.workflows.*.start/execute/get`, handle channels/streams/events/lifecycle operations, `setRetention()`, `sigterm()`, `runGarbageCollection()`, and `engine.shutdown()`.
@@ -1189,6 +1259,7 @@ Work in Progress — Public API design complete. Internal implementation pending
 - Patches for safe workflow code evolution
 - Typed deterministic RNG (`ctx.rng.*`)
 - `beforeCompensate` / `afterCompensate` lifecycle hooks on workflow definition
+- **`WorkflowHeader` / `defineWorkflowHeader`** — minimal workflow descriptors for circular reference resolution and self-referential (recursive/tree) workflows; `WorkflowDefinition` satisfies `WorkflowHeader` structurally so headers and full definitions are interchangeable in `childWorkflows` / `foreignWorkflows`
 
 ## License
 

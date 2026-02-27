@@ -49,7 +49,7 @@
 export * from './types';
 
 // Public API - Definition helpers
-export { defineStep, defineWorkflow } from './workflow';
+export { defineStep, defineWorkflow, defineWorkflowHeader } from './workflow';
 
 // Public API - Engine
 export { WorkflowEngine, type WorkflowEngineConfig } from './engine';
