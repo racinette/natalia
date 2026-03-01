@@ -9,16 +9,16 @@
  *     Chain builders before awaiting: .compensate(cb), .retry(policy), .failure(cb), .complete(cb)
  * - Scopes: Structured concurrency — concurrent branches run as closures inside ctx.scope().
  *     Collections (Array, Map) are supported for dynamic fan-out.
- * - BranchHandle: Awaitable handle produced by scope entries — passed to select/forEach/map
+ * - BranchHandle: Awaitable handle produced by scope entries — passed to select/map
  * - Compensation: Registered per-step via .compensate(cb) builder, runs LIFO on failure.
  *     Compensation always runs if any attempt was made — the engine assumes at-least-once
  *     semantics for external side effects. No status checks needed in callbacks.
  *     addCompensation(cb) provides general-purpose cleanup.
- * - BranchFailureInfo: Passed to failure callbacks in forEach/map/match for branch handles.
+ * - BranchFailureInfo: Passed to failure callbacks in map/match for branch handles.
  *     claimCompensation() — transfer ownership and receive a callable compensation runner.
  *     Once claimed, the engine will not run that compensation automatically.
  * - failure/complete builders: { complete, failure } callbacks on concurrency primitives
- *     (match, forEach, map) for explicit failure recovery on branch handles.
+ *     (match, map) for explicit failure recovery on branch handles.
  * - Select: `ctx.select(handles)` returns a Selection<M>.
  *     `for await...of` — primary iteration surface; yields SelectDataUnion<M> (successful data
  *     from all handle types including channels and receive calls); branch failure auto-terminates.
@@ -26,7 +26,7 @@
  *     handlers on branch handle keys for granular recovery without auto-termination.
  *     No `.next()` method — use `for await` for simple iteration, `.match()` for granular control.
  *     Channel inputs: raw ChannelHandle = streaming (never exhausted); ChannelReceiveCall = one-shot.
- * - forEach / map: Batch processing of FiniteHandle inputs with { complete, failure } handlers.
+ * - map: Batch transformation of FiniteHandle inputs with { complete, failure } handlers.
  *     Accepts BranchHandle variants and ChannelReceiveCall (not raw ChannelHandle).
  *     Collection handles (BranchHandle[], Map<K, BranchHandle>) pass innerKey to callbacks.
  * - Child workflows: ctx.childWorkflows.* — structured invocation (WorkflowCall<T> thenable).
@@ -37,7 +37,7 @@
  *     Only channels.send() is available — no lifecycle coupling.
  * - Channels: Async message passing (input).
  *     ctx.channels.receive() returns ChannelReceiveCall<T> — awaitable directly or passed into
- *     select/forEach/map for one-shot channel waits. Timeout overloads available:
+ *     select/map for one-shot channel waits. Timeout overloads available:
  *     receive(timeoutSeconds) → T | undefined; receive(timeoutSeconds, defaultValue) → T | TDefault.
  *     receive(0) is a deterministic nowait poll.
  *     Raw ChannelHandle can be passed into select for streaming (multi-message) branches.

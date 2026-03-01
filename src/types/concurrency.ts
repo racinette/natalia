@@ -54,7 +54,7 @@ export type WithCompensation<T> = T & {
 
 /**
  * Failure information for a scope branch, passed to `failure` callbacks in
- * forEach, map, and match handlers.
+ * map and match handlers.
  *
  * Includes `claimCompensation()` to transfer compensation ownership for any
  * compensated steps registered within this branch.
@@ -74,7 +74,7 @@ export interface BranchFailureInfo {
  * A one-shot receive future returned by `ChannelHandle.receive(...)`.
  *
  * `ChannelReceiveCall<T>` is awaitable (extends `PromiseLike<T>`) and can be
- * passed into `ctx.select()`, `ctx.forEach()`, and `ctx.map()` as a finite,
+ * passed into `ctx.select()` and `ctx.map()` as a finite,
  * one-shot channel wait — the key is removed from `remaining` once the receive
  * resolves, just like a branch handle.
  *
@@ -99,7 +99,7 @@ export interface ChannelHandle<T> extends AsyncIterable<T> {
    * Blocks until a message arrives. Returns the decoded value directly.
    *
    * Returns a `ChannelReceiveCall<T>` that can be awaited directly or passed
-   * into `ctx.select()`, `ctx.forEach()`, or `ctx.map()` as a one-shot branch.
+ * into `ctx.select()` or `ctx.map()` as a one-shot branch.
    */
   receive(): ChannelReceiveCall<T>;
 
@@ -110,7 +110,7 @@ export interface ChannelHandle<T> extends AsyncIterable<T> {
    * `receive(0)` is a non-blocking poll (nowait).
    *
    * Returns a `ChannelReceiveCall<T | undefined>` that can be awaited directly
-   * or passed into `ctx.select()`, `ctx.forEach()`, or `ctx.map()`.
+ * or passed into `ctx.select()` or `ctx.map()`.
    */
   receive(timeoutSeconds: number): ChannelReceiveCall<T | undefined>;
 
@@ -121,7 +121,7 @@ export interface ChannelHandle<T> extends AsyncIterable<T> {
    * `receive(0, defaultValue)` is a non-blocking poll (nowait).
    *
    * Returns a `ChannelReceiveCall<T | TDefault>` that can be awaited directly
-   * or passed into `ctx.select()`, `ctx.forEach()`, or `ctx.map()`.
+ * or passed into `ctx.select()` or `ctx.map()`.
    */
   receive<TDefault>(
     timeoutSeconds: number,
@@ -188,7 +188,7 @@ export type ScopeEntryValue<T> = ScopeBranch<T> | PromiseLike<T>;
  *
  * `BranchHandle<T>` values are produced by `ctx.scope()` and can be:
  * - Directly awaited: `const result = await flight`
- * - Passed into `ctx.select()`, `ctx.forEach()`, `ctx.map()`
+ * - Passed into `ctx.select()` and `ctx.map()`
  * - Accumulated into collections for dynamic fan-out
  *
  * @typeParam T - The resolved value type.
@@ -197,7 +197,7 @@ export interface BranchHandle<T> extends Promise<T> {}
 
 /**
  * A group of branch handles — single, array, or map.
- * Used as input to `ctx.select()`, `ctx.forEach()`, and `ctx.map()`.
+ * Used as input to `ctx.select()` and `ctx.map()`.
  *
  * - Single: `BranchHandle<T>` — one branch
  * - Array: `BranchHandle<T>[]` — N parallel branches
@@ -276,7 +276,7 @@ export type SelectableHandle =
  * Finite handle types — all handles that resolve exactly once and are removed
  * from `remaining` upon completion.
  *
- * Used as the accepted input type for `ctx.forEach()` and `ctx.map()`, which
+ * Used as the accepted input type for `ctx.map()`, which
  * require every branch to have a definite end. Raw `ChannelHandle` is excluded
  * because it never exhausts. Use `ctx.channels.<n>.receive(...)` to get a
  * finite one-shot `ChannelReceiveCall<T>` instead.
@@ -398,7 +398,7 @@ export type SelectMatchResult<T> =
   | { ok: false; status: "exhausted" };
 
 /**
- * Extract the return type from a match/forEach/map handler entry.
+ * Extract the return type from a match/map handler entry.
  * Supports plain functions and `{ complete, failure }` objects.
  */
 type ExtractHandlerReturn<H> = H extends (...args: any[]) => infer R
@@ -487,7 +487,7 @@ export type UnhandledSelectFailureEvent<
 > = Extract<UnhandledSelectEvent<M, H>, { status: "failed" }>;
 
 /**
- * Default handler entry for unhandled events in selection/forEach/map.
+ * Default handler entry for unhandled events in selection/map.
  *
  * - Plain function: happy path only (receives completion events only).
  * - Object form: explicit `{ complete, failure }` handling.
@@ -589,7 +589,7 @@ export interface CompensationSelection<
 }
 
 // =============================================================================
-// forEach / map — HANDLER ENTRY TYPES
+// map — HANDLER ENTRY TYPES
 // =============================================================================
 
 /**
@@ -624,50 +624,8 @@ type FiniteHandleInnerKey<H> =
           : never;
 
 /**
- * A forEach handler entry for a finite handle or collection.
- *
- * - Single `BranchHandle<T>`: plain `(data: T) => void` or `{ complete, failure }`
- * - `BranchHandle<T>[]`: receives `(data: T, innerKey: number)` per element
- * - `Map<K, BranchHandle<T>>`: receives `(data: T, innerKey: K)` per entry
- * - `ChannelReceiveCall<T>`: plain `(data: T) => void` (one-shot; no failure path)
- *
- * For plain function handlers on branch handles, failure auto-terminates the workflow.
- * For `{ complete, failure }` handlers on branch handles, failure is handled explicitly.
- * Channel receive calls never fail, so only plain function handlers are accepted.
- */
-export type ForEachHandlerEntry<H extends FiniteHandle> = H extends
-  | BranchHandle<any>
-  | BranchHandle<any>[]
-  | Map<any, BranchHandle<any>>
-  ? FiniteHandleInnerKey<H> extends never
-    ? // Single BranchHandle
-        | ((data: FiniteHandleData<H>) => Promise<void> | void)
-        | {
-            complete: (data: FiniteHandleData<H>) => Promise<void> | void;
-            failure: (failure: BranchFailureInfo) => Promise<void> | void;
-          }
-    : // Collection BranchHandle (array or map)
-        | ((
-            data: FiniteHandleData<H>,
-            innerKey: FiniteHandleInnerKey<H>,
-          ) => Promise<void> | void)
-        | {
-            complete: (
-              data: FiniteHandleData<H>,
-              innerKey: FiniteHandleInnerKey<H>,
-            ) => Promise<void> | void;
-            failure: (
-              failure: BranchFailureInfo,
-              innerKey: FiniteHandleInnerKey<H>,
-            ) => Promise<void> | void;
-          }
-  : H extends ChannelReceiveCall<any>
-    ? (data: FiniteHandleData<H>) => Promise<void> | void
-    : never;
-
-/**
  * A map handler entry for a finite handle or collection.
- * Same structure as ForEachHandlerEntry but returns a value instead of void.
+ * Handles the same input shapes (single/array/map/one-shot receive) and returns a value.
  *
  * `ctx.map()` return type mirrors the collection structure:
  * - Single BranchHandle / ChannelReceiveCall → single transformed value
@@ -723,25 +681,8 @@ export type MapOutputFor<H, C> =
           : never;
 
 // =============================================================================
-// forEach / map — HANDLER ENTRY TYPES (CompensationContext)
+// map — HANDLER ENTRY TYPES (CompensationContext)
 // =============================================================================
-
-/**
- * A forEach handler entry for CompensationContext.
- * Plain function — receives the branch data directly (already a result union).
- * No `complete`/`failure` split — the result union encodes success/failure.
- * Also accepts `ChannelReceiveCall<T>` for one-shot channel waits in compensation.
- */
-export type CompensationForEachHandlerEntry<H extends FiniteHandle> =
-  H extends BranchHandle<any>
-    ? (data: FiniteHandleData<H>) => Promise<void> | void
-    : H extends BranchHandle<any>[]
-      ? (data: FiniteHandleData<H>, innerKey: number) => Promise<void> | void
-      : H extends Map<infer K, BranchHandle<any>>
-        ? (data: FiniteHandleData<H>, innerKey: K) => Promise<void> | void
-        : H extends ChannelReceiveCall<any>
-          ? (data: FiniteHandleData<H>) => Promise<void> | void
-          : never;
 
 /**
  * A map handler entry for CompensationContext.

@@ -245,7 +245,7 @@ export function defineWorkflowHeader<
  * `ctx.scope()`. Collections (Array, Map) are supported for dynamic fan-out.
  * Branches with compensated steps are compensated on scope exit.
  *
- * **Failure handling:** Concurrency primitives (match, forEach, map) support
+ * **Failure handling:** Concurrency primitives (match, map) support
  * `{ complete, failure }` handlers for explicit failure recovery without
  * crashing the workflow.
  *

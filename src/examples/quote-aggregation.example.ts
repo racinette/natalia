@@ -10,7 +10,7 @@ const QuoteAggregationArgs = z.object({
 /**
  * Showcases:
  * - Array fan-out + Map fan-out
- * - forEach innerKey handling
+ * - map innerKey handling
  * - map output structure mirroring
  */
 export const quoteAggregationWorkflow = defineWorkflow({
@@ -30,27 +30,29 @@ export const quoteAggregationWorkflow = defineWorkflow({
       }),
     );
 
-    const arrayPrices: number[] = [];
-    await ctx.scope({ quotes: arrayBranches }, async ({ quotes }) => {
-      await ctx.forEach(
-        { quotes },
-        {
-          quotes: {
-            complete: (data, innerKey) => {
-              ctx.logger.info("Array quote received", {
-                idx: innerKey,
-                provider: data.provider,
-                price: data.price,
-              });
-              arrayPrices.push(data.price);
-            },
-            failure: (_failure, innerKey) => {
-              ctx.logger.warn("Array quote failed", { idx: innerKey });
+    const arrayMapped = await ctx.scope(
+      { quotes: arrayBranches },
+      async ({ quotes }) =>
+        ctx.map(
+          { quotes },
+          {
+            quotes: {
+              complete: (data, innerKey) => {
+                ctx.logger.info("Array quote received", {
+                  idx: innerKey,
+                  provider: data.provider,
+                  price: data.price,
+                });
+                return data.price;
+              },
+              failure: (_failure, innerKey) => {
+                ctx.logger.warn("Array quote failed", { idx: innerKey });
+                return null;
+              },
             },
           },
-        },
-      );
-    });
+        ),
+    );
 
     const mapBranches = new Map(
       args.providers.map((p) => [
@@ -84,6 +86,11 @@ export const quoteAggregationWorkflow = defineWorkflow({
     let bestProvider: string | null = null;
     let lowestPrice: number | null = null;
     const allPrices = new Map<string, number>();
+    const arrayPrices = arrayMapped.quotes.filter((price) => price != null);
+    ctx.logger.info("Array quote fan-out complete", {
+      requested: args.providers.length,
+      received: arrayPrices.length,
+    });
 
     for (const [provider, entry] of mapped.quotes ?? []) {
       if (entry == null) continue;

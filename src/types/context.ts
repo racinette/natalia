@@ -36,11 +36,9 @@ import type {
   FiniteHandle,
   Selection,
   CompensationSelection,
-  ForEachHandlerEntry,
   MapHandlerEntry,
   DefaultUnhandledHandlerEntry,
   MapOutputFor,
-  CompensationForEachHandlerEntry,
   CompensationMapHandlerEntry,
   StepFailureInfo,
   ChildWorkflowFailureInfo,
@@ -658,7 +656,7 @@ export interface BaseContext<
  * Key differences from WorkflowContext:
  * - Steps return `CompensationStepResult<T>` via `CompensationStepCall<T>` —
  *   compensation code MUST handle failures gracefully.
- * - Has `scope()`, `select()`, `forEach()`, `map()` — same closure-based structured
+ * - Has `scope()`, `select()`, `map()` — same closure-based structured
  *   concurrency but failures are always visible in result types.
  * - `childWorkflows` return `CompensationWorkflowCall<T>` → `WorkflowResult<T>`.
  * - No `addCompensation()` (prevents nested compensation chains).
@@ -749,45 +747,6 @@ export interface CompensationContext<
   select<M extends Record<string, SelectableHandle>>(
     handles: M,
   ): CompensationSelection<M>;
-
-  // ---------------------------------------------------------------------------
-  // forEach — process all finite handle results
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Process all finite handle results as they arrive.
-   * In compensation context, branch handles return result unions — handle all outcomes.
-   * Every handle must have a callback.
-   *
-   * Accepted inputs:
-   * - `BranchHandle` variants (single, array, map)
-   * - `ChannelReceiveCall<T>` — produced by `ctx.channels.<n>.receive(...)`
-   *
-   * Raw `ChannelHandle` is not accepted here.
-   */
-  forEach<M extends Record<string, FiniteHandle>>(
-    handles: M,
-    callbacks: {
-      [K in keyof M & string]: CompensationForEachHandlerEntry<M[K]>;
-    },
-  ): Promise<void>;
-
-  /**
-   * Process all finite handle results with partial callbacks and a default.
-   */
-  forEach<
-    M extends Record<string, FiniteHandle>,
-    C extends Partial<{
-      [K in keyof M & string]: CompensationForEachHandlerEntry<M[K]>;
-    }>,
-  >(
-    handles: M,
-    callbacks: C,
-    defaultCallback: (
-      key: Exclude<keyof M & string, keyof C & string>,
-      data: any,
-    ) => Promise<void> | void,
-  ): Promise<void>;
 
   // ---------------------------------------------------------------------------
   // map — collect transformed results
@@ -890,7 +849,7 @@ export type CompensationCallback<
  * Dynamic fan-out: scope entries accept collections (arrays, Maps) of closures
  * and/or thenables.
  * `ctx.select()` accepts `BranchHandle` variants, `ChannelHandle` (streaming), and
- * `ChannelReceiveCall` (one-shot). `ctx.forEach()` and `ctx.map()` accept `FiniteHandle`
+ * `ChannelReceiveCall` (one-shot). `ctx.map()` accepts `FiniteHandle`
  * inputs — `BranchHandle` variants and `ChannelReceiveCall` (not raw `ChannelHandle`).
  *
  * Child workflow access is split by semantics:
@@ -1011,7 +970,7 @@ export interface WorkflowContext<
    * Entries can be async closures OR direct thenables (or collections of either).
    * The engine runs them on a virtual event loop, interleaving at durable yield points.
    * The callback receives `BranchHandle<T>` values (matching the closure structure)
-   * which can be directly awaited or passed into select/forEach/map.
+   * which can be directly awaited or passed into select/map.
    *
    * Scope exit behavior:
    * - Branches with compensated steps that weren't consumed → compensation runs
@@ -1027,51 +986,6 @@ export interface WorkflowContext<
     entries: E,
     callback: (handles: ScopeHandles<E>) => Promise<R>,
   ): Promise<R>;
-
-  // ---------------------------------------------------------------------------
-  // forEach — process all finite handle results as they arrive
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Process all finite handle results as they arrive.
-   * Plain callbacks receive successful data (T) and failure auto-terminates.
-   * Use `{ complete, failure }` handlers for explicit failure recovery.
-   *
-   * Accepted inputs:
-   * - Single `BranchHandle<T>`, `BranchHandle<T>[]`, `Map<K, BranchHandle<T>>`
-   * - `ChannelReceiveCall<T>` — produced by `ctx.channels.<n>.receive(...)`;
-   *   resolves once and calls the callback with the received value.
-   *
-   * Raw `ChannelHandle` is not accepted here — it never exhausts and would
-   * prevent `forEach` from completing. Use `ctx.channels.<n>.receive(...)` for
-   * a one-shot channel wait, or `ctx.select()` for streaming channel iteration.
-   *
-   * For BranchHandle collections, callbacks receive `(data, innerKey)`.
-   */
-  forEach<M extends Record<string, FiniteHandle>>(
-    handles: M,
-    callbacks: {
-      [K in keyof M & string]: ForEachHandlerEntry<M[K]>;
-    },
-  ): Promise<void>;
-
-  /**
-   * Process finite handle results with partial callbacks and a default.
-   * The default only fires for keys NOT explicitly covered.
-   * Plain default callback handles completion only; for failure handling
-   * use `{ complete, failure }`.
-   */
-  forEach<
-    M extends Record<string, FiniteHandle>,
-    C extends Partial<{
-      [K in keyof M & string]: ForEachHandlerEntry<M[K]>;
-    }>,
-    D extends DefaultUnhandledHandlerEntry<M, C>,
-  >(
-    handles: M,
-    callbacks: C,
-    defaultCallback: D,
-  ): Promise<void>;
 
   // ---------------------------------------------------------------------------
   // map — collect transformed results from all finite handles

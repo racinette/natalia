@@ -35,7 +35,7 @@ const OperatorResolution = z.discriminatedUnion("action", [
 /**
  * Showcases:
  * - beforeCompensate / afterCompensate
- * - compensation context scope/forEach/select/sleep/channels/streams/events
+ * - compensation context scope/map/select/sleep/channels/streams/events
  * - CompensationStepCall.retry()
  * - human-in-the-loop compensation via channels + events + streams
  */
@@ -100,19 +100,19 @@ export const compensationHooksWorkflow = defineWorkflow({
         },
       },
       async ({ logEntry, auditEntry }) => {
-        await ctx.forEach(
+        const notificationResults = await ctx.map(
           { logEntry, auditEntry },
           {
-            logEntry: (data) => {
-              if (!data.ok)
-                ctx.logger.warn("Customer notification failed to send");
-            },
-            auditEntry: (data) => {
-              if (!data.ok)
-                ctx.logger.warn("Audit notification failed to send");
-            },
+            logEntry: (data) => data.ok,
+            auditEntry: (data) => data.ok,
           },
         );
+        if (!notificationResults.logEntry) {
+          ctx.logger.warn("Customer notification failed to send");
+        }
+        if (!notificationResults.auditEntry) {
+          ctx.logger.warn("Audit notification failed to send");
+        }
       },
     );
 
