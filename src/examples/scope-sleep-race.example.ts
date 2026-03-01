@@ -40,7 +40,7 @@ export const scopeSleepRaceWorkflow = defineWorkflow({
           }),
         timer: ctx.sleep(30).then(() => "timed_out" as const),
       },
-      async ({ flight, timer }) => {
+      async (ctx, { flight, timer }) => {
         const sel = ctx.select({ flight, timer });
         for await (const val of sel.match({
           flight: {
@@ -68,7 +68,7 @@ export const scopeSleepRaceWorkflow = defineWorkflow({
         }),
         timer: ctx.sleep(45).then(() => "timed_out" as const),
       },
-      async ({ payment, timer }) => {
+      async (ctx, { payment, timer }) => {
         const sel = ctx.select({ payment, timer });
         for await (const val of sel.match({
           payment: {

@@ -32,7 +32,7 @@ export const quoteAggregationWorkflow = defineWorkflow({
 
     const arrayMapped = await ctx.scope(
       { quotes: arrayBranches },
-      async ({ quotes }) =>
+      async (ctx, { quotes }) =>
         ctx.map(
           { quotes },
           {
@@ -65,7 +65,7 @@ export const quoteAggregationWorkflow = defineWorkflow({
 
     const mapped = await ctx.scope(
       { quotes: mapBranches },
-      async ({ quotes }) =>
+      async (ctx, { quotes }) =>
         ctx.map(
           { quotes },
           {

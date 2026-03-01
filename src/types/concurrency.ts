@@ -265,10 +265,20 @@ export type ScopeHandles<E extends ScopeEntries> = {
  * - `ChannelReceiveCall<T>` — one-shot; produced by `ctx.channels.<n>.receive(...)`.
  *   The key is removed from `remaining` once the receive resolves.
  */
-export type SelectableHandle =
+export type ScopeSelectableHandle =
   | BranchHandle<any>
   | BranchHandle<any>[]
   | Map<any, BranchHandle<any>>
+  | ChannelHandle<any>
+  | ChannelReceiveCall<any>;
+
+/**
+ * Handle types that can be passed into base-context `ctx.select()`.
+ *
+ * Base context only supports channel-based waiting and does not allow
+ * branch-handle selection (branch handles are scope-local by design).
+ */
+export type BaseSelectableHandle =
   | ChannelHandle<any>
   | ChannelReceiveCall<any>;
 
@@ -281,7 +291,7 @@ export type SelectableHandle =
  * because it never exhausts. Use `ctx.channels.<n>.receive(...)` to get a
  * finite one-shot `ChannelReceiveCall<T>` instead.
  */
-export type FiniteHandle =
+export type ScopeFiniteHandle =
   | BranchHandle<any>
   | BranchHandle<any>[]
   | Map<any, BranchHandle<any>>
@@ -354,7 +364,7 @@ export type HandleMatchData<H> =
 /**
  * Union of all possible events from a select record.
  */
-export type SelectEvent<M extends Record<string, SelectableHandle>> = {
+export type SelectEvent<M extends Record<string, ScopeSelectableHandle>> = {
   [K in keyof M & string]: HandleSelectEvent<K, M[K]>;
 }[keyof M & string];
 
@@ -382,7 +392,7 @@ type SelectHandleData<H> =
  * For collections (array/map), the per-element data type is yielded.
  * A branch failure auto-terminates the workflow when iterating with `for await`.
  */
-export type SelectDataUnion<M extends Record<string, SelectableHandle>> = {
+export type SelectDataUnion<M extends Record<string, ScopeSelectableHandle>> = {
   [K in keyof M & string]: SelectHandleData<M[K]>;
 }[keyof M & string];
 
@@ -441,7 +451,7 @@ type HasExplicitFailure<H> =
  * For channel handles and one-shot receive calls, only a plain function is allowed
  * (channels never fail).
  */
-export type MatchHandlerEntry<H extends SelectableHandle> = H extends
+export type MatchHandlerEntry<H extends ScopeSelectableHandle> = H extends
   | BranchHandle<any>
   | BranchHandle<any>[]
   | Map<any, BranchHandle<any>>
@@ -458,7 +468,7 @@ export type MatchHandlerEntry<H extends SelectableHandle> = H extends
 /**
  * Handler map for Selection.match().
  */
-export type MatchHandlers<M extends Record<string, SelectableHandle>> = {
+export type MatchHandlers<M extends Record<string, ScopeSelectableHandle>> = {
   [K in keyof M & string]?: MatchHandlerEntry<M[K]>;
 };
 
@@ -474,7 +484,7 @@ export type MatchHandlers<M extends Record<string, SelectableHandle>> = {
  * auto-terminate the workflow and contribute nothing to the yield type.
  */
 export type MatchReturn<
-  M extends Record<string, SelectableHandle>,
+  M extends Record<string, ScopeSelectableHandle>,
   H extends MatchHandlers<M>,
   DF = never,
 > = {
@@ -519,7 +529,7 @@ export type MatchReturn<
  * @typeParam M - The handle record type.
  */
 export interface Selection<
-  M extends Record<string, SelectableHandle>,
+  M extends Record<string, ScopeSelectableHandle>,
 > extends AsyncIterable<SelectDataUnion<M>> {
   /**
    * Iterate over all events with a default failure handler and no per-key transforms.
@@ -572,7 +582,7 @@ export interface Selection<
  * failure handler for granular recovery during compensation.
  */
 export interface CompensationSelection<
-  M extends Record<string, SelectableHandle>,
+  M extends Record<string, ScopeSelectableHandle>,
 > extends AsyncIterable<SelectDataUnion<M>> {
   /** All keys identity, all failures caught by `onFailure`. Equivalent to `match({}, onFailure)`. */
   match<DF extends (failure: BranchFailureInfo) => any>(
@@ -644,7 +654,7 @@ type FiniteHandleInnerKey<H> =
  * - `{ complete }` only: failure auto-terminates.
  * - `{ failure }` only: complete yields data unchanged (identity); failure handled explicitly.
  */
-export type MapHandlerEntry<H extends FiniteHandle> = H extends
+export type ScopeMapHandlerEntry<H extends ScopeFiniteHandle> = H extends
   | BranchHandle<any>
   | BranchHandle<any>[]
   | Map<any, BranchHandle<any>>
@@ -721,7 +731,7 @@ export type MapOutputFor<H, C> =
  * When `DF = never` (no `onFailure` argument): `X | never = X`, failures auto-terminate.
  */
 export type MapReturn<
-  M extends Record<string, FiniteHandle>,
+  M extends Record<string, ScopeFiniteHandle>,
   C extends Partial<Record<keyof M & string, any>>,
   DF = never,
 > = {
@@ -741,7 +751,7 @@ export type MapReturn<
  * Plain function — receives the branch data directly.
  * Also accepts `ChannelReceiveCall<T>` for one-shot channel waits in compensation.
  */
-export type CompensationMapHandlerEntry<H extends FiniteHandle> =
+export type ScopeCompensationMapHandlerEntry<H extends ScopeFiniteHandle> =
   H extends BranchHandle<any>
     ? (data: FiniteHandleData<H>) => any
     : H extends BranchHandle<any>[]

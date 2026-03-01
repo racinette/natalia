@@ -171,7 +171,7 @@ export const onboardingVerificationWorkflow = defineWorkflow({
         ),
         deadline: ctx.sleep(3600).then(() => "deadline" as const),
       },
-      async ({
+      async (ctx, {
         passport,
         driverLicense,
         nationalId,

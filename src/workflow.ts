@@ -278,7 +278,7 @@ export function defineWorkflowHeader<
  *         .compensate(async (compCtx) => {
  *           await compCtx.steps.cancelHotel(args.city, args.checkIn, args.checkOut);
  *         }),
- *     }, async ({ a }) => await a);
+ *     }, async (ctx, { a }) => await a);
  *
  *     return { bookingId: flight.id };
  *   },

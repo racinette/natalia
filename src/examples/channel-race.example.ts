@@ -38,7 +38,7 @@ export const channelRaceWorkflow = defineWorkflow({
             await compCtx.steps.cancelFlight(args.destination, args.customerId);
           }),
       },
-      async ({ booking }) => {
+      async (ctx, { booking }) => {
         // One-shot race: booking completes OR a single cancel message arrives.
         // channel.receive() produces a ChannelReceiveCall — finite, removed from
         // remaining once resolved, so the for-await loop terminates naturally.
@@ -76,7 +76,7 @@ export const channelRaceWorkflow = defineWorkflow({
             );
           }),
       },
-      async ({ booking2 }) => {
+      async (ctx, { booking2 }) => {
         // Streaming channel: passes the raw ChannelHandle so the channel branch
         // fires on each incoming cancel message (never removed from remaining).
         // match() iterates events; we break after the first to get a one-shot result.

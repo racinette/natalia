@@ -33,15 +33,15 @@ import type {
   BranchFailureInfo,
   ScopeEntries,
   ScopeHandles,
-  SelectableHandle,
-  FiniteHandle,
+  BaseSelectableHandle,
+  ScopeSelectableHandle,
+  ScopeFiniteHandle,
   FiniteHandleData,
   Selection,
   CompensationSelection,
-  MapHandlerEntry,
-  MapOutputFor,
+  ScopeMapHandlerEntry,
   MapReturn,
-  CompensationMapHandlerEntry,
+  ScopeCompensationMapHandlerEntry,
   StepFailureInfo,
   ChildWorkflowFailureInfo,
   WithCompensation,
@@ -658,8 +658,9 @@ export interface BaseContext<
  * Key differences from WorkflowContext:
  * - Steps return `CompensationStepResult<T>` via `CompensationStepCall<T>` —
  *   compensation code MUST handle failures gracefully.
- * - Has `scope()`, `select()`, `map()` — same closure-based structured
- *   concurrency but failures are always visible in result types.
+ * - Has `scope()` and channel-only `select()`.
+ * - Full structured-concurrency primitives (`select` with branch handles, `map`)
+ *   are available only inside `scope()` via `WorkflowCompensationConcurrencyContext`.
  * - `childWorkflows` return `CompensationWorkflowCall<T>` → `WorkflowResult<T>`.
  * - No `addCompensation()` (prevents nested compensation chains).
  * - No `foreignWorkflows` accessor (fire-and-forget not needed in compensation).
@@ -732,7 +733,20 @@ export interface CompensationContext<
    */
   scope<R, E extends ScopeEntries>(
     entries: E,
-    callback: (handles: ScopeHandles<E>) => Promise<R>,
+    callback: (
+      ctx: WorkflowCompensationConcurrencyContext<
+        TState,
+        TChannels,
+        TStreams,
+        TEvents,
+        TSteps,
+        TChildWorkflows,
+        TForeignWorkflows,
+        TPatches,
+        TRng
+      >,
+      handles: ScopeHandles<E>,
+    ) => Promise<R>,
   ): Promise<R>;
 
   // ---------------------------------------------------------------------------
@@ -746,46 +760,9 @@ export interface CompensationContext<
    * - `ctx.channels.<n>` (`ChannelHandle`) — streaming branch; never exhausted.
    * - `ctx.channels.<n>.receive(...)` (`ChannelReceiveCall`) — one-shot branch.
    */
-  select<M extends Record<string, SelectableHandle>>(
+  select<M extends Record<string, BaseSelectableHandle>>(
     handles: M,
   ): CompensationSelection<M>;
-
-  // ---------------------------------------------------------------------------
-  // map — collect transformed results
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Collect transformed results from all finite handles.
-   *
-   * Same three call forms as `WorkflowContext.map`:
-   * - `ctx.map(handles)` — identity for all keys; failure auto-terminates.
-   * - `ctx.map(handles, callbacks)` — partial plain-function callbacks; omitted keys = identity.
-   * - `ctx.map(handles, callbacks, onFailure)` — default failure handler for uncovered failures.
-   *
-   * In `CompensationContext`, callbacks are plain functions only (no `{ complete, failure }`
-   * objects — failures are surfaced in `CompensationStepResult` at the step level).
-   */
-  map<M extends Record<string, FiniteHandle>>(
-    handles: M,
-  ): Promise<{ [K in keyof M & string]: FiniteHandleData<M[K]> }>;
-
-  map<
-    M extends Record<string, FiniteHandle>,
-    C extends Partial<{ [K in keyof M & string]: CompensationMapHandlerEntry<M[K]> }>,
-  >(
-    handles: M,
-    callbacks: C,
-  ): Promise<MapReturn<M, C>>;
-
-  map<
-    M extends Record<string, FiniteHandle>,
-    C extends Partial<{ [K in keyof M & string]: CompensationMapHandlerEntry<M[K]> }>,
-    DF extends (failure: BranchFailureInfo) => any,
-  >(
-    handles: M,
-    callbacks: C,
-    onFailure: DF,
-  ): Promise<MapReturn<M, C, Awaited<ReturnType<DF>>>>;
 }
 
 /**
@@ -839,9 +816,9 @@ export type CompensationCallback<
  *
  * Dynamic fan-out: scope entries accept collections (arrays, Maps) of closures
  * and/or thenables.
- * `ctx.select()` accepts `BranchHandle` variants, `ChannelHandle` (streaming), and
- * `ChannelReceiveCall` (one-shot). `ctx.map()` accepts `FiniteHandle`
- * inputs — `BranchHandle` variants and `ChannelReceiveCall` (not raw `ChannelHandle`).
+ * Base `ctx.select()` is channel-only (`ChannelHandle` and `ChannelReceiveCall`).
+ * Full concurrency primitives (`select` with branch handles and `map`) are
+ * available only inside `ctx.scope()` via `WorkflowConcurrencyContext`.
  *
  * Child workflow access is split by semantics:
  * - `ctx.childWorkflows.*` — structured invocation (lifecycle managed, compensation supported)
@@ -935,16 +912,9 @@ export interface WorkflowContext<
    *   resolves exactly once and is removed from `remaining` afterwards. Use
    *   when you want a single message (or a timeout fallback) in a race.
    *
-   * **`for await...of`** — primary iteration; yields `SelectDataUnion<M>` until exhausted.
-   * Branch failures auto-terminate the workflow.
-   *
-   * **`.match(handlers, onFailure?)`** — key-aware async iteration.
-   * Handlers override default behavior per key; omitting a key yields its data unchanged.
-   * Omitting `complete` in a `{ failure }` object also yields data unchanged on success.
-   * The optional `onFailure` callback is the default failure handler — applied to branch
-   * failures on keys without an explicit `failure` handler.
+   * Base-context selection is channel-only.
    */
-  select<M extends Record<string, SelectableHandle>>(handles: M): Selection<M>;
+  select<M extends Record<string, BaseSelectableHandle>>(handles: M): Selection<M>;
 
   /**
    * Create a cron-like schedule handle for recurring execution.
@@ -966,8 +936,9 @@ export interface WorkflowContext<
    *
    * Entries can be async closures OR direct thenables (or collections of either).
    * The engine runs them on a virtual event loop, interleaving at durable yield points.
-   * The callback receives `BranchHandle<T>` values (matching the closure structure)
-   * which can be directly awaited or passed into select/map.
+   * The callback receives a `WorkflowConcurrencyContext` as first argument and
+   * `BranchHandle<T>` values as second argument. Use the callback context for all
+   * branch-aware `select/map` operations.
    *
    * Scope exit behavior:
    * - Branches with compensated steps that weren't consumed → compensation runs
@@ -981,60 +952,21 @@ export interface WorkflowContext<
    */
   scope<R, E extends ScopeEntries>(
     entries: E,
-    callback: (handles: ScopeHandles<E>) => Promise<R>,
+    callback: (
+      ctx: WorkflowConcurrencyContext<
+        TState,
+        TChannels,
+        TStreams,
+        TEvents,
+        TSteps,
+        TChildWorkflows,
+        TForeignWorkflows,
+        TPatches,
+        TRng
+      >,
+      handles: ScopeHandles<E>,
+    ) => Promise<R>,
   ): Promise<R>;
-
-  // ---------------------------------------------------------------------------
-  // map — collect transformed results from all finite handles
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Collect transformed results from all finite handles.
-   *
-   * **Three call forms — parallel to `sel.match()`:**
-   *
-   * `ctx.map(handles)` — identity for all keys; failure auto-terminates.
-   * Equivalent to awaiting all branches with no transformation.
-   *
-   * `ctx.map(handles, callbacks)` — partial per-key handlers; omitted keys yield data
-   * unchanged. Handler forms per key: plain function, `{ complete, failure }`,
-   * `{ complete }` (failure terminates), `{ failure }` (complete = identity).
-   *
-   * `ctx.map(handles, callbacks, onFailure)` — same as above, but `onFailure` is the
-   * default failure callback applied to any branch failure not covered by an explicit
-   * per-key `failure` handler. Its return value replaces the failed result instead of
-   * terminating the workflow.
-   *
-   * Accepted inputs:
-   * - Single `BranchHandle<T>`, `BranchHandle<T>[]`, `Map<K, BranchHandle<T>>`
-   * - `ChannelReceiveCall<T>` — produced by `ctx.channels.<n>.receive(...)`
-   *
-   * The return type mirrors the collection structure:
-   * - Single BranchHandle / ChannelReceiveCall → single value
-   * - BranchHandle[] → value[]
-   * - Map<K, BranchHandle> → Map<K, value>
-   */
-  map<M extends Record<string, FiniteHandle>>(
-    handles: M,
-  ): Promise<{ [K in keyof M & string]: FiniteHandleData<M[K]> }>;
-
-  map<
-    M extends Record<string, FiniteHandle>,
-    C extends Partial<{ [K in keyof M & string]: MapHandlerEntry<M[K]> }>,
-  >(
-    handles: M,
-    callbacks: C,
-  ): Promise<MapReturn<M, C>>;
-
-  map<
-    M extends Record<string, FiniteHandle>,
-    C extends Partial<{ [K in keyof M & string]: MapHandlerEntry<M[K]> }>,
-    DF extends (failure: BranchFailureInfo) => any,
-  >(
-    handles: M,
-    callbacks: C,
-    onFailure: DF,
-  ): Promise<MapReturn<M, C, Awaited<ReturnType<DF>>>>;
 
   // ---------------------------------------------------------------------------
   // addCompensation — general purpose LIFO registration
@@ -1062,6 +994,138 @@ export interface WorkflowContext<
       TRng
     >,
   ): void;
+}
+
+// =============================================================================
+// WORKFLOW CONCURRENCY CONTEXT
+// =============================================================================
+
+/**
+ * Scope-local context for structured concurrency in workflow execution.
+ *
+ * Exposes full branch-aware concurrency primitives (`select`, `map`) and is
+ * provided only as the first argument to `WorkflowContext.scope(...)`.
+ */
+export interface WorkflowConcurrencyContext<
+  TState,
+  TChannels extends ChannelDefinitions,
+  TStreams extends StreamDefinitions,
+  TEvents extends EventDefinitions,
+  TSteps extends StepDefinitions,
+  TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TPatches extends PatchDefinitions = Record<string, never>,
+  TRng extends RngDefinitions = Record<string, never>,
+> extends WorkflowContext<
+    TState,
+    TChannels,
+    TStreams,
+    TEvents,
+    TSteps,
+    TChildWorkflows,
+    TForeignWorkflows,
+    TPatches,
+    TRng
+  > {
+  /**
+   * Create a selection for concurrent waiting over scope branch handles and
+   * channels.
+   */
+  select<M extends Record<string, ScopeSelectableHandle>>(handles: M): Selection<M>;
+
+  /**
+   * Collect transformed results from all finite scope handles.
+   */
+  map<M extends Record<string, ScopeFiniteHandle>>(
+    handles: M,
+  ): Promise<{ [K in keyof M & string]: FiniteHandleData<M[K]> }>;
+
+  map<
+    M extends Record<string, ScopeFiniteHandle>,
+    C extends Partial<{ [K in keyof M & string]: ScopeMapHandlerEntry<M[K]> }>,
+  >(
+    handles: M,
+    callbacks: C,
+  ): Promise<MapReturn<M, C>>;
+
+  map<
+    M extends Record<string, ScopeFiniteHandle>,
+    C extends Partial<{ [K in keyof M & string]: ScopeMapHandlerEntry<M[K]> }>,
+    DF extends (failure: BranchFailureInfo) => any,
+  >(
+    handles: M,
+    callbacks: C,
+    onFailure: DF,
+  ): Promise<MapReturn<M, C, Awaited<ReturnType<DF>>>>;
+}
+
+// =============================================================================
+// COMPENSATION CONCURRENCY CONTEXT
+// =============================================================================
+
+/**
+ * Scope-local context for structured concurrency in compensation execution.
+ *
+ * Exposes full branch-aware concurrency primitives (`select`, `map`) and is
+ * provided only as the first argument to `CompensationContext.scope(...)`.
+ */
+export interface WorkflowCompensationConcurrencyContext<
+  TState,
+  TChannels extends ChannelDefinitions,
+  TStreams extends StreamDefinitions,
+  TEvents extends EventDefinitions,
+  TSteps extends StepDefinitions,
+  TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TPatches extends PatchDefinitions = Record<string, never>,
+  TRng extends RngDefinitions = Record<string, never>,
+> extends CompensationContext<
+    TState,
+    TChannels,
+    TStreams,
+    TEvents,
+    TSteps,
+    TChildWorkflows,
+    TForeignWorkflows,
+    TPatches,
+    TRng
+  > {
+  /**
+   * Create a selection for concurrent waiting over scope branch handles and
+   * channels.
+   */
+  select<M extends Record<string, ScopeSelectableHandle>>(
+    handles: M,
+  ): CompensationSelection<M>;
+
+  /**
+   * Collect transformed results from all finite scope handles.
+   */
+  map<M extends Record<string, ScopeFiniteHandle>>(
+    handles: M,
+  ): Promise<{ [K in keyof M & string]: FiniteHandleData<M[K]> }>;
+
+  map<
+    M extends Record<string, ScopeFiniteHandle>,
+    C extends Partial<{
+      [K in keyof M & string]: ScopeCompensationMapHandlerEntry<M[K]>;
+    }>,
+  >(
+    handles: M,
+    callbacks: C,
+  ): Promise<MapReturn<M, C>>;
+
+  map<
+    M extends Record<string, ScopeFiniteHandle>,
+    C extends Partial<{
+      [K in keyof M & string]: ScopeCompensationMapHandlerEntry<M[K]>;
+    }>,
+    DF extends (failure: BranchFailureInfo) => any,
+  >(
+    handles: M,
+    callbacks: C,
+    onFailure: DF,
+  ): Promise<MapReturn<M, C, Awaited<ReturnType<DF>>>>;
 }
 
 // =============================================================================

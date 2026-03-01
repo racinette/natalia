@@ -99,7 +99,7 @@ export const compensationHooksWorkflow = defineWorkflow({
           return result;
         },
       },
-      async ({ logEntry, auditEntry }) => {
+      async (ctx, { logEntry, auditEntry }) => {
         const notificationResults = await ctx.map(
           { logEntry, auditEntry },
           {
@@ -204,7 +204,7 @@ export const compensationHooksWorkflow = defineWorkflow({
               `Hotel booking for ${args.destination} was cancelled.`,
             ),
           },
-          async ({ cancel, notify }) => {
+          async (compCtx, { cancel, notify }) => {
             const sel = compCtx.select({ cancel, notify });
             for await (const _data of sel) {
               compCtx.logger.debug("Compensation branch resolved");

@@ -51,7 +51,7 @@ export const flightBookingWorkflow = defineWorkflow({
           })
           .retry({ maxAttempts: 5 }),
       },
-      async ({ provider1, provider2 }) => {
+      async (ctx, { provider1, provider2 }) => {
         const sel = ctx.select({ provider1, provider2 });
         for await (const data of sel) {
           return data;
@@ -81,7 +81,7 @@ export const flightBookingWorkflow = defineWorkflow({
             );
           }),
       },
-      async ({ primary, backup }) => {
+      async (ctx, { primary, backup }) => {
         const sel = ctx.select({ primary, backup });
         for await (const result of sel.match(
           {

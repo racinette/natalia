@@ -95,7 +95,7 @@ export const orderWorkflow = defineWorkflow({
             );
           }),
       },
-      async ({ hotel }) => {
+      async (ctx, { hotel }) => {
         const result = await ctx.map(
           { hotel },
           {

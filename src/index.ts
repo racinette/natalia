@@ -19,7 +19,8 @@
  *     Once claimed, the engine will not run that compensation automatically.
  * - failure/complete builders: { complete, failure } callbacks on concurrency primitives
  *     (match, map) for explicit failure recovery on branch handles.
- * - Select: `ctx.select(handles)` returns a Selection<M>.
+ * - Select: base `ctx.select(handles)` is channel-only.
+ *     Full branch-aware select is available on the scope callback context.
  *     `for await...of` — primary iteration surface; yields SelectDataUnion<M> (successful data
  *     from all handle types including channels and receive calls); branch failure auto-terminates.
  *     `.match(handlers, onFailure?)` — key-aware async iteration; `for await (const val of sel.match(...))`.
@@ -27,10 +28,10 @@
  *     Omitting a key yields its data unchanged (identity) on complete; failure auto-terminates (or uses onFailure).
  *     onFailure: default failure callback for keys without an explicit failure handler.
  *     Channel inputs: raw ChannelHandle = streaming (never exhausted); ChannelReceiveCall = one-shot.
- * - map: Collect results from all FiniteHandle inputs concurrently.
+ * - map: Scope-local primitive only (not on base workflow/compensation contexts).
+ *     Use inside `ctx.scope(..., async (ctx, handles) => ...)`.
  *     map(handles) — identity for all, failure terminates.
- *     map(handles, callbacks, onFailure?) — partial per-key handlers (plain fn, { complete, failure },
- *     { complete }, { failure } = identity) + optional default failure callback.
+ *     map(handles, callbacks, onFailure?) — partial per-key handlers + optional default failure callback.
  *     Accepts BranchHandle variants and ChannelReceiveCall (not raw ChannelHandle).
  *     Collection handles (BranchHandle[], Map<K, BranchHandle>) pass innerKey to callbacks.
  * - Child workflows: ctx.childWorkflows.* — structured invocation (WorkflowCall<T> thenable).

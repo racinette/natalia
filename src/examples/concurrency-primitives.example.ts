@@ -188,7 +188,7 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
 
     const decision = await ctx.scope(
       { flights: flightSearches, hotels: hotelReservations },
-      async ({ flights, hotels }) => {
+      async (ctx, { flights, hotels }) => {
         const pricedFlights = await ctx.map(
           { flights },
           {
