@@ -18,24 +18,29 @@
  *     claimCompensation() — transfer ownership and receive a callable compensation runner.
  *     Once claimed, the engine will not run that compensation automatically.
  * - failure/complete builders: { complete, failure } callbacks on concurrency primitives
- *     (match, forEach, map) for explicit failure recovery.
+ *     (match, forEach, map) for explicit failure recovery on branch handles.
  * - Select: `ctx.select(handles)` returns a Selection<M>.
- *     `for await...of` — primary iteration surface; yields SelectDataUnion<M> (successful data);
- *     branch failure auto-terminates the workflow.
+ *     `for await...of` — primary iteration surface; yields SelectDataUnion<M> (successful data
+ *     from all handle types including channels and receive calls); branch failure auto-terminates.
  *     `.match(handlers)` — key-aware single-event dispatch; supports { complete, failure }
  *     handlers on branch handle keys for granular recovery without auto-termination.
  *     No `.next()` method — use `for await` for simple iteration, `.match()` for granular control.
- * - forEach / map: Batch processing with { complete, failure } handlers; collection-aware
- *     (BranchHandle, BranchHandle[], Map<K, BranchHandle>) — innerKey identifies element.
+ *     Channel inputs: raw ChannelHandle = streaming (never exhausted); ChannelReceiveCall = one-shot.
+ * - forEach / map: Batch processing of FiniteHandle inputs with { complete, failure } handlers.
+ *     Accepts BranchHandle variants and ChannelReceiveCall (not raw ChannelHandle).
+ *     Collection handles (BranchHandle[], Map<K, BranchHandle>) pass innerKey to callbacks.
  * - Child workflows: ctx.childWorkflows.* — structured invocation (WorkflowCall<T> thenable).
  *     Supports .compensate(), .failure(), .complete() in result mode.
  *     Use call option `{ detached: true }` for fire-and-forget messaging mode
  *     which returns a ForeignWorkflowHandle directly.
  * - Foreign workflows: ctx.foreignWorkflows.* — message-only handles to existing instances.
  *     Only channels.send() is available — no lifecycle coupling.
- * - Channels: Async message passing (input) — ctx.channels.receive() blocks until a message arrives.
- *     Optional timeout overloads are available: receive(timeoutSeconds, defaultValue?).
+ * - Channels: Async message passing (input).
+ *     ctx.channels.receive() returns ChannelReceiveCall<T> — awaitable directly or passed into
+ *     select/forEach/map for one-shot channel waits. Timeout overloads available:
+ *     receive(timeoutSeconds) → T | undefined; receive(timeoutSeconds, defaultValue) → T | TDefault.
  *     receive(0) is a deterministic nowait poll.
+ *     Raw ChannelHandle can be passed into select for streaming (multi-message) branches.
  * - Streams: Append-only logs (output)
  * - Events: Write-once coordination flags with "never" semantics
  * - Lifecycle Events: Engine-managed workflow state signals (external API only)

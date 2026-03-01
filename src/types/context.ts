@@ -33,6 +33,7 @@ import type {
   ScopeEntries,
   ScopeHandles,
   SelectableHandle,
+  FiniteHandle,
   Selection,
   CompensationSelection,
   ForEachHandlerEntry,
@@ -740,21 +741,31 @@ export interface CompensationContext<
 
   /**
    * Create a selection for concurrent waiting in compensation.
+   *
+   * Two channel input forms with distinct semantics:
+   * - `ctx.channels.<n>` (`ChannelHandle`) — streaming branch; never exhausted.
+   * - `ctx.channels.<n>.receive(...)` (`ChannelReceiveCall`) — one-shot branch.
    */
   select<M extends Record<string, SelectableHandle>>(
     handles: M,
   ): CompensationSelection<M>;
 
   // ---------------------------------------------------------------------------
-  // forEach — process all branch results
+  // forEach — process all finite handle results
   // ---------------------------------------------------------------------------
 
   /**
-   * Process all branch results as they arrive.
-   * In compensation context, branches return result unions — handle all outcomes.
+   * Process all finite handle results as they arrive.
+   * In compensation context, branch handles return result unions — handle all outcomes.
    * Every handle must have a callback.
+   *
+   * Accepted inputs:
+   * - `BranchHandle` variants (single, array, map)
+   * - `ChannelReceiveCall<T>` — produced by `ctx.channels.<n>.receive(...)`
+   *
+   * Raw `ChannelHandle` is not accepted here.
    */
-  forEach<M extends Record<string, SelectableHandle>>(
+  forEach<M extends Record<string, FiniteHandle>>(
     handles: M,
     callbacks: {
       [K in keyof M & string]: CompensationForEachHandlerEntry<M[K]>;
@@ -762,10 +773,10 @@ export interface CompensationContext<
   ): Promise<void>;
 
   /**
-   * Process all branch results with partial callbacks and a default.
+   * Process all finite handle results with partial callbacks and a default.
    */
   forEach<
-    M extends Record<string, SelectableHandle>,
+    M extends Record<string, FiniteHandle>,
     C extends Partial<{
       [K in keyof M & string]: CompensationForEachHandlerEntry<M[K]>;
     }>,
@@ -783,11 +794,15 @@ export interface CompensationContext<
   // ---------------------------------------------------------------------------
 
   /**
-   * Collect transformed results from all branch handles.
+   * Collect transformed results from all finite handles.
    * Every handle must have a callback.
+   *
+   * Accepted inputs:
+   * - `BranchHandle` variants (single, array, map)
+   * - `ChannelReceiveCall<T>` — produced by `ctx.channels.<n>.receive(...)`
    */
   map<
-    M extends Record<string, SelectableHandle>,
+    M extends Record<string, FiniteHandle>,
     C extends {
       [K in keyof M & string]: CompensationMapHandlerEntry<M[K]>;
     },
@@ -804,7 +819,7 @@ export interface CompensationContext<
    * Collect transformed results with partial callbacks and a default.
    */
   map<
-    M extends Record<string, SelectableHandle>,
+    M extends Record<string, FiniteHandle>,
     C extends Partial<{
       [K in keyof M & string]: CompensationMapHandlerEntry<M[K]>;
     }>,
@@ -874,7 +889,9 @@ export type CompensationCallback<
  *
  * Dynamic fan-out: scope entries accept collections (arrays, Maps) of closures
  * and/or thenables.
- * `ctx.select()`, `ctx.forEach()`, `ctx.map()` accept HandleGroup collections.
+ * `ctx.select()` accepts `BranchHandle` variants, `ChannelHandle` (streaming), and
+ * `ChannelReceiveCall` (one-shot). `ctx.forEach()` and `ctx.map()` accept `FiniteHandle`
+ * inputs — `BranchHandle` variants and `ChannelReceiveCall` (not raw `ChannelHandle`).
  *
  * Child workflow access is split by semantics:
  * - `ctx.childWorkflows.*` — structured invocation (lifecycle managed, compensation supported)
@@ -962,6 +979,14 @@ export interface WorkflowContext<
    *
    * Branch failures crash the workflow by default (happy-path model).
    * Use `.match()` with `{ complete, failure }` handlers for recovery.
+   *
+   * Two channel input forms with distinct semantics:
+   * - `ctx.channels.<n>` (`ChannelHandle`) — streaming branch; fires on every
+   *   new message and is **never removed** from `remaining`. Suitable for
+   *   long-running consumer loops where channel reads continue indefinitely.
+   * - `ctx.channels.<n>.receive(...)` (`ChannelReceiveCall`) — one-shot branch;
+   *   resolves exactly once and is removed from `remaining` afterwards. Use
+   *   when you want a single message (or a timeout fallback) in a race.
    */
   select<M extends Record<string, SelectableHandle>>(handles: M): Selection<M>;
 
@@ -1004,18 +1029,26 @@ export interface WorkflowContext<
   ): Promise<R>;
 
   // ---------------------------------------------------------------------------
-  // forEach — process all branch results as they arrive
+  // forEach — process all finite handle results as they arrive
   // ---------------------------------------------------------------------------
 
   /**
-   * Process all branch results as they arrive.
+   * Process all finite handle results as they arrive.
    * Plain callbacks receive successful data (T) and failure auto-terminates.
    * Use `{ complete, failure }` handlers for explicit failure recovery.
    *
-   * Accepts `HandleGroup` inputs: single BranchHandles, arrays, and Maps.
-   * For collections, callbacks receive `(data, innerKey)`.
+   * Accepted inputs:
+   * - Single `BranchHandle<T>`, `BranchHandle<T>[]`, `Map<K, BranchHandle<T>>`
+   * - `ChannelReceiveCall<T>` — produced by `ctx.channels.<n>.receive(...)`;
+   *   resolves once and calls the callback with the received value.
+   *
+   * Raw `ChannelHandle` is not accepted here — it never exhausts and would
+   * prevent `forEach` from completing. Use `ctx.channels.<n>.receive(...)` for
+   * a one-shot channel wait, or `ctx.select()` for streaming channel iteration.
+   *
+   * For BranchHandle collections, callbacks receive `(data, innerKey)`.
    */
-  forEach<M extends Record<string, SelectableHandle>>(
+  forEach<M extends Record<string, FiniteHandle>>(
     handles: M,
     callbacks: {
       [K in keyof M & string]: ForEachHandlerEntry<M[K]>;
@@ -1023,13 +1056,13 @@ export interface WorkflowContext<
   ): Promise<void>;
 
   /**
-   * Process branch results with partial callbacks and a default.
+   * Process finite handle results with partial callbacks and a default.
    * The default only fires for keys NOT explicitly covered.
    * Plain default callback handles completion only; for failure handling
    * use `{ complete, failure }`.
    */
   forEach<
-    M extends Record<string, SelectableHandle>,
+    M extends Record<string, FiniteHandle>,
     C extends Partial<{
       [K in keyof M & string]: ForEachHandlerEntry<M[K]>;
     }>,
@@ -1041,21 +1074,27 @@ export interface WorkflowContext<
   ): Promise<void>;
 
   // ---------------------------------------------------------------------------
-  // map — collect transformed results from all branches
+  // map — collect transformed results from all finite handles
   // ---------------------------------------------------------------------------
 
   /**
-   * Collect transformed results from all branch handles.
+   * Collect transformed results from all finite handles.
    * Plain callbacks receive successful data and return a transformed value.
-   * Use `{ complete, failure }` handlers for explicit failure recovery.
+   * Use `{ complete, failure }` handlers for explicit failure recovery on branch handles.
+   *
+   * Accepted inputs:
+   * - Single `BranchHandle<T>`, `BranchHandle<T>[]`, `Map<K, BranchHandle<T>>`
+   * - `ChannelReceiveCall<T>` — produced by `ctx.channels.<n>.receive(...)`
+   *
+   * Raw `ChannelHandle` is not accepted — use `ctx.channels.<n>.receive(...)` instead.
    *
    * The return type mirrors the input structure:
-   * - Single BranchHandle → single value
+   * - Single BranchHandle / ChannelReceiveCall → single value
    * - BranchHandle[] → value[]
    * - Map<K, BranchHandle> → Map<K, value>
    */
   map<
-    M extends Record<string, SelectableHandle>,
+    M extends Record<string, FiniteHandle>,
     C extends {
       [K in keyof M & string]: MapHandlerEntry<M[K]>;
     },
@@ -1070,7 +1109,7 @@ export interface WorkflowContext<
    * Collect transformed results with partial callbacks and a default.
    */
   map<
-    M extends Record<string, SelectableHandle>,
+    M extends Record<string, FiniteHandle>,
     C extends Partial<{
       [K in keyof M & string]: MapHandlerEntry<M[K]>;
     }>,

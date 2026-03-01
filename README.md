@@ -275,19 +275,33 @@ await ctx.forEach(
 
 **Handler shapes for concurrency primitives:**
 
-- `(data) => ...` — plain function. Receives successful data `T`. Failure crashes the workflow.
-- `{ complete, failure }` — explicit handling for branch handles.
+- `(data) => ...` — plain function. Receives successful data `T`. Failure crashes the workflow (branch handles) or resolves with the received value (channel receive calls).
+- `{ complete, failure }` — explicit handling for branch handles only.
 
 ### Select (Concurrency Primitive)
 
-The `select` primitive multiplexes multiple handles and yields events as they arrive. Two access patterns are available:
+The `select` primitive multiplexes multiple handles and yields events as they arrive. Two access patterns are available.
+
+**Channel input forms — two distinct semantics:**
 
 ```typescript
-// Inside a scope callback:
+// Streaming channel branch: ctx.channels.<n> (ChannelHandle)
+// - Fires on every new message; the key is NEVER removed from `remaining`.
+// - Use for long-running consumer loops where channel reads continue indefinitely.
+// - Note: `while (sel.remaining.size > 0)` will not terminate on its own.
 const sel = ctx.select({
   flight: flightHandle,
-  hotel: hotelHandle,
-  cancel: ctx.channels.cancel,
+  cancel: ctx.channels.cancel,        // streaming — reads forever
+});
+
+// One-shot receive branch: ctx.channels.<n>.receive(...) (ChannelReceiveCall)
+// - Resolves exactly once; key IS removed from `remaining` afterwards.
+// - Use when you want a single message (or a timeout fallback) in a race.
+const sel = ctx.select({
+  flight: flightHandle,
+  cancel: ctx.channels.cancel.receive(),             // one-shot — terminates
+  payment: ctx.channels.payment.receive(300),        // with timeout (T | undefined)
+  confirm: ctx.channels.confirm.receive(60, false),  // with default (T | false)
 });
 ```
 
@@ -296,7 +310,8 @@ const sel = ctx.select({
 The primary iteration surface. Yields `SelectDataUnion<M>` — the successful data values from all handles — until all handles are exhausted. Any branch failure **auto-terminates** the workflow (LIFO compensation fires).
 
 ```typescript
-// Simple "process all" loop
+// Simple "process all" loop — works correctly when all handles are finite
+// (branch handles and ChannelReceiveCall; avoid raw ChannelHandle here)
 for await (const data of sel) {
   ctx.logger.info("Handle resolved", { data });
 }
@@ -307,7 +322,7 @@ for await (const data of sel) {
 }
 ```
 
-Use `for await` when you want to process events as they arrive and failures are unrecoverable.
+Use `for await` when you want to process events as they arrive and failures are unrecoverable. Avoid including a raw `ChannelHandle` when iterating with `for await` — the loop will not terminate once branch handles are exhausted.
 
 #### Lower-level: `.match()` — key-aware, one event at a time
 
@@ -318,7 +333,15 @@ Default handler forms:
 - `{ complete, failure }`: explicit handling for unhandled completion/failure events.
 
 ```typescript
-// Drive a loop: one event per iteration, explicit failure recovery
+// Drive a loop: one event per iteration, explicit failure recovery.
+// Use channel.receive() for cancel so the key is removed from remaining
+// after one message — the loop terminates naturally when all handles resolve.
+const sel = ctx.select({
+  flight: flightHandle,
+  hotel: hotelHandle,
+  cancel: ctx.channels.cancel.receive(), // one-shot; removed from remaining after first message
+});
+
 while (sel.remaining.size > 0) {
   const result = await sel.match(
     {
@@ -331,7 +354,7 @@ while (sel.remaining.size > 0) {
           return { ok: false as const, id: null };
         },
       },
-      // Channel handler — plain function (channels don't fail)
+      // ChannelReceiveCall handler — plain function (channel receives don't fail)
       cancel: (data) => ({ ok: false as const, id: null }),
     },
     // Optional default object — only for unhandled keys
@@ -349,6 +372,8 @@ while (sel.remaining.size > 0) {
   if (result.data.ok) return result.data.id;
 }
 ```
+
+With a raw `ChannelHandle` (streaming form), the `remaining` set never drops the channel key. Use `while (sel.remaining.size > 0)` only when all entries are finite (branch handles or `ChannelReceiveCall`). For the streaming form, drive the loop with an explicit break condition instead.
 
 `match()` overloads: handlers only, or handlers + default handler (plain function or `{ complete, failure }`).
 
@@ -409,24 +434,33 @@ while (true) {
 console.log(sel.remaining); // ReadonlySet<'flight' | 'hotel' | 'cancel'>
 ```
 
+`remaining` tracks keys that have not yet been removed. Branch handle keys are removed when the branch completes or fails. `ChannelReceiveCall` keys are removed after the single receive resolves. **Raw `ChannelHandle` keys are never removed** — they represent an infinite stream.
+
 ### Select Event Types (`HandleSelectEvent`)
 
-Branch handles carry `status: "complete" | "failed"` discrimination. Channel handles carry data directly. Collection handles include an `innerKey`.
+Branch handles carry `status: "complete" | "failed"` discrimination. Channel handles and receive calls carry data directly. Collection handles include an `innerKey`.
 
-| Handle Type                     | Event Shape                                                                                                           |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `BranchHandle<T>` (single)      | `{ key: K; status: "complete"; data: T }` or `{ key: K; status: "failed"; failure: BranchFailureInfo }`              |
-| `BranchHandle<T>[]` (array)     | `{ key: K; innerKey: number; status: "complete"; data: T }` or `{ key: K; innerKey: number; status: "failed"; ... }` |
-| `Map<K, BranchHandle<T>>` (map) | `{ key: K; innerKey: K; status: "complete"; data: T }` or `{ key: K; innerKey: K; status: "failed"; ... }`           |
-| `ChannelHandle<T>`              | `{ key: K; data: T }`                                                                                                 |
+| Handle Type                      | Event Shape                                                                                                           |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `BranchHandle<T>` (single)       | `{ key: K; status: "complete"; data: T }` or `{ key: K; status: "failed"; failure: BranchFailureInfo }`              |
+| `BranchHandle<T>[]` (array)      | `{ key: K; innerKey: number; status: "complete"; data: T }` or `{ key: K; innerKey: number; status: "failed"; ... }` |
+| `Map<K, BranchHandle<T>>` (map)  | `{ key: K; innerKey: K; status: "complete"; data: T }` or `{ key: K; innerKey: K; status: "failed"; ... }`           |
+| `ChannelHandle<T>` (streaming)   | `{ key: K; data: T }` — fires on every message; key never removed from `remaining`                                   |
+| `ChannelReceiveCall<T>` (1-shot) | `{ key: K; data: T }` — fires once; key removed from `remaining` after resolving                                     |
 
-`SelectableHandle` includes only `BranchHandle` variants and `ChannelHandle`. Streams and lifecycle events are not selectable in workflow-internal code — use the external API (`WorkflowHandleExternal`) for those.
+`SelectableHandle` includes `BranchHandle` variants, `ChannelHandle`, and `ChannelReceiveCall`. Streams and lifecycle events are not selectable in workflow-internal code — use the external API (`WorkflowHandleExternal`) for those.
 
-`for await...of` on a `Selection<M>` yields `SelectDataUnion<M>` — the union of successful data types across all handles. Failed branch events auto-terminate the workflow when iterating; to handle failures explicitly, use `.match()` with `{ complete, failure }` handlers.
+`for await...of` on a `Selection<M>` yields `SelectDataUnion<M>` — the union of successful data types across all handles (including channel and receive-call data). Failed branch events auto-terminate the workflow when iterating; to handle failures explicitly, use `.match()` with `{ complete, failure }` handlers.
 
 ### forEach / map (Batch Processing)
 
-Process all branch handles concurrently. Callbacks receive successful data `T` directly (plain function) or use `{ complete, failure }` for explicit failure handling.
+Process all finite handles concurrently. Callbacks receive successful data `T` directly (plain function) or use `{ complete, failure }` for explicit failure handling on branch handles.
+
+**Accepted handle types (`FiniteHandle`):**
+- `BranchHandle<T>` (single, array, or `Map`)
+- `ChannelReceiveCall<T>` — produced by `ctx.channels.<n>.receive(...)`
+
+Raw `ChannelHandle` is **not** accepted because it never exhausts and would prevent `forEach`/`map` from completing. Use `ctx.channels.<n>.receive(...)` for a one-shot channel wait, or `ctx.select()` for streaming channel iteration.
 
 Collection handles (Array, Map) pass `innerKey` as a second argument to callbacks.
 
@@ -491,6 +525,39 @@ await ctx.forEach(
     },
   },
 );
+
+// map with a ChannelReceiveCall — non-blocking cancel poll alongside a branch handle
+// receive(0) = nowait: resolves immediately with undefined if no message is queued
+const earlyCancel = await ctx.map(
+  { cancel: ctx.channels.cancel.receive(0) },
+  { cancel: (msg) => msg }, // msg: CancelCommand | undefined
+);
+if (earlyCancel.cancel !== undefined) {
+  // a cancel message was already queued — abort early
+}
+
+// map mixing branch handles and a timed channel receive in a single call
+const result = await ctx.scope(
+  { booking: ctx.steps.bookFlight(dest, customerId) },
+  async ({ booking }) =>
+    ctx.map(
+      {
+        booking,
+        cancel: ctx.channels.cancel.receive(300, { type: "timeout" as const }),
+      },
+      {
+        booking: {
+          complete: (data) => ({ status: "booked" as const, id: data.id }),
+          failure: () => ({ status: "failed" as const, id: null }),
+        },
+        cancel: (msg) => ({
+          status: msg.type === "cancel" ? ("cancelled" as const) : ("timeout" as const),
+          id: null,
+        }),
+      },
+    ),
+);
+// result: { booking: ..., cancel: ... }
 ```
 
 ### Child Workflows
@@ -1057,8 +1124,8 @@ Some external-facing blocking primitives exclude the `timeout` status when calle
 
 Workflow-internal timeout behavior:
 
-- `channels.receive(timeoutSeconds, defaultValue?)` supports deterministic time-bounded waits
-- `channels.receive(0)` is nowait
+- `channels.receive(...)` returns `ChannelReceiveCall<T>` — awaitable directly or passed into `select`/`forEach`/`map`
+- `channels.receive(timeoutSeconds, defaultValue?)` supports deterministic time-bounded waits; `receive(0)` is nowait
 - `select` and `sleep` remain explicit primitives for orchestration/race patterns
 
 ## Visibility Rules
@@ -1068,16 +1135,16 @@ Workflow-internal timeout behavior:
 | Resource                     | Operations                                                                                             |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------ |
 | `ctx.steps.*`                | `(args)` → `StepCall<T>` — chain `.compensate()`, `.retry()`, `.failure()`, `.complete()` before await |
-| `ctx.channels.*`             | `.receive()` (blocking), `.receive(timeoutSeconds)` (`T \| undefined`), `.receive(timeoutSeconds, defaultValue)` (`T \| defaultValue`) |
+| `ctx.channels.*`             | `.receive()` → `ChannelReceiveCall<T>` (blocking), `.receive(timeoutSeconds)` (`T \| undefined`), `.receive(timeoutSeconds, defaultValue)` (`T \| TDefault`); also `for await...of` for streaming iteration |
 | `ctx.streams.*`              | `.write()`                                                                                             |
 | `ctx.events.*`               | `.set()`                                                                                               |
 | `ctx.childWorkflows.*`       | `(options)` → `WorkflowCall<T>` by default; supports optional `metadata`; with `detached: true` → `ForeignWorkflowHandle` |
 | `ctx.foreignWorkflows.*`     | `.get(id)` → `ForeignWorkflowHandle` (channels.send only, fire-and-forget)                             |
 | `ctx.patches.*`              | `await ctx.patches.name` → boolean, `(callback, default?)` → callback result or default                |
 | `ctx.scope()`                | Structured concurrency boundary — accepts closures and collections                                     |
-| `ctx.select()`               | Multiplex handles — `for await` (primary) or `.match()` (key-aware, `{ complete, failure }`)           |
-| `ctx.forEach()`              | Process branch handles concurrently; `{ complete, failure }` handlers; collection-aware                |
-| `ctx.map()`                  | Transform branch handle results; collection structure mirrored; `{ complete, failure }` handlers       |
+| `ctx.select()`               | Multiplex `SelectableHandle` — `for await` (primary) or `.match()`; accepts `ChannelHandle` (streaming) or `ChannelReceiveCall` (one-shot) |
+| `ctx.forEach()`              | Process `FiniteHandle` results concurrently; accepts `BranchHandle` variants and `ChannelReceiveCall`; `{ complete, failure }` on branch handles |
+| `ctx.map()`                  | Transform `FiniteHandle` results; collection structure mirrored; `{ complete, failure }` on branch handles; `ChannelReceiveCall` keys use plain callbacks |
 | `ctx.addCompensation()`      | Register LIFO compensation callback                                                                    |
 | `ctx.schedule(cron, { timezone?, resumeAt? })` | Durable cron-like schedule handle; first tick is strictly after `resumeAt` when provided |
 | `ctx.sleep(seconds)`         | Durable relative sleep                                                                                 |
@@ -1091,14 +1158,14 @@ Workflow-internal timeout behavior:
 | Resource                    | Operations                                                                     |
 | --------------------------- | ------------------------------------------------------------------------------ |
 | `ctx.steps.*`               | `(args)` → `CompensationStepCall<T>` — resolves to `CompensationStepResult<T>`; chain `.retry()` to override policy |
-| `ctx.channels.*`            | `.receive()` (blocking), `.receive(timeoutSeconds)`, `.receive(timeoutSeconds, defaultValue)` |
+| `ctx.channels.*`            | `.receive()` → `ChannelReceiveCall<T>` (blocking), `.receive(timeoutSeconds)`, `.receive(timeoutSeconds, defaultValue)` |
 | `ctx.streams.*`             | `.write()`                                                                     |
 | `ctx.events.*`              | `.set()`                                                                       |
 | `ctx.childWorkflows.*`      | `(options)` → `CompensationWorkflowCall<T>` — resolves to `WorkflowResult<T>`  |
 | `ctx.scope()`               | Structured concurrency boundary — all unjoined branches settled on exit        |
-| `ctx.select()`              | Multiplex handles — `for await` or `.match()` (no `{ complete, failure }` split in compensation) |
-| `ctx.forEach()`             | Process branch results — plain callbacks; data carries result unions           |
-| `ctx.map()`                 | Transform branch results — plain callbacks                                     |
+| `ctx.select()`              | Multiplex `SelectableHandle` — `for await` or `.match()` (no `{ complete, failure }` split); accepts `ChannelHandle` (streaming) or `ChannelReceiveCall` (one-shot) |
+| `ctx.forEach()`             | Process `FiniteHandle` results — plain callbacks; accepts `BranchHandle` variants and `ChannelReceiveCall` |
+| `ctx.map()`                 | Transform `FiniteHandle` results — plain callbacks; `ChannelReceiveCall` keys supported |
 | `ctx.sleep()` / `ctx.rng.*` | Same as WorkflowContext                                                        |
 | `ctx.logger`                | Replay-aware logger                                                            |
 

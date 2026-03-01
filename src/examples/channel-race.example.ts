@@ -15,7 +15,8 @@ const CancelCommand = z.object({
 /**
  * Showcases:
  * - channels.receive standalone
- * - select({ branch, channel }) with for-await
+ * - select({ branch, channel.receive() }) with for-await (one-shot race)
+ * - select({ branch, channel }) with match() (streaming channel in select)
  * - match with default handler
  */
 export const channelRaceWorkflow = defineWorkflow({
@@ -38,7 +39,13 @@ export const channelRaceWorkflow = defineWorkflow({
           }),
       },
       async ({ booking }) => {
-        const sel = ctx.select({ booking, cancel: ctx.channels.cancel });
+        // One-shot race: booking completes OR a single cancel message arrives.
+        // channel.receive() produces a ChannelReceiveCall — finite, removed from
+        // remaining once resolved, so the for-await loop terminates naturally.
+        const sel = ctx.select({
+          booking,
+          cancel: ctx.channels.cancel.receive(),
+        });
         for await (const data of sel) {
           ctx.logger.info("Race event received", { data });
           if ("id" in data) {
@@ -70,6 +77,9 @@ export const channelRaceWorkflow = defineWorkflow({
           }),
       },
       async ({ booking2 }) => {
+        // Streaming channel: passes the raw ChannelHandle so the channel branch
+        // fires on each incoming cancel message (never removed from remaining).
+        // The match() call below handles whichever event arrives first and exits.
         const sel2 = ctx.select({ booking2, cancel2: ctx.channels.cancel });
         const result = await sel2.match(
           {

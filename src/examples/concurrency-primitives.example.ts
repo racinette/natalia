@@ -119,7 +119,8 @@ const cancelHotelReservation = defineStep({
  * - dynamic provider fan-out with Map handles (runtime-known cardinality)
  * - `ctx.map()` for cheapest itinerary extraction (up to 3 hops)
  * - concurrent hotel reservations while searching flights
- * - `ctx.select().match()` loop for "first successful hotel hold"
+ * - `ctx.map()` with a `ChannelReceiveCall` (non-blocking cancel poll)
+ * - `ctx.select({ branch, channel.receive() }).match()` loop for "first successful hotel hold"
  * - child workflows in both result mode and detached mode
  * - foreign workflow channel access to existing workflow instance
  */
@@ -231,7 +232,35 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
           }
         }
 
-        const hotelSel = ctx.select({ hotel: hotels, cancel: ctx.channels.cancel });
+        // Non-blocking poll (receive(0) = nowait): check whether a cancel message
+        // arrived while we were searching flights. This demonstrates ctx.map() with
+        // a ChannelReceiveCall — the key resolves immediately (undefined if no message).
+        const earlyCancel = await ctx.map(
+          { cancel: ctx.channels.cancel.receive(0) },
+          { cancel: (msg) => msg },
+        );
+        if (earlyCancel.cancel !== undefined) {
+          return {
+            outcome: "cancelled" as const,
+            itineraryId: null,
+            hops: null,
+            flightProvider: null,
+            hotelReservationId: null,
+            hotelProvider: null,
+            totalPrice: null,
+            paymentReceiptId: null,
+            candidateCount: Array.from(pricedFlights.flights.values()).filter(
+              (v) => v != null,
+            ).length,
+          };
+        }
+
+        // One-shot race: hotel branches exhaust naturally; cancel.receive() resolves
+        // once and is removed from remaining, so the while loop always terminates.
+        const hotelSel = ctx.select({
+          hotel: hotels,
+          cancel: ctx.channels.cancel.receive(),
+        });
         let selectedHotel:
           | { provider: string; reservationId: string; price: number }
           | null = null;
