@@ -325,7 +325,11 @@ Use `for await` when you want to process events as they arrive and failures are 
 
 #### `.match()` — key-aware async iteration
 
-Returns an `AsyncIterable` that yields a transformed value for every event across all handles. The iteration ends when all handles are exhausted, so `for await` loops terminate naturally.
+Returns an `AsyncIterable` that yields a transformed value for every event across all handles. The iteration ends when all handles are exhausted, so `for await` loops terminate naturally. **Three call forms — parallel to `ctx.map()`:**
+
+- `sel.match(onFailure)` — identity for all keys, `onFailure` catches every branch failure.
+- `sel.match(handlers)` — per-key handlers; omitted keys yield data unchanged.
+- `sel.match(handlers, onFailure)` — per-key handlers + default failure catch-all.
 
 **Handler forms** (for BranchHandle keys):
 
@@ -335,7 +339,7 @@ Returns an `AsyncIterable` that yields a transformed value for every event acros
 - `{ failure }` only: complete yields data unchanged (identity); failure handled explicitly.
 - Key omitted from map: yields data unchanged on complete; failure auto-terminates (or uses `onFailure`).
 
-**`onFailure` — default failure handler (optional second argument):**
+**`onFailure` — default failure handler:**
 
 A single callback `(failure: BranchFailureInfo) => R` applied to all branch failures that do not have their own explicit `failure` handler. Its return value is yielded instead of terminating the workflow. Keys with explicit `failure` handlers are unaffected.
 
@@ -377,12 +381,13 @@ for await (const result of sel.match(
 
 **Empty handlers — equivalence with `for await`:**
 
-`sel.match({})` is equivalent to `for await (const val of sel)`: all keys use identity for complete and auto-terminate on failure. Adding `onFailure` replaces the auto-terminate:
+`sel.match({})` is equivalent to `for await (const val of sel)`: all keys use identity for complete and auto-terminate on failure. The new `match(onFailure)` single-argument form is shorthand for this:
 
 ```typescript
 // All events yielded as-is; any branch failure returns null instead of terminating
-for await (const val of sel.match({}, () => null)) {
+for await (const val of sel.match(() => null)) {
   // val: SelectDataUnion<M> | null
+  // same as sel.match({}, () => null)
 }
 ```
 

@@ -522,6 +522,18 @@ export interface Selection<
   M extends Record<string, SelectableHandle>,
 > extends AsyncIterable<SelectDataUnion<M>> {
   /**
+   * Iterate over all events with a default failure handler and no per-key transforms.
+   * Equivalent to `match({}, onFailure)`: all keys yield data unchanged on complete;
+   * any branch failure yields `onFailure`'s return value instead of terminating.
+   *
+   * Declared first so TypeScript's overload resolution correctly routes a bare
+   * function argument here rather than to the `match(handlers)` overload.
+   */
+  match<DF extends (failure: BranchFailureInfo) => any>(
+    onFailure: DF,
+  ): AsyncIterable<MatchReturn<M, Record<never, never>, Awaited<ReturnType<DF>>>>;
+
+  /**
    * Iterate over matching events.
    * Yields a transformed value for each event; unhandled keys yield data unchanged.
    * Ends when all handles are exhausted.
@@ -562,6 +574,11 @@ export interface Selection<
 export interface CompensationSelection<
   M extends Record<string, SelectableHandle>,
 > extends AsyncIterable<SelectDataUnion<M>> {
+  /** All keys identity, all failures caught by `onFailure`. Equivalent to `match({}, onFailure)`. */
+  match<DF extends (failure: BranchFailureInfo) => any>(
+    onFailure: DF,
+  ): AsyncIterable<MatchReturn<M, Record<never, never>, Awaited<ReturnType<DF>>>>;
+
   /** Iterate over matching events; unhandled keys yield data unchanged. */
   match<H extends MatchHandlers<M>>(
     handlers: H,
