@@ -26,12 +26,16 @@ import type {
   EventCheckResult,
 } from "./results";
 import type {
+  DeterministicAwaitable,
   ChannelHandle,
   StreamAccessor,
   EventAccessor,
   BranchHandle,
   BranchFailureInfo,
   ScopeEntries,
+  EnsureScopeEntries,
+  NoInferScope,
+  ScopeEntriesCheck,
   ScopeHandles,
   ScopePath,
   AppendScopeName,
@@ -93,7 +97,7 @@ export interface ScheduleHandle extends AsyncIterable<ScheduleTick> {
    * Suspend until the next scheduled tick.
    * Returns immediately if the next scheduled time is already in the past.
    */
-  sleep(): Promise<ScheduleTick>;
+  sleep(): DeterministicAwaitable<ScheduleTick>;
   /**
    * Cancel a pending sleep and stop future iteration.
    */
@@ -148,7 +152,7 @@ export interface StepCall<
   TFail = never,
   HasCompensation extends boolean = false,
   TCompCtx = unknown,
-> {
+> extends DeterministicAwaitable<T | TFail> {
   /**
    * Register a compensation callback for this step.
    * Runs during LIFO unwinding when the workflow fails.
@@ -189,13 +193,12 @@ export interface StepCall<
     cb: (data: T) => R,
   ): StepCall<Awaited<R>, TFail, HasCompensation, TCompCtx>;
 
-  then<R1 = T | TFail, R2 = never>(
+  then<R1 = T | TFail>(
     onfulfilled?:
       | ((value: T | TFail) => R1 | PromiseLike<R1>)
       | null
       | undefined,
-    onrejected?: ((reason: any) => R2 | PromiseLike<R2>) | null | undefined,
-  ): Promise<R1 | R2>;
+  ): DeterministicAwaitable<R1>;
 }
 
 // =============================================================================
@@ -213,19 +216,21 @@ export interface StepCall<
  *
  * @typeParam T - Decoded step result type (z.output<Schema>).
  */
-export interface CompensationStepCall<T> {
+export interface CompensationStepCall<T>
+  extends DeterministicAwaitable<CompensationStepResult<T>> {
   /**
    * Override the step's retry policy.
    */
   retry(policy: RetryPolicyOptions): CompensationStepCall<T>;
 
-  then<R1 = CompensationStepResult<T>, R2 = never>(
+  then<R1 = CompensationStepResult<T>>(
     onfulfilled?:
-      | ((value: CompensationStepResult<T>) => R1 | PromiseLike<R1>)
+      | ((
+          value: CompensationStepResult<T>,
+        ) => R1 | PromiseLike<R1>)
       | null
       | undefined,
-    onrejected?: ((reason: any) => R2 | PromiseLike<R2>) | null | undefined,
-  ): Promise<R1 | R2>;
+  ): DeterministicAwaitable<R1>;
 }
 
 // =============================================================================
@@ -248,7 +253,7 @@ export interface ForeignWorkflowHandle<
    */
   readonly channels: {
     [K in keyof TChannels]: {
-      send(data: StandardSchemaV1.InferInput<TChannels[K]>): Promise<void>;
+      send(data: StandardSchemaV1.InferInput<TChannels[K]>): DeterministicAwaitable<void>;
     };
   };
 }
@@ -271,7 +276,7 @@ export interface WorkflowCallResult<
   TFail = never,
   HasCompensation extends boolean = false,
   TCompCtx = unknown,
-> {
+> extends DeterministicAwaitable<T | TFail> {
   /**
    * Register a compensation callback for this child workflow invocation.
    * Runs during LIFO unwinding when the parent workflow fails.
@@ -301,13 +306,12 @@ export interface WorkflowCallResult<
     cb: (data: T) => R,
   ): WorkflowCallResult<Awaited<R>, TFail, HasCompensation, TCompCtx>;
 
-  then<R1 = T | TFail, R2 = never>(
+  then<R1 = T | TFail>(
     onfulfilled?:
       | ((value: T | TFail) => R1 | PromiseLike<R1>)
       | null
       | undefined,
-    onrejected?: ((reason: any) => R2 | PromiseLike<R2>) | null | undefined,
-  ): Promise<R1 | R2>;
+  ): DeterministicAwaitable<R1>;
 }
 
 /**
@@ -328,7 +332,7 @@ export interface WorkflowCall<
   TFail = never,
   HasCompensation extends boolean = false,
   TCompCtx = unknown,
-> {
+> extends DeterministicAwaitable<T | TFail> {
   /**
    * Register a compensation callback.
    */
@@ -357,13 +361,12 @@ export interface WorkflowCall<
     cb: (data: T) => R,
   ): WorkflowCallResult<Awaited<R>, TFail, HasCompensation, TCompCtx>;
 
-  then<R1 = T | TFail, R2 = never>(
+  then<R1 = T | TFail>(
     onfulfilled?:
       | ((value: T | TFail) => R1 | PromiseLike<R1>)
       | null
       | undefined,
-    onrejected?: ((reason: any) => R2 | PromiseLike<R2>) | null | undefined,
-  ): Promise<R1 | R2>;
+  ): DeterministicAwaitable<R1>;
 }
 
 // =============================================================================
@@ -376,14 +379,14 @@ export interface WorkflowCall<
  *
  * @typeParam T - Decoded child workflow result type.
  */
-export interface CompensationWorkflowCall<T> {
-  then<R1 = WorkflowResult<T>, R2 = never>(
+export interface CompensationWorkflowCall<T>
+  extends DeterministicAwaitable<WorkflowResult<T>> {
+  then<R1 = WorkflowResult<T>>(
     onfulfilled?:
       | ((value: WorkflowResult<T>) => R1 | PromiseLike<R1>)
       | null
       | undefined,
-    onrejected?: ((reason: any) => R2 | PromiseLike<R2>) | null | undefined,
-  ): Promise<R1 | R2>;
+  ): DeterministicAwaitable<R1>;
 }
 
 // =============================================================================
@@ -451,7 +454,7 @@ export interface ChildWorkflowAccessor<
   ): WorkflowCall<InferWorkflowResult<W>, never, false, TCompCtx>;
   (
     options: DetachedChildWorkflowStartOptions<W>,
-  ): Promise<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
+  ): DeterministicAwaitable<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
 }
 
 /**
@@ -523,17 +526,17 @@ export interface LifecycleEventAccessor {
    * Wait for the lifecycle event to be set.
    * Returns "never" if the workflow reached a terminal state without this event firing.
    */
-  wait(): Promise<EventWaitResultNoTimeout>;
+  wait(): DeterministicAwaitable<EventWaitResultNoTimeout>;
 
   /**
    * Wait for the lifecycle event to be set, with a timeout (in seconds).
    */
-  wait(timeoutSeconds: number): Promise<EventWaitResult>;
+  wait(timeoutSeconds: number): DeterministicAwaitable<EventWaitResult>;
 
   /**
    * Check if the lifecycle event is set (non-blocking).
    */
-  get(): Promise<EventCheckResult>;
+  get(): DeterministicAwaitable<EventCheckResult>;
 }
 
 /**
@@ -545,17 +548,17 @@ export interface EventAccessorReadonly {
    * Wait for the event to be set.
    * Returns "never" if the workflow reached a terminal state without setting this event.
    */
-  wait(): Promise<EventWaitResultNoTimeout>;
+  wait(): DeterministicAwaitable<EventWaitResultNoTimeout>;
 
   /**
    * Wait for the event to be set, with a timeout (in seconds).
    */
-  wait(timeoutSeconds: number): Promise<EventWaitResult>;
+  wait(timeoutSeconds: number): DeterministicAwaitable<EventWaitResult>;
 
   /**
    * Check if the event is set (non-blocking).
    */
-  get(): Promise<EventCheckResult>;
+  get(): DeterministicAwaitable<EventCheckResult>;
 }
 
 /**
@@ -633,13 +636,13 @@ export interface BaseContext<
    * Durable sleep.
    * @param seconds - Duration in seconds.
    */
-  sleep(seconds: number): Promise<void>;
+  sleep(seconds: number): DeterministicAwaitable<void>;
 
   /**
    * Durable sleep until a target instant.
    * @param target - Target time as Date or epoch milliseconds.
    */
-  sleepUntil(target: Date | number): Promise<void>;
+  sleepUntil(target: Date | number): DeterministicAwaitable<void>;
 
   /**
    * Deterministic random utilities.
@@ -736,7 +739,7 @@ export interface CompensationContext<
    * On scope exit, all running branches are awaited to completion.
    * No per-branch compensation — compensation cannot nest.
    */
-  scope<Name extends string, R, E extends ScopeEntries>(
+  scope<Name extends string, R, E>(
     name: Name,
     entries: E,
     callback: (
@@ -752,9 +755,13 @@ export interface CompensationContext<
         TRng,
         AppendScopeName<[], Name>
       >,
-      handles: ScopeHandles<E, AppendScopeName<[], Name>>,
+      handles: ScopeHandles<
+        EnsureScopeEntries<NoInferScope<E>>,
+        AppendScopeName<[], Name>
+      >,
     ) => Promise<R>,
-  ): Promise<R>;
+    ..._entriesCheck: ScopeEntriesCheck<E>
+  ): DeterministicAwaitable<R>;
 
   // ---------------------------------------------------------------------------
   // select — multiplexed waiting
@@ -954,10 +961,10 @@ export interface WorkflowContext<
    *
    * Entries can be single values or collections:
    * - `flight: async () => T` OR `flight: ctx.steps.bookFlight(...)` → `BranchHandle<T>`
-   * - `providers: Array<() => Promise<T> | PromiseLike<T>>` → `BranchHandle<T>[]`
-   * - `quotes: Map<K, () => Promise<T> | PromiseLike<T>>` → `Map<K, BranchHandle<T>>`
+   * - `providers: Array<() => Promise<T> | DeterministicAwaitable<T>>` → `BranchHandle<T>[]`
+   * - `quotes: Map<K, () => Promise<T> | DeterministicAwaitable<T>>` → `Map<K, BranchHandle<T>>`
    */
-  scope<Name extends string, R, E extends ScopeEntries>(
+  scope<Name extends string, R, E>(
     name: Name,
     entries: E,
     callback: (
@@ -973,9 +980,13 @@ export interface WorkflowContext<
         TRng,
         AppendScopeName<[], Name>
       >,
-      handles: ScopeHandles<E, AppendScopeName<[], Name>>,
+      handles: ScopeHandles<
+        EnsureScopeEntries<NoInferScope<E>>,
+        AppendScopeName<[], Name>
+      >,
     ) => Promise<R>,
-  ): Promise<R>;
+    ..._entriesCheck: ScopeEntriesCheck<E>
+  ): DeterministicAwaitable<R>;
 
   // ---------------------------------------------------------------------------
   // addCompensation — general purpose LIFO registration
@@ -1040,7 +1051,7 @@ export interface WorkflowConcurrencyContext<
     >,
     "scope" | "select"
   > {
-  scope<Name extends string, R, E extends ScopeEntries>(
+  scope<Name extends string, R, E>(
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     callback: (
@@ -1056,9 +1067,13 @@ export interface WorkflowConcurrencyContext<
         TRng,
         AppendScopeName<TScopePath, Name>
       >,
-      handles: ScopeHandles<E, AppendScopeName<TScopePath, Name>>,
+      handles: ScopeHandles<
+        EnsureScopeEntries<NoInferScope<E>>,
+        AppendScopeName<TScopePath, Name>
+      >,
     ) => Promise<R>,
-  ): Promise<R>;
+    ..._entriesCheck: ScopeEntriesCheck<E>
+  ): DeterministicAwaitable<R>;
 
   /**
    * Create a selection for concurrent waiting over scope branch handles and
@@ -1073,7 +1088,7 @@ export interface WorkflowConcurrencyContext<
    */
   map<M extends Record<string, ScopeFiniteHandle>>(
     handles: ScopeFiniteRecordForPath<M, TScopePath>,
-  ): Promise<{
+  ): DeterministicAwaitable<{
     [K in keyof M & string]: FiniteHandleData<
       ScopeFiniteRecordForPath<M, TScopePath>[K]
     >;
@@ -1085,7 +1100,7 @@ export interface WorkflowConcurrencyContext<
   >(
     handles: ScopeFiniteRecordForPath<M, TScopePath>,
     callbacks: C,
-  ): Promise<MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C>>;
+  ): DeterministicAwaitable<MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C>>;
 
   map<
     M extends Record<string, ScopeFiniteHandle>,
@@ -1095,7 +1110,7 @@ export interface WorkflowConcurrencyContext<
     handles: ScopeFiniteRecordForPath<M, TScopePath>,
     callbacks: C,
     onFailure: DF,
-  ): Promise<
+  ): DeterministicAwaitable<
     MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C, Awaited<ReturnType<DF>>>
   >;
 }
@@ -1135,7 +1150,7 @@ export interface WorkflowCompensationConcurrencyContext<
     >,
     "scope" | "select"
   > {
-  scope<Name extends string, R, E extends ScopeEntries>(
+  scope<Name extends string, R, E>(
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     callback: (
@@ -1151,9 +1166,13 @@ export interface WorkflowCompensationConcurrencyContext<
         TRng,
         AppendScopeName<TScopePath, Name>
       >,
-      handles: ScopeHandles<E, AppendScopeName<TScopePath, Name>>,
+      handles: ScopeHandles<
+        EnsureScopeEntries<NoInferScope<E>>,
+        AppendScopeName<TScopePath, Name>
+      >,
     ) => Promise<R>,
-  ): Promise<R>;
+    ..._entriesCheck: ScopeEntriesCheck<E>
+  ): DeterministicAwaitable<R>;
 
   /**
    * Create a selection for concurrent waiting over scope branch handles and
@@ -1168,7 +1187,7 @@ export interface WorkflowCompensationConcurrencyContext<
    */
   map<M extends Record<string, ScopeFiniteHandle>>(
     handles: ScopeFiniteRecordForPath<M, TScopePath>,
-  ): Promise<{
+  ): DeterministicAwaitable<{
     [K in keyof M & string]: FiniteHandleData<
       ScopeFiniteRecordForPath<M, TScopePath>[K]
     >;
@@ -1182,7 +1201,7 @@ export interface WorkflowCompensationConcurrencyContext<
   >(
     handles: ScopeFiniteRecordForPath<M, TScopePath>,
     callbacks: C,
-  ): Promise<MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C>>;
+  ): DeterministicAwaitable<MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C>>;
 
   map<
     M extends Record<string, ScopeFiniteHandle>,
@@ -1194,7 +1213,7 @@ export interface WorkflowCompensationConcurrencyContext<
     handles: ScopeFiniteRecordForPath<M, TScopePath>,
     callbacks: C,
     onFailure: DF,
-  ): Promise<
+  ): DeterministicAwaitable<
     MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C, Awaited<ReturnType<DF>>>
   >;
 }

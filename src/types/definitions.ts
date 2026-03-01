@@ -1,5 +1,6 @@
 import type { StandardSchemaV1 } from "./standard-schema";
 import type { CompensationContext, WorkflowContext } from "./context";
+import type { DeterministicAwaitable } from "./concurrency";
 
 // =============================================================================
 // SCHEMA DEFINITIONS
@@ -86,16 +87,23 @@ export type RngDefinitions = Record<
  * }, null);
  * ```
  */
-export interface PatchAccessor {
+export interface PatchAccessor extends DeterministicAwaitable<boolean> {
   /** Boolean form — await the accessor directly for active/inactive */
-  then<R1 = boolean, R2 = never>(
-    onfulfilled?: ((value: boolean) => R1 | PromiseLike<R1>) | null | undefined,
-    onrejected?: ((reason: any) => R2 | PromiseLike<R2>) | null | undefined,
-  ): Promise<R1 | R2>;
+  then<R1 = boolean>(
+    onfulfilled?:
+      | ((value: boolean) => R1 | PromiseLike<R1>)
+      | null
+      | undefined,
+  ): DeterministicAwaitable<R1>;
   /** Callback form with default — runs callback if active, returns default otherwise */
-  <T, D>(callback: () => Promise<T>, defaultValue: D): Promise<T | D>;
+  <T, D>(
+    callback: () => Promise<T> | DeterministicAwaitable<T>,
+    defaultValue: D,
+  ): DeterministicAwaitable<T | D>;
   /** Callback form without default — runs callback if active, returns undefined otherwise */
-  <T>(callback: () => Promise<T>): Promise<T | undefined>;
+  <T>(
+    callback: () => Promise<T> | DeterministicAwaitable<T>,
+  ): DeterministicAwaitable<T | undefined>;
 }
 
 // =============================================================================

@@ -29,7 +29,36 @@ export type ChildWorkflowFailureInfo =
       readonly reason: WorkflowTerminationReason;
     };
 
-export type CompensationRunner = () => PromiseLike<void>;
+declare const deterministicAwaitableBrand: unique symbol;
+
+/**
+ * Branded awaitable used by deterministic workflow primitives.
+ *
+ * This intentionally excludes native Promise values from structural assignment
+ * unless they are explicitly wrapped/typed by the engine as deterministic.
+ */
+export interface DeterministicAwaitable<T> {
+  /** @internal Brand discriminator — do not access at runtime. */
+  readonly [deterministicAwaitableBrand]: true;
+
+  then<TResult = T>(
+    onfulfilled?:
+      | ((value: T) => TResult | PromiseLike<TResult>)
+      | null
+      | undefined,
+  ): DeterministicAwaitable<TResult>;
+
+  /**
+   * Await-compatibility signature used by TypeScript's `Awaited<T>` extraction.
+   * Keep this overload broad and LAST so normal `.then(...)` calls still
+   * resolve to the strongly typed generic overload above.
+   */
+  then(
+    onfulfilled: (value: T, ...args: any[]) => any,
+  ): any;
+}
+
+export type CompensationRunner = () => DeterministicAwaitable<void>;
 
 /**
  * Augment a failure info type with `claimCompensation()`.
@@ -73,7 +102,7 @@ export interface BranchFailureInfo {
 /**
  * A one-shot receive future returned by `ChannelHandle.receive(...)`.
  *
- * `ChannelReceiveCall<T>` is awaitable (extends `PromiseLike<T>`) and can be
+ * `ChannelReceiveCall<T>` is awaitable (extends `DeterministicAwaitable<T>`) and can be
  * passed into `ctx.select()` and `ctx.map()` as a finite,
  * one-shot channel wait — the key is removed from `remaining` once the receive
  * resolves, just like a branch handle.
@@ -83,7 +112,7 @@ export interface BranchFailureInfo {
  *
  * @typeParam T - The resolved value type (may include `undefined` for timeout overloads).
  */
-export interface ChannelReceiveCall<T> extends PromiseLike<T> {
+export interface ChannelReceiveCall<T> extends DeterministicAwaitable<T> {
   /** @internal Brand discriminator — do not access at runtime. */
   readonly _kind: "channel_receive_call";
 }
@@ -147,7 +176,7 @@ export interface StreamAccessor<T> {
    * @param data - Record data (z.input type — encoded).
    * @returns The offset at which the record was saved.
    */
-  write(data: T): Promise<number>;
+  write(data: T): DeterministicAwaitable<number>;
 }
 
 /**
@@ -157,7 +186,7 @@ export interface EventAccessor {
   /**
    * Set the event (idempotent — second call is no-op).
    */
-  set(): Promise<void>;
+  set(): DeterministicAwaitable<void>;
 }
 
 // =============================================================================
@@ -183,9 +212,10 @@ export type ScopePath = readonly string[];
  *
  * Supports two forms:
  * - Closure form: `() => Promise<T>` (full flexibility, lazy execution)
- * - Direct thenable form: `PromiseLike<T>` (short-hand for common step/child calls)
+ * - Direct deterministic-thenable form: `DeterministicAwaitable<T>`
+ *   (short-hand for common step/child calls)
  */
-export type ScopeEntryValue<T> = ScopeBranch<T> | PromiseLike<T>;
+export type ScopeEntryValue<T> = ScopeBranch<T> | DeterministicAwaitable<T>;
 
 /**
  * A handle to a running scope branch — awaitable in the scope callback.
@@ -203,9 +233,9 @@ declare const scopePathBrand: unique symbol;
 export interface BranchHandle<
   T,
   TScopePath extends ScopePath = ScopePath,
-> extends Promise<T> {
+> extends DeterministicAwaitable<T> {
   /** @internal Type-level scope ownership brand. */
-  readonly [scopePathBrand]?: TScopePath;
+  readonly [scopePathBrand]: TScopePath;
 }
 
 /**
@@ -228,14 +258,33 @@ export type HandleGroup<T, K = any> =
  * Valid entry values for `ctx.scope()` declarations.
  * Each entry can be either:
  * - a closure (`() => Promise<T>`)
- * - a direct thenable (`PromiseLike<T>`)
+ * - a direct deterministic thenable (`DeterministicAwaitable<T>`)
  *
  * Collections (array/map) accept the same two forms per element.
  */
 export type ScopeEntries = Record<
   string,
-  ScopeEntryValue<any> | ScopeEntryValue<any>[] | Map<any, ScopeEntryValue<any>>
+  | ScopeEntryValue<unknown>
+  | ScopeEntryValue<unknown>[]
+  | Map<unknown, ScopeEntryValue<unknown>>
 >;
+
+/**
+ * Validates that an inferred generic type is compatible with `ScopeEntries`
+ * without forcing contextual typing of object literals to the constraint.
+ */
+export type EnsureScopeEntries<E> = E extends ScopeEntries ? E : never;
+
+/** Prevent callback parameter positions from widening inferred scope entries. */
+export type NoInferScope<T> = [T][T extends any ? 0 : never];
+
+/**
+ * Rest-parameter tuple used to validate scope entries while keeping the
+ * `entries` argument itself free from contextual-typing widening.
+ */
+export type ScopeEntriesCheck<E> = E extends ScopeEntries
+  ? []
+  : ["Invalid scope entries"];
 
 /**
  * Append a named scope to the current lineage.
@@ -325,14 +374,14 @@ export type ScopeHandles<
   E extends ScopeEntries,
   TScopePath extends ScopePath = ScopePath,
 > = {
-  [K in keyof E]: E[K] extends ScopeEntryValue<any>
+  [K in keyof E]: E[K] extends ScopeEntryValue<unknown>
     ? BranchHandle<ScopeEntryResult<E[K]>, TScopePath>
     : E[K] extends (infer U)[]
-      ? U extends ScopeEntryValue<any>
+      ? U extends ScopeEntryValue<unknown>
         ? BranchHandle<ScopeEntryResult<U>, TScopePath>[]
         : never
       : E[K] extends Map<infer MK, infer V>
-        ? V extends ScopeEntryValue<any>
+        ? V extends ScopeEntryValue<unknown>
           ? Map<MK, BranchHandle<ScopeEntryResult<V>, TScopePath>>
           : never
         : never;
@@ -826,13 +875,28 @@ export type MapOutputFor<H, C> =
  * Return type for `ctx.map()` with partial callbacks and an optional default
  * failure handler `DF`.
  *
- * For each key `K` in `M`:
- * - In `C` with explicit `failure` handler: `MapOutputFor<M[K], C[K]>` — sealed, `DF` excluded.
- * - In `C` without explicit `failure`: `MapOutputFor<M[K], C[K]> | DF` — `DF` covers failures.
- * - Not in `C`: `FiniteHandleData<M[K]> | DF` — identity for complete, `DF` for failure.
+ * Failure fallback semantics are shape-preserving:
+ * - `BranchHandle<T>`: `X | DF`
+ * - `BranchHandle<T>[]`: `Array<X | DF>` (fallback applies per element)
+ * - `Map<K, BranchHandle<T>>`: `Map<K, X | DF>` (fallback applies per map entry)
+ * - `ChannelReceiveCall<T>`: no failure path, so `DF` is ignored.
  *
- * When `DF = never` (no `onFailure` argument): `X | never = X`, failures auto-terminate.
+ * For each key `K` in `M`:
+ * - In `C` with explicit `failure` handler: sealed output (`DF` excluded).
+ * - In `C` without explicit `failure`: `DF` applies per failing branch element.
+ * - Not in `C`: identity complete behavior with the same per-element `DF` semantics.
  */
+type MapOutputForWithDefault<H, C, DF> =
+  H extends BranchHandle<any>
+    ? ExtractHandlerReturn<C, FiniteHandleData<H>> | DF
+    : H extends BranchHandle<any>[]
+      ? Array<ExtractHandlerReturn<C, FiniteHandleData<H>> | DF>
+      : H extends Map<infer K, BranchHandle<any>>
+        ? Map<K, ExtractHandlerReturn<C, FiniteHandleData<H>> | DF>
+        : H extends ChannelReceiveCall<any>
+          ? ExtractHandlerReturn<C, FiniteHandleData<H>>
+          : never;
+
 export type MapReturn<
   M extends Record<string, ScopeFiniteHandle>,
   C extends Partial<Record<keyof M & string, any>>,
@@ -841,8 +905,8 @@ export type MapReturn<
   [K in keyof M & string]: K extends keyof C & string
     ? HasExplicitFailure<C[K]> extends true
       ? MapOutputFor<M[K], C[K]>
-      : MapOutputFor<M[K], C[K]> | DF
-    : FiniteHandleData<M[K]> | DF;
+      : MapOutputForWithDefault<M[K], C[K], DF>
+    : MapOutputForWithDefault<M[K], undefined, DF>;
 };
 
 // =============================================================================

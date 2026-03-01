@@ -13,6 +13,13 @@ const ScopeSleepRaceArgs = z.object({
   amount: z.number(),
 });
 
+type Assert<T extends true> = T;
+type IsAny<T> = 0 extends 1 & T ? true : false;
+type IsEqual<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+    ? true
+    : false;
+
 /**
  * Showcases:
  * - time-bounded workflow logic via `scope + sleep` races

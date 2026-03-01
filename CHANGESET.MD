@@ -4,8 +4,7 @@
 3. OTel integration. nuff said, needs exploratory analysis first.
 4. need to clarify semantics of idempotencyKey in different contexts. I think for parent / detached child workflows idempotencyKey is unique on `(workflowType, idempotencyKey)`, while for child workflows we'd have `(workflowType, idempotencyKey, parentWorkflowId)`. While this seems redundant, it kind of namespaces the workflows and incapsulates them. If we didn't do the `(workflowType, idempotencyKey, parentWorkflowId)`, this would mean that starting a child workflow might already have been done outside the current context, which is a very bad place to be in, so I think this is correct. However, this begs the question of how to search for direct children at the client level - this needs thinking. Also splits the `foreignWorkflow.[name].get()` API into child/non-child versions. Seems fair, but still better to think carefully here.
 5. also when designing the client we need to think about the metadata being searchable. field-wise? or what? it's really difficult to pin down at the moment.
-6. we need to better handle the types on different concurrency primitives. nothing should return a `Promise`: we need to be explicit about what runs when and `await` explicitly, never allowing any Promise-like to touch the event loop, unless awaited explicitly.
-7. Need more engine-level observability over the compensation stage. We'd need `compensationTerminated` and `compensationFailed` lifecycles as well. Also we'd need a `getResult()` counterpart to the compensation. Or do we? `waitCompensation` returning a terminal status? Needs designing.
+6. Need more engine-level observability over the compensation stage. We'd need `compensationTerminated` and `compensationFailed` lifecycles as well. Also we'd need a `getResult()` counterpart to the compensation. Or do we? `waitCompensation` returning a terminal status? Needs designing.
 
 I guess if I do all of this the public API will be feature complete.
 
