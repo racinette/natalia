@@ -391,26 +391,39 @@ export type SelectDataUnion<M extends Record<string, SelectableHandle>> = {
 // =============================================================================
 
 /**
- * Result of Selection.match().
+ * Extract the return type from a match/map handler entry.
+ *
+ * - Plain function: returns the function's return type.
+ * - `{ complete, failure }`: returns the union of both return types.
+ * - `{ complete }` only: returns the complete return type (failure terminates).
+ * - `{ failure }` only: returns TData (identity for complete) | failure return type.
+ * - `undefined` or omitted: returns TData (identity — data passed through unchanged).
+ *
+ * TData is the raw data type for the handle — used as the identity return
+ * when `complete` is not explicitly provided.
  */
-export type SelectMatchResult<T> =
-  | { ok: true; status: "matched"; data: T }
-  | { ok: false; status: "exhausted" };
+type ExtractHandlerReturn<H, TData = never> =
+  H extends undefined
+    ? TData
+    : H extends (...args: any[]) => infer R
+      ? Awaited<R>
+      : H extends {
+            complete: (...args: any[]) => infer R;
+            failure: (...args: any[]) => infer R2;
+          }
+        ? Awaited<R> | Awaited<R2>
+        : H extends { failure: (...args: any[]) => infer R2 }
+          ? TData | Awaited<R2>
+          : H extends { complete: (...args: any[]) => infer R }
+            ? Awaited<R>
+            : TData;
 
 /**
- * Extract the return type from a match/map handler entry.
- * Supports plain functions and `{ complete, failure }` objects.
+ * True when a handler entry has an explicit `failure` callback.
+ * Used to determine whether the default failure handler applies.
  */
-type ExtractHandlerReturn<H> = H extends (...args: any[]) => infer R
-  ? Awaited<R>
-  : H extends {
-        complete: (...args: any[]) => infer R;
-        failure: (...args: any[]) => infer R2;
-      }
-    ? Awaited<R> | Awaited<R2>
-    : H extends { complete: (...args: any[]) => infer R }
-      ? Awaited<R>
-      : never;
+type HasExplicitFailure<H> =
+  H extends { failure: (...args: any[]) => any } ? true : false;
 
 // =============================================================================
 // MATCH HANDLER ENTRY TYPES
@@ -419,9 +432,11 @@ type ExtractHandlerReturn<H> = H extends (...args: any[]) => infer R
 /**
  * A match handler entry for a specific key.
  *
- * For BranchHandle keys (single or collection), the handler can be either a plain
- * function (failure auto-terminates workflow) or a `{ complete, failure }` object
- * for explicit failure recovery.
+ * For BranchHandle keys (single or collection), four forms are accepted:
+ * - Plain function: handles complete only; failure auto-terminates (or uses `onFailure`).
+ * - `{ complete, failure }`: both paths handled explicitly.
+ * - `{ complete }` only: failure auto-terminates (or uses `onFailure`).
+ * - `{ failure }` only: complete yields data unchanged (identity); failure handled explicitly.
  *
  * For channel handles and one-shot receive calls, only a plain function is allowed
  * (channels never fail).
@@ -436,6 +451,8 @@ export type MatchHandlerEntry<H extends SelectableHandle> = H extends
           complete: (data: HandleMatchData<H>) => any;
           failure: (failure: BranchFailureInfo) => any;
         }
+      | { complete: (data: HandleMatchData<H>) => any }
+      | { failure: (failure: BranchFailureInfo) => any }
   : (data: HandleMatchData<H>) => any;
 
 /**
@@ -446,61 +463,27 @@ export type MatchHandlers<M extends Record<string, SelectableHandle>> = {
 };
 
 /**
- * Return type of Selection.match().
+ * Yield type of `sel.match()` iteration.
+ *
+ * Iterates over ALL keys in M (not just those in H):
+ * - Keys in H with an explicit `failure` handler: sealed — `DF` does not apply.
+ * - Keys in H without an explicit `failure` handler: `ExtractHandlerReturn<H[K], TData> | DF`.
+ * - Keys NOT in H: identity (`HandleMatchData<M[K]>`) + `DF` for failures.
+ *
+ * When `DF = never` (no `onFailure` argument), branch failures on unhandled paths
+ * auto-terminate the workflow and contribute nothing to the yield type.
  */
 export type MatchReturn<
   M extends Record<string, SelectableHandle>,
   H extends MatchHandlers<M>,
+  DF = never,
 > = {
-  [K in keyof H & string]: ExtractHandlerReturn<H[K]>;
-}[keyof H & string];
-
-/**
- * Union of select events from keys NOT present in the handler map.
- */
-export type UnhandledSelectEvent<
-  M extends Record<string, SelectableHandle>,
-  H extends Partial<Record<keyof M & string, any>>,
-> = {
-  [K in Exclude<keyof M & string, keyof H & string>]: HandleSelectEvent<
-    K,
-    M[K]
-  >;
-}[Exclude<keyof M & string, keyof H & string>];
-
-/**
- * Unhandled select events that represent successful completion only.
- * For plain default callbacks — failures still auto-terminate.
- */
-export type UnhandledSelectCompleteEvent<
-  M extends Record<string, SelectableHandle>,
-  H extends Partial<Record<keyof M & string, any>>,
-> = Exclude<UnhandledSelectEvent<M, H>, { status: "failed" }>;
-
-/**
- * Unhandled select events that represent branch failures.
- * For `{ complete, failure }` default callbacks.
- */
-export type UnhandledSelectFailureEvent<
-  M extends Record<string, SelectableHandle>,
-  H extends Partial<Record<keyof M & string, any>>,
-> = Extract<UnhandledSelectEvent<M, H>, { status: "failed" }>;
-
-/**
- * Default handler entry for unhandled events in selection/map.
- *
- * - Plain function: happy path only (receives completion events only).
- * - Object form: explicit `{ complete, failure }` handling.
- */
-export type DefaultUnhandledHandlerEntry<
-  M extends Record<string, SelectableHandle>,
-  H extends Partial<Record<keyof M & string, any>>,
-> =
-  | ((event: UnhandledSelectCompleteEvent<M, H>) => any)
-  | {
-      complete: (event: UnhandledSelectCompleteEvent<M, H>) => any;
-      failure: (event: UnhandledSelectFailureEvent<M, H>) => any;
-    };
+  [K in keyof M & string]: K extends keyof H & string
+    ? HasExplicitFailure<H[K]> extends true
+      ? ExtractHandlerReturn<H[K], HandleMatchData<M[K]>>
+      : ExtractHandlerReturn<H[K], HandleMatchData<M[K]>> | DF
+    : HandleMatchData<M[K]> | DF;
+}[keyof M & string];
 
 // =============================================================================
 // SELECTION (WorkflowContext)
@@ -515,11 +498,20 @@ export type DefaultUnhandledHandlerEntry<
  * Any branch failure auto-terminates the workflow and triggers LIFO compensation.
  * Use this for simple "process everything, fail on any error" patterns.
  *
- * **`.match()`** — the lower-level, key-aware API.
- * Waits for the first event matching a provided handler map.
- * Handlers can be plain functions (failure crashes workflow) or
- * `{ complete, failure }` objects for BranchHandle keys for explicit recovery.
- * Returns `{ ok: false, status: "exhausted" }` when all handles resolve without matching.
+ * **`.match(handlers, onFailure?)`** — key-aware async iteration.
+ * Yields a transformed value for every event across all handles. Handlers in the
+ * map override the default behavior for their key; unhandled keys yield their data
+ * unchanged (identity). The iteration ends when all handles are exhausted.
+ *
+ * Handler forms for BranchHandle keys:
+ * - Plain function: complete path only; failure auto-terminates (or uses `onFailure`).
+ * - `{ complete, failure }`: both paths handled explicitly.
+ * - `{ complete }` only: failure auto-terminates (or uses `onFailure`).
+ * - `{ failure }` only: complete yields data unchanged; failure handled explicitly.
+ *
+ * The optional `onFailure` callback is the default failure handler — applied to any
+ * key that does not have its own explicit `failure` handler. Its return value is
+ * yielded instead of auto-terminating the workflow.
  *
  * For collection handles (BranchHandle[], Map<K, BranchHandle>), each element
  * produces its own event with an `innerKey`.
@@ -530,23 +522,23 @@ export interface Selection<
   M extends Record<string, SelectableHandle>,
 > extends AsyncIterable<SelectDataUnion<M>> {
   /**
-   * Wait for the first event matching a handler.
-   *
-   * Handlers can be plain functions (failure crashes workflow) or
-   * `{ complete, failure }` objects for BranchHandle keys.
+   * Iterate over matching events.
+   * Yields a transformed value for each event; unhandled keys yield data unchanged.
+   * Ends when all handles are exhausted.
    */
   match<H extends MatchHandlers<M>>(
     handlers: H,
-  ): Promise<SelectMatchResult<MatchReturn<M, H>>>;
+  ): AsyncIterable<MatchReturn<M, H>>;
 
-  /** Handlers + default for unhandled events. */
-  match<
-    H extends MatchHandlers<M>,
-    D extends DefaultUnhandledHandlerEntry<M, H>,
-  >(
+  /**
+   * Iterate over matching events with a default failure handler.
+   * `onFailure` is called for branch failures on keys that have no explicit
+   * `failure` handler — its return value is yielded instead of terminating.
+   */
+  match<H extends MatchHandlers<M>, DF extends (failure: BranchFailureInfo) => any>(
     handlers: H,
-    defaultHandler: D,
-  ): Promise<SelectMatchResult<MatchReturn<M, H> | ExtractHandlerReturn<D>>>;
+    onFailure: DF,
+  ): AsyncIterable<MatchReturn<M, H, Awaited<ReturnType<DF>>>>;
 
   /**
    * Live set of unresolved handle keys.
@@ -564,25 +556,22 @@ export interface Selection<
  * **`for await...of`** — yields `SelectDataUnion<M>` until all handles are exhausted.
  * Any branch failure auto-terminates the compensation scope.
  *
- * **`.match()`** — key-aware, one-event-at-a-time API with explicit `{ complete, failure }`
- * handlers for granular recovery during compensation.
+ * **`.match(handlers, onFailure?)`** — key-aware async iteration with optional default
+ * failure handler for granular recovery during compensation.
  */
 export interface CompensationSelection<
   M extends Record<string, SelectableHandle>,
 > extends AsyncIterable<SelectDataUnion<M>> {
-  /** Pattern-match on events. */
+  /** Iterate over matching events; unhandled keys yield data unchanged. */
   match<H extends MatchHandlers<M>>(
     handlers: H,
-  ): Promise<SelectMatchResult<MatchReturn<M, H>>>;
+  ): AsyncIterable<MatchReturn<M, H>>;
 
-  /** Handlers + default. */
-  match<
-    H extends MatchHandlers<M>,
-    D extends DefaultUnhandledHandlerEntry<M, H>,
-  >(
+  /** Iterate with a default failure handler for keys without explicit failure handling. */
+  match<H extends MatchHandlers<M>, DF extends (failure: BranchFailureInfo) => any>(
     handlers: H,
-    defaultHandler: D,
-  ): Promise<SelectMatchResult<MatchReturn<M, H> | ExtractHandlerReturn<D>>>;
+    onFailure: DF,
+  ): AsyncIterable<MatchReturn<M, H, Awaited<ReturnType<DF>>>>;
 
   /** Live set of unresolved handle keys. */
   readonly remaining: ReadonlySet<keyof M & string>;
@@ -631,6 +620,12 @@ type FiniteHandleInnerKey<H> =
  * - Single BranchHandle / ChannelReceiveCall → single transformed value
  * - Array → array of transformed values
  * - Map → Map of transformed values
+ *
+ * Handler forms for BranchHandle keys:
+ * - Plain function: complete path only; failure auto-terminates.
+ * - `{ complete, failure }`: both paths handled explicitly.
+ * - `{ complete }` only: failure auto-terminates.
+ * - `{ failure }` only: complete yields data unchanged (identity); failure handled explicitly.
  */
 export type MapHandlerEntry<H extends FiniteHandle> = H extends
   | BranchHandle<any>
@@ -643,6 +638,8 @@ export type MapHandlerEntry<H extends FiniteHandle> = H extends
             complete: (data: FiniteHandleData<H>) => any;
             failure: (failure: BranchFailureInfo) => any;
           }
+        | { complete: (data: FiniteHandleData<H>) => any }
+        | { failure: (failure: BranchFailureInfo) => any }
     : // Collection BranchHandle
         | ((
             data: FiniteHandleData<H>,
@@ -658,27 +655,64 @@ export type MapHandlerEntry<H extends FiniteHandle> = H extends
               innerKey: FiniteHandleInnerKey<H>,
             ) => any;
           }
+        | {
+            complete: (
+              data: FiniteHandleData<H>,
+              innerKey: FiniteHandleInnerKey<H>,
+            ) => any;
+          }
+        | {
+            failure: (
+              failure: BranchFailureInfo,
+              innerKey: FiniteHandleInnerKey<H>,
+            ) => any;
+          }
   : H extends ChannelReceiveCall<any>
     ? (data: FiniteHandleData<H>) => any
     : never;
 
 /**
  * Mirror the map output structure to match the input collection structure.
- * - BranchHandle<T> → ExtractHandlerReturn<C>
- * - BranchHandle<T>[] → ExtractHandlerReturn<C>[]
- * - Map<K, BranchHandle<T>> → Map<K, ExtractHandlerReturn<C>>
- * - ChannelReceiveCall<T> → ExtractHandlerReturn<C>
+ * - BranchHandle<T> → ExtractHandlerReturn<C, T>
+ * - BranchHandle<T>[] → ExtractHandlerReturn<C, T>[]
+ * - Map<K, BranchHandle<T>> → Map<K, ExtractHandlerReturn<C, T>>
+ * - ChannelReceiveCall<T> → ExtractHandlerReturn<C, T>
+ *
+ * FiniteHandleData<H> is passed as TData so that omitting `complete` in a
+ * `{ failure }` handler yields the raw data unchanged (identity semantics).
  */
 export type MapOutputFor<H, C> =
   H extends BranchHandle<any>
-    ? ExtractHandlerReturn<C>
+    ? ExtractHandlerReturn<C, FiniteHandleData<H>>
     : H extends BranchHandle<any>[]
-      ? ExtractHandlerReturn<C>[]
+      ? ExtractHandlerReturn<C, FiniteHandleData<H>>[]
       : H extends Map<infer K, BranchHandle<any>>
-        ? Map<K, ExtractHandlerReturn<C>>
+        ? Map<K, ExtractHandlerReturn<C, FiniteHandleData<H>>>
         : H extends ChannelReceiveCall<any>
-          ? ExtractHandlerReturn<C>
+          ? ExtractHandlerReturn<C, FiniteHandleData<H>>
           : never;
+
+/**
+ * Default handler entry for unhandled keys in `ctx.map()` partial overloads.
+ *
+ * Applied to keys not covered by the per-key callbacks map.
+ * Same handler forms as `MapHandlerEntry` for a single BranchHandle,
+ * but without key-specific typing (the data is untyped since it covers
+ * multiple possible handle types).
+ *
+ * - Plain function: complete only; failure auto-terminates.
+ * - `{ complete, failure }`: both paths.
+ * - `{ complete }` only: failure auto-terminates.
+ * - `{ failure }` only: complete = identity.
+ */
+export type MapDefaultHandlerEntry =
+  | ((data: any) => any)
+  | {
+      complete: (data: any) => any;
+      failure: (failure: BranchFailureInfo) => any;
+    }
+  | { complete: (data: any) => any }
+  | { failure: (failure: BranchFailureInfo) => any };
 
 // =============================================================================
 // map — HANDLER ENTRY TYPES (CompensationContext)

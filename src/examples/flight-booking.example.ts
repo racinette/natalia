@@ -22,7 +22,7 @@ const FlightBookingArgs = z.object({
  * - scope with shorthand entries
  * - for-await race
  * - nested scope
- * - selection.remaining + .match loop
+ * - match() async iteration with explicit + onFailure handlers
  */
 export const flightBookingWorkflow = defineWorkflow({
   name: "flightBooking",
@@ -83,40 +83,35 @@ export const flightBookingWorkflow = defineWorkflow({
       },
       async ({ primary, backup }) => {
         const sel = ctx.select({ primary, backup });
-        while (sel.remaining.size > 0) {
-          const result = await sel.match(
-            {
-              primary: {
-                complete: (data) => ({
-                  ok: true as const,
-                  id: data.id,
-                  dest: args.destination,
-                }),
-                failure: async (failure) => {
-                  ctx.logger.warn("Primary hotel failed — falling back");
-                  const compensate = failure.claimCompensation();
-                  await compensate();
-                  return { ok: false as const, id: null, dest: null };
-                },
-              },
-            },
-            {
-              complete: (event) => ({
+        for await (const result of sel.match(
+          {
+            primary: {
+              complete: (data) => ({
                 ok: true as const,
-                id: event.data.id,
-                dest: args.backupDestination,
+                id: data.id,
+                dest: args.destination,
               }),
-              failure: async () => {
-                ctx.logger.error("Backup hotel also failed");
+              failure: async (failure) => {
+                ctx.logger.warn("Primary hotel failed — falling back");
+                const compensate = failure.claimCompensation();
+                await compensate();
                 return { ok: false as const, id: null, dest: null };
               },
             },
-          );
-
-          if (result.status === "exhausted") break;
-          if (result.data.ok) {
-            ctx.logger.info("Hotel booked", { dest: result.data.dest });
-            return result.data.id;
+            backup: (data) => ({
+              ok: true as const,
+              id: data.id,
+              dest: args.backupDestination,
+            }),
+          },
+          async () => {
+            ctx.logger.error("Backup hotel also failed");
+            return { ok: false as const, id: null, dest: null };
+          },
+        )) {
+          if (result.ok) {
+            ctx.logger.info("Hotel booked", { dest: result.dest });
+            return result.id;
           }
         }
         throw new Error("No hotel available at primary or backup destination");

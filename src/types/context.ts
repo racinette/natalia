@@ -37,7 +37,7 @@ import type {
   Selection,
   CompensationSelection,
   MapHandlerEntry,
-  DefaultUnhandledHandlerEntry,
+  MapDefaultHandlerEntry,
   MapOutputFor,
   CompensationMapHandlerEntry,
   StepFailureInfo,
@@ -934,10 +934,7 @@ export interface WorkflowContext<
 
   /**
    * Create a selection for concurrent waiting.
-   * Pass a record of named handles — use `event.key` to discriminate results.
-   *
-   * Branch failures crash the workflow by default (happy-path model).
-   * Use `.match()` with `{ complete, failure }` handlers for recovery.
+   * Pass a record of named handles — use `for await...of` or `.match()` to consume events.
    *
    * Two channel input forms with distinct semantics:
    * - `ctx.channels.<n>` (`ChannelHandle`) — streaming branch; fires on every
@@ -946,6 +943,15 @@ export interface WorkflowContext<
    * - `ctx.channels.<n>.receive(...)` (`ChannelReceiveCall`) — one-shot branch;
    *   resolves exactly once and is removed from `remaining` afterwards. Use
    *   when you want a single message (or a timeout fallback) in a race.
+   *
+   * **`for await...of`** — primary iteration; yields `SelectDataUnion<M>` until exhausted.
+   * Branch failures auto-terminate the workflow.
+   *
+   * **`.match(handlers, onFailure?)`** — key-aware async iteration.
+   * Handlers override default behavior per key; omitting a key yields its data unchanged.
+   * Omitting `complete` in a `{ failure }` object also yields data unchanged on success.
+   * The optional `onFailure` callback is the default failure handler — applied to branch
+   * failures on keys without an explicit `failure` handler.
    */
   select<M extends Record<string, SelectableHandle>>(handles: M): Selection<M>;
 
@@ -1021,13 +1027,16 @@ export interface WorkflowContext<
 
   /**
    * Collect transformed results with partial callbacks and a default.
+   * `defaultCallback` is applied to keys not covered by the per-key `callbacks` map.
+   * Supports the same handler forms as per-key entries: plain function,
+   * `{ complete, failure }`, `{ complete }`, or `{ failure }` (complete = identity).
    */
   map<
     M extends Record<string, FiniteHandle>,
     C extends Partial<{
       [K in keyof M & string]: MapHandlerEntry<M[K]>;
     }>,
-    D extends DefaultUnhandledHandlerEntry<M, C>,
+    D extends MapDefaultHandlerEntry,
   >(
     handles: M,
     callbacks: C,

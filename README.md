@@ -18,7 +18,7 @@ A type-safe, Postgres-backed durable execution engine for TypeScript.
 - **Happy path by default, explicit when needed** — Workflow code describes business intent, not error handling plumbing. The engine handles retries, compensation, and cleanup. `.failure(cb)` opts in to explicit error handling for individual operations.
 - **Explicit over implicit** — No decorators, no global state, no magic.
 - **Structured concurrency** — Every concurrent branch lives inside `ctx.scope()` using either a closure (`async () => ...`) or a direct thenable entry (`ctx.steps.x(...)`). Branches with compensated steps are compensated on exit; others are settled.
-- **Sound compensation** — One callback per handle via `.compensate(cb)` builder. `{ complete, failure }` handler entries for explicit failure recovery. Virtual event loop for concurrent compensation execution.
+- **Sound compensation** — One callback per handle via `.compensate(cb)` builder. `{ complete, failure }`, `{ failure }`, and `onFailure` handler forms for explicit failure recovery. Virtual event loop for concurrent compensation execution.
 - **Type safety** — Full TypeScript inference with standard schemas. Impossible states are unrepresentable.
 - **Deterministic replay** — Global sequence ordering for reproducible execution.
 
@@ -268,7 +268,7 @@ ctx.state.hotelId = ids.hotel;
 - **Runner invocation** — calling the returned runner switches to compensation mode (SIGTERM-resilient), runs to completion, then returns to normal workflow context.
 - **Runner is idempotent** — calling it more than once is a no-op and logs a warning (does not throw).
 - If you never claim compensation, the engine still runs it at scope exit / LIFO unwinding (safe default).
-- For `map` and `match`, the `failure` callback can return a fallback value.
+- For `map` and `match`, per-key `failure` callbacks and the `onFailure` default can return fallback values instead of terminating.
 - **Step failure info:** `StepFailureInfo` — `{ reason: "attempts_exhausted" | "timeout", errors: StepErrorAccessor }` — passed directly to `.failure(cb)` on a `StepCall`.
 - **Child workflow failure info:** `ChildWorkflowFailureInfo` — discriminated union: `{ status: "failed", error: WorkflowExecutionError } | { status: "terminated", reason: WorkflowTerminationReason }` — passed to `.failure(cb)` on a `WorkflowCall`.
 
@@ -323,59 +323,70 @@ for await (const data of sel) {
 
 Use `for await` when you want to process events as they arrive and failures are unrecoverable. Avoid including a raw `ChannelHandle` when iterating with `for await` — the loop will not terminate once branch handles are exhausted.
 
-#### Lower-level: `.match()` — key-aware, one event at a time
+#### `.match()` — key-aware async iteration
 
-Waits for the **first** event matching a provided handler map. Handlers can be plain functions or `{ complete, failure }` objects for branch handle keys. The optional second argument is a default handler for unhandled events.
+Returns an `AsyncIterable` that yields a transformed value for every event across all handles. The iteration ends when all handles are exhausted, so `for await` loops terminate naturally.
 
-Default handler forms:
+**Handler forms** (for BranchHandle keys):
 
-- Plain function: happy path only (receives completion events only). Unhandled failures still terminate the workflow.
-- `{ complete, failure }`: explicit handling for unhandled completion/failure events.
+- Plain function: complete only; failure auto-terminates (or uses `onFailure`).
+- `{ complete, failure }`: both paths handled explicitly.
+- `{ complete }` only: failure auto-terminates (or uses `onFailure`).
+- `{ failure }` only: complete yields data unchanged (identity); failure handled explicitly.
+- Key omitted from map: yields data unchanged on complete; failure auto-terminates (or uses `onFailure`).
+
+**`onFailure` — default failure handler (optional second argument):**
+
+A single callback `(failure: BranchFailureInfo) => R` applied to all branch failures that do not have their own explicit `failure` handler. Its return value is yielded instead of terminating the workflow. Keys with explicit `failure` handlers are unaffected.
 
 ```typescript
-// Drive a loop: one event per iteration, explicit failure recovery.
+// Drive a loop: explicit failure recovery per key, onFailure as catch-all.
 // Use channel.receive() for cancel so the key is removed from remaining
-// after one message — the loop terminates naturally when all handles resolve.
+// after one message — the for-await loop terminates naturally.
 const sel = ctx.select({
   flight: flightHandle,
   hotel: hotelHandle,
   cancel: ctx.channels.cancel.receive(), // one-shot; removed from remaining after first message
 });
 
-while (sel.remaining.size > 0) {
-  const result = await sel.match(
-    {
-      // { complete, failure } for explicit branch failure handling
-      flight: {
-        complete: (data) => ({ ok: true as const, id: data.id }),
-        failure: async (failure) => {
-          const compensate = failure.claimCompensation();
-          await compensate();
-          return { ok: false as const, id: null };
-        },
-      },
-      // ChannelReceiveCall handler — plain function (channel receives don't fail)
-      cancel: (data) => ({ ok: false as const, id: null }),
-    },
-    // Optional default object — only for unhandled keys
-    {
-      complete: (event) => ({ ok: true as const, id: event.data.id }),
-      failure: async (event) => {
-        const compensate = event.failure.claimCompensation();
+for await (const result of sel.match(
+  {
+    // { complete, failure } for explicit per-key handling
+    flight: {
+      complete: (data) => ({ ok: true as const, id: data.id }),
+      failure: async (failure) => {
+        const compensate = failure.claimCompensation();
         await compensate();
         return { ok: false as const, id: null };
       },
     },
-  );
-
-  if (result.status === "exhausted") break;
-  if (result.data.ok) return result.data.id;
+    // ChannelReceiveCall — plain function (channel receives don't fail)
+    cancel: () => ({ ok: false as const, id: null }),
+    // hotel: omitted — yields data unchanged on complete, onFailure on failure
+  },
+  async (failure) => {
+    // default failure handler: covers hotel (and any other key without explicit failure)
+    const compensate = failure.claimCompensation();
+    await compensate();
+    return { ok: false as const, id: null };
+  },
+)) {
+  if (result.ok) return result.id;
 }
 ```
 
-With a raw `ChannelHandle` (streaming form), the `remaining` set never drops the channel key. Use `while (sel.remaining.size > 0)` only when all entries are finite (branch handles or `ChannelReceiveCall`). For the streaming form, drive the loop with an explicit break condition instead.
+**Empty handlers — equivalence with `for await`:**
 
-`match()` overloads: handlers only, or handlers + default handler (plain function or `{ complete, failure }`).
+`sel.match({})` is equivalent to `for await (const val of sel)`: all keys use identity for complete and auto-terminate on failure. Adding `onFailure` replaces the auto-terminate:
+
+```typescript
+// All events yielded as-is; any branch failure returns null instead of terminating
+for await (const val of sel.match({}, () => null)) {
+  // val: SelectDataUnion<M> | null
+}
+```
+
+With a raw `ChannelHandle` (streaming form), the `remaining` set never drops the channel key, so the iteration will not end on its own. Drive the loop with an explicit `break` condition.
 
 #### Time-bounded step/child patterns (`scope + sleep`)
 
@@ -390,14 +401,17 @@ const stepRace = await ctx.scope(
     timer: ctx.sleep(30).then(() => "timed_out" as const),
   },
   async ({ flight, timer }) => {
-    const result = await ctx.select({ flight, timer }).match({
+    const sel = ctx.select({ flight, timer });
+    for await (const val of sel.match({
       flight: {
         complete: () => "booked" as const,
         failure: () => "timed_out" as const,
       },
       timer: () => "timed_out" as const,
-    });
-    return result.status === "exhausted" ? "timed_out" : result.data;
+    })) {
+      return val;
+    }
+    return "timed_out" as const;
   },
 );
 
@@ -411,14 +425,17 @@ const childRace = await ctx.scope(
     timer: ctx.sleep(45).then(() => "timed_out" as const),
   },
   async ({ payment, timer }) => {
-    const result = await ctx.select({ payment, timer }).match({
+    const sel = ctx.select({ payment, timer });
+    for await (const val of sel.match({
       payment: {
         complete: () => "completed" as const,
         failure: () => "timed_out" as const,
       },
       timer: () => "timed_out" as const,
-    });
-    return result.status === "exhausted" ? "timed_out" : result.data;
+    })) {
+      return val;
+    }
+    return "timed_out" as const;
   },
 );
 ```
@@ -456,11 +473,11 @@ Branch handles carry `status: "complete" | "failed"` discrimination. Channel han
 
 `SelectableHandle` includes `BranchHandle` variants, `ChannelHandle`, and `ChannelReceiveCall`. Streams and lifecycle events are not selectable in workflow-internal code — use the external API (`WorkflowHandleExternal`) for those.
 
-`for await...of` on a `Selection<M>` yields `SelectDataUnion<M>` — the union of successful data types across all handles (including channel and receive-call data). Failed branch events auto-terminate the workflow when iterating; to handle failures explicitly, use `.match()` with `{ complete, failure }` handlers.
+`for await...of` on a `Selection<M>` yields `SelectDataUnion<M>` — the union of successful data types across all handles (including channel and receive-call data). Failed branch events auto-terminate the workflow when iterating; to handle failures without terminating, use `.match()` with `{ complete, failure }` or `{ failure }` per-key handlers, or the `onFailure` second argument.
 
 ### map (Batch Processing)
 
-Transform all finite handles concurrently. Callbacks receive successful data `T` directly (plain function) or use `{ complete, failure }` for explicit failure handling on branch handles.
+Transform all finite handles concurrently. Callbacks receive successful data `T` directly (plain function), or use `{ complete, failure }` for explicit failure handling, or `{ failure }` alone to handle failures while passing data through unchanged on success.
 
 **Accepted handle types (`FiniteHandle`):**
 
@@ -472,7 +489,7 @@ Raw `ChannelHandle` is **not** accepted because it never exhausts and would prev
 Collection handles (Array, Map) pass `innerKey` as a second argument to callbacks.
 
 ```typescript
-// map — { complete, failure } for specific keys, default object for unhandled failures
+// map — { complete, failure } per key; { failure } alone uses identity for complete
 // Return type mirrors collection structure: array → array, map → map
 const ids = await ctx.map(
   { flight: flightHandle, hotel: hotelHandle, car: carHandle },
@@ -485,18 +502,24 @@ const ids = await ctx.map(
         return "FAILED"; // fallback value
       },
     },
-    hotel: (data) => data.id,
-  },
-  {
-    complete: (event) => event.data.id,
-    failure: async (event) => {
-      const compensate = event.failure.claimCompensation();
-      await compensate();
-      return "FAILED";
+    // { failure } only: complete returns data unchanged; failure returns fallback
+    hotel: {
+      failure: async (failure) => {
+        const compensate = failure.claimCompensation();
+        await compensate();
+        return "FAILED";
+      },
     },
+    // car: handled by defaultCallback below
+  },
+  // defaultCallback for keys not listed above
+  async (failure) => {
+    const compensate = failure.claimCompensation();
+    await compensate();
+    return "FAILED";
   },
 );
-// ids: { flight: string, hotel: string, car: string }
+// ids: { flight: string, hotel: HotelData | "FAILED", car: CarData | "FAILED" }
 
 // map with a Map collection — innerKey is the Map's key
 const quotePrices = await ctx.map(
@@ -1079,7 +1102,6 @@ No `"terminated"` — the only way to terminate during compensation is SIGKILL, 
 | `EventWaitResult`          | `set`      | `never`, `timeout`               | Engine-level event wait         |
 | `EventCheckResult`         | `set`      | `not_set`, `never`, `not_found`  | Engine-level non-blocking check |
 | `SignalResult`             | `sent`     | `already_finished`, `not_found`  | Engine-level signal             |
-| `SelectMatchResult`        | `matched`  | `exhausted`                      | Workflow-internal match result  |
 
 Workflow-internal `ChannelHandle.receive()` returns `T` directly when called without a timeout. The timeout overloads are:
 
@@ -1143,8 +1165,8 @@ Workflow-internal timeout behavior:
 | `ctx.foreignWorkflows.*`                       | `.get(id)` → `ForeignWorkflowHandle` (channels.send only, fire-and-forget)                                                                                                                                  |
 | `ctx.patches.*`                                | `await ctx.patches.name` → boolean, `(callback, default?)` → callback result or default                                                                                                                     |
 | `ctx.scope()`                                  | Structured concurrency boundary — accepts closures and collections                                                                                                                                          |
-| `ctx.select()`                                 | Multiplex `SelectableHandle` — `for await` (primary) or `.match()`; accepts `ChannelHandle` (streaming) or `ChannelReceiveCall` (one-shot)                                                                  |
-| `ctx.map()`                                    | Transform `FiniteHandle` results; collection structure mirrored; `{ complete, failure }` on branch handles; `ChannelReceiveCall` keys use plain callbacks                                                   |
+| `ctx.select()`                                 | Multiplex `SelectableHandle` — `for await` (primary) or `.match(handlers, onFailure?)`; accepts `ChannelHandle` (streaming) or `ChannelReceiveCall` (one-shot)                                             |
+| `ctx.map()`                                    | Transform `FiniteHandle` results; collection structure mirrored; `{ complete, failure }`, `{ failure }`, or plain function on branch handles; `ChannelReceiveCall` keys use plain callbacks                 |
 | `ctx.addCompensation()`                        | Register LIFO compensation callback                                                                                                                                                                         |
 | `ctx.schedule(cron, { timezone?, resumeAt? })` | Durable cron-like schedule handle; first tick is strictly after `resumeAt` when provided                                                                                                                    |
 | `ctx.sleep(seconds)`                           | Durable relative sleep                                                                                                                                                                                      |
@@ -1163,7 +1185,7 @@ Workflow-internal timeout behavior:
 | `ctx.events.*`              | `.set()`                                                                                                                                                            |
 | `ctx.childWorkflows.*`      | `(options)` → `CompensationWorkflowCall<T>` — resolves to `WorkflowResult<T>`                                                                                       |
 | `ctx.scope()`               | Structured concurrency boundary — all unjoined branches settled on exit                                                                                             |
-| `ctx.select()`              | Multiplex `SelectableHandle` — `for await` or `.match()` (no `{ complete, failure }` split); accepts `ChannelHandle` (streaming) or `ChannelReceiveCall` (one-shot) |
+| `ctx.select()`              | Multiplex `SelectableHandle` — `for await` or `.match(handlers, onFailure?)`; accepts `ChannelHandle` (streaming) or `ChannelReceiveCall` (one-shot) |
 | `ctx.map()`                 | Transform `FiniteHandle` results — plain callbacks; `ChannelReceiveCall` keys supported                                                                             |
 | `ctx.sleep()` / `ctx.rng.*` | Same as WorkflowContext                                                                                                                                             |
 | `ctx.logger`                | Replay-aware logger                                                                                                                                                 |
@@ -1295,7 +1317,7 @@ Examples are split into focused files under `src/examples/`.
 - Cron-like scheduler example: `src/examples/cron-scheduler.example.ts` demonstrates the manager/worker split for long-running schedulers — a stable-ID manager loop delegates to bounded-history workers, with `afterCompensate` + `foreignWorkflows` guaranteeing handoff delivery on failure and detached child starts so workers carry no compensation obligation to the manager.
 - Web scraper example: `src/examples/web-scraper.example.ts` demonstrates `defineWorkflowHeader` for self-referential workflows and URL-as-idempotency-key for automatic cycle prevention — no explicit visited-set needed.
 - Concurrency-focused example: `src/examples/concurrency-primitives.example.ts` demonstrates dynamic Map fan-out, cheapest-flight selection across variable providers (up to 3 hops), concurrent hotel reservation race, and child/foreign workflow orchestration in one realistic flow.
-- Default-callback-focused example: `src/examples/onboarding-verification.example.ts` demonstrates 5 parallel identity methods, a 1-hour deadline race, 3-of-5 threshold gating, and default `{ complete, failure }` handling for unhandled verification branches.
+- Per-key match example: `src/examples/onboarding-verification.example.ts` demonstrates 5 parallel identity methods, a 1-hour deadline race, 3-of-5 threshold gating, and explicit per-key `{ complete, failure }` handlers for each verification branch.
 - Engine-level API example: `src/examples/engine-level-api.example.ts` demonstrates `engine.start()`, `engine.workflows.*.start/execute/get`, handle channels/streams/events/lifecycle operations, `setRetention()`, `sigterm()`, `runGarbageCollection()`, and `engine.shutdown()`.
 
 ## Project Structure
@@ -1323,8 +1345,8 @@ Work in Progress — Public API design complete. Internal implementation pending
 - **Structured concurrency with shorthand entries** via `ctx.scope()` — entries can be `async () => T` closures or direct thenables; collections (Array, Map) supported for dynamic fan-out
 - **One compensation callback per handle** — defined via `.compensate(cb)` builder, full `CompensationContext`; compensation is always unconditional (at-least-once semantics)
 - **Scope exit behavior** — branches with compensated steps → compensated; others → settled
-- **Unified failure model** — `.failure(cb)` / `{ complete, failure }` handler entries; `BranchFailureInfo` with `claimCompensation()` for explicit ownership transfer
-- **`for await...of` as primary select iteration** — yields `SelectDataUnion<M>`, branch failure auto-terminates; `.match()` for key-aware granular handling
+- **Unified failure model** — `.failure(cb)` / `{ complete, failure }` / `{ failure }` handler entries; `onFailure` default for `match()`; `BranchFailureInfo` with `claimCompensation()` for explicit ownership transfer
+- **`for await...of` as primary select iteration** — yields `SelectDataUnion<M>`, branch failure auto-terminates; `.match(handlers, onFailure?)` for key-aware granular handling with async iteration
 - **Time-bounded channel receive** — `ChannelHandle.receive(timeoutSeconds, defaultValue?)` supports deterministic timeout/nowait workflow logic
 - **Virtual event loop** — engine interleaves concurrent compensation callbacks transparently
 - `BaseContext` / `WorkflowContext` / `CompensationContext` hierarchy

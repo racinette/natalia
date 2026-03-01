@@ -106,7 +106,7 @@ const OnboardingVerificationArgs = z.object({
 /**
  * Showcases:
  * - onboarding with 5 identity methods and "at least 3" threshold
- * - `ctx.select().match()` default `{ complete, failure }` for unhandled methods
+ * - `ctx.select().match()` with explicit handlers per identity method
  * - explicit deadline branch using `ctx.sleep()` (1 hour)
  * - gating progression until threshold is reached
  * - child workflow call after verification (`riskAssessment`)
@@ -144,36 +144,31 @@ export const onboardingVerificationWorkflow = defineWorkflow({
 
     const outcome = await ctx.scope(
       {
-        passport: async () =>
-          ctx.steps.verifyIdentityProof(
-            "passport",
-            (await ctx.channels.passport.receive()).artifactId,
-            args.userId,
-          ),
-        driverLicense: async () =>
-          ctx.steps.verifyIdentityProof(
-            "driverLicense",
-            (await ctx.channels.driverLicense.receive()).artifactId,
-            args.userId,
-          ),
-        nationalId: async () =>
-          ctx.steps.verifyIdentityProof(
-            "nationalId",
-            (await ctx.channels.nationalId.receive()).artifactId,
-            args.userId,
-          ),
-        bankId: async () =>
-          ctx.steps.verifyIdentityProof(
-            "bankId",
-            (await ctx.channels.bankId.receive()).artifactId,
-            args.userId,
-          ),
-        videoSelfie: async () =>
-          ctx.steps.verifyIdentityProof(
-            "videoSelfie",
-            (await ctx.channels.videoSelfie.receive()).artifactId,
-            args.userId,
-          ),
+        passport: ctx.steps.verifyIdentityProof(
+          "passport",
+          (await ctx.channels.passport.receive()).artifactId,
+          args.userId,
+        ),
+        driverLicense: ctx.steps.verifyIdentityProof(
+          "driverLicense",
+          (await ctx.channels.driverLicense.receive()).artifactId,
+          args.userId,
+        ),
+        nationalId: ctx.steps.verifyIdentityProof(
+          "nationalId",
+          (await ctx.channels.nationalId.receive()).artifactId,
+          args.userId,
+        ),
+        bankId: ctx.steps.verifyIdentityProof(
+          "bankId",
+          (await ctx.channels.bankId.receive()).artifactId,
+          args.userId,
+        ),
+        videoSelfie: ctx.steps.verifyIdentityProof(
+          "videoSelfie",
+          (await ctx.channels.videoSelfie.receive()).artifactId,
+          args.userId,
+        ),
         deadline: ctx.sleep(3600).then(() => "deadline" as const),
       },
       async ({
@@ -193,48 +188,67 @@ export const onboardingVerificationWorkflow = defineWorkflow({
           deadline,
         });
 
-        while (sel.remaining.size > 0 && verifiedMethods.size < 3) {
-          const result = await sel.match(
-            {
-              deadline: () => ({ kind: "deadline" as const }),
-              videoSelfie: {
-                complete: (data) => {
-                  if (data.confidence < 0.8) {
-                    failedMethods.add("videoSelfie");
-                    return { kind: "continue" as const };
-                  }
-                  verifiedMethods.add("videoSelfie");
-                  return { kind: "continue" as const };
-                },
-                failure: async (failure) => {
-                  failedMethods.add("videoSelfie");
-                  return { kind: "continue" as const };
-                },
-              },
+        for await (const kind of sel.match({
+          deadline: () => "deadline" as const,
+          videoSelfie: {
+            complete: (data) => {
+              if (data.confidence < 0.8) {
+                failedMethods.add("videoSelfie");
+              } else {
+                verifiedMethods.add("videoSelfie");
+              }
+              return "continue" as const;
             },
-            {
-              complete: (event) => {
-                verifiedMethods.add(event.key);
-                return { kind: "continue" as const };
-              },
-              failure: async (event) => {
-                failedMethods.add(event.key);
-                return { kind: "continue" as const };
-              },
+            failure: async () => {
+              failedMethods.add("videoSelfie");
+              return "continue" as const;
             },
-          );
-
-          if (result.status === "exhausted") {
-            break;
-          }
-          if (result.data.kind === "deadline") {
-            break;
-          }
-
+          },
+          passport: {
+            complete: () => {
+              verifiedMethods.add("passport");
+              return "continue" as const;
+            },
+            failure: async () => {
+              failedMethods.add("passport");
+              return "continue" as const;
+            },
+          },
+          driverLicense: {
+            complete: () => {
+              verifiedMethods.add("driverLicense");
+              return "continue" as const;
+            },
+            failure: async () => {
+              failedMethods.add("driverLicense");
+              return "continue" as const;
+            },
+          },
+          nationalId: {
+            complete: () => {
+              verifiedMethods.add("nationalId");
+              return "continue" as const;
+            },
+            failure: async () => {
+              failedMethods.add("nationalId");
+              return "continue" as const;
+            },
+          },
+          bankId: {
+            complete: () => {
+              verifiedMethods.add("bankId");
+              return "continue" as const;
+            },
+            failure: async () => {
+              failedMethods.add("bankId");
+              return "continue" as const;
+            },
+          },
+        })) {
+          if (kind === "deadline") break;
+          if (verifiedMethods.size >= 3) break;
           const remainingPossible = sel.remaining.size;
-          if (verifiedMethods.size + remainingPossible < 3) {
-            break;
-          }
+          if (verifiedMethods.size + remainingPossible < 3) break;
         }
 
         if (verifiedMethods.size < 3) {

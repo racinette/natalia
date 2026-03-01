@@ -17,7 +17,7 @@ const CancelCommand = z.object({
  * - channels.receive standalone
  * - select({ branch, channel.receive() }) with for-await (one-shot race)
  * - select({ branch, channel }) with match() (streaming channel in select)
- * - match with default handler
+ * - match() with explicit handlers for all keys including streaming channel
  */
 export const channelRaceWorkflow = defineWorkflow({
   name: "channelRace",
@@ -79,22 +79,18 @@ export const channelRaceWorkflow = defineWorkflow({
       async ({ booking2 }) => {
         // Streaming channel: passes the raw ChannelHandle so the channel branch
         // fires on each incoming cancel message (never removed from remaining).
-        // The match() call below handles whichever event arrives first and exits.
+        // match() iterates events; we break after the first to get a one-shot result.
         const sel2 = ctx.select({ booking2, cancel2: ctx.channels.cancel });
-        const result = await sel2.match(
-          {
-            booking2: {
-              complete: (data) => ({ type: "booked" as const, id: data.id }),
-              failure: async () => ({ type: "failed" as const, id: null }),
-            },
+        for await (const result of sel2.match({
+          booking2: {
+            complete: (data) => ({ type: "booked" as const, id: data.id }),
+            failure: async () => ({ type: "failed" as const, id: null }),
           },
-          (event) => ({
-            type: "unhandled" as const,
-            key: event.key,
-          }),
-        );
-
-        return result;
+          cancel2: (data) => ({ type: "cancelled" as const, reason: data.reason }),
+        })) {
+          return result;
+        }
+        throw new Error("Selection exhausted unexpectedly");
       },
     );
 

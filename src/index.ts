@@ -22,11 +22,13 @@
  * - Select: `ctx.select(handles)` returns a Selection<M>.
  *     `for await...of` — primary iteration surface; yields SelectDataUnion<M> (successful data
  *     from all handle types including channels and receive calls); branch failure auto-terminates.
- *     `.match(handlers)` — key-aware single-event dispatch; supports { complete, failure }
- *     handlers on branch handle keys for granular recovery without auto-termination.
- *     No `.next()` method — use `for await` for simple iteration, `.match()` for granular control.
+ *     `.match(handlers, onFailure?)` — key-aware async iteration; `for await (const val of sel.match(...))`.
+ *     Handlers can be plain functions, { complete, failure }, { complete }, or { failure } (identity for complete).
+ *     Omitting a key yields its data unchanged (identity) on complete; failure auto-terminates (or uses onFailure).
+ *     onFailure: default failure callback for keys without an explicit failure handler.
  *     Channel inputs: raw ChannelHandle = streaming (never exhausted); ChannelReceiveCall = one-shot.
- * - map: Batch transformation of FiniteHandle inputs with { complete, failure } handlers.
+ * - map: Batch transformation of FiniteHandle inputs.
+ *     Handler forms: plain function, { complete, failure }, { complete }, { failure } (identity for complete).
  *     Accepts BranchHandle variants and ChannelReceiveCall (not raw ChannelHandle).
  *     Collection handles (BranchHandle[], Map<K, BranchHandle>) pass innerKey to callbacks.
  * - Child workflows: ctx.childWorkflows.* — structured invocation (WorkflowCall<T> thenable).

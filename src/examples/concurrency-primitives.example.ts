@@ -266,29 +266,26 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
           | null = null;
         let cancelled = false;
 
-        while (hotelSel.remaining.size > 0) {
-          const match = await hotelSel.match({
-            cancel: () => {
-              cancelled = true;
+        for await (const val of hotelSel.match({
+          cancel: () => {
+            cancelled = true;
+            return null;
+          },
+          hotel: {
+            complete: ({ data, innerKey }) => ({
+              provider: innerKey,
+              reservationId: data.reservationId,
+              price: data.price,
+            }),
+            failure: async () => {
+              ctx.logger.warn("Hotel reservation provider failed");
               return null;
             },
-            hotel: {
-              complete: ({ data, innerKey }) => ({
-                provider: innerKey,
-                reservationId: data.reservationId,
-                price: data.price,
-              }),
-              failure: async (failure) => {
-                ctx.logger.warn("Hotel reservation provider failed");
-                return null;
-              },
-            },
-          });
-
-          if (match.status === "exhausted") break;
+          },
+        })) {
           if (cancelled) break;
-          if (match.data != null) {
-            selectedHotel = match.data;
+          if (val != null) {
+            selectedHotel = val;
             break;
           }
         }
