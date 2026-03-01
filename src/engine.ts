@@ -34,13 +34,13 @@ export interface EngineWorkflowAccessor<W extends AnyWorkflowDefinition> {
   /**
    * Start a new instance of this workflow.
    *
-   * @param options - Start options (id, args, metadata, seed, deadlineSeconds, retention).
+   * @param options - Start options (idempotencyKey?, args, metadata, seed, deadlineSeconds, retention).
    * @returns External handle to the workflow.
    *
    * @example
    * ```typescript
    * const handle = await engine.workflows.order.start({
-   *   id: 'order-123',
+   *   idempotencyKey: 'order-123',
    *   metadata: { tenantId: 'tenant-acme', correlationId: 'req-42' },
    *   args: { customerId: 'cust-456', items: [...] },
    * });
@@ -65,13 +65,13 @@ export interface EngineWorkflowAccessor<W extends AnyWorkflowDefinition> {
    * start + getResult). Waits indefinitely for the workflow to reach
    * a terminal state.
    *
-   * @param options - Start options (id, args, metadata, seed, deadlineSeconds, retention).
+   * @param options - Start options (idempotencyKey?, args, metadata, seed, deadlineSeconds, retention).
    * @returns The workflow result.
    *
    * @example
    * ```typescript
    * const result = await engine.workflows.order.execute({
-   *   id: 'order-123',
+   *   idempotencyKey: 'order-123',
    *   metadata: { tenantId: 'tenant-acme', correlationId: 'req-42' },
    *   args: { customerId: 'cust-456', items: [...] },
    * });
@@ -92,7 +92,7 @@ export interface EngineWorkflowAccessor<W extends AnyWorkflowDefinition> {
   /**
    * Get a handle to an existing workflow instance.
    *
-   * @param id - The workflow instance ID.
+   * @param idempotencyKey - The workflow idempotency key.
    * @returns External handle to the workflow.
    *
    * @example
@@ -102,7 +102,7 @@ export interface EngineWorkflowAccessor<W extends AnyWorkflowDefinition> {
    * ```
    */
   get(
-    id: string,
+    idempotencyKey: string,
   ): WorkflowHandleExternal<
     InferWorkflowResult<W>,
     InferWorkflowChannels<W>,
@@ -213,7 +213,7 @@ export interface WorkflowEngineConfig<
  * await engine.start();
  *
  * const handle = await engine.workflows.order.start({
- *   id: 'order-123',
+ *   idempotencyKey: 'order-123',
  *   metadata: { tenantId: 'tenant-acme', correlationId: 'req-42' },
  *   args: { customerId: 'cust-456', items: [...] },
  * });
@@ -281,7 +281,7 @@ export class WorkflowEngine<
           this.assertNotShutdown();
           throw new Error("Not implemented");
         },
-        get: (_id: string) => {
+        get: (_idempotencyKey: string) => {
           this.assertNotShutdown();
           throw new Error("Not implemented");
         },

@@ -443,7 +443,7 @@ const childRace = await ctx.scope(
   "ChildTimeoutRace",
   {
     payment: ctx.childWorkflows.payment({
-      id: "payment-1",
+      idempotencyKey: "payment-1",
       args: { amount: 100, customerId: "cust-1" },
     }),
     timer: ctx.sleep(45).then(() => "timed_out" as const),
@@ -621,6 +621,8 @@ Child workflow access is split by semantics:
 - **`ctx.childWorkflows.*`** — structured invocation, lifecycle managed by parent.
 - **`ctx.foreignWorkflows.*`** — message-only handles to existing workflow instances.
 - Child starts also accept optional immutable `metadata` for audit/filtering.
+- `idempotencyKey` is optional on workflow starts. If omitted, the engine
+  generates a unique key for that workflow instance.
 
 This split is enforced at definition-time too:
 
@@ -631,7 +633,7 @@ const checkoutWorkflow = defineWorkflow({
     payment: paymentWorkflow, // callable as ctx.childWorkflows.payment(...)
   },
   foreignWorkflows: {
-    campaign: campaignWorkflow, // handle via ctx.foreignWorkflows.campaign.get(id)
+    campaign: campaignWorkflow, // handle via ctx.foreignWorkflows.campaign.get(idempotencyKey)
   },
   // ...
 });
@@ -641,7 +643,7 @@ const checkoutWorkflow = defineWorkflow({
 // Sequential — childWorkflows call returns WorkflowCall<T>
 const result = await ctx.childWorkflows
   .payment({
-    id: `payment-${ctx.rng.paymentId.uuidv4()}`,
+    idempotencyKey: `payment-${ctx.rng.paymentId.uuidv4()}`,
     metadata: { tenantId: "tenant-acme", correlationId: "req-42" },
     seed: "payment-seed-cust-123",
     args: { amount: 100, customerId: "cust-123" },
@@ -657,7 +659,7 @@ const receiptId = await ctx.scope(
   {
     child: async () => {
       const result = await ctx.childWorkflows.payment({
-        id: "payment-1",
+        idempotencyKey: "payment-1",
         metadata: { tenantId: "tenant-acme" },
         seed: "payment-seed-1",
         args: { amount: 100, customerId: "cust-123" },
@@ -670,7 +672,7 @@ const receiptId = await ctx.scope(
 
 // Detached — pass detached: true in call options, no scope required
 const notifier = await ctx.childWorkflows.emailCampaign({
-  id: `campaign-${ctx.rng.campaignId.uuidv4()}`,
+  idempotencyKey: `campaign-${ctx.rng.campaignId.uuidv4()}`,
   metadata: { tenantId: "tenant-acme" },
   seed: "campaign-seed",
   args: { customerId: "cust-123" },
@@ -760,7 +762,7 @@ const treeWorkflow = defineWorkflow({
   execute: async (ctx, args) => {
     for (const child of args.children) {
       await ctx.childWorkflows.subtree({
-        id: child.id,
+        idempotencyKey: child.id,
         args: child,
         detached: true,
       });
@@ -769,12 +771,12 @@ const treeWorkflow = defineWorkflow({
 });
 ```
 
-**Idempotent child starts as cycle prevention.** When a self-referential workflow uses a content-derived ID (e.g. a URL, a node key) for each child start, the engine's idempotent start semantics automatically prevent duplicate work. If two different paths in the tree both try to start a workflow for the same ID, the second start is a no-op — no explicit visited-set, no coordination needed:
+**Idempotent child starts as cycle prevention.** When a self-referential workflow uses a content-derived idempotency key (e.g. a URL, a node key) for each child start, the engine's idempotent start semantics automatically prevent duplicate work. If two different paths in the tree both try to start a workflow for the same idempotency key, the second start is a no-op — no explicit visited-set, no coordination needed:
 
 ```typescript
-// URL as stable idempotency key — same URL = same ID = engine no-ops the duplicate
+// URL as stable idempotency key — same URL = same key = engine no-ops the duplicate
 await ctx.childWorkflows.page({
-  id: pageUrl,          // deterministic from content, not from call site
+  idempotencyKey: pageUrl, // deterministic from content, not from call site
   args: { url: pageUrl, depth: args.depth + 1, ... },
   detached: true,
 });
@@ -816,7 +818,7 @@ for await (const tick of schedule) {
 
   // Detached child job with independent retention policy
   await ctx.childWorkflows.dailyReport({
-    id: `daily-report-${tick.index}`,
+    idempotencyKey: `daily-report-${tick.index}`,
     args: { reportDate: tick.scheduledAt.toISOString() },
     detached: true,
     deadlineUntil: tick.nextScheduledAt,
@@ -1201,7 +1203,7 @@ Workflow-internal timeout behavior:
 | `ctx.streams.*`                                | `.write()`                                                                                                                                                                                                  |
 | `ctx.events.*`                                 | `.set()`                                                                                                                                                                                                    |
 | `ctx.childWorkflows.*`                         | `(options)` → `WorkflowCall<T>` by default; supports optional `metadata`; with `detached: true` → `ForeignWorkflowHandle`                                                                                   |
-| `ctx.foreignWorkflows.*`                       | `.get(id)` → `ForeignWorkflowHandle` (channels.send only, fire-and-forget)                                                                                                                                  |
+| `ctx.foreignWorkflows.*`                       | `.get(idempotencyKey)` → `ForeignWorkflowHandle` (channels.send only, fire-and-forget)                                                                                                                       |
 | `ctx.patches.*`                                | `await ctx.patches.name` → boolean, `(callback, default?)` → callback result or default                                                                                                                     |
 | `ctx.scope(name, entries, callback)`           | Structured concurrency boundary — requires explicit scope name; accepts closures and collections                                                                                                             |
 | `ctx.select()`                                 | Channel-only select on base context — accepts `ChannelHandle` (streaming) or `ChannelReceiveCall` (one-shot)                                                                                                 |
@@ -1239,7 +1241,7 @@ Workflow-internal timeout behavior:
 
 | Resource     | Operations                                                                                                                |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `.start()`   | Start workflow (`id`, optional `metadata`, optional `seed`, optional `deadlineSeconds`), returns `WorkflowHandleExternal` |
+| `.start()`   | Start workflow (`idempotencyKey?`, optional `metadata`, optional `seed`, optional `deadlineSeconds`), returns `WorkflowHandleExternal` |
 | `.execute()` | Start + wait for result (sugar for start + getResult)                                                                     |
 | `.get()`     | Get handle to existing workflow                                                                                           |
 
@@ -1288,7 +1290,7 @@ const workflow = defineWorkflow({
 
 // Override at start time
 await engine.workflows.order.start({
-  id: "vip-order",
+  idempotencyKey: "vip-order",
   seed: "vip-order-seed-v1",
   retention: 86400 * 365 * 5,
 });
@@ -1334,7 +1336,9 @@ const engine = new WorkflowEngine({
 await engine.start();
 
 // Engine-level uses full result unions
-const result = await engine.workflows.hello.execute({ id: "hello-1" });
+const result = await engine.workflows.hello.execute({
+  idempotencyKey: "hello-1",
+});
 if (result.ok) {
   console.log(result.data.message); // "Hello, World!"
 } else if (result.status === "failed") {
@@ -1342,7 +1346,9 @@ if (result.ok) {
 }
 
 // Or start() for a handle with full control
-const handle = await engine.workflows.hello.start({ id: "hello-2" });
+const handle = await engine.workflows.hello.start({
+  idempotencyKey: "hello-2",
+});
 const result2 = await handle.getResult();
 
 await engine.shutdown();
@@ -1353,7 +1359,7 @@ await engine.shutdown();
 Examples are split into focused files under `src/examples/`.
 
 - Workflow-internal API examples: scopes, selection, compensation, channels, patches, child/foreign workflows.
-- Cron-like scheduler example: `src/examples/cron-scheduler.example.ts` demonstrates the manager/worker split for long-running schedulers — a stable-ID manager loop delegates to bounded-history workers, with `afterCompensate` + `foreignWorkflows` guaranteeing handoff delivery on failure and detached child starts so workers carry no compensation obligation to the manager.
+- Cron-like scheduler example: `src/examples/cron-scheduler.example.ts` demonstrates the manager/worker split for long-running schedulers — a stable idempotency-key manager loop delegates to bounded-history workers, with `afterCompensate` + `foreignWorkflows` guaranteeing handoff delivery on failure and detached child starts so workers carry no compensation obligation to the manager.
 - Web scraper example: `src/examples/web-scraper.example.ts` demonstrates `defineWorkflowHeader` for self-referential workflows and URL-as-idempotency-key for automatic cycle prevention — no explicit visited-set needed.
 - Concurrency-focused example: `src/examples/concurrency-primitives.example.ts` demonstrates dynamic Map fan-out, cheapest-flight selection across variable providers (up to 3 hops), concurrent hotel reservation race, and child/foreign workflow orchestration in one realistic flow.
 - Per-key match example: `src/examples/onboarding-verification.example.ts` demonstrates 5 parallel identity methods, a 1-hour deadline race, 3-of-5 threshold gating, and explicit per-key `{ complete, failure }` handlers for each verification branch.
@@ -1392,7 +1398,7 @@ Work in Progress — Public API design complete. Internal implementation pending
 - **CompensationContext with full structured concurrency** — `scope(name, ...)` plus scope-local `select()/map()` and `CompensationStepCall.retry()`; failures always explicit in result types
 - `CompensationStepResult<T>` for defensive compensation code
 - **`ctx.childWorkflows.*` / `ctx.foreignWorkflows.*`** split — structured vs message-only access
-- **Detached child start via call options** — `ctx.childWorkflows.name({ id, args, detached: true })` returns `ForeignWorkflowHandle`
+- **Detached child start via call options** — `ctx.childWorkflows.name({ idempotencyKey?, args, detached: true })` returns `ForeignWorkflowHandle`
 - **Simplified typing model** — detached vs result mode is selected at call-site options instead of builder chaining
 - **Collection support** — Array and Map of closures/handles in scope/select/map; callbacks receive `innerKey` for collections
 - Error observability — `StepExecutionError`, `StepErrorAccessor`, `WorkflowExecutionError`

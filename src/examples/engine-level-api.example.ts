@@ -23,7 +23,7 @@ export async function engineLevelApiShowcase(
 
   // start + wait shortcut
   const quickOrder = await engine.workflows.order.execute({
-    id: "order-quick-demo",
+    idempotencyKey: "order-quick-demo",
     seed: "order-quick-seed-v1",
     deadlineSeconds: 300,
     args: {
@@ -41,7 +41,7 @@ export async function engineLevelApiShowcase(
 
   // metadata is optional but strongly typed when schema is defined
   await engine.workflows.campaign.execute({
-    id: "campaign-with-metadata-demo",
+    idempotencyKey: "campaign-with-metadata-demo",
     metadata: {
       tenantId: "tenant-acme",
       correlationId: "req-42",
@@ -54,7 +54,7 @@ export async function engineLevelApiShowcase(
 
   // start + handle manipulation
   const handle = await engine.workflows.compensationHooks.start({
-    id: "comp-hooks-demo",
+    idempotencyKey: "comp-hooks-demo",
     seed: "comp-hooks-seed-v1",
     deadlineSeconds: 600,
     args: {
@@ -97,7 +97,7 @@ export async function engineLevelApiShowcase(
     break;
   }
 
-  // get existing handle by id
+  // get existing handle by idempotency key
   const sameHandle = engine.workflows.compensationHooks.get("comp-hooks-demo");
 
   // operational control

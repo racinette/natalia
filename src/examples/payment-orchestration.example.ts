@@ -5,7 +5,7 @@ import { paymentWorkflow, campaignWorker } from "./shared";
 const PaymentOrchestrationArgs = z.object({
   customerId: z.string(),
   amount: z.number(),
-  existingCampaignId: z.string(),
+  existingCampaignIdempotencyKey: z.string(),
 });
 
 /**
@@ -34,7 +34,7 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
   async execute(ctx, args) {
     const receiptId = await ctx.childWorkflows
       .payment({
-        id: `payment-${ctx.rng.ids.uuidv4()}`,
+        idempotencyKey: `payment-${ctx.rng.ids.uuidv4()}`,
         metadata: {
           tenantId: `tenant-${args.customerId}`,
           correlationId: `corr-payment-${args.customerId}`,
@@ -62,7 +62,7 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
       .complete((data) => data.receiptId);
 
     const campaignHandle = await ctx.childWorkflows.campaignWorker({
-      id: `campaign-${ctx.rng.ids.uuidv4()}`,
+      idempotencyKey: `campaign-${ctx.rng.ids.uuidv4()}`,
       metadata: {
         tenantId: `tenant-${args.customerId}`,
         correlationId: `corr-campaign-${args.customerId}`,
@@ -73,7 +73,7 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
     });
 
     const foreign = ctx.foreignWorkflows.campaignWorker.get(
-      args.existingCampaignId,
+      args.existingCampaignIdempotencyKey,
     );
     await foreign.channels.nudge.send({ type: "nudge" });
     await campaignHandle.channels.nudge.send({ type: "nudge" });

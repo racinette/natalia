@@ -149,7 +149,7 @@ export interface WorkflowHandleExternal<
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
 > {
-  readonly id: string;
+  readonly idempotencyKey: string;
 
   /**
    * Channels for sending messages.

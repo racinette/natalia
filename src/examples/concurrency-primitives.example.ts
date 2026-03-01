@@ -10,7 +10,7 @@ const ConcurrencyPrimitivesArgs = z.object({
   customerId: z.string(),
   flightProviders: z.array(z.string()),
   hotelProviders: z.array(z.string()),
-  existingCampaignId: z.string().optional(),
+  existingCampaignIdempotencyKey: z.string().optional(),
 });
 
 const CancelCommand = z.object({
@@ -310,7 +310,7 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
         const totalPrice = bestFlight.price + selectedHotel.price;
         const paymentReceiptId = await ctx.childWorkflows
           .payment({
-            id: `payment-${ctx.rng.ids.uuidv4()}`,
+            idempotencyKey: `payment-${ctx.rng.ids.uuidv4()}`,
             metadata: {
               tenantId: `tenant-${args.customerId}`,
               correlationId: `corr-payment-${args.customerId}`,
@@ -333,7 +333,7 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
           .complete((data) => data.receiptId);
 
         const campaign = await ctx.childWorkflows.campaignWorker({
-          id: `campaign-${ctx.rng.ids.uuidv4()}`,
+          idempotencyKey: `campaign-${ctx.rng.ids.uuidv4()}`,
           metadata: {
             tenantId: `tenant-${args.customerId}`,
             correlationId: `corr-campaign-${args.customerId}`,
@@ -344,9 +344,9 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
         });
         await campaign.channels.nudge.send({ type: "nudge" });
 
-        if (args.existingCampaignId) {
+        if (args.existingCampaignIdempotencyKey) {
           const existing = ctx.foreignWorkflows.campaignWorker.get(
-            args.existingCampaignId,
+            args.existingCampaignIdempotencyKey,
           );
           await existing.channels.nudge.send({ type: "nudge" });
         }

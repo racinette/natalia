@@ -67,7 +67,7 @@ export const scopeSleepRaceWorkflow = defineWorkflow({
       "ChildTimeoutRace",
       {
         payment: ctx.childWorkflows.payment({
-          id: `payment-${ctx.rng.ids.uuidv4()}`,
+          idempotencyKey: `payment-${ctx.rng.ids.uuidv4()}`,
           metadata: {
             tenantId: `tenant-${args.customerId}`,
             correlationId: `corr-payment-race-${args.customerId}`,

@@ -18,7 +18,7 @@ const SchedulerManagerArgs = z.object({
 
 const SchedulerWorkerArgs = z.object({
   userId: z.string(),
-  managerId: z.string(),
+  managerIdempotencyKey: z.string(),
   resumeAt: z.iso.datetime().optional(),
   maxTicks: z.number(),
 });
@@ -100,7 +100,7 @@ export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
   afterCompensate: async ({ ctx, args }) => {
     if (ctx.state.dateSent) return;
     await ctx.foreignWorkflows.manager
-      .get(args.managerId)
+      .get(args.managerIdempotencyKey)
       .channels.workerDone.send({
         workerId: ctx.workflowId,
         lastTickAt: ctx.state.lastTickAt,
@@ -127,7 +127,7 @@ export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
         });
 
       await ctx.childWorkflows.job({
-        id: `daily-report-${ctx.rng.ids.uuidv4()}`,
+        idempotencyKey: `daily-report-${ctx.rng.ids.uuidv4()}`,
         args: {
           userId: args.userId,
           reportDate: tick.scheduledAt.toISOString(),
@@ -146,7 +146,7 @@ export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
     }
 
     await ctx.foreignWorkflows.manager
-      .get(args.managerId)
+      .get(args.managerIdempotencyKey)
       .channels.workerDone.send({
         workerId: ctx.workflowId,
         lastTickAt: ctx.state.lastTickAt,
@@ -158,7 +158,7 @@ export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
 // =============================================================================
 // MANAGER WORKFLOW
 //
-// Stable ID, infinite loop. History grows at O(total_ticks / maxTicks) —
+// Stable idempotency key, infinite loop. History grows at O(total_ticks / maxTicks) —
 // one child-start + one channel-receive per worker generation.
 // At 1000 ticks/generation on a daily schedule that is roughly one new
 // history entry every 2.7 years.
@@ -191,10 +191,10 @@ export const dailyReportSchedulerManagerWorkflow = defineWorkflow({
       const workerId = `scheduler-worker-${ctx.rng.gen.uuidv4()}`;
 
       await ctx.childWorkflows.worker({
-        id: workerId,
+        idempotencyKey: workerId,
         args: {
           userId: args.userId,
-          managerId: ctx.workflowId,
+          managerIdempotencyKey: ctx.workflowId,
           resumeAt,
           maxTicks: 1000,
         },

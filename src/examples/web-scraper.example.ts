@@ -5,7 +5,7 @@ import { defineStep, defineWorkflow, defineWorkflowHeader } from "../workflow";
  * Showcases:
  * - defineWorkflowHeader for self-referential (recursive/tree) workflows
  * - URL as stable idempotency key: the same URL always maps to the same
- *   workflow ID, so cycles and duplicate page visits are prevented by the
+ *   workflow idempotency key, so cycles and duplicate page visits are prevented by the
  *   engine's idempotent start semantics — no explicit visited-set needed
  * - detached child workflows for parallel tree fan-out
  * - maxLinksPerPage + maxDepth to bound the crawl
@@ -125,7 +125,7 @@ export const pageScraperWorkflow = defineWorkflow({
 
     // Fan out to child pages in parallel.
     //
-    // Each child's ID is the target URL itself (the stable idempotency key).
+    // Each child's idempotency key is the target URL itself.
     // If another page in the crawl already started a workflow for this URL
     // — whether via a different path or a back-edge creating a cycle — the
     // engine treats the start as a no-op and the duplicate is silently
@@ -133,7 +133,7 @@ export const pageScraperWorkflow = defineWorkflow({
     const links = page.links.slice(0, args.maxLinksPerPage);
     for (const link of links) {
       await ctx.childWorkflows.page({
-        id: link,
+        idempotencyKey: link,
         args: {
           url: link,
           baseUrl: args.baseUrl,

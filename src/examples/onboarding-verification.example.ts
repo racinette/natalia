@@ -273,7 +273,7 @@ export const onboardingVerificationWorkflow = defineWorkflow({
 
         const risk = await ctx.childWorkflows
           .riskAssessment({
-            id: `risk-${args.userId}`,
+            idempotencyKey: `risk-${args.userId}`,
             args: { userId: args.userId, methods },
           })
           .failure(async (failure) => {

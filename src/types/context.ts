@@ -245,7 +245,7 @@ export interface CompensationStepCall<T>
 export interface ForeignWorkflowHandle<
   TChannels extends ChannelDefinitions = Record<string, never>,
 > {
-  readonly id: string;
+  readonly idempotencyKey: string;
 
   /**
    * Channels for sending messages to this workflow.
@@ -396,7 +396,7 @@ export interface CompensationWorkflowCall<T>
 /**
  * Callable child workflow accessor on `ctx.childWorkflows` in WorkflowContext.
  *
- * Call it with `{ id, args, seed? }` to get a `WorkflowCall<T>`.
+ * Call it with `{ idempotencyKey?, args, seed? }` to get a `WorkflowCall<T>`.
  * Call it with `{ detached: true }` to start detached and get a foreign handle.
  * Chain builders before awaiting:
  * - `.compensate()` — register compensation
@@ -460,7 +460,7 @@ export interface ChildWorkflowAccessor<
 /**
  * Foreign workflow accessor on `ctx.foreignWorkflows` in WorkflowContext.
  *
- * Use `.get(id)` to obtain a `ForeignWorkflowHandle` for an existing
+ * Use `.get(idempotencyKey)` to obtain a `ForeignWorkflowHandle` for an existing
  * (non-child) workflow instance. Only `channels.send()` is available — no
  * events, streams, or lifecycle (prevents tight coupling).
  *
@@ -471,9 +471,9 @@ export interface ForeignWorkflowAccessor<W extends AnyWorkflowHeader> {
    * Get a limited handle to an existing workflow instance.
    * Only channels.send() is available (fire-and-forget).
    *
-   * @param id - The workflow instance ID.
+   * @param idempotencyKey - The workflow idempotency key.
    */
-  get(id: string): ForeignWorkflowHandle<InferWorkflowChannels<W>>;
+  get(idempotencyKey: string): ForeignWorkflowHandle<InferWorkflowChannels<W>>;
 }
 
 /**
@@ -589,7 +589,7 @@ export interface BaseContext<
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
 > {
-  /** Unique workflow instance ID */
+  /** Unique internal workflow instance identifier (not the idempotency key). */
   readonly workflowId: string;
 
   /** Mutable workflow state (replayed on recovery) */
@@ -717,7 +717,7 @@ export interface CompensationContext<
 
   /**
    * Foreign workflow accessors — message-only handles to existing workflow instances.
-   * Use `.get(id)` to get a `ForeignWorkflowHandle` with `channels.send()` only.
+   * Use `.get(idempotencyKey)` to get a `ForeignWorkflowHandle` with `channels.send()` only.
    * No lifecycle, events, streams, or compensation (prevents tight coupling).
    */
   readonly foreignWorkflows: {
@@ -905,7 +905,7 @@ export interface WorkflowContext<
 
   /**
    * Foreign workflow accessors — message-only handles to existing workflow instances.
-   * Use `.get(id)` to get a `ForeignWorkflowHandle` with `channels.send()` only.
+   * Use `.get(idempotencyKey)` to get a `ForeignWorkflowHandle` with `channels.send()` only.
    * No lifecycle, events, streams, or compensation (prevents tight coupling).
    */
   readonly foreignWorkflows: {
