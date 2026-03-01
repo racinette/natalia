@@ -84,6 +84,7 @@ export const orderWorkflow = defineWorkflow({
     ctx.state.phase = "approved";
 
     const hotelId = await ctx.scope(
+      "BookHotel",
       {
         hotel: ctx.steps
           .bookHotel(args.destination, args.checkIn, args.checkOut)

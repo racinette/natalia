@@ -13,6 +13,7 @@ import type {
   ExternalWaitOptions,
 } from "./types";
 import { EngineShutdownError } from "./internal/errors";
+import { ScopeRuntimeRegistry } from "./internal/scope-runtime-registry";
 
 // =============================================================================
 // ENGINE WORKFLOW ACCESSOR
@@ -250,6 +251,12 @@ export class WorkflowEngine<
   private gcInterval: NodeJS.Timeout | null = null;
   private isStarted = false;
   private isShutdown = false;
+  /**
+   * Named-scope runtime guard.
+   * Will be consumed by the scope executor implementation to reject duplicate
+   * active child scope names under the same parent path.
+   */
+  private readonly scopeRuntimeRegistry = new ScopeRuntimeRegistry();
 
   /**
    * Workflow accessors — populated from constructor.

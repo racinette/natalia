@@ -174,6 +174,11 @@ export interface EventAccessor {
 export type ScopeBranch<T> = () => Promise<T>;
 
 /**
+ * Ordered scope lineage from root to current scope.
+ */
+export type ScopePath = readonly string[];
+
+/**
  * A scope entry value.
  *
  * Supports two forms:
@@ -193,7 +198,15 @@ export type ScopeEntryValue<T> = ScopeBranch<T> | PromiseLike<T>;
  *
  * @typeParam T - The resolved value type.
  */
-export interface BranchHandle<T> extends Promise<T> {}
+declare const scopePathBrand: unique symbol;
+
+export interface BranchHandle<
+  T,
+  TScopePath extends ScopePath = ScopePath,
+> extends Promise<T> {
+  /** @internal Type-level scope ownership brand. */
+  readonly [scopePathBrand]?: TScopePath;
+}
 
 /**
  * A group of branch handles — single, array, or map.
@@ -225,6 +238,79 @@ export type ScopeEntries = Record<
 >;
 
 /**
+ * Append a named scope to the current lineage.
+ */
+export type AppendScopeName<
+  TScopePath extends ScopePath,
+  TName extends string,
+> = [...TScopePath, TName];
+
+/**
+ * Scope name guard:
+ * - literal names cannot reuse any ancestor scope name
+ * - widened `string` is allowed but loses compile-time collision guarantees
+ */
+export type ScopeNameArg<
+  TScopePath extends ScopePath,
+  TName extends string,
+> = string extends TName ? TName : TName extends TScopePath[number] ? never : TName;
+
+type IsPrefix<TPrefix extends ScopePath, TValue extends ScopePath> =
+  TPrefix extends []
+    ? true
+    : TValue extends readonly [
+          infer TValueHead extends string,
+          ...infer TValueTail extends ScopePath,
+        ]
+      ? TPrefix extends readonly [
+            infer TPrefixHead extends string,
+            ...infer TPrefixTail extends ScopePath,
+          ]
+        ? TPrefixHead extends TValueHead
+          ? IsPrefix<TPrefixTail, TValueTail>
+          : false
+        : false
+      : false;
+
+type RestrictSelectableHandleToPath<
+  H,
+  TCurrentPath extends ScopePath,
+> = H extends BranchHandle<infer T, infer THandlePath>
+  ? IsPrefix<THandlePath, TCurrentPath> extends true
+    ? BranchHandle<T, THandlePath>
+    : never
+  : H extends BranchHandle<infer T, infer THandlePath>[]
+    ? IsPrefix<THandlePath, TCurrentPath> extends true
+      ? BranchHandle<T, THandlePath>[]
+      : never
+    : H extends Map<infer MK, BranchHandle<infer T, infer THandlePath>>
+      ? IsPrefix<THandlePath, TCurrentPath> extends true
+        ? Map<MK, BranchHandle<T, THandlePath>>
+        : never
+      : H extends ChannelHandle<any> | ChannelReceiveCall<any>
+        ? H
+        : never;
+
+type RestrictFiniteHandleToPath<
+  H,
+  TCurrentPath extends ScopePath,
+> = H extends BranchHandle<infer T, infer THandlePath>
+  ? IsPrefix<THandlePath, TCurrentPath> extends true
+    ? BranchHandle<T, THandlePath>
+    : never
+  : H extends BranchHandle<infer T, infer THandlePath>[]
+    ? IsPrefix<THandlePath, TCurrentPath> extends true
+      ? BranchHandle<T, THandlePath>[]
+      : never
+    : H extends Map<infer MK, BranchHandle<infer T, infer THandlePath>>
+      ? IsPrefix<THandlePath, TCurrentPath> extends true
+        ? Map<MK, BranchHandle<T, THandlePath>>
+        : never
+      : H extends ChannelReceiveCall<any>
+        ? H
+        : never;
+
+/**
  * Extract resolved value type from a scope entry value.
  */
 type ScopeEntryResult<V> = V extends (...args: any[]) => infer R
@@ -235,16 +321,19 @@ type ScopeEntryResult<V> = V extends (...args: any[]) => infer R
  * Maps scope entry values to their corresponding branch handle types,
  * preserving collection structure (single → BranchHandle, array → array, map → map).
  */
-export type ScopeHandles<E extends ScopeEntries> = {
+export type ScopeHandles<
+  E extends ScopeEntries,
+  TScopePath extends ScopePath = ScopePath,
+> = {
   [K in keyof E]: E[K] extends ScopeEntryValue<any>
-    ? BranchHandle<ScopeEntryResult<E[K]>>
+    ? BranchHandle<ScopeEntryResult<E[K]>, TScopePath>
     : E[K] extends (infer U)[]
       ? U extends ScopeEntryValue<any>
-        ? BranchHandle<ScopeEntryResult<U>>[]
+        ? BranchHandle<ScopeEntryResult<U>, TScopePath>[]
         : never
       : E[K] extends Map<infer MK, infer V>
         ? V extends ScopeEntryValue<any>
-          ? Map<MK, BranchHandle<ScopeEntryResult<V>>>
+          ? Map<MK, BranchHandle<ScopeEntryResult<V>, TScopePath>>
           : never
         : never;
 };
@@ -296,6 +385,20 @@ export type ScopeFiniteHandle =
   | BranchHandle<any>[]
   | Map<any, BranchHandle<any>>
   | ChannelReceiveCall<any>;
+
+export type ScopeSelectableRecordForPath<
+  M extends Record<string, ScopeSelectableHandle>,
+  TCurrentPath extends ScopePath,
+> = {
+  [K in keyof M & string]: RestrictSelectableHandleToPath<M[K], TCurrentPath>;
+};
+
+export type ScopeFiniteRecordForPath<
+  M extends Record<string, ScopeFiniteHandle>,
+  TCurrentPath extends ScopePath,
+> = {
+  [K in keyof M & string]: RestrictFiniteHandleToPath<M[K], TCurrentPath>;
+};
 
 // =============================================================================
 // SELECT — EVENT TYPES (WorkflowContext)

@@ -32,6 +32,7 @@ export const flightBookingWorkflow = defineWorkflow({
 
   async execute(ctx, args) {
     const flight = await ctx.scope(
+      "PickFlightProvider",
       {
         provider1: ctx.steps
           .bookFlight(`${args.destination}/p1`, args.customerId)
@@ -61,6 +62,7 @@ export const flightBookingWorkflow = defineWorkflow({
     );
 
     const hotelId = await ctx.scope(
+      "PickHotelProvider",
       {
         primary: ctx.steps
           .bookHotel(args.destination, args.checkIn, args.checkOut)

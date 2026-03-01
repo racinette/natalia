@@ -32,6 +32,7 @@ export const scopeSleepRaceWorkflow = defineWorkflow({
 
   async execute(ctx, args) {
     const stepRace = await ctx.scope(
+      "StepTimeoutRace",
       {
         flight: ctx.steps
           .bookFlight(args.destination, args.customerId)
@@ -56,6 +57,7 @@ export const scopeSleepRaceWorkflow = defineWorkflow({
     );
 
     const childRace = await ctx.scope(
+      "ChildTimeoutRace",
       {
         payment: ctx.childWorkflows.payment({
           id: `payment-${ctx.rng.ids.uuidv4()}`,

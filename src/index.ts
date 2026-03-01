@@ -7,7 +7,8 @@
  * - Workflows: Long-running, durable processes with happy-path-only code
  * - Steps: Durable, retriable operations — calling a step returns a StepCall<T> thenable.
  *     Chain builders before awaiting: .compensate(cb), .retry(policy), .failure(cb), .complete(cb)
- * - Scopes: Structured concurrency — concurrent branches run as closures inside ctx.scope().
+ * - Scopes: Structured concurrency — concurrent branches run as closures inside
+ *     ctx.scope(scopeName, entries, callback).
  *     Collections (Array, Map) are supported for dynamic fan-out.
  * - BranchHandle: Awaitable handle produced by scope entries — passed to select/map
  * - Compensation: Registered per-step via .compensate(cb) builder, runs LIFO on failure.
@@ -29,7 +30,7 @@
  *     onFailure: default failure callback for keys without an explicit failure handler.
  *     Channel inputs: raw ChannelHandle = streaming (never exhausted); ChannelReceiveCall = one-shot.
  * - map: Scope-local primitive only (not on base workflow/compensation contexts).
- *     Use inside `ctx.scope(..., async (ctx, handles) => ...)`.
+ *     Use inside `ctx.scope("Name", entries, async (ctx, handles) => ...)`.
  *     map(handles) — identity for all, failure terminates.
  *     map(handles, callbacks, onFailure?) — partial per-key handlers + optional default failure callback.
  *     Accepts BranchHandle variants and ChannelReceiveCall (not raw ChannelHandle).

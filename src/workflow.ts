@@ -242,7 +242,7 @@ export function defineWorkflowHeader<
  * All compensations run in LIFO order when the workflow fails.
  *
  * **Structured concurrency:** All concurrent branches run as closures inside
- * `ctx.scope()`. Collections (Array, Map) are supported for dynamic fan-out.
+ * `ctx.scope(name, ...)`. Collections (Array, Map) are supported for dynamic fan-out.
  * Branches with compensated steps are compensated on scope exit.
  *
  * **Failure handling:** Concurrency primitives (match, map) support
@@ -272,7 +272,7 @@ export function defineWorkflowHeader<
  *       });
  *
  *     // Concurrent with scope — closures as branches
- *     const hotel = await ctx.scope({
+ *     const hotel = await ctx.scope("BookHotel", {
  *       a: async () => ctx.steps
  *         .bookHotel(args.city, args.checkIn, args.checkOut)
  *         .compensate(async (compCtx) => {

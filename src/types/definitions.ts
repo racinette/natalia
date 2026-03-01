@@ -385,7 +385,7 @@ export type StateFactory<TState> = () => TState;
  * `addCompensation(cb)` provides general-purpose cleanup. Runs LIFO on failure.
  *
  * **Structured concurrency:** All concurrent branches run as closures inside
- * `ctx.scope()`. Collections (Array, Map) are supported for dynamic fan-out.
+ * `ctx.scope(name, ...)`. Collections (Array, Map) are supported for dynamic fan-out.
  */
 export interface WorkflowDefinition<
   TState,

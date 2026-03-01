@@ -79,6 +79,7 @@ export const compensationHooksWorkflow = defineWorkflow({
     ctx.logger.info("All compensations done");
 
     await ctx.scope(
+      "CompensationNotifications",
       {
         logEntry: async () => {
           const result = await ctx.steps.sendEmail(
@@ -194,6 +195,7 @@ export const compensationHooksWorkflow = defineWorkflow({
       .bookHotel(args.destination, args.checkIn, args.checkOut)
       .compensate(async (compCtx) => {
         await compCtx.scope(
+          "HotelCompensationBranches",
           {
             cancel: compCtx.steps
               .cancelHotel(args.destination, args.checkIn, args.checkOut)

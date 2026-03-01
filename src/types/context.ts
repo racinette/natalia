@@ -33,9 +33,14 @@ import type {
   BranchFailureInfo,
   ScopeEntries,
   ScopeHandles,
+  ScopePath,
+  AppendScopeName,
+  ScopeNameArg,
   BaseSelectableHandle,
   ScopeSelectableHandle,
   ScopeFiniteHandle,
+  ScopeSelectableRecordForPath,
+  ScopeFiniteRecordForPath,
   FiniteHandleData,
   Selection,
   CompensationSelection,
@@ -658,9 +663,9 @@ export interface BaseContext<
  * Key differences from WorkflowContext:
  * - Steps return `CompensationStepResult<T>` via `CompensationStepCall<T>` —
  *   compensation code MUST handle failures gracefully.
- * - Has `scope()` and channel-only `select()`.
+ * - Has `scope(name, ...)` and channel-only `select()`.
  * - Full structured-concurrency primitives (`select` with branch handles, `map`)
- *   are available only inside `scope()` via `WorkflowCompensationConcurrencyContext`.
+ *   are available only inside `scope(name, ...)` via `WorkflowCompensationConcurrencyContext`.
  * - `childWorkflows` return `CompensationWorkflowCall<T>` → `WorkflowResult<T>`.
  * - No `addCompensation()` (prevents nested compensation chains).
  * - No `foreignWorkflows` accessor (fire-and-forget not needed in compensation).
@@ -731,7 +736,8 @@ export interface CompensationContext<
    * On scope exit, all running branches are awaited to completion.
    * No per-branch compensation — compensation cannot nest.
    */
-  scope<R, E extends ScopeEntries>(
+  scope<Name extends string, R, E extends ScopeEntries>(
+    name: Name,
     entries: E,
     callback: (
       ctx: WorkflowCompensationConcurrencyContext<
@@ -743,9 +749,10 @@ export interface CompensationContext<
         TChildWorkflows,
         TForeignWorkflows,
         TPatches,
-        TRng
+        TRng,
+        AppendScopeName<[], Name>
       >,
-      handles: ScopeHandles<E>,
+      handles: ScopeHandles<E, AppendScopeName<[], Name>>,
     ) => Promise<R>,
   ): Promise<R>;
 
@@ -810,7 +817,7 @@ export type CompensationCallback<
  * - `.failure(cb)` — handle failure without auto-termination
  * - `.complete(cb)` — transform success result
  *
- * Structured concurrency via `ctx.scope()`: every concurrent branch runs as a
+ * Structured concurrency via `ctx.scope(name, ...)`: every concurrent branch runs as a
  * closure or direct thenable entry. Branches with compensated steps are
  * compensated on scope exit.
  *
@@ -818,7 +825,7 @@ export type CompensationCallback<
  * and/or thenables.
  * Base `ctx.select()` is channel-only (`ChannelHandle` and `ChannelReceiveCall`).
  * Full concurrency primitives (`select` with branch handles and `map`) are
- * available only inside `ctx.scope()` via `WorkflowConcurrencyContext`.
+ * available only inside `ctx.scope(name, ...)` via `WorkflowConcurrencyContext`.
  *
  * Child workflow access is split by semantics:
  * - `ctx.childWorkflows.*` — structured invocation (lifecycle managed, compensation supported)
@@ -950,7 +957,8 @@ export interface WorkflowContext<
    * - `providers: Array<() => Promise<T> | PromiseLike<T>>` → `BranchHandle<T>[]`
    * - `quotes: Map<K, () => Promise<T> | PromiseLike<T>>` → `Map<K, BranchHandle<T>>`
    */
-  scope<R, E extends ScopeEntries>(
+  scope<Name extends string, R, E extends ScopeEntries>(
+    name: Name,
     entries: E,
     callback: (
       ctx: WorkflowConcurrencyContext<
@@ -962,9 +970,10 @@ export interface WorkflowContext<
         TChildWorkflows,
         TForeignWorkflows,
         TPatches,
-        TRng
+        TRng,
+        AppendScopeName<[], Name>
       >,
-      handles: ScopeHandles<E>,
+      handles: ScopeHandles<E, AppendScopeName<[], Name>>,
     ) => Promise<R>,
   ): Promise<R>;
 
@@ -1016,47 +1025,79 @@ export interface WorkflowConcurrencyContext<
   TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
-> extends WorkflowContext<
-    TState,
-    TChannels,
-    TStreams,
-    TEvents,
-    TSteps,
-    TChildWorkflows,
-    TForeignWorkflows,
-    TPatches,
-    TRng
+  TScopePath extends ScopePath = [],
+> extends Omit<
+    WorkflowContext<
+      TState,
+      TChannels,
+      TStreams,
+      TEvents,
+      TSteps,
+      TChildWorkflows,
+      TForeignWorkflows,
+      TPatches,
+      TRng
+    >,
+    "scope" | "select"
   > {
+  scope<Name extends string, R, E extends ScopeEntries>(
+    name: ScopeNameArg<TScopePath, Name>,
+    entries: E,
+    callback: (
+      ctx: WorkflowConcurrencyContext<
+        TState,
+        TChannels,
+        TStreams,
+        TEvents,
+        TSteps,
+        TChildWorkflows,
+        TForeignWorkflows,
+        TPatches,
+        TRng,
+        AppendScopeName<TScopePath, Name>
+      >,
+      handles: ScopeHandles<E, AppendScopeName<TScopePath, Name>>,
+    ) => Promise<R>,
+  ): Promise<R>;
+
   /**
    * Create a selection for concurrent waiting over scope branch handles and
    * channels.
    */
-  select<M extends Record<string, ScopeSelectableHandle>>(handles: M): Selection<M>;
+  select<M extends Record<string, ScopeSelectableHandle>>(
+    handles: ScopeSelectableRecordForPath<M, TScopePath>,
+  ): Selection<ScopeSelectableRecordForPath<M, TScopePath>>;
 
   /**
    * Collect transformed results from all finite scope handles.
    */
   map<M extends Record<string, ScopeFiniteHandle>>(
-    handles: M,
-  ): Promise<{ [K in keyof M & string]: FiniteHandleData<M[K]> }>;
+    handles: ScopeFiniteRecordForPath<M, TScopePath>,
+  ): Promise<{
+    [K in keyof M & string]: FiniteHandleData<
+      ScopeFiniteRecordForPath<M, TScopePath>[K]
+    >;
+  }>;
 
   map<
     M extends Record<string, ScopeFiniteHandle>,
     C extends Partial<{ [K in keyof M & string]: ScopeMapHandlerEntry<M[K]> }>,
   >(
-    handles: M,
+    handles: ScopeFiniteRecordForPath<M, TScopePath>,
     callbacks: C,
-  ): Promise<MapReturn<M, C>>;
+  ): Promise<MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C>>;
 
   map<
     M extends Record<string, ScopeFiniteHandle>,
     C extends Partial<{ [K in keyof M & string]: ScopeMapHandlerEntry<M[K]> }>,
     DF extends (failure: BranchFailureInfo) => any,
   >(
-    handles: M,
+    handles: ScopeFiniteRecordForPath<M, TScopePath>,
     callbacks: C,
     onFailure: DF,
-  ): Promise<MapReturn<M, C, Awaited<ReturnType<DF>>>>;
+  ): Promise<
+    MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C, Awaited<ReturnType<DF>>>
+  >;
 }
 
 // =============================================================================
@@ -1079,31 +1120,59 @@ export interface WorkflowCompensationConcurrencyContext<
   TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
-> extends CompensationContext<
-    TState,
-    TChannels,
-    TStreams,
-    TEvents,
-    TSteps,
-    TChildWorkflows,
-    TForeignWorkflows,
-    TPatches,
-    TRng
+  TScopePath extends ScopePath = [],
+> extends Omit<
+    CompensationContext<
+      TState,
+      TChannels,
+      TStreams,
+      TEvents,
+      TSteps,
+      TChildWorkflows,
+      TForeignWorkflows,
+      TPatches,
+      TRng
+    >,
+    "scope" | "select"
   > {
+  scope<Name extends string, R, E extends ScopeEntries>(
+    name: ScopeNameArg<TScopePath, Name>,
+    entries: E,
+    callback: (
+      ctx: WorkflowCompensationConcurrencyContext<
+        TState,
+        TChannels,
+        TStreams,
+        TEvents,
+        TSteps,
+        TChildWorkflows,
+        TForeignWorkflows,
+        TPatches,
+        TRng,
+        AppendScopeName<TScopePath, Name>
+      >,
+      handles: ScopeHandles<E, AppendScopeName<TScopePath, Name>>,
+    ) => Promise<R>,
+  ): Promise<R>;
+
   /**
    * Create a selection for concurrent waiting over scope branch handles and
    * channels.
    */
   select<M extends Record<string, ScopeSelectableHandle>>(
-    handles: M,
-  ): CompensationSelection<M>;
+    handles: ScopeSelectableRecordForPath<M, TScopePath>,
+  ): CompensationSelection<ScopeSelectableRecordForPath<M, TScopePath>>;
 
   /**
    * Collect transformed results from all finite scope handles.
    */
   map<M extends Record<string, ScopeFiniteHandle>>(
-    handles: M,
-  ): Promise<{ [K in keyof M & string]: FiniteHandleData<M[K]> }>;
+    handles: ScopeFiniteRecordForPath<M, TScopePath>,
+  ): Promise<{
+    [K in keyof M & string]: FiniteHandleData<
+      ScopeFiniteRecordForPath<M, TScopePath>[K]
+    >;
+  }>;
 
   map<
     M extends Record<string, ScopeFiniteHandle>,
@@ -1111,9 +1180,9 @@ export interface WorkflowCompensationConcurrencyContext<
       [K in keyof M & string]: ScopeCompensationMapHandlerEntry<M[K]>;
     }>,
   >(
-    handles: M,
+    handles: ScopeFiniteRecordForPath<M, TScopePath>,
     callbacks: C,
-  ): Promise<MapReturn<M, C>>;
+  ): Promise<MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C>>;
 
   map<
     M extends Record<string, ScopeFiniteHandle>,
@@ -1122,10 +1191,12 @@ export interface WorkflowCompensationConcurrencyContext<
     }>,
     DF extends (failure: BranchFailureInfo) => any,
   >(
-    handles: M,
+    handles: ScopeFiniteRecordForPath<M, TScopePath>,
     callbacks: C,
     onFailure: DF,
-  ): Promise<MapReturn<M, C, Awaited<ReturnType<DF>>>>;
+  ): Promise<
+    MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C, Awaited<ReturnType<DF>>>
+  >;
 }
 
 // =============================================================================

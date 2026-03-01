@@ -143,6 +143,7 @@ export const onboardingVerificationWorkflow = defineWorkflow({
     const failedMethods = new Set<z.infer<typeof VerificationMethod>>();
 
     const outcome = await ctx.scope(
+      "CollectVerificationProofs",
       {
         passport: ctx.steps.verifyIdentityProof(
           "passport",

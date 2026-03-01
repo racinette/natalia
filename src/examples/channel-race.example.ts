@@ -31,6 +31,7 @@ export const channelRaceWorkflow = defineWorkflow({
 
   async execute(ctx, args) {
     const outcome = await ctx.scope(
+      "BookingCancelRace",
       {
         booking: ctx.steps
           .bookFlight(args.destination, args.customerId)
@@ -66,6 +67,7 @@ export const channelRaceWorkflow = defineWorkflow({
     }
 
     const cancelMsg = await ctx.scope(
+      "StreamingCancelRace",
       {
         booking2: ctx.steps
           .bookFlight(`${args.destination}-2`, args.customerId)
