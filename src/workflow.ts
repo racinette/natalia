@@ -1,4 +1,4 @@
-import type { StandardSchemaV1 } from "./internal/standard-schema";
+import type { StandardSchemaV1 } from "./types/standard-schema";
 import type {
   StepDefinition,
   RetryPolicyOptions,

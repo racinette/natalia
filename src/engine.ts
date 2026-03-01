@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
 import type {
-  WorkflowDefinition,
+  AnyWorkflowDefinition,
   WorkflowHandleExternal,
   StartWorkflowOptions,
   InferWorkflowResult,
@@ -9,15 +9,10 @@ import type {
   InferWorkflowEvents,
   InferWorkflowArgsInput,
   InferWorkflowMetadataInput,
-  WorkflowDefinitions,
   WorkflowResult,
   ExternalWaitOptions,
 } from "./types";
-import { DatabaseOperations } from "./internal/database";
-import { NotificationsManager } from "./internal/notifications";
-import { WorkflowExecutor } from "./internal/executor";
 import { EngineShutdownError } from "./internal/errors";
-import { generateExecutorId } from "./internal/utils";
 
 // =============================================================================
 // ENGINE WORKFLOW ACCESSOR
@@ -34,20 +29,7 @@ import { generateExecutorId } from "./internal/utils";
  * Engine-level handles (`WorkflowHandleExternal`) retain `sigterm()` and `sigkill()`
  * for operational lifecycle control.
  */
-export interface EngineWorkflowAccessor<
-  W extends WorkflowDefinition<
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any
-  >,
-> {
+export interface EngineWorkflowAccessor<W extends AnyWorkflowDefinition> {
   /**
    * Start a new instance of this workflow.
    *
@@ -136,7 +118,7 @@ export interface EngineWorkflowAccessor<
  * Configuration for the WorkflowEngine.
  */
 export interface WorkflowEngineConfig<
-  TWfs extends WorkflowDefinitions = Record<string, never>,
+  TWfs extends Record<string, AnyWorkflowDefinition> = Record<string, never>,
 > {
   /** Postgres connection pool */
   pool: Pool;
@@ -262,18 +244,9 @@ export interface WorkflowEngineConfig<
  * ```
  */
 export class WorkflowEngine<
-  TWfs extends WorkflowDefinitions = Record<string, never>,
+  TWfs extends Record<string, AnyWorkflowDefinition> = Record<string, never>,
 > {
-  private readonly db: DatabaseOperations;
-  private readonly notifications: NotificationsManager;
-  private readonly executor: WorkflowExecutor;
-  private readonly config: Required<
-    Omit<WorkflowEngineConfig<TWfs>, "pool" | "polling" | "workflows">
-  > & {
-    pool: Pool;
-    polling: NonNullable<WorkflowEngineConfig<TWfs>["polling"]>;
-  };
-
+  private readonly config: WorkflowEngineConfig<TWfs>;
   private gcInterval: NodeJS.Timeout | null = null;
   private isStarted = false;
   private isShutdown = false;
@@ -288,72 +261,28 @@ export class WorkflowEngine<
   };
 
   constructor(config: WorkflowEngineConfig<TWfs>) {
-    this.config = {
-      pool: config.pool,
-      schemaName: config.schemaName ?? "workflows",
-      executorId: config.executorId ?? generateExecutorId(),
-      maxConcurrentExecutions: config.maxConcurrentExecutions ?? 10,
-      logger: config.logger ?? console,
-      gcIntervalSeconds:
-        config.gcIntervalSeconds === undefined
-          ? 3600
-          : config.gcIntervalSeconds,
-      polling: {
-        channelPollIntervalMs: config.polling?.channelPollIntervalMs ?? 1000,
-        eventPollIntervalMs: config.polling?.eventPollIntervalMs ?? 5000,
-        workflowPollIntervalMs: config.polling?.workflowPollIntervalMs ?? 1000,
-      },
-    };
+    this.config = config;
 
-    this.db = new DatabaseOperations(config.pool, this.config.schemaName);
-    this.notifications = new NotificationsManager(
-      config.pool,
-      this.config.schemaName,
-      this.config.polling,
-    );
-    this.executor = new WorkflowExecutor(
-      this.db,
-      this.notifications,
-      config.pool,
-      {
-        executorId: this.config.executorId,
-        maxConcurrentExecutions: this.config.maxConcurrentExecutions,
-        logger: this.config.logger,
-      },
-    );
-
-    // Register workflows and build accessors
     const workflowAccessors: Record<string, EngineWorkflowAccessor<any>> = {};
-    for (const [name, workflowDef] of Object.entries(
-      config.workflows as Record<
-        string,
-        WorkflowDefinition<any, any, any, any, any, any, any, any, any, any>
-      >,
-    )) {
-      // Register with executor for claiming
-      this.executor.registerWorkflow(workflowDef);
-
-      // Create type-safe accessor
+    for (const [name] of Object.entries(config.workflows)) {
       workflowAccessors[name] = {
-        start: async (options: any) => {
+        start: async (_options: any) => {
           this.assertNotShutdown();
-          return this.executor.startWorkflow(workflowDef, options);
+          throw new Error("Not implemented");
         },
-        execute: async (options: any) => {
+        execute: async (_options: any) => {
           this.assertNotShutdown();
-          const handle = await this.executor.startWorkflow(
-            workflowDef,
-            options,
-          );
-          return handle.getResult();
+          throw new Error("Not implemented");
         },
-        get: (id: string) => {
+        get: (_id: string) => {
           this.assertNotShutdown();
-          return this.executor.getWorkflowHandle(workflowDef, id);
+          throw new Error("Not implemented");
         },
       };
     }
-    this.workflows = workflowAccessors as any;
+    this.workflows = workflowAccessors as {
+      [K in keyof TWfs]: EngineWorkflowAccessor<TWfs[K]>;
+    };
   }
 
   /**
@@ -373,27 +302,11 @@ export class WorkflowEngine<
       return;
     }
 
-    this.config.logger.info("Starting WorkflowEngine", {
-      executorId: this.executor.executorId,
-      schemaName: this.config.schemaName,
-    });
-
-    // Start notification listener
-    await this.notifications.start();
-
-    // Recover pending workflows
-    await this.executor.recoverPendingWorkflows();
-
-    // Start GC loop if configured
     if (this.config.gcIntervalSeconds && this.config.gcIntervalSeconds > 0) {
       this.startGarbageCollection();
     }
 
-    // Start worker loop
-    this.executor.startWorkerLoop();
-
     this.isStarted = true;
-    this.config.logger.info("WorkflowEngine started");
   }
 
   /**
@@ -402,24 +315,9 @@ export class WorkflowEngine<
    * @param batchSize - Number of workflows to delete per batch.
    * @returns Number of workflows deleted.
    */
-  async runGarbageCollection(batchSize = 100): Promise<number> {
+  async runGarbageCollection(_batchSize = 100): Promise<number> {
     this.assertNotShutdown();
-
-    let totalDeleted = 0;
-    let deleted: number;
-
-    do {
-      deleted = await this.db.deleteExpiredWorkflows(batchSize);
-      totalDeleted += deleted;
-    } while (deleted === batchSize);
-
-    if (totalDeleted > 0) {
-      this.config.logger.info("Garbage collection completed", {
-        deleted: totalDeleted,
-      });
-    }
-
-    return totalDeleted;
+    throw new Error("Not implemented");
   }
 
   /**
@@ -440,38 +338,23 @@ export class WorkflowEngine<
    * await engine.shutdown();
    * ```
    */
-  async shutdown(options?: ExternalWaitOptions): Promise<void> {
+  async shutdown(_options?: ExternalWaitOptions): Promise<void> {
     if (this.isShutdown) {
       return;
     }
-
     this.isShutdown = true;
-    this.config.logger.info("Shutting down WorkflowEngine...");
 
-    // Stop accepting new work
-    this.executor.shutdown();
-
-    // Stop GC
     if (this.gcInterval) {
       clearInterval(this.gcInterval);
       this.gcInterval = null;
     }
-
-    // Wait for running workflows to complete
-    // @ts-expect-error internal API out of sync — will be updated to accept AbortSignal
-    await this.executor.drainRunningWorkflows(options?.signal);
-
-    // Stop notification listener
-    await this.notifications.stop();
-
-    this.config.logger.info("WorkflowEngine shutdown complete");
   }
 
   /**
    * Get the executor ID for this engine instance.
    */
   get executorId(): string {
-    return this.executor.executorId;
+    return this.config.executorId ?? "not-started";
   }
 
   private assertNotShutdown(): void {
@@ -487,7 +370,7 @@ export class WorkflowEngine<
       try {
         await this.runGarbageCollection();
       } catch (err) {
-        this.config.logger.error("Garbage collection failed", { error: err });
+        this.config.logger?.error("Garbage collection failed", { error: err });
       }
     }, intervalMs);
 

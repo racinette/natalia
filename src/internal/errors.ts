@@ -8,7 +8,7 @@
 export class WorkflowError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'WorkflowError';
+    this.name = "WorkflowError";
   }
 }
 
@@ -21,7 +21,7 @@ export class WorkflowCancelledError extends WorkflowError {
     public readonly reason: CancellationReasonInternal,
   ) {
     super(`Workflow ${workflowId} was cancelled: ${reason.type}`);
-    this.name = 'WorkflowCancelledError';
+    this.name = "WorkflowCancelledError";
   }
 }
 
@@ -29,9 +29,9 @@ export class WorkflowCancelledError extends WorkflowError {
  * Internal representation of cancellation reason
  */
 export type CancellationReasonInternal =
-  | { type: 'external'; data: unknown }
-  | { type: 'timeout' }
-  | { type: 'parent_cancelled' };
+  | { type: "external"; data: unknown }
+  | { type: "timeout" }
+  | { type: "parent_cancelled" };
 
 /**
  * Thrown when a workflow is killed
@@ -39,7 +39,7 @@ export type CancellationReasonInternal =
 export class WorkflowKilledError extends WorkflowError {
   constructor(public readonly workflowId: string) {
     super(`Workflow ${workflowId} was killed`);
-    this.name = 'WorkflowKilledError';
+    this.name = "WorkflowKilledError";
   }
 }
 
@@ -49,10 +49,10 @@ export class WorkflowKilledError extends WorkflowError {
 export class StepCancelledError extends WorkflowError {
   constructor(
     public readonly functionId: number,
-    public readonly reason: 'workflow_cancelled' | 'step_execution_timeout',
+    public readonly reason: "workflow_cancelled" | "step_execution_timeout",
   ) {
     super(`Step ${functionId} was cancelled: ${reason}`);
-    this.name = 'StepCancelledError';
+    this.name = "StepCancelledError";
   }
 }
 
@@ -65,8 +65,10 @@ export class MaxRetriesExceededError extends WorkflowError {
     public readonly attempts: number,
     public readonly lastError: Error,
   ) {
-    super(`Step ${stepName} failed after ${attempts} attempts: ${lastError.message}`);
-    this.name = 'MaxRetriesExceededError';
+    super(
+      `Step ${stepName} failed after ${attempts} attempts: ${lastError.message}`,
+    );
+    this.name = "MaxRetriesExceededError";
     this.cause = lastError;
   }
 }
@@ -80,7 +82,7 @@ export class WorkflowConflictError extends WorkflowError {
     message: string,
   ) {
     super(`Conflict in workflow ${workflowId}: ${message}`);
-    this.name = 'WorkflowConflictError';
+    this.name = "WorkflowConflictError";
   }
 }
 
@@ -90,7 +92,7 @@ export class WorkflowConflictError extends WorkflowError {
 export class WorkflowNotFoundError extends WorkflowError {
   constructor(public readonly workflowId: string) {
     super(`Workflow ${workflowId} not found`);
-    this.name = 'WorkflowNotFoundError';
+    this.name = "WorkflowNotFoundError";
   }
 }
 
@@ -107,7 +109,7 @@ export class NonDeterminismError extends WorkflowError {
       `Non-determinism detected in workflow ${workflowId}: ` +
         `expected ${expected}, got ${actual}`,
     );
-    this.name = 'NonDeterminismError';
+    this.name = "NonDeterminismError";
   }
 }
 
@@ -120,7 +122,7 @@ export class StepTimeoutError extends WorkflowError {
     public readonly timeoutSeconds: number,
   ) {
     super(`Step ${stepName} timed out after ${timeoutSeconds} seconds`);
-    this.name = 'StepTimeoutError';
+    this.name = "StepTimeoutError";
   }
 }
 
@@ -129,8 +131,8 @@ export class StepTimeoutError extends WorkflowError {
  */
 export class EngineShutdownError extends Error {
   constructor() {
-    super('WorkflowEngine is shutdown');
-    this.name = 'EngineShutdownError';
+    super("WorkflowEngine is shutdown");
+    this.name = "EngineShutdownError";
   }
 }
 
@@ -144,7 +146,7 @@ export class CompensationFailedError extends WorkflowError {
     public readonly lastError: Error,
   ) {
     super(`Compensation for step ${stepName} failed: ${lastError.message}`);
-    this.name = 'CompensationFailedError';
+    this.name = "CompensationFailedError";
     this.cause = lastError;
   }
 }

@@ -176,7 +176,7 @@ export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
 // =============================================================================
 
 export const dailyReportSchedulerManagerWorkflow = defineWorkflow({
-  ...schedulerManagerHeader,  // name + channels declared once
+  ...schedulerManagerHeader, // name + channels declared once
   args: SchedulerManagerArgs,
   streams: {
     currentWorker: z.object({ workerId: z.string() }),
