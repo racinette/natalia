@@ -586,7 +586,7 @@ export interface CompensationSelection<
  * For branch collections, this is the element's data type (innerKey is separate).
  * For ChannelReceiveCall, this is the resolved value type.
  */
-type FiniteHandleData<H> =
+export type FiniteHandleData<H> =
   H extends BranchHandle<infer T>
     ? T
     : H extends BranchHandle<infer T>[]
@@ -693,26 +693,27 @@ export type MapOutputFor<H, C> =
           : never;
 
 /**
- * Default handler entry for unhandled keys in `ctx.map()` partial overloads.
+ * Return type for `ctx.map()` with partial callbacks and an optional default
+ * failure handler `DF`.
  *
- * Applied to keys not covered by the per-key callbacks map.
- * Same handler forms as `MapHandlerEntry` for a single BranchHandle,
- * but without key-specific typing (the data is untyped since it covers
- * multiple possible handle types).
+ * For each key `K` in `M`:
+ * - In `C` with explicit `failure` handler: `MapOutputFor<M[K], C[K]>` — sealed, `DF` excluded.
+ * - In `C` without explicit `failure`: `MapOutputFor<M[K], C[K]> | DF` — `DF` covers failures.
+ * - Not in `C`: `FiniteHandleData<M[K]> | DF` — identity for complete, `DF` for failure.
  *
- * - Plain function: complete only; failure auto-terminates.
- * - `{ complete, failure }`: both paths.
- * - `{ complete }` only: failure auto-terminates.
- * - `{ failure }` only: complete = identity.
+ * When `DF = never` (no `onFailure` argument): `X | never = X`, failures auto-terminate.
  */
-export type MapDefaultHandlerEntry =
-  | ((data: any) => any)
-  | {
-      complete: (data: any) => any;
-      failure: (failure: BranchFailureInfo) => any;
-    }
-  | { complete: (data: any) => any }
-  | { failure: (failure: BranchFailureInfo) => any };
+export type MapReturn<
+  M extends Record<string, FiniteHandle>,
+  C extends Partial<Record<keyof M & string, any>>,
+  DF = never,
+> = {
+  [K in keyof M & string]: K extends keyof C & string
+    ? HasExplicitFailure<C[K]> extends true
+      ? MapOutputFor<M[K], C[K]>
+      : MapOutputFor<M[K], C[K]> | DF
+    : FiniteHandleData<M[K]> | DF;
+};
 
 // =============================================================================
 // map — HANDLER ENTRY TYPES (CompensationContext)

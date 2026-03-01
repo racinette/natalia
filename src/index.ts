@@ -27,8 +27,10 @@
  *     Omitting a key yields its data unchanged (identity) on complete; failure auto-terminates (or uses onFailure).
  *     onFailure: default failure callback for keys without an explicit failure handler.
  *     Channel inputs: raw ChannelHandle = streaming (never exhausted); ChannelReceiveCall = one-shot.
- * - map: Batch transformation of FiniteHandle inputs.
- *     Handler forms: plain function, { complete, failure }, { complete }, { failure } (identity for complete).
+ * - map: Collect results from all FiniteHandle inputs concurrently.
+ *     map(handles) — identity for all, failure terminates.
+ *     map(handles, callbacks, onFailure?) — partial per-key handlers (plain fn, { complete, failure },
+ *     { complete }, { failure } = identity) + optional default failure callback.
  *     Accepts BranchHandle variants and ChannelReceiveCall (not raw ChannelHandle).
  *     Collection handles (BranchHandle[], Map<K, BranchHandle>) pass innerKey to callbacks.
  * - Child workflows: ctx.childWorkflows.* — structured invocation (WorkflowCall<T> thenable).

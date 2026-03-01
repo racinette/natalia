@@ -459,25 +459,19 @@ console.log(sel.remaining); // ReadonlySet<'flight' | 'hotel' | 'cancel'>
 
 `remaining` tracks keys that have not yet been removed. Branch handle keys are removed when the branch completes or fails. `ChannelReceiveCall` keys are removed after the single receive resolves. **Raw `ChannelHandle` keys are never removed** — they represent an infinite stream.
 
-### Select Event Types (`HandleSelectEvent`)
-
-Branch handles carry `status: "complete" | "failed"` discrimination. Channel handles and receive calls carry data directly. Collection handles include an `innerKey`.
-
-| Handle Type                      | Event Shape                                                                                                          |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `BranchHandle<T>` (single)       | `{ key: K; status: "complete"; data: T }` or `{ key: K; status: "failed"; failure: BranchFailureInfo }`              |
-| `BranchHandle<T>[]` (array)      | `{ key: K; innerKey: number; status: "complete"; data: T }` or `{ key: K; innerKey: number; status: "failed"; ... }` |
-| `Map<K, BranchHandle<T>>` (map)  | `{ key: K; innerKey: K; status: "complete"; data: T }` or `{ key: K; innerKey: K; status: "failed"; ... }`           |
-| `ChannelHandle<T>` (streaming)   | `{ key: K; data: T }` — fires on every message; key never removed from `remaining`                                   |
-| `ChannelReceiveCall<T>` (1-shot) | `{ key: K; data: T }` — fires once; key removed from `remaining` after resolving                                     |
-
 `SelectableHandle` includes `BranchHandle` variants, `ChannelHandle`, and `ChannelReceiveCall`. Streams and lifecycle events are not selectable in workflow-internal code — use the external API (`WorkflowHandleExternal`) for those.
 
 `for await...of` on a `Selection<M>` yields `SelectDataUnion<M>` — the union of successful data types across all handles (including channel and receive-call data). Failed branch events auto-terminate the workflow when iterating; to handle failures without terminating, use `.match()` with `{ complete, failure }` or `{ failure }` per-key handlers, or the `onFailure` second argument.
 
 ### map (Batch Processing)
 
-Transform all finite handles concurrently. Callbacks receive successful data `T` directly (plain function), or use `{ complete, failure }` for explicit failure handling, or `{ failure }` alone to handle failures while passing data through unchanged on success.
+Collects results from all finite handles concurrently. **Three call forms — parallel to `sel.match()`:**
+
+- `ctx.map(handles)` — identity for all keys; failure auto-terminates. Returns raw resolved data.
+- `ctx.map(handles, callbacks)` — partial per-key handlers; omitted keys yield data unchanged.
+- `ctx.map(handles, callbacks, onFailure)` — same, plus a default failure callback for branch failures not covered by an explicit per-key `failure` handler.
+
+Handler forms per key: plain function, `{ complete, failure }`, `{ complete }` (failure terminates), `{ failure }` (complete = identity).
 
 **Accepted handle types (`FiniteHandle`):**
 
@@ -489,7 +483,12 @@ Raw `ChannelHandle` is **not** accepted because it never exhausts and would prev
 Collection handles (Array, Map) pass `innerKey` as a second argument to callbacks.
 
 ```typescript
-// map — { complete, failure } per key; { failure } alone uses identity for complete
+// ctx.map(handles) — collect all results unchanged; failure terminates
+const raw = await ctx.map({ flight: flightHandle, hotel: hotelHandle });
+// raw: { flight: FlightData, hotel: HotelData }
+
+// ctx.map(handles, callbacks) — per-key handlers; omitted keys yield data unchanged
+// { failure } only: complete = identity, failure = explicit
 // Return type mirrors collection structure: array → array, map → map
 const ids = await ctx.map(
   { flight: flightHandle, hotel: hotelHandle, car: carHandle },
@@ -499,10 +498,10 @@ const ids = await ctx.map(
       failure: async (failure) => {
         const compensate = failure.claimCompensation();
         await compensate();
-        return "FAILED"; // fallback value
+        return "FAILED";
       },
     },
-    // { failure } only: complete returns data unchanged; failure returns fallback
+    // { failure } only — complete yields HotelData unchanged; failure = fallback
     hotel: {
       failure: async (failure) => {
         const compensate = failure.claimCompensation();
@@ -510,16 +509,26 @@ const ids = await ctx.map(
         return "FAILED";
       },
     },
-    // car: handled by defaultCallback below
+    // car: omitted — yields CarData unchanged; failure terminates (or uses onFailure below)
   },
-  // defaultCallback for keys not listed above
+);
+// ids: { flight: string | "FAILED", hotel: HotelData | "FAILED", car: CarData }
+
+// ctx.map(handles, callbacks, onFailure) — onFailure covers car's failure
+const ids2 = await ctx.map(
+  { flight: flightHandle, hotel: hotelHandle, car: carHandle },
+  {
+    flight: { complete: (data) => data.id, failure: async (f) => "FAILED" },
+    hotel: { failure: async (f) => "FAILED" },
+  },
   async (failure) => {
+    // covers car (omitted) and any key without explicit failure handler
     const compensate = failure.claimCompensation();
     await compensate();
     return "FAILED";
   },
 );
-// ids: { flight: string, hotel: HotelData | "FAILED", car: CarData | "FAILED" }
+// ids2: { flight: string | "FAILED", hotel: HotelData | "FAILED", car: CarData | "FAILED" }
 
 // map with a Map collection — innerKey is the Map's key
 const quotePrices = await ctx.map(
@@ -1166,7 +1175,7 @@ Workflow-internal timeout behavior:
 | `ctx.patches.*`                                | `await ctx.patches.name` → boolean, `(callback, default?)` → callback result or default                                                                                                                     |
 | `ctx.scope()`                                  | Structured concurrency boundary — accepts closures and collections                                                                                                                                          |
 | `ctx.select()`                                 | Multiplex `SelectableHandle` — `for await` (primary) or `.match(handlers, onFailure?)`; accepts `ChannelHandle` (streaming) or `ChannelReceiveCall` (one-shot)                                             |
-| `ctx.map()`                                    | Transform `FiniteHandle` results; collection structure mirrored; `{ complete, failure }`, `{ failure }`, or plain function on branch handles; `ChannelReceiveCall` keys use plain callbacks                 |
+| `ctx.map()`                                    | Collect `FiniteHandle` results; `map(handles)` = identity; `map(handles, callbacks, onFailure?)` = partial handlers + optional default failure; collection structure mirrored                              |
 | `ctx.addCompensation()`                        | Register LIFO compensation callback                                                                                                                                                                         |
 | `ctx.schedule(cron, { timezone?, resumeAt? })` | Durable cron-like schedule handle; first tick is strictly after `resumeAt` when provided                                                                                                                    |
 | `ctx.sleep(seconds)`                           | Durable relative sleep                                                                                                                                                                                      |
@@ -1186,7 +1195,7 @@ Workflow-internal timeout behavior:
 | `ctx.childWorkflows.*`      | `(options)` → `CompensationWorkflowCall<T>` — resolves to `WorkflowResult<T>`                                                                                       |
 | `ctx.scope()`               | Structured concurrency boundary — all unjoined branches settled on exit                                                                                             |
 | `ctx.select()`              | Multiplex `SelectableHandle` — `for await` or `.match(handlers, onFailure?)`; accepts `ChannelHandle` (streaming) or `ChannelReceiveCall` (one-shot) |
-| `ctx.map()`                 | Transform `FiniteHandle` results — plain callbacks; `ChannelReceiveCall` keys supported                                                                             |
+| `ctx.map()`                 | Collect `FiniteHandle` results; `map(handles)` = identity; `map(handles, callbacks, onFailure?)` = partial handlers + optional default failure                      |
 | `ctx.sleep()` / `ctx.rng.*` | Same as WorkflowContext                                                                                                                                             |
 | `ctx.logger`                | Replay-aware logger                                                                                                                                                 |
 

@@ -30,15 +30,17 @@ import type {
   StreamAccessor,
   EventAccessor,
   BranchHandle,
+  BranchFailureInfo,
   ScopeEntries,
   ScopeHandles,
   SelectableHandle,
   FiniteHandle,
+  FiniteHandleData,
   Selection,
   CompensationSelection,
   MapHandlerEntry,
-  MapDefaultHandlerEntry,
   MapOutputFor,
+  MapReturn,
   CompensationMapHandlerEntry,
   StepFailureInfo,
   ChildWorkflowFailureInfo,
@@ -754,47 +756,36 @@ export interface CompensationContext<
 
   /**
    * Collect transformed results from all finite handles.
-   * Every handle must have a callback.
    *
-   * Accepted inputs:
-   * - `BranchHandle` variants (single, array, map)
-   * - `ChannelReceiveCall<T>` — produced by `ctx.channels.<n>.receive(...)`
+   * Same three call forms as `WorkflowContext.map`:
+   * - `ctx.map(handles)` — identity for all keys; failure auto-terminates.
+   * - `ctx.map(handles, callbacks)` — partial plain-function callbacks; omitted keys = identity.
+   * - `ctx.map(handles, callbacks, onFailure)` — default failure handler for uncovered failures.
+   *
+   * In `CompensationContext`, callbacks are plain functions only (no `{ complete, failure }`
+   * objects — failures are surfaced in `CompensationStepResult` at the step level).
    */
-  map<
-    M extends Record<string, FiniteHandle>,
-    C extends {
-      [K in keyof M & string]: CompensationMapHandlerEntry<M[K]>;
-    },
-  >(
+  map<M extends Record<string, FiniteHandle>>(
     handles: M,
-    callbacks: C,
-  ): Promise<{
-    [K in keyof M & string]: Awaited<
-      ReturnType<C[K] extends (...args: any[]) => any ? C[K] : never>
-    >;
-  }>;
+  ): Promise<{ [K in keyof M & string]: FiniteHandleData<M[K]> }>;
 
-  /**
-   * Collect transformed results with partial callbacks and a default.
-   */
   map<
     M extends Record<string, FiniteHandle>,
-    C extends Partial<{
-      [K in keyof M & string]: CompensationMapHandlerEntry<M[K]>;
-    }>,
-    TDefault,
+    C extends Partial<{ [K in keyof M & string]: CompensationMapHandlerEntry<M[K]> }>,
   >(
     handles: M,
     callbacks: C,
-    defaultCallback: (
-      key: Exclude<keyof M & string, keyof C & string>,
-      data: any,
-    ) => Promise<TDefault> | TDefault,
-  ): Promise<{
-    [K in keyof M & string]: K extends keyof C
-      ? Awaited<ReturnType<C[K] extends (...args: any[]) => any ? C[K] : never>>
-      : Awaited<TDefault>;
-  }>;
+  ): Promise<MapReturn<M, C>>;
+
+  map<
+    M extends Record<string, FiniteHandle>,
+    C extends Partial<{ [K in keyof M & string]: CompensationMapHandlerEntry<M[K]> }>,
+    DF extends (failure: BranchFailureInfo) => any,
+  >(
+    handles: M,
+    callbacks: C,
+    onFailure: DF,
+  ): Promise<MapReturn<M, C, Awaited<ReturnType<DF>>>>;
 }
 
 /**
@@ -999,53 +990,51 @@ export interface WorkflowContext<
 
   /**
    * Collect transformed results from all finite handles.
-   * Plain callbacks receive successful data and return a transformed value.
-   * Use `{ complete, failure }` handlers for explicit failure recovery on branch handles.
+   *
+   * **Three call forms — parallel to `sel.match()`:**
+   *
+   * `ctx.map(handles)` — identity for all keys; failure auto-terminates.
+   * Equivalent to awaiting all branches with no transformation.
+   *
+   * `ctx.map(handles, callbacks)` — partial per-key handlers; omitted keys yield data
+   * unchanged. Handler forms per key: plain function, `{ complete, failure }`,
+   * `{ complete }` (failure terminates), `{ failure }` (complete = identity).
+   *
+   * `ctx.map(handles, callbacks, onFailure)` — same as above, but `onFailure` is the
+   * default failure callback applied to any branch failure not covered by an explicit
+   * per-key `failure` handler. Its return value replaces the failed result instead of
+   * terminating the workflow.
    *
    * Accepted inputs:
    * - Single `BranchHandle<T>`, `BranchHandle<T>[]`, `Map<K, BranchHandle<T>>`
    * - `ChannelReceiveCall<T>` — produced by `ctx.channels.<n>.receive(...)`
    *
-   * Raw `ChannelHandle` is not accepted — use `ctx.channels.<n>.receive(...)` instead.
-   *
-   * The return type mirrors the input structure:
+   * The return type mirrors the collection structure:
    * - Single BranchHandle / ChannelReceiveCall → single value
    * - BranchHandle[] → value[]
    * - Map<K, BranchHandle> → Map<K, value>
    */
-  map<
-    M extends Record<string, FiniteHandle>,
-    C extends {
-      [K in keyof M & string]: MapHandlerEntry<M[K]>;
-    },
-  >(
+  map<M extends Record<string, FiniteHandle>>(
     handles: M,
-    callbacks: C,
-  ): Promise<{
-    [K in keyof M & string]: MapOutputFor<M[K], C[K]>;
-  }>;
+  ): Promise<{ [K in keyof M & string]: FiniteHandleData<M[K]> }>;
 
-  /**
-   * Collect transformed results with partial callbacks and a default.
-   * `defaultCallback` is applied to keys not covered by the per-key `callbacks` map.
-   * Supports the same handler forms as per-key entries: plain function,
-   * `{ complete, failure }`, `{ complete }`, or `{ failure }` (complete = identity).
-   */
   map<
     M extends Record<string, FiniteHandle>,
-    C extends Partial<{
-      [K in keyof M & string]: MapHandlerEntry<M[K]>;
-    }>,
-    D extends MapDefaultHandlerEntry,
+    C extends Partial<{ [K in keyof M & string]: MapHandlerEntry<M[K]> }>,
   >(
     handles: M,
     callbacks: C,
-    defaultCallback: D,
-  ): Promise<{
-    [K in keyof M & string]: K extends keyof C
-      ? MapOutputFor<M[K], C[K]>
-      : MapOutputFor<M[K], D>;
-  }>;
+  ): Promise<MapReturn<M, C>>;
+
+  map<
+    M extends Record<string, FiniteHandle>,
+    C extends Partial<{ [K in keyof M & string]: MapHandlerEntry<M[K]> }>,
+    DF extends (failure: BranchFailureInfo) => any,
+  >(
+    handles: M,
+    callbacks: C,
+    onFailure: DF,
+  ): Promise<MapReturn<M, C, Awaited<ReturnType<DF>>>>;
 
   // ---------------------------------------------------------------------------
   // addCompensation — general purpose LIFO registration
