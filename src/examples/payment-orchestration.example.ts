@@ -55,7 +55,8 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
             reason: failure.reason,
           });
         }
-        await failure.compensate();
+        const compensate = failure.claimCompensation();
+        await compensate();
         return null;
       })
       .complete((data) => data.receiptId);

@@ -22,7 +22,7 @@ const ApprovalMessage = z.object({ approved: z.boolean(), reason: z.string() });
  * Showcases:
  * - sequential compensation (unconditional)
  * - .failure/.complete/.retry
- * - dontCompensate
+ * - claimCompensation ownership transfer
  * - channels.receive + afterCompensate + mutable state
  */
 export const orderWorkflow = defineWorkflow({
@@ -66,7 +66,8 @@ export const orderWorkflow = defineWorkflow({
           reason: failure.reason,
           attempts: failure.errors.count,
         });
-        await failure.compensate();
+        const compensate = failure.claimCompensation();
+        await compensate();
         return null;
       })
       .complete((data) => data.id);
@@ -101,9 +102,11 @@ export const orderWorkflow = defineWorkflow({
             hotel: {
               complete: (data) => data.id as string | null,
               failure: (failure) => {
-                failure.dontCompensate();
+                // Once claimed, the engine stops automatic branch compensation.
+                // Intentionally not calling the returned runner in this case.
+                failure.claimCompensation();
                 ctx.logger.error(
-                  "Hotel booking failed — no side effects, skipping compensation",
+                  "Hotel booking failed — claimed compensation and skipped manual execution",
                 );
                 return null;
               },

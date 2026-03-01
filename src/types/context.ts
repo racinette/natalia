@@ -146,7 +146,7 @@ export interface StepCall<
   /**
    * Register a compensation callback for this step.
    * Runs during LIFO unwinding when the workflow fails.
-   * May be invoked explicitly via `failure.compensate()` for eager discharge.
+   * May be claimed explicitly via `failure.claimCompensation()`.
    */
   compensate(
     cb: (ctx: TCompCtx, result: StepCompensationResult<T>) => Promise<void>,
@@ -163,8 +163,9 @@ export interface StepCall<
    * Handle step failure explicitly — the workflow does NOT auto-terminate.
    * The callback return value becomes TFail in the resolved union.
    *
-   * If `.compensate()` was called, the failure object includes `compensate()`
-   * for eager discharge. If not called, compensation still runs at scope exit.
+   * If `.compensate()` was called, the failure object includes
+   * `claimCompensation()` to transfer ownership of compensation execution.
+   * If not called, compensation still runs at scope exit.
    */
   failure<R>(
     cb: (

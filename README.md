@@ -65,17 +65,18 @@ const flight = await ctx.steps
 **`.failure()` / `.complete()` — explicit error handling:** When you need to observe step failures without auto-terminating the workflow, chain `.failure(cb)`. Optionally `.complete(cb)` to transform the success result:
 
 ```typescript
-// With .compensate() — failure handler receives failure.compensate()
+// With .compensate() — failure handler receives failure.claimCompensation()
 const flightId = await ctx.steps
   .bookFlight("Paris", "cust-1")
   .compensate(async (compCtx) => {
     await compCtx.steps.cancelFlight("Paris", "cust-1");
   })
   .failure(async (failure) => {
-    // Eagerly discharge — runs in compensation mode (SIGTERM-resilient)
-    await failure.compensate();
+    // Claim ownership, then run manually in compensation mode (SIGTERM-resilient)
+    const compensate = failure.claimCompensation();
+    await compensate();
     return null;
-    // Or: don't call it — engine runs it at LIFO unwinding (safe default)
+    // Or: don't claim it — engine runs it at LIFO unwinding (safe default)
   })
   .complete((data) => data.id);
 
@@ -234,7 +235,7 @@ ctx.addCompensation(async (compCtx) => {
 
 ### `.failure()` / `.complete()` — Explicit Failure Handling
 
-The `.failure(cb)` builder on `StepCall` / `WorkflowCall` provides explicit failure handling without auto-terminating the workflow. Chain after `.compensate()` if needed — the failure handler receives `compensate()` for eager discharge when compensation was registered.
+The `.failure(cb)` builder on `StepCall` / `WorkflowCall` provides explicit failure handling without auto-terminating the workflow. Chain after `.compensate()` if needed — the failure handler receives `claimCompensation()` when compensation was registered.
 
 ```typescript
 // { complete, failure } pattern for forEach and map handlers
@@ -246,10 +247,11 @@ await ctx.forEach(
         ctx.state.flightId = data.id;
       },
       failure: async (failure) => {
-        // failure: BranchFailureInfo with compensate() and dontCompensate()
-        await failure.compensate(); // run callback + discharge from LIFO
+        // failure: BranchFailureInfo with claimCompensation()
+        const compensate = failure.claimCompensation();
+        await compensate(); // run claimed callback manually
         // OR:
-        // failure.dontCompensate(); // discharge WITHOUT running the callback
+        // failure.claimCompensation(); // claim ownership and intentionally skip execution
       },
     },
     hotel: (data) => {
@@ -260,11 +262,13 @@ await ctx.forEach(
 );
 ```
 
-**`BranchFailureInfo` — two discharge methods:**
+**`BranchFailureInfo` — ownership API:**
 
-- **`failure.compensate()`** — invokes the registered compensation callback, switches the context to compensation mode (SIGTERM-resilient), runs the callback to completion, then discharges it from the LIFO stack.
-- **`failure.dontCompensate()`** — explicitly discharge the obligation WITHOUT running the compensation callback. Use when you know the failed operation had no observable side effects (e.g. a timeout before the request ever reached the server). Prevents unnecessary undo work.
-- If neither is called, the compensation still runs at scope exit / LIFO unwinding (safe default).
+- **`failure.claimCompensation()`** — transfers compensation ownership to user code and returns the callable compensation runner.
+- **Claimed means user-owned** — once claimed, the engine does not auto-run that compensation anymore.
+- **Runner invocation** — calling the returned runner switches to compensation mode (SIGTERM-resilient), runs to completion, then returns to normal workflow context.
+- **Runner is idempotent** — calling it more than once is a no-op and logs a warning (does not throw).
+- If you never claim compensation, the engine still runs it at scope exit / LIFO unwinding (safe default).
 - For `map` and `match`, the `failure` callback can return a fallback value.
 - **Step failure info:** `StepFailureInfo` — `{ reason: "attempts_exhausted" | "timeout", errors: StepErrorAccessor }` — passed directly to `.failure(cb)` on a `StepCall`.
 - **Child workflow failure info:** `ChildWorkflowFailureInfo` — discriminated union: `{ status: "failed", error: WorkflowExecutionError } | { status: "terminated", reason: WorkflowTerminationReason }` — passed to `.failure(cb)` on a `WorkflowCall`.
@@ -322,7 +326,8 @@ while (sel.remaining.size > 0) {
       flight: {
         complete: (data) => ({ ok: true as const, id: data.id }),
         failure: async (failure) => {
-          await failure.compensate();
+          const compensate = failure.claimCompensation();
+          await compensate();
           return { ok: false as const, id: null };
         },
       },
@@ -333,7 +338,8 @@ while (sel.remaining.size > 0) {
     {
       complete: (event) => ({ ok: true as const, id: event.data.id }),
       failure: async (event) => {
-        await event.failure.compensate();
+        const compensate = event.failure.claimCompensation();
+        await compensate();
         return { ok: false as const, id: null };
       },
     },
@@ -434,7 +440,8 @@ await ctx.forEach(
         ctx.state.flightId = data.id;
       },
       failure: async (failure) => {
-        await failure.compensate();
+        const compensate = failure.claimCompensation();
+        await compensate();
       },
     },
   },
@@ -452,7 +459,8 @@ const ids = await ctx.map(
     flight: {
       complete: (data) => data.id,
       failure: async (failure) => {
-        await failure.compensate();
+        const compensate = failure.claimCompensation();
+        await compensate();
         return "FAILED"; // fallback value
       },
     },
@@ -461,7 +469,8 @@ const ids = await ctx.map(
   {
     complete: (event) => event.data.id,
     failure: async (event) => {
-      await event.failure.compensate();
+      const compensate = event.failure.claimCompensation();
+      await compensate();
       return "FAILED";
     },
   },
@@ -968,10 +977,13 @@ Step and child workflow calls in `WorkflowContext` resolve to `T` directly when 
 
 `.failure(cb)` and `.complete(cb)` on `StepCall` / `WorkflowCall` let you handle outcomes explicitly. The call resolves to `T | TFail` where `TFail` is the `failure` callback's return type.
 
-**`failure.compensate()` semantics (unified across all `failure` surfaces):**
+**`failure.claimCompensation()` semantics (unified across all `failure` surfaces):**
 
-- Calling it switches to compensation mode (SIGTERM-resilient), runs the callback to completion, discharges from LIFO.
-- Not calling it → engine runs it after `failure` returns / at scope exit (safe default).
+- Calling it transfers ownership and returns the compensation runner callback.
+- Once claimed, the engine no longer auto-runs that compensation; user code owns it.
+- Calling the returned runner switches to compensation mode (SIGTERM-resilient) and runs to completion.
+- Calling the returned runner more than once is a no-op with a warning (no throw).
+- Not claiming it → engine runs it after `failure` returns / at scope exit (safe default).
 - Same mechanism in `match`/`forEach`/`map` failure handlers and `.failure()` builder.
 
 ### Compensation-Internal
@@ -1245,7 +1257,7 @@ Work in Progress — Public API design complete. Internal implementation pending
 - **Structured concurrency with shorthand entries** via `ctx.scope()` — entries can be `async () => T` closures or direct thenables; collections (Array, Map) supported for dynamic fan-out
 - **One compensation callback per handle** — defined via `.compensate(cb)` builder, full `CompensationContext`; compensation is always unconditional (at-least-once semantics)
 - **Scope exit behavior** — branches with compensated steps → compensated; others → settled
-- **Unified failure model** — `.failure(cb)` / `{ complete, failure }` handler entries; `BranchFailureInfo` with `compensate()` for eager discharge and `dontCompensate()` to discharge without running the callback
+- **Unified failure model** — `.failure(cb)` / `{ complete, failure }` handler entries; `BranchFailureInfo` with `claimCompensation()` for explicit ownership transfer
 - **`for await...of` as primary select iteration** — yields `SelectDataUnion<M>`, branch failure auto-terminates; `.match()` for key-aware granular handling
 - **Time-bounded channel receive** — `ChannelHandle.receive(timeoutSeconds, defaultValue?)` supports deterministic timeout/nowait workflow logic
 - **Virtual event loop** — engine interleaves concurrent compensation callbacks transparently

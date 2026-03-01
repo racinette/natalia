@@ -92,8 +92,9 @@ export const flightBookingWorkflow = defineWorkflow({
                   id: data.id,
                   dest: args.destination,
                 }),
-                failure: async ({ compensate }) => {
+                failure: async (failure) => {
                   ctx.logger.warn("Primary hotel failed — falling back");
+                  const compensate = failure.claimCompensation();
                   await compensate();
                   return { ok: false as const, id: null, dest: null };
                 },

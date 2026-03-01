@@ -15,9 +15,8 @@
  *     semantics for external side effects. No status checks needed in callbacks.
  *     addCompensation(cb) provides general-purpose cleanup.
  * - BranchFailureInfo: Passed to failure callbacks in forEach/map/match for branch handles.
- *     compensate() — eagerly discharge the LIFO obligation by running the callback.
- *     dontCompensate() — explicitly discharge the obligation WITHOUT running the callback
- *     (use when you know the failed operation had no observable side effects).
+ *     claimCompensation() — transfer ownership and receive a callable compensation runner.
+ *     Once claimed, the engine will not run that compensation automatically.
  * - failure/complete builders: { complete, failure } callbacks on concurrency primitives
  *     (match, forEach, map) for explicit failure recovery.
  * - Select: `ctx.select(handles)` returns a Selection<M>.
