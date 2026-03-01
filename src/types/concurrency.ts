@@ -87,6 +87,25 @@ export interface ChannelHandle<T> extends AsyncIterable<T> {
   receive(): Promise<T>;
 
   /**
+   * Receive with timeout (in seconds).
+   * Returns undefined when the timeout expires before a message arrives.
+   *
+   * `receive(0)` is a non-blocking poll (nowait).
+   */
+  receive(timeoutSeconds: number): Promise<T | undefined>;
+
+  /**
+   * Receive with timeout (in seconds) and an explicit timeout default.
+   * Returns `defaultValue` when the timeout expires before a message arrives.
+   *
+   * `receive(0, defaultValue)` is a non-blocking poll (nowait).
+   */
+  receive<TDefault>(
+    timeoutSeconds: number,
+    defaultValue: TDefault,
+  ): Promise<T | TDefault>;
+
+  /**
    * Async iteration over channel messages.
    *
    * Example:

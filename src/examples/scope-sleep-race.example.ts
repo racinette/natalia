@@ -15,7 +15,7 @@ const ScopeSleepRaceArgs = z.object({
 
 /**
  * Showcases:
- * - time-bounded workflow logic via `scope + sleep` (no timeout options)
+ * - time-bounded workflow logic via `scope + sleep` races
  * - step race pattern (step vs sleep)
  * - child workflow race pattern (child workflow vs sleep)
  */

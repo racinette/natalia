@@ -733,19 +733,17 @@ for await (const paymentMsg of ctx.channels.payment) {
   console.log(paymentMsg);
 }
 
-// Time-bounded receive: use ctx.sleep() + ctx.select() for an explicit race
-const result = await ctx.scope(
-  { payment: ctx.channels.payment.receive() }, // shorthand
-  async ({ payment }) => {
-    const sel = ctx.select({ payment });
-    await ctx.sleep(300);
-    // If payment hasn't arrived, scope exits and payment is settled
-    for await (const data of sel) {
-      return data; // payment message
-    }
-    return null; // timed out
-  },
-);
+// Time-bounded receive: timeout in seconds (0 = nowait)
+const maybePayment = await ctx.channels.payment.receive(300);
+if (maybePayment === undefined) {
+  console.log("timed out");
+}
+
+// Time-bounded receive with explicit timeout default
+const paymentOrDefault = await ctx.channels.payment.receive(300, {
+  amount: 0,
+  txnId: "timeout",
+});
 
 // From another workflow — send via foreign handle (fire-and-forget)
 const handle = ctx.foreignWorkflows.order.get("order-123");
@@ -1005,7 +1003,10 @@ No `"terminated"` — the only way to terminate during compensation is SIGKILL, 
 | `SignalResult`             | `sent`     | `already_finished`, `not_found`  | Engine-level signal            |
 | `SelectMatchResult`        | `matched`  | `exhausted`                      | Workflow-internal match result |
 
-Workflow-internal `ChannelHandle.receive()` returns `T` directly — no wrapper type. Timeouts in workflow logic create temporal dependencies; model them explicitly using `ctx.sleep()` + `ctx.select()` races instead.
+Workflow-internal `ChannelHandle.receive()` returns `T` directly when called without a timeout. The timeout overloads are:
+- `receive(timeoutSeconds)` → `T | undefined`
+- `receive(timeoutSeconds, defaultValue)` → `T | typeof defaultValue`
+- `receive(0, ...)` is a deterministic nowait poll.
 
 ### Engine-Level Results
 
@@ -1042,7 +1043,11 @@ Some external-facing blocking primitives exclude the `timeout` status when calle
 - External stream reader: `read(offset)` → `StreamReadResultNoTimeout<T>` (no `timeout` status)
 - External event: `wait()` without signal → `EventWaitResultNoTimeout` (no `timeout` status)
 
-Workflow-internal blocking operations (`channels.receive()`, `select`, `sleep`) do not have timeout overloads. Use `ctx.sleep()` + `ctx.select()` races for time-bounded workflows.
+Workflow-internal timeout behavior:
+
+- `channels.receive(timeoutSeconds, defaultValue?)` supports deterministic time-bounded waits
+- `channels.receive(0)` is nowait
+- `select` and `sleep` remain explicit primitives for orchestration/race patterns
 
 ## Visibility Rules
 
@@ -1051,7 +1056,7 @@ Workflow-internal blocking operations (`channels.receive()`, `select`, `sleep`) 
 | Resource                     | Operations                                                                                             |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------ |
 | `ctx.steps.*`                | `(args)` → `StepCall<T>` — chain `.compensate()`, `.retry()`, `.failure()`, `.complete()` before await |
-| `ctx.channels.*`             | `.receive()` — blocks until message arrives; returns `T` directly                                      |
+| `ctx.channels.*`             | `.receive()` (blocking), `.receive(timeoutSeconds)` (`T \| undefined`), `.receive(timeoutSeconds, defaultValue)` (`T \| defaultValue`) |
 | `ctx.streams.*`              | `.write()`                                                                                             |
 | `ctx.events.*`               | `.set()`                                                                                               |
 | `ctx.childWorkflows.*`       | `(options)` → `WorkflowCall<T>` by default; supports optional `metadata`; with `detached: true` → `ForeignWorkflowHandle` |
@@ -1074,7 +1079,7 @@ Workflow-internal blocking operations (`channels.receive()`, `select`, `sleep`) 
 | Resource                    | Operations                                                                     |
 | --------------------------- | ------------------------------------------------------------------------------ |
 | `ctx.steps.*`               | `(args)` → `CompensationStepCall<T>` — resolves to `CompensationStepResult<T>`; chain `.retry()` to override policy |
-| `ctx.channels.*`            | `.receive()` — blocks until message arrives; returns `T` directly              |
+| `ctx.channels.*`            | `.receive()` (blocking), `.receive(timeoutSeconds)`, `.receive(timeoutSeconds, defaultValue)` |
 | `ctx.streams.*`             | `.write()`                                                                     |
 | `ctx.events.*`              | `.set()`                                                                       |
 | `ctx.childWorkflows.*`      | `(options)` → `CompensationWorkflowCall<T>` — resolves to `WorkflowResult<T>`  |
@@ -1242,7 +1247,7 @@ Work in Progress — Public API design complete. Internal implementation pending
 - **Scope exit behavior** — branches with compensated steps → compensated; others → settled
 - **Unified failure model** — `.failure(cb)` / `{ complete, failure }` handler entries; `BranchFailureInfo` with `compensate()` for eager discharge and `dontCompensate()` to discharge without running the callback
 - **`for await...of` as primary select iteration** — yields `SelectDataUnion<M>`, branch failure auto-terminates; `.match()` for key-aware granular handling
-- **No temporal dependencies in workflow logic** — `ChannelHandle.receive()` has no timeout overload; time-bounded patterns use `ctx.sleep()` + `ctx.select()` races
+- **Time-bounded channel receive** — `ChannelHandle.receive(timeoutSeconds, defaultValue?)` supports deterministic timeout/nowait workflow logic
 - **Virtual event loop** — engine interleaves concurrent compensation callbacks transparently
 - `BaseContext` / `WorkflowContext` / `CompensationContext` hierarchy
 - **CompensationContext with full structured concurrency** — `scope()`, `select()`, `forEach()`, `map()`, `CompensationStepCall.retry()`; failures always explicit in result types
@@ -1252,7 +1257,7 @@ Work in Progress — Public API design complete. Internal implementation pending
 - **Simplified typing model** — detached vs result mode is selected at call-site options instead of builder chaining
 - **Collection support** — Array and Map of closures/handles in scope/select/forEach/map; callbacks receive `innerKey` for collections
 - Error observability — `StepExecutionError`, `StepErrorAccessor`, `WorkflowExecutionError`
-- Channel receive returns `T` directly (no wrapper, no timeout overload)
+- Channel receive returns `T` directly (blocking) and supports timeout overloads with optional default values
 - Engine-level handles retain `sigterm()`, `sigkill()`, `getResult()` with `WorkflowExecutionError`
 - Lifecycle events with "never" semantics (external API)
 - Stream iterators (external API; streams close implicitly on workflow termination)

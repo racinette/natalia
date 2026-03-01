@@ -35,7 +35,8 @@
  * - Foreign workflows: ctx.foreignWorkflows.* — message-only handles to existing instances.
  *     Only channels.send() is available — no lifecycle coupling.
  * - Channels: Async message passing (input) — ctx.channels.receive() blocks until a message arrives.
- *     No timeout on receive; use ctx.sleep() + ctx.select() for time-bounded waits.
+ *     Optional timeout overloads are available: receive(timeoutSeconds, defaultValue?).
+ *     receive(0) is a deterministic nowait poll.
  * - Streams: Append-only logs (output)
  * - Events: Write-once coordination flags with "never" semantics
  * - Lifecycle Events: Engine-managed workflow state signals (external API only)

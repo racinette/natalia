@@ -8,6 +8,7 @@ export { flightBookingWorkflow } from "./flight-booking.example";
 export { quoteAggregationWorkflow } from "./quote-aggregation.example";
 export { paymentOrchestrationWorkflow } from "./payment-orchestration.example";
 export { channelRaceWorkflow } from "./channel-race.example";
+export { channelTimeoutWorkflow } from "./channel-timeout.example";
 export { campaignWorkflow } from "./campaign.example";
 export { compensationHooksWorkflow } from "./compensation-hooks.example";
 export { scopeSleepRaceWorkflow } from "./scope-sleep-race.example";
