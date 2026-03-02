@@ -495,28 +495,24 @@ export interface CompensationChildWorkflowAccessor<
 // =============================================================================
 
 /**
- * Engine-managed lifecycle event names.
+ * Engine-managed phase lifecycle event names.
  * Automatically managed by the engine — cannot be set by user code.
  *
- * - started:       set when workflow begins execution
- * - sigterm:       set when SIGTERM signal is received
- * - compensating:  set when compensation begins
- * - compensated:   set when all compensations finish
- * - complete:      set when workflow returns successfully;
- *                  preemptively "never" when failed/terminated
- * - failed:        set when workflow throws;
- *                  preemptively "never" when complete
+ * Shared across execution and compensation phases:
  *
- * After the workflow reaches a terminal state, all lifecycle events that were
- * not set are marked "never" — they will never fire.
+ * - started:    set when the phase begins
+ * - complete:   set when the phase completes successfully
+ * - failed:     set when the phase fails
+ * - terminated: set when the phase is terminated
+ *
+ * After a phase reaches a terminal state, all unset events are marked "never" —
+ * they will never fire.
  */
-export type LifecycleEventName =
+export type PhaseLifecycleEventName =
   | "started"
-  | "sigterm"
-  | "compensating"
-  | "compensated"
   | "complete"
-  | "failed";
+  | "failed"
+  | "terminated";
 
 /**
  * Lifecycle event accessor — supports wait/get with "never" semantics.
@@ -562,15 +558,13 @@ export interface EventAccessorReadonly {
 }
 
 /**
- * All lifecycle events available on a workflow handle.
+ * Lifecycle events available for a single workflow phase.
  */
-export interface LifecycleEvents {
+export interface PhaseLifecycleEvents {
   readonly started: LifecycleEventAccessor;
-  readonly sigterm: LifecycleEventAccessor;
-  readonly compensating: LifecycleEventAccessor;
-  readonly compensated: LifecycleEventAccessor;
   readonly complete: LifecycleEventAccessor;
   readonly failed: LifecycleEventAccessor;
+  readonly terminated: LifecycleEventAccessor;
 }
 
 // =============================================================================
