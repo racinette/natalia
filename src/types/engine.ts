@@ -14,10 +14,11 @@ import type {
   StreamReadResult,
   StreamIteratorReadResult,
   StreamOpenResult,
-  EventWaitResult,
+  EventWaitResultNoTimeout,
   EventCheckResult,
   SignalResult,
-  WorkflowResultExternal,
+  ExecutionResultExternal,
+  CompensationResultExternal,
   WorkflowResult,
   ExternalWaitOptions,
 } from "./results";
@@ -62,7 +63,7 @@ export interface EventAccessorExternal {
    * Wait for the event to be set.
    * Returns "never" if the workflow finished without setting this event.
    */
-  wait(options?: ExternalWaitOptions): Promise<EventWaitResult>;
+  wait(options?: ExternalWaitOptions): Promise<EventWaitResultNoTimeout>;
 
   /**
    * Check if the event is set (non-blocking).
@@ -79,7 +80,7 @@ export interface LifecycleEventAccessorExternal {
    * Wait for the lifecycle event to be set.
    * Returns "never" if the workflow reached a terminal state without this event firing.
    */
-  wait(options?: ExternalWaitOptions): Promise<EventWaitResult>;
+  wait(options?: ExternalWaitOptions): Promise<EventWaitResultNoTimeout>;
 
   /**
    * Check if the lifecycle event is set (non-blocking).
@@ -90,13 +91,41 @@ export interface LifecycleEventAccessorExternal {
 /**
  * All lifecycle events available on an external workflow handle.
  */
-export interface LifecycleEventsExternal {
+export interface PhaseLifecycleEventsExternal {
   readonly started: LifecycleEventAccessorExternal;
-  readonly sigterm: LifecycleEventAccessorExternal;
-  readonly compensating: LifecycleEventAccessorExternal;
-  readonly compensated: LifecycleEventAccessorExternal;
   readonly complete: LifecycleEventAccessorExternal;
   readonly failed: LifecycleEventAccessorExternal;
+  readonly terminated: LifecycleEventAccessorExternal;
+}
+
+/**
+ * Execution phase accessors on an external workflow handle.
+ */
+export interface ExecutionHandleExternal<TResult> {
+  /**
+   * Execution phase lifecycle.
+   */
+  readonly lifecycle: PhaseLifecycleEventsExternal;
+
+  /**
+   * Wait for execution phase terminal outcome and return typed result payload.
+   */
+  wait(options?: ExternalWaitOptions): Promise<ExecutionResultExternal<TResult>>;
+}
+
+/**
+ * Compensation phase accessors on an external workflow handle.
+ */
+export interface CompensationHandleExternal {
+  /**
+   * Compensation phase lifecycle.
+   */
+  readonly lifecycle: PhaseLifecycleEventsExternal;
+
+  /**
+   * Wait for compensation phase terminal outcome.
+   */
+  wait(options?: ExternalWaitOptions): Promise<CompensationResultExternal>;
 }
 
 /**
@@ -156,7 +185,7 @@ export interface StreamReaderAccessorExternal<T> extends AsyncIterable<T> {
 
 /**
  * Handle to a workflow from engine level.
- * Full access to all public APIs: channels, streams, events, lifecycle, signals.
+ * Full access to all public APIs: channels, streams, events, phases, signals.
  *
  * Engine-level handles retain `sigterm()` and `sigkill()` — these are
  * operational concerns for engine callers. Workflow code uses scopes instead.
@@ -196,17 +225,10 @@ export interface WorkflowHandleExternal<
     [K in keyof TEvents]: EventAccessorExternal;
   };
 
-  /**
-   * Engine-managed lifecycle events.
-   */
-  readonly lifecycle: LifecycleEventsExternal;
-
-  /**
-   * Wait for workflow to complete and get result.
-   */
-  getResult(
-    options?: ExternalWaitOptions,
-  ): Promise<WorkflowResultExternal<TResult>>;
+  /** Execution phase accessors. */
+  readonly execution: ExecutionHandleExternal<TResult>;
+  /** Compensation phase accessors. */
+  readonly compensation: CompensationHandleExternal;
 
   /**
    * Send SIGTERM — graceful shutdown with compensation.
@@ -267,7 +289,8 @@ export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader> {
   >;
 
   /**
-   * Start and wait for completion (start + getResult convenience).
+   * Start and wait for execution terminal outcome
+   * (start + handle.execution.wait() convenience).
    */
   execute(
     options: StartWorkflowOptions<

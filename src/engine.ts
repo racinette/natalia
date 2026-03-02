@@ -114,8 +114,8 @@ export interface WorkflowEngineConfig<
  * // Send a message
  * const result = await handle.channels.payment.send({ amount: 100, txnId: 'abc' });
  *
- * // Wait for lifecycle event
- * const completed = await handle.lifecycle.complete.wait({
+ * // Wait for execution lifecycle event
+ * const completed = await handle.execution.lifecycle.complete.wait({
  *   signal: AbortSignal.timeout(300_000),
  * });
  *
@@ -124,11 +124,14 @@ export interface WorkflowEngineConfig<
  *   signal: AbortSignal.timeout(300_000),
  * });
  *
- * // Get result — engine-level uses full discriminated union
- * const finalResult = await handle.getResult();
+ * // Wait for execution terminal result
+ * const finalResult = await handle.execution.wait();
  * if (!finalResult.ok && finalResult.status === 'failed') {
  *   console.error(finalResult.error.message); // WorkflowExecutionError
  * }
+ *
+ * // Wait for compensation phase terminal result
+ * const compensationResult = await handle.compensation.wait();
  *
  * // Signals (engine-level only — not available in workflow code)
  * await handle.sigterm();  // Graceful shutdown with compensation

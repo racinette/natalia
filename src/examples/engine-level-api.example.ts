@@ -8,7 +8,7 @@ import { orderWorkflow } from "./order.example";
  *
  * Demonstrates client-facing workflow access:
  * - workflow accessors (`start`, `execute`, `get`)
- * - handle APIs (`channels`, `streams`, `events`, `lifecycle`, `getResult`)
+ * - handle APIs (`channels`, `streams`, `events`, `execution`, `compensation`)
  * - operational controls (`sigterm`, `setRetention`)
  */
 export async function clientApiShowcase(
@@ -75,8 +75,10 @@ export async function clientApiShowcase(
     note: "Operator verified manual rollback externally.",
   });
 
-  // lifecycle + user events
-  await handle.lifecycle.started.wait({ signal: AbortSignal.timeout(15_000) });
+  // phase lifecycle + user events
+  await handle.execution.lifecycle.started.wait({
+    signal: AbortSignal.timeout(15_000),
+  });
   await handle.events.compensationStarted.wait({
     signal: AbortSignal.timeout(120_000),
   });
@@ -101,7 +103,7 @@ export async function clientApiShowcase(
   await sameHandle.setRetention({ failed: 86400 * 14 });
   await sameHandle.sigterm();
 
-  const finalResult = await sameHandle.getResult({
+  const finalResult = await sameHandle.execution.wait({
     signal: AbortSignal.timeout(180_000),
   });
   if (!finalResult.ok && finalResult.status === "failed") {
@@ -113,6 +115,21 @@ export async function clientApiShowcase(
     console.error(
       "Compensation hooks workflow terminated:",
       finalResult.reason,
+    );
+  }
+
+  const compensationResult = await sameHandle.compensation.wait({
+    signal: AbortSignal.timeout(180_000),
+  });
+  if (!compensationResult.ok && compensationResult.status === "failed") {
+    console.error("Compensation phase failed:", compensationResult.error.message);
+  } else if (
+    !compensationResult.ok &&
+    compensationResult.status === "terminated"
+  ) {
+    console.error(
+      "Compensation phase terminated:",
+      compensationResult.reason,
     );
   }
 

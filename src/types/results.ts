@@ -127,10 +127,9 @@ export type WorkflowResult<T> =
     };
 
 /**
- * Result of getting a workflow's result (engine level).
- * Includes all possible outcomes including timeout and not_found.
+ * Result of waiting for execution phase terminal outcome (engine level).
  */
-export type WorkflowResultExternal<TResult> =
+export type ExecutionResultExternal<TResult> =
   | { ok: true; status: "complete"; data: TResult }
   | { ok: false; status: "failed"; error: WorkflowExecutionError }
   | {
@@ -138,7 +137,19 @@ export type WorkflowResultExternal<TResult> =
       status: "terminated";
       reason: WorkflowTerminationReason;
     }
-  | { ok: false; status: "timeout" }
+  | { ok: false; status: "not_found" };
+
+/**
+ * Result of waiting for compensation phase terminal outcome (engine level).
+ */
+export type CompensationResultExternal =
+  | { ok: true; status: "complete" }
+  | { ok: false; status: "failed"; error: WorkflowExecutionError }
+  | {
+      ok: false;
+      status: "terminated";
+      reason: WorkflowTerminationReason;
+    }
   | { ok: false; status: "not_found" };
 
 // =============================================================================
@@ -163,31 +174,12 @@ export type ChannelSendResult =
 export type StreamReadResult<T> =
   | { ok: true; status: "received"; data: T; offset: number }
   | { ok: false; status: "closed" }
-  | { ok: false; status: "timeout" }
-  | { ok: false; status: "not_found" };
-
-/**
- * Result of reading from a stream without timeout.
- * When no timeout is specified, timeout cannot occur.
- */
-export type StreamReadResultNoTimeout<T> =
-  | { ok: true; status: "received"; data: T; offset: number }
-  | { ok: false; status: "closed" }
   | { ok: false; status: "not_found" };
 
 /**
  * Result of reading the next record from a stream iterator.
  */
 export type StreamIteratorReadResult<T> =
-  | { ok: true; status: "record"; data: T; offset: number }
-  | { ok: false; status: "closed" }
-  | { ok: false; status: "timeout" };
-
-/**
- * Result of reading the next record from a stream iterator without timeout.
- * When no timeout is specified, timeout cannot occur.
- */
-export type StreamIteratorReadResultNoTimeout<T> =
   | { ok: true; status: "record"; data: T; offset: number }
   | { ok: false; status: "closed" };
 
@@ -249,13 +241,15 @@ export type SignalResult =
  * @example
  * ```typescript
  * // Time-based wait (5 seconds)
- * await handle.getResult({ signal: AbortSignal.timeout(5_000) });
+ * await handle.execution.wait({ signal: AbortSignal.timeout(5_000) });
  *
  * // Cancellable wait
  * const controller = new AbortController();
- * await handle.getResult({ signal: controller.signal });
+ * await handle.execution.wait({ signal: controller.signal });
  * // elsewhere: controller.abort();
  * ```
+ *
+ * If the signal aborts, wait operations reject with AbortError.
  */
 export interface ExternalWaitOptions {
   signal?: AbortSignal;

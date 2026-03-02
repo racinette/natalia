@@ -730,7 +730,7 @@ beforeSettle: async (params) => {
 - `execute(...)` and compensation belong to the same workflow instance, but they run in different phases/contexts.
 - `beforeSettle` runs before terminal status is finalized and exposed to result listeners.
 - On `failed` / `terminated` paths that require compensation, `beforeSettle` runs after `beforeCompensate` -> LIFO compensations -> `afterCompensate`.
-- Compensation progress remains observable through lifecycle events (`compensating`, `compensated`).
+- Compensation progress remains observable through `handle.compensation.lifecycle.*`.
 
 ### Hook Ordering Table
 
@@ -964,29 +964,32 @@ if (result.ok) {
   console.log("Event set!");
 } else if (result.status === "never") {
   console.log("Workflow finished without setting this event");
-} else if (result.status === "timeout") {
-  console.log("Timed out");
 }
 ```
 
-### Lifecycle Events
+`wait({ signal })` rejects with `AbortError` if the signal aborts.
 
-Engine-managed events available on every workflow handle via `.lifecycle`:
+### Phase Lifecycle Events
 
-| Event          | Set when                      | "Never" when                    |
-| -------------- | ----------------------------- | ------------------------------- |
-| `started`      | Workflow begins execution     | —                               |
-| `sigterm`      | SIGTERM signal received       | Terminal without SIGTERM        |
-| `compensating` | Compensation begins           | Workflow completes successfully |
-| `compensated`  | All compensations finish      | Workflow completes successfully |
-| `complete`     | Workflow returns successfully | Failed or terminated            |
-| `failed`       | Workflow throws               | Completed or terminated         |
+Engine-managed phase events are available on every workflow handle via:
 
-Terminal execute status and compensation are intentionally decoupled:
+- `handle.execution.lifecycle`
+- `handle.compensation.lifecycle`
+
+Each phase exposes the same event names:
+
+| Event        | Meaning for that phase |
+| ------------ | ---------------------- |
+| `started`    | Phase execution begins |
+| `complete`   | Phase completes successfully |
+| `failed`     | Phase fails with an error |
+| `terminated` | Phase is terminated |
+
+Execution and compensation are intentionally decoupled phases:
 
 - `complete` / `failed` represent the terminal outcome of `execute(...)`.
-- `compensating` / `compensated` represent asynchronous compensation progress after terminal outcome recording.
-- Consumers that need post-compensation guarantees should wait on `lifecycle.compensated` in addition to checking the workflow result.
+- Compensation has its own terminal outcome (`complete` / `failed` / `terminated`).
+- Consumers that need post-compensation guarantees should wait on `handle.compensation.wait(...)` in addition to checking `handle.execution.wait(...)`.
 
 ### State
 
@@ -1128,7 +1131,7 @@ Every schema has **input** (encoded for DB) and **output** (decoded for runtime)
 | Stream **write** accepts       | `z.input<Schema>`  | Saved to DB      |
 | Stream **read** returns        | `z.output<Schema>` | Decoded from DB  |
 | Workflow **execute** returns   | `z.input<Schema>`  | Saved to DB      |
-| Workflow **getResult** returns | `z.output<Schema>` | Decoded from DB  |
+| Workflow **execution.wait()** returns | `z.output<Schema>` | Decoded from DB  |
 
 ## Result Types
 
@@ -1171,9 +1174,9 @@ No `"terminated"` — the only way to terminate during compensation is SIGKILL, 
 | Type                       | Success    | Failure Statuses                 | Notes                           |
 | -------------------------- | ---------- | -------------------------------- | ------------------------------- |
 | `ChannelSendResult`        | `sent`     | `not_found`                      | Engine-level send               |
-| `StreamReadResult`         | `received` | `closed`, `timeout`, `not_found` | Engine-level random-access read |
-| `StreamIteratorReadResult` | `record`   | `closed`, `timeout`              | Engine-level iterator read      |
-| `EventWaitResult`          | `set`      | `never`, `timeout`               | Engine-level event wait         |
+| `StreamReadResult`         | `received` | `closed`, `not_found`            | Engine-level random-access read |
+| `StreamIteratorReadResult` | `record`   | `closed`                         | Engine-level iterator read      |
+| `EventWaitResultNoTimeout` | `set`      | `never`                          | Engine-level event wait         |
 | `EventCheckResult`         | `set`      | `not_set`, `never`, `not_found`  | Engine-level non-blocking check |
 | `SignalResult`             | `sent`     | `already_finished`, `not_found`  | Engine-level signal             |
 
@@ -1190,7 +1193,8 @@ Engine-level types retain full result unions since engine callers need to handle
 | Type                     | Success    | Failure Statuses                                                              |
 | ------------------------ | ---------- | ----------------------------------------------------------------------------- |
 | `WorkflowResult`         | `complete` | `failed` (with `error`), `terminated` (with `reason`)                         |
-| `WorkflowResultExternal` | `complete` | `failed` (with `error`), `terminated` (with `reason`), `timeout`, `not_found` |
+| `ExecutionResultExternal` | `complete` | `failed` (with `error`), `terminated` (with `reason`), `not_found` |
+| `CompensationResultExternal` | `complete` | `failed` (with `error`), `terminated` (with `reason`), `not_found` |
 
 `WorkflowTerminationReason` values: `"deadline_exceeded" | "terminated_by_signal" | "terminated_by_parent"`.
 
@@ -1211,13 +1215,12 @@ Notes:
 - Workflows are not retried as a unit; retry is step-scoped.
 - Retention affects persistence lifecycle, not execution semantics.
 
-### Timeout-Free Variants
+### External Wait Cancellation
 
-Some external-facing blocking primitives exclude the `timeout` status when called without a timeout argument:
+Engine-level wait APIs use `{ signal?: AbortSignal }` for runtime cancellation:
 
-- External stream iterator: `read()` → `StreamIteratorReadResultNoTimeout<T>` (no `timeout` status)
-- External stream reader: `read(offset)` → `StreamReadResultNoTimeout<T>` (no `timeout` status)
-- External event: `wait()` without signal → `EventWaitResultNoTimeout` (no `timeout` status)
+- If the signal aborts, the wait rejects with `AbortError`.
+- Wait result unions do not contain a `timeout` status.
 
 Workflow-internal timeout behavior:
 
@@ -1275,7 +1278,7 @@ Workflow-internal timeout behavior:
 | Resource     | Operations                                                                                                                |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------- |
 | `.start()`   | Start workflow (`idempotencyKey?`, optional `metadata`, optional `seed`, optional `deadlineSeconds`), returns `WorkflowHandleExternal` |
-| `.execute()` | Start + wait for result (sugar for start + getResult)                                                                     |
+| `.execute()` | Start + wait for execution result (sugar for `start + handle.execution.wait()`)                                           |
 | `.get()`     | Get handle to existing workflow                                                                                           |
 
 ### External Handle (`WorkflowHandleExternal`)
@@ -1287,8 +1290,10 @@ Engine-level waits use `{ signal?: AbortSignal }` instead of numeric timeouts.
 | `.channels.*`               | `.send()`                                                                  |
 | `.streams.*`                | `.read(offset, { signal? })`, `.iterator()`, `.isOpen()`, `for await...of` |
 | `.events.*`                 | `.wait({ signal? })`, `.isSet()`                                           |
-| `.lifecycle.*`              | `.wait({ signal? })`, `.get()`                                             |
-| `.getResult({ signal? })`   | Wait for result                                                            |
+| `.execution.lifecycle.*`    | `.wait({ signal? })`, `.get()`                                             |
+| `.compensation.lifecycle.*` | `.wait({ signal? })`, `.get()`                                             |
+| `.execution.wait({ signal? })`   | Wait for execution phase result                                     |
+| `.compensation.wait({ signal? })` | Wait for compensation phase result                                  |
 | `.sigterm()` / `.sigkill()` | Send signals (engine-level only)                                           |
 | `.setRetention()`           | Update retention policy                                                    |
 
@@ -1382,7 +1387,7 @@ if (result.ok) {
 const handle = await engine.workflows.hello.start({
   idempotencyKey: "hello-2",
 });
-const result2 = await handle.getResult();
+const result2 = await handle.execution.wait();
 
 await engine.shutdown();
 ```
@@ -1396,7 +1401,7 @@ Examples are split into focused files under `src/examples/`.
 - Web scraper example: `src/examples/web-scraper.example.ts` demonstrates `defineWorkflowHeader` for self-referential workflows and URL-as-idempotency-key for automatic cycle prevention — no explicit visited-set needed.
 - Concurrency-focused example: `src/examples/concurrency-primitives.example.ts` demonstrates dynamic Map fan-out, cheapest-flight selection across variable providers (up to 3 hops), concurrent hotel reservation race, and child/foreign workflow orchestration in one realistic flow.
 - Per-key match example: `src/examples/onboarding-verification.example.ts` demonstrates 5 parallel identity methods, a 1-hour deadline race, 3-of-5 threshold gating, and explicit per-key `{ complete, failure }` handlers for each verification branch.
-- Client API example: `src/examples/engine-level-api.example.ts` demonstrates the shared workflow client API (`workflows.*.start/execute/get`) and handle operations (channels/streams/events/lifecycle, `setRetention()`, `sigterm()`) via `clientApiShowcase`.
+- Client API example: `src/examples/engine-level-api.example.ts` demonstrates the shared workflow client API (`workflows.*.start/execute/get`) and handle operations (channels/streams/events/execution/compensation, `setRetention()`, `sigterm()`) via `clientApiShowcase`.
 
 ## Project Structure
 
@@ -1436,7 +1441,7 @@ Work in Progress — Public API design complete. Internal implementation pending
 - **Collection support** — Array and Map of closures/handles in scope/select/map; callbacks receive `innerKey` for collections
 - Error observability — `StepExecutionError`, `StepErrorAccessor`, `WorkflowExecutionError`
 - Channel receive returns `T` directly (blocking) and supports timeout overloads with optional default values
-- Engine-level handles retain `sigterm()`, `sigkill()`, `getResult()` with `WorkflowExecutionError`
+- Engine-level handles retain `sigterm()`, `sigkill()`, `execution.wait()`, and `compensation.wait()` with typed terminal outcomes
 - Lifecycle events with "never" semantics (external API)
 - Stream iterators (external API; streams close implicitly on workflow termination)
 - Patches for safe workflow code evolution
