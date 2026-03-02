@@ -123,14 +123,19 @@ type _PresentStatusExpected = Assert<
     "shipping" | "delivered" | 1 | 2 | 3 | 4 | undefined
   >
 >;
-type _DeepAInferred = UnionObjectProp<SearchTypeMatrixQueryMetadata["deep"], "a">;
+type _DeepAInferred = UnionObjectProp<
+  SearchTypeMatrixQueryMetadata["deep"],
+  "a"
+>;
 type _DeepBInferred = UnionObjectProp<_DeepAInferred, "b">;
 type _DeepCInferred = UnionObjectProp<_DeepBInferred, "c">;
 type _DeepDInferred = UnionObjectProp<_DeepCInferred, "d">;
 type _DeepBExpected = Assert<
   IsEqual<_DeepBInferred, { c: { d: number | string } } | number | undefined>
 >;
-type _DeepDExpected = Assert<IsEqual<_DeepDInferred, number | string | undefined>>;
+type _DeepDExpected = Assert<
+  IsEqual<_DeepDInferred, number | string | undefined>
+>;
 
 const searchTypeMatrixCursor =
   "opaque-cursor" as unknown as WorkflowSearchCursor<SearchTypeMatrixQueryMetadata>;
@@ -208,25 +213,27 @@ export async function searchQueryTypeMatrixRegression(): Promise<void> {
   // Object query overload: invalid usages
   // ---------------------------------------------------------------------------
 
-  const invalidGroupShape: WorkflowSearchQuery<SearchTypeMatrixQueryMetadata> = {
-    where: {
-      kind: "and",
-      nodes: [],
-      // @ts-expect-error group nodes do not accept `node`; only `nodes`
-      node: { kind: "or", nodes: [] },
-    },
-  };
+  const invalidGroupShape: WorkflowSearchQuery<SearchTypeMatrixQueryMetadata> =
+    {
+      where: {
+        kind: "and",
+        nodes: [],
+        // @ts-expect-error group nodes do not accept `node`; only `nodes`
+        node: { kind: "or", nodes: [] },
+      },
+    };
 
-  const invalidEnginePath: WorkflowSearchQuery<SearchTypeMatrixQueryMetadata> = {
-    where: {
-      kind: "eq",
-      namespace: "engine",
-      // @ts-expect-error engine namespace does not accept metadata paths
-      path: "tenant.id",
-      // @ts-expect-error engine path/value pairing requires engine field value
-      value: "tenant-acme",
-    },
-  };
+  const invalidEnginePath: WorkflowSearchQuery<SearchTypeMatrixQueryMetadata> =
+    {
+      where: {
+        kind: "eq",
+        namespace: "engine",
+        // @ts-expect-error engine namespace does not accept metadata paths
+        path: "tenant.id",
+        // @ts-expect-error engine path/value pairing requires engine field value
+        value: "tenant-acme",
+      },
+    };
 
   const invalidMetaContainsOnScalar: WorkflowSearchQuery<SearchTypeMatrixQueryMetadata> =
     {
@@ -346,8 +353,8 @@ export async function searchQueryTypeMatrixRegression(): Promise<void> {
   // Nasty union metadata: transitive absence/nullability + mixed capabilities
   // ---------------------------------------------------------------------------
 
-  const nastyUnionBuilderResult = await client.workflows.searchTypeMatrix.search(
-    (q) =>
+  const nastyUnionBuilderResult =
+    await client.workflows.searchTypeMatrix.search((q) =>
       q.and(
         // object-branch access: type exists on object branches; undefined on others
         q.meta.present.type.eq("package"),
@@ -366,7 +373,7 @@ export async function searchQueryTypeMatrixRegression(): Promise<void> {
         q.meta.present.contains(42),
         q.meta.present.containsAny([1, 2, 3]),
       ),
-  );
+    );
 
   type _NastyUnionResultNoAny = Assert<
     IsAny<typeof nastyUnionBuilderResult> extends false ? true : false

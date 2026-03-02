@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineWorkflow } from "../workflow";
 import type { DeterministicAwaitable } from "../types";
-import { bookFlight, cancelFlight } from "./shared";
+import { bookFlight, cancelFlight } from "../examples/shared";
 
 type Assert<T extends true> = T;
 type IsAny<T> = 0 extends 1 & T ? true : false;
@@ -12,7 +12,9 @@ type IsEqual<A, B> =
 type AwaitedDeterministic<T> =
   T extends DeterministicAwaitable<infer U> ? U : never;
 
-type _AwaitedDeterministicAwaitable = Awaited<DeterministicAwaitable<"timed_out">>;
+type _AwaitedDeterministicAwaitable = Awaited<
+  DeterministicAwaitable<"timed_out">
+>;
 type _AwaitedNoAny = Assert<
   IsAny<_AwaitedDeterministicAwaitable> extends false ? true : false
 >;
@@ -51,10 +53,15 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
     // Deterministic awaitable chaining basics
     const sleepThen = ctx.sleep(30).then(() => "a");
     type SleepThenType = AwaitedDeterministic<typeof sleepThen>;
-    type _SleepThenNoAny = Assert<IsAny<SleepThenType> extends false ? true : false>;
+    type _SleepThenNoAny = Assert<
+      IsAny<SleepThenType> extends false ? true : false
+    >;
     type _SleepThenIsString = Assert<IsEqual<SleepThenType, string>>;
-    // @ts-expect-error deterministic awaitables do not expose rejection continuations
-    ctx.sleep(30).then(() => "ok", () => "bad");
+    ctx.sleep(30).then(
+      () => "ok",
+      // @ts-expect-error deterministic awaitables do not expose rejection continuations
+      () => "bad",
+    );
 
     ctx.sleep(1).then((value) => {
       type _SleepValueIsVoid = Assert<IsEqual<typeof value, void>>;
@@ -65,10 +72,15 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
       .bookFlight(args.destination, args.customerId)
       .then((flight) => flight.id);
     type StepThenType = AwaitedDeterministic<typeof stepThen>;
-    type _StepThenNoAny = Assert<IsAny<StepThenType> extends false ? true : false>;
+    type _StepThenNoAny = Assert<
+      IsAny<StepThenType> extends false ? true : false
+    >;
     type _StepThenIsString = Assert<IsEqual<StepThenType, string>>;
-    // @ts-expect-error deterministic step-call thenable does not accept onrejected
-    ctx.steps.bookFlight(args.destination, args.customerId).then(() => "ok", () => "bad");
+    ctx.steps.bookFlight(args.destination, args.customerId).then(
+      () => "ok",
+      // @ts-expect-error deterministic step-call thenable does not accept onrejected
+      () => "bad",
+    );
 
     const stepChained = ctx.steps
       .bookFlight(args.destination, args.customerId)
@@ -85,10 +97,15 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
       cancelStream: ctx.channels.cancel,
       cancelOnce: ctx.channels.cancel.receive(0),
     });
-    // @ts-expect-error deterministic awaitables do not support onrejected callbacks
-    ctx.channels.cancel.receive(0).then(() => "ok", () => "bad");
+    ctx.channels.cancel.receive(0).then(
+      () => "ok",
+      // @ts-expect-error deterministic awaitables do not support onrejected callbacks
+      () => "bad",
+    );
     for await (const data of baseSel) {
-      type _BaseSelNoAny = Assert<IsAny<typeof data> extends false ? true : false>;
+      type _BaseSelNoAny = Assert<
+        IsAny<typeof data> extends false ? true : false
+      >;
       break;
     }
 
@@ -111,7 +128,9 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
         const timerValue = await timer;
         const bookingValue = await booking;
 
-        type _TimerNotAny = Assert<IsAny<typeof timerValue> extends false ? true : false>;
+        type _TimerNotAny = Assert<
+          IsAny<typeof timerValue> extends false ? true : false
+        >;
         type _BookingNotAny = Assert<
           IsAny<typeof bookingValue> extends false ? true : false
         >;
@@ -123,7 +142,9 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
           timer: () => "timed_out" as const,
           booking: () => "booked" as const,
         })) {
-          type _MatchNotAny = Assert<IsAny<typeof value> extends false ? true : false>;
+          type _MatchNotAny = Assert<
+            IsAny<typeof value> extends false ? true : false
+          >;
           break;
         }
 
@@ -155,10 +176,14 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
         type _TimeoutNotAny = Assert<
           IsAny<typeof timeoutValue> extends false ? true : false
         >;
-        type _TimeoutLiteral = Assert<IsEqual<typeof timeoutValue, "timed_out">>;
+        type _TimeoutLiteral = Assert<
+          IsEqual<typeof timeoutValue, "timed_out">
+        >;
 
         const singleId = await single.then((v) => v.id);
-        type _SingleIdNotAny = Assert<IsAny<typeof singleId> extends false ? true : false>;
+        type _SingleIdNotAny = Assert<
+          IsAny<typeof singleId> extends false ? true : false
+        >;
         type _SingleIdString = Assert<IsEqual<typeof singleId, string>>;
 
         // Scope select: all handle shapes
@@ -197,7 +222,9 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
           },
           () => "default_failed" as const,
         )) {
-          type _SelectMatchNoAny = Assert<IsAny<typeof value> extends false ? true : false>;
+          type _SelectMatchNoAny = Assert<
+            IsAny<typeof value> extends false ? true : false
+          >;
           break;
         }
 
@@ -232,7 +259,9 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
           },
           () => "default_failed" as const,
         );
-        type _MapNoAny = Assert<IsAny<typeof mapped> extends false ? true : false>;
+        type _MapNoAny = Assert<
+          IsAny<typeof mapped> extends false ? true : false
+        >;
         type _MapProvidersNoAny = Assert<
           IsAny<(typeof mapped.providers)[number]> extends false ? true : false
         >;
