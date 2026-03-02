@@ -1,6 +1,11 @@
 import type { StandardSchemaV1 } from "./standard-schema";
 import type { CompensationContext, WorkflowContext } from "./context";
 import type { DeterministicAwaitable } from "./concurrency";
+import type {
+  JsonInput,
+  JsonSchemaConstraint,
+  JsonObjectSchemaConstraint,
+} from "./json-input";
 
 // =============================================================================
 // SCHEMA DEFINITIONS
@@ -12,37 +17,7 @@ import type { DeterministicAwaitable } from "./concurrency";
  */
 export type ChannelDefinitions = Record<
   string,
-  StandardSchemaV1<unknown, unknown>
->;
-
-/**
- * JSON-like value allowed in workflow metadata schema input.
- *
- * Includes `undefined` by design to support optional/absent metadata keys
- * in query typing and payload construction ergonomics.
- */
-export type MetadataJsonInput =
-  | undefined
-  | string
-  | number
-  | boolean
-  | null
-  | readonly MetadataJsonInput[]
-  | { readonly [key: string]: MetadataJsonInput };
-
-/**
- * Top-level metadata input object shape.
- */
-export type MetadataJsonInputObject = {
-  readonly [key: string]: MetadataJsonInput;
-};
-
-/**
- * Constraint for metadata schemas: input must be a JSON-like object (or void).
- */
-export type MetadataSchemaConstraint = StandardSchemaV1<
-  MetadataJsonInputObject | void | undefined,
-  unknown
+  StandardSchemaV1<JsonInput, unknown>
 >;
 
 /**
@@ -51,7 +26,7 @@ export type MetadataSchemaConstraint = StandardSchemaV1<
  */
 export type StreamDefinitions = Record<
   string,
-  StandardSchemaV1<unknown, unknown>
+  StandardSchemaV1<JsonInput, unknown>
 >;
 
 /**
@@ -184,7 +159,7 @@ export type RetryPolicyOptions = RetryPolicyBaseOptions & DeadlineOptions;
  */
 export interface StepDefinition<
   TArgs extends unknown[] = unknown[],
-  TResultSchema extends StandardSchemaV1<unknown, unknown> = any,
+  TResultSchema extends JsonSchemaConstraint = any,
 > {
   readonly name: string;
   /**
@@ -250,15 +225,15 @@ export interface PublicWorkflowHeader<
   TChannels extends ChannelDefinitions = Record<string, never>,
   TStreams extends StreamDefinitions = Record<string, never>,
   TEvents extends EventDefinitions = Record<string, never>,
-  TArgs extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+  TArgs extends JsonSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,
-  TMetadata extends MetadataSchemaConstraint = StandardSchemaV1<
+  TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,
-  TResult extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+  TResult extends JsonSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,
@@ -331,15 +306,15 @@ export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
  */
 export interface WorkflowHeader<
   TChannels extends ChannelDefinitions = Record<string, never>,
-  TArgs extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+  TArgs extends JsonSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,
-  TMetadata extends MetadataSchemaConstraint = StandardSchemaV1<
+  TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,
-  TResult extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+  TResult extends JsonSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,
@@ -486,15 +461,15 @@ export interface WorkflowDefinition<
   TSteps extends StepDefinitions,
   TChildWorkflows extends WorkflowDefinitions,
   TForeignWorkflows extends WorkflowDefinitions,
-  TResultSchema extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+  TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,
-  TArgs extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+  TArgs extends JsonSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,
-  TMetadata extends MetadataSchemaConstraint = StandardSchemaV1<
+  TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,

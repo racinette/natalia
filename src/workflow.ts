@@ -9,7 +9,8 @@ import type {
   WorkflowDefinitions,
   WorkflowDefinition,
   WorkflowHeader,
-  MetadataSchemaConstraint,
+  JsonSchemaConstraint,
+  JsonObjectSchemaConstraint,
   WorkflowContext,
   CompensationContext,
   PatchDefinitions,
@@ -81,7 +82,7 @@ import type {
  */
 export function defineStep<
   TArgs extends unknown[],
-  TResultSchema extends StandardSchemaV1<unknown, unknown> = any,
+  TResultSchema extends JsonSchemaConstraint = any,
 >(config: {
   name: string;
   execute: (
@@ -163,15 +164,15 @@ export function defineStep<
  */
 export function defineWorkflowHeader<
   TChannels extends ChannelDefinitions = Record<string, never>,
-  TArgs extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+  TArgs extends JsonSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,
-  TMetadata extends MetadataSchemaConstraint = StandardSchemaV1<
+  TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,
-  TResult extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+  TResult extends JsonSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,
@@ -300,15 +301,15 @@ export function defineWorkflow<
   TSteps extends StepDefinitions = Record<string, never>,
   TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
   TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
-  TResultSchema extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+  TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,
-  TArgs extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+  TArgs extends JsonSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,
-  TMetadata extends MetadataSchemaConstraint = StandardSchemaV1<
+  TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,

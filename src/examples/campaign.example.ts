@@ -24,7 +24,15 @@ export const campaignWorkflow = defineWorkflow({
   args: CampaignWorkflowArgs,
   metadata: CampaignMetadata,
   steps: { sendNotification },
-  streams: { events: z.object({ type: z.string(), data: z.unknown() }) },
+  streams: {
+    events: z.object({
+      type: z.string(),
+      data: z.record(
+        z.string(),
+        z.union([z.string(), z.number(), z.boolean(), z.null()]),
+      ),
+    }),
+  },
   patches: {
     multiChannel: true,
     legacySms: false,

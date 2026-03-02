@@ -20,7 +20,7 @@ export const quoteAggregationWorkflow = defineWorkflow({
   result: z.object({
     bestProvider: z.string().nullable(),
     lowestPrice: z.number().nullable(),
-    allPrices: z.map(z.string(), z.number()),
+    allPrices: z.record(z.string(), z.number()),
   }),
 
   async execute(ctx, args) {
@@ -103,6 +103,6 @@ export const quoteAggregationWorkflow = defineWorkflow({
       }
     }
 
-    return { bestProvider, lowestPrice, allPrices };
+    return { bestProvider, lowestPrice, allPrices: Object.fromEntries(allPrices) };
   },
 });
