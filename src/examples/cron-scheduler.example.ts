@@ -72,8 +72,8 @@ const schedulerManagerHeader = defineWorkflowHeader({
 //
 // Showcases:
 // - detached child workflows (workers must not participate in manager compensation)
-// - afterCompensate with foreignWorkflows for guaranteed delivery on failure/SIGTERM
-// - state-based dateSent guard as a secondary defence against double notification
+// - beforeSettle with status-discriminated context for unified handoff delivery
+// - state-based dateSent guard for idempotent workerDone signaling
 // - undefined lastTickAt when zero progress was made
 // =============================================================================
 
@@ -86,7 +86,6 @@ export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
   rng: { ids: true },
   state: () => ({
     lastTickAt: undefined as string | undefined,
-    dateSent: false,
   }),
   retention: {
     complete: 3600,
@@ -94,11 +93,12 @@ export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
     terminated: 3600,
   },
 
-  // Runs on failure or SIGTERM after all compensations unwind.
-  // The LIFO stack is empty,
-  // but afterCompensate still fires — that is the guarantee we rely on.
-  afterCompensate: async ({ ctx, args }) => {
-    if (ctx.state.dateSent) return;
+  // Runs once before final status is settled:
+  // - complete: WorkflowContext + result
+  // - failed/terminated: CompensationContext
+  // This lets us send workerDone from one place on every outcome.
+  beforeSettle: async (params) => {
+    const { ctx, args } = params;
     await ctx.foreignWorkflows.manager
       .get(args.managerIdempotencyKey)
       .channels.workerDone.send({
@@ -144,14 +144,6 @@ export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
       ctx.state.lastTickAt = tick.scheduledAt.toISOString();
       if (++count >= args.maxTicks) break;
     }
-
-    await ctx.foreignWorkflows.manager
-      .get(args.managerIdempotencyKey)
-      .channels.workerDone.send({
-        workerId: ctx.workflowId,
-        lastTickAt: ctx.state.lastTickAt,
-      });
-    ctx.state.dateSent = true;
   },
 });
 

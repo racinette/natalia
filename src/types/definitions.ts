@@ -523,6 +523,49 @@ export interface WorkflowDefinition<
   }) => Promise<void>;
 
   /**
+   * Called once before final workflow status is settled.
+   *
+   * - `complete`: receives WorkflowContext + decoded result.
+   * - `failed` / `terminated`: receives CompensationContext.
+   *
+   * If this hook throws on the complete path, the workflow transitions into
+   * failure flow (`beforeCompensate` -> LIFO compensations -> `afterCompensate`).
+   * The hook is single-shot and is not invoked a second time.
+   */
+  readonly beforeSettle?: (params:
+    | {
+        status: "complete";
+        ctx: WorkflowContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng
+        >;
+        args: StandardSchemaV1.InferOutput<TArgs>;
+        result: StandardSchemaV1.InferOutput<TResultSchema>;
+      }
+    | {
+        status: "failed" | "terminated";
+        ctx: CompensationContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng
+        >;
+        args: StandardSchemaV1.InferOutput<TArgs>;
+      }) => Promise<void>;
+
+  /**
    * Workflow execution function.
    * Must return z.input<ResultSchema> (encoded for DB).
    * Throwing an exception fails the workflow and triggers compensation.

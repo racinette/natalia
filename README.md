@@ -704,12 +704,43 @@ await existing.channels.commands.send({ type: "nudge" });
 - **SIGTERM**: Current step terminates → `beforeCompensate` hook → compensations (LIFO) → `afterCompensate` hook. NOOP if already compensating.
 - **SIGKILL**: Immediate termination. No compensation, no hooks.
 
+**`beforeSettle` hook semantics:**
+
+- Called once before final workflow status is settled (single-shot).
+- Status-discriminated params:
+  - `status: "complete"` → `WorkflowContext`, `args`, and decoded `result`.
+  - `status: "failed" | "terminated"` → `CompensationContext` and `args`.
+- If `beforeSettle` throws on the complete path, the workflow transitions to failure flow:
+  `beforeCompensate` → LIFO compensations → `afterCompensate`.
+- The hook is not re-entered after that transition (no second `beforeSettle` call).
+- Not invoked on SIGKILL.
+
+```typescript
+beforeSettle: async (params) => {
+  if (params.status === "complete") {
+    // params.ctx: WorkflowContext, params.result available
+    return;
+  }
+  // params.ctx: CompensationContext, status is failed|terminated
+};
+```
+
 **Execution result vs compensation lifecycle (important):**
 
 - `execute(...)` and compensation belong to the same workflow instance, but they run in different phases/contexts.
-- As soon as `execute(...)` reaches a terminal workflow status (`complete`, `failed`, or `terminated`), that status/result is observable to workflow result listeners.
-- If compensation is needed, it runs asynchronously after the terminal execute outcome has been recorded.
-- Compensation progress is observable separately through lifecycle events (`compensating`, `compensated`) rather than by delaying `complete/failed/terminated`.
+- `beforeSettle` runs before terminal status is finalized and exposed to result listeners.
+- On `failed` / `terminated` paths that require compensation, `beforeSettle` runs after `beforeCompensate` -> LIFO compensations -> `afterCompensate`.
+- Compensation progress remains observable through lifecycle events (`compensating`, `compensated`).
+
+### Hook Ordering Table
+
+| Path | Hook order | `beforeSettle` params | Final status behavior |
+| --- | --- | --- | --- |
+| `execute` returns successfully, `beforeSettle` succeeds | `beforeSettle` | `{ status: "complete", ctx: WorkflowContext, result, args }` | Settles as `complete` |
+| `execute` returns successfully, `beforeSettle` throws | `beforeSettle` -> `beforeCompensate` -> LIFO compensations -> `afterCompensate` | Initial call uses `{ status: "complete", ... }` | Transitions and settles as `failed`; `beforeSettle` is not called again |
+| `execute` throws (non-signal failure) | `beforeCompensate` -> LIFO compensations -> `afterCompensate` -> `beforeSettle` | `{ status: "failed", ctx: CompensationContext, args }` | Settles as `failed` |
+| SIGTERM (graceful termination with compensation) | `beforeCompensate` -> LIFO compensations -> `afterCompensate` -> `beforeSettle` | `{ status: "terminated", ctx: CompensationContext, args }` | Settles as `terminated` |
+| SIGKILL (immediate termination) | _none_ | _none_ | Immediate termination; no hooks/compensation |
 
 ### Workflow Headers
 
@@ -1359,7 +1390,7 @@ await engine.shutdown();
 Examples are split into focused files under `src/examples/`.
 
 - Workflow-internal API examples: scopes, selection, compensation, channels, patches, child/foreign workflows.
-- Cron-like scheduler example: `src/examples/cron-scheduler.example.ts` demonstrates the manager/worker split for long-running schedulers — a stable idempotency-key manager loop delegates to bounded-history workers, with `afterCompensate` + `foreignWorkflows` guaranteeing handoff delivery on failure and detached child starts so workers carry no compensation obligation to the manager.
+- Cron-like scheduler example: `src/examples/cron-scheduler.example.ts` demonstrates the manager/worker split for long-running schedulers — a stable idempotency-key manager loop delegates to bounded-history workers, with `beforeSettle` + `foreignWorkflows` guaranteeing worker handoff delivery on complete/failed/terminated outcomes and detached child starts so workers carry no compensation obligation to the manager.
 - Web scraper example: `src/examples/web-scraper.example.ts` demonstrates `defineWorkflowHeader` for self-referential workflows and URL-as-idempotency-key for automatic cycle prevention — no explicit visited-set needed.
 - Concurrency-focused example: `src/examples/concurrency-primitives.example.ts` demonstrates dynamic Map fan-out, cheapest-flight selection across variable providers (up to 3 hops), concurrent hotel reservation race, and child/foreign workflow orchestration in one realistic flow.
 - Per-key match example: `src/examples/onboarding-verification.example.ts` demonstrates 5 parallel identity methods, a 1-hour deadline race, 3-of-5 threshold gating, and explicit per-key `{ complete, failure }` handlers for each verification branch.
@@ -1408,7 +1439,7 @@ Work in Progress — Public API design complete. Internal implementation pending
 - Stream iterators (external API; streams close implicitly on workflow termination)
 - Patches for safe workflow code evolution
 - Typed deterministic RNG (`ctx.rng.*`)
-- `beforeCompensate` / `afterCompensate` lifecycle hooks on workflow definition
+- `beforeCompensate` / `afterCompensate` / `beforeSettle` lifecycle hooks on workflow definition
 - **`WorkflowHeader` / `defineWorkflowHeader`** — minimal workflow descriptors for circular reference resolution and self-referential (recursive/tree) workflows; `WorkflowDefinition` satisfies `WorkflowHeader` structurally so headers and full definitions are interchangeable in `childWorkflows` / `foreignWorkflows`
 
 ## License

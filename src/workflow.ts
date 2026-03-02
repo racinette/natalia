@@ -356,6 +356,38 @@ export function defineWorkflow<
     >;
     args: StandardSchemaV1.InferOutput<TArgs>;
   }) => Promise<void>;
+  beforeSettle?: (params:
+    | {
+        status: "complete";
+        ctx: WorkflowContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng
+        >;
+        args: StandardSchemaV1.InferOutput<TArgs>;
+        result: StandardSchemaV1.InferOutput<TResultSchema>;
+      }
+    | {
+        status: "failed" | "terminated";
+        ctx: CompensationContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng
+        >;
+        args: StandardSchemaV1.InferOutput<TArgs>;
+      }) => Promise<void>;
   execute: (
     ctx: WorkflowContext<
       TState,
@@ -591,6 +623,12 @@ export function defineWorkflow<
     typeof config.afterCompensate !== "function"
   ) {
     throw new Error("afterCompensate must be a function");
+  }
+  if (
+    config.beforeSettle !== undefined &&
+    typeof config.beforeSettle !== "function"
+  ) {
+    throw new Error("beforeSettle must be a function");
   }
 
   const patches = config.patches ?? ({} as TPatches);

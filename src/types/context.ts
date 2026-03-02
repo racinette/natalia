@@ -661,7 +661,7 @@ export interface BaseContext<
 
 /**
  * Context available inside compensation callbacks and hooks (beforeCompensate,
- * afterCompensate).
+ * afterCompensate, and beforeSettle when status is failed/terminated).
  *
  * Key differences from WorkflowContext:
  * - Steps return `CompensationStepResult<T>` via `CompensationStepCall<T>` —
