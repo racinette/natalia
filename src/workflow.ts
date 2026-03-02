@@ -9,6 +9,7 @@ import type {
   WorkflowDefinitions,
   WorkflowDefinition,
   WorkflowHeader,
+  MetadataSchemaConstraint,
   WorkflowContext,
   CompensationContext,
   PatchDefinitions,
@@ -166,7 +167,7 @@ export function defineWorkflowHeader<
     void,
     void
   >,
-  TMetadata extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+  TMetadata extends MetadataSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,
@@ -307,7 +308,7 @@ export function defineWorkflow<
     void,
     void
   >,
-  TMetadata extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+  TMetadata extends MetadataSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,

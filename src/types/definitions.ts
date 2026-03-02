@@ -16,6 +16,36 @@ export type ChannelDefinitions = Record<
 >;
 
 /**
+ * JSON-like value allowed in workflow metadata schema input.
+ *
+ * Includes `undefined` by design to support optional/absent metadata keys
+ * in query typing and payload construction ergonomics.
+ */
+export type MetadataJsonInput =
+  | undefined
+  | string
+  | number
+  | boolean
+  | null
+  | readonly MetadataJsonInput[]
+  | { readonly [key: string]: MetadataJsonInput };
+
+/**
+ * Top-level metadata input object shape.
+ */
+export type MetadataJsonInputObject = {
+  readonly [key: string]: MetadataJsonInput;
+};
+
+/**
+ * Constraint for metadata schemas: input must be a JSON-like object (or void).
+ */
+export type MetadataSchemaConstraint = StandardSchemaV1<
+  MetadataJsonInputObject | void | undefined,
+  unknown
+>;
+
+/**
  * Stream definitions map - keys are stream names, values are standard schemas.
  * Streams are append-only logs for external consumption.
  */
@@ -224,7 +254,7 @@ export interface PublicWorkflowHeader<
     void,
     void
   >,
-  TMetadata extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+  TMetadata extends MetadataSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,
@@ -305,7 +335,7 @@ export interface WorkflowHeader<
     void,
     void
   >,
-  TMetadata extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+  TMetadata extends MetadataSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,
@@ -464,7 +494,7 @@ export interface WorkflowDefinition<
     void,
     void
   >,
-  TMetadata extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+  TMetadata extends MetadataSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,

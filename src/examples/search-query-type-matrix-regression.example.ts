@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { createWorkflowClient } from "../client";
 import type { SearchMetadataFromInput, WorkflowSearchQuery } from "../types";
-import { defineWorkflow } from "../workflow";
+import { defineWorkflow, defineWorkflowHeader } from "../workflow";
 
 type Assert<T extends true> = T;
 type IsAny<T> = 0 extends 1 & T ? true : false;
@@ -65,6 +65,21 @@ const SearchTypeMatrixWorkflow = defineWorkflow({
   name: "searchTypeMatrix",
   metadata: SearchTypeMatrixMetadata,
   execute: async () => undefined,
+});
+
+const InvalidMetadataSetSchema = z.object({
+  set: z.set(z.number()),
+});
+defineWorkflow({
+  name: "invalidMetadataSetWorkflow",
+  // @ts-expect-error metadata input must be JSON-like; Set is not allowed
+  metadata: InvalidMetadataSetSchema,
+  execute: async () => undefined,
+});
+defineWorkflowHeader({
+  name: "invalidMetadataSetHeader",
+  // @ts-expect-error workflow header metadata input must be JSON-like; Set is not allowed
+  metadata: InvalidMetadataSetSchema,
 });
 
 type SearchTypeMatrixQueryMetadata = SearchMetadataFromInput<
