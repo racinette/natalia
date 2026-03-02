@@ -4,3 +4,4 @@ export * from "./types/concurrency";
 export * from "./types/context";
 export * from "./types/engine";
 export * from "./types/helpers";
+export * from "./types/search-query";

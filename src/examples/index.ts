@@ -26,6 +26,7 @@ export {
   engineLevelApiShowcase,
 } from "./engine-level-api.example";
 export { concurrencyPrimitivesWorkflow } from "./concurrency-primitives.example";
+export { searchQueryTypeMatrixRegression } from "./search-query-type-matrix-regression.example";
 export { onboardingVerificationWorkflow } from "./onboarding-verification.example";
 export { scopePossessionViolationsWorkflow } from "./scope-possession-violations.example";
 

@@ -29,6 +29,12 @@ import type {
   InferWorkflowArgsInput,
   InferWorkflowMetadataInput,
 } from "./helpers";
+import type {
+  SearchMetadataFromInput,
+  WorkflowSearchQuery,
+  WorkflowSearchQueryBuilder,
+  WorkflowSearchResultPage,
+} from "./search-query";
 
 // =============================================================================
 // ENGINE LEVEL — EXTERNAL HANDLES
@@ -279,6 +285,36 @@ export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader> {
     InferWorkflowChannels<W>,
     InferWorkflowStreams<W>,
     InferWorkflowEvents<W>
+  >;
+
+  /**
+   * Search workflow instances using a typed discriminated-union query object.
+   */
+  search(
+    query?: WorkflowSearchQuery<
+      SearchMetadataFromInput<InferWorkflowMetadataInput<W>>
+    >,
+  ): Promise<
+    WorkflowSearchResultPage<SearchMetadataFromInput<InferWorkflowMetadataInput<W>>>
+  >;
+
+  /**
+   * Search workflow instances using the typed builder callback.
+   */
+  search(
+    build: (
+      builder: WorkflowSearchQueryBuilder<
+        SearchMetadataFromInput<InferWorkflowMetadataInput<W>>
+      >,
+    ) => WorkflowSearchQuery<
+      SearchMetadataFromInput<InferWorkflowMetadataInput<W>>
+    >["where"],
+    options?: Omit<
+      WorkflowSearchQuery<SearchMetadataFromInput<InferWorkflowMetadataInput<W>>>,
+      "where"
+    >,
+  ): Promise<
+    WorkflowSearchResultPage<SearchMetadataFromInput<InferWorkflowMetadataInput<W>>>
   >;
 }
 

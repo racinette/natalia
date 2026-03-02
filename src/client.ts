@@ -32,6 +32,10 @@ export abstract class AbstractWorkflowClient<
           this.assertClientAvailable();
           throw new Error("Not implemented");
         },
+        search: async (_queryOrBuilder: any, _options?: any) => {
+          this.assertClientAvailable();
+          throw new Error("Not implemented");
+        },
       };
     }
 
