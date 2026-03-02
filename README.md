@@ -744,7 +744,9 @@ beforeSettle: async (params) => {
 
 ### Workflow Headers
 
-A `WorkflowHeader` is a minimal descriptor that captures only the public interface of a workflow — the parts other workflows need to reference it: `name`, and optionally `channels` (for `foreignWorkflows`), `args`, `metadata`, and `result` (for `childWorkflows`). It contains no implementation details.
+A `WorkflowHeader` is a minimal authoring descriptor used to wire workflow-to-workflow references before full implementations exist. It captures only what internal references need: `name`, and optionally `channels` (for `foreignWorkflows`), `args`, `metadata`, and `result` (for `childWorkflows`). It contains no implementation details.
+
+For external/client APIs, use `PublicWorkflowHeader` (type-level contract) — it includes `name`, `args`, `metadata`, `channels`, `streams`, `events`, and `result`.
 
 Use `defineWorkflowHeader()` to create one, then:
 
@@ -1394,7 +1396,7 @@ Examples are split into focused files under `src/examples/`.
 - Web scraper example: `src/examples/web-scraper.example.ts` demonstrates `defineWorkflowHeader` for self-referential workflows and URL-as-idempotency-key for automatic cycle prevention — no explicit visited-set needed.
 - Concurrency-focused example: `src/examples/concurrency-primitives.example.ts` demonstrates dynamic Map fan-out, cheapest-flight selection across variable providers (up to 3 hops), concurrent hotel reservation race, and child/foreign workflow orchestration in one realistic flow.
 - Per-key match example: `src/examples/onboarding-verification.example.ts` demonstrates 5 parallel identity methods, a 1-hour deadline race, 3-of-5 threshold gating, and explicit per-key `{ complete, failure }` handlers for each verification branch.
-- Engine-level API example: `src/examples/engine-level-api.example.ts` demonstrates `engine.start()`, `engine.workflows.*.start/execute/get`, handle channels/streams/events/lifecycle operations, `setRetention()`, `sigterm()`, `runGarbageCollection()`, and `engine.shutdown()`.
+- Client API example: `src/examples/engine-level-api.example.ts` demonstrates the shared workflow client API (`workflows.*.start/execute/get`) and handle operations (channels/streams/events/lifecycle, `setRetention()`, `sigterm()`) via `clientApiShowcase`.
 
 ## Project Structure
 
@@ -1440,7 +1442,8 @@ Work in Progress — Public API design complete. Internal implementation pending
 - Patches for safe workflow code evolution
 - Typed deterministic RNG (`ctx.rng.*`)
 - `beforeCompensate` / `afterCompensate` / `beforeSettle` lifecycle hooks on workflow definition
-- **`WorkflowHeader` / `defineWorkflowHeader`** — minimal workflow descriptors for circular reference resolution and self-referential (recursive/tree) workflows; `WorkflowDefinition` satisfies `WorkflowHeader` structurally so headers and full definitions are interchangeable in `childWorkflows` / `foreignWorkflows`
+- **`WorkflowHeader` / `defineWorkflowHeader`** — minimal authoring descriptors for circular reference resolution and self-referential (recursive/tree) workflows in `childWorkflows` / `foreignWorkflows`
+- **`PublicWorkflowHeader`** — client-facing workflow contract (`name`, `args`, `metadata`, `channels`, `streams`, `events`, `result`); full `WorkflowDefinition` objects satisfy it structurally
 
 ## License
 

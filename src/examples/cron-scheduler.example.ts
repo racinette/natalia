@@ -49,11 +49,11 @@ export const dailyReportJobWorkflow = defineWorkflow({
 // =============================================================================
 // MANAGER HEADER
 //
-// Captures the manager's public interface — name + channels — before the full
-// definition exists. The worker references this header in its foreignWorkflows,
-// breaking the circular dependency. The manager then spreads the header into
-// its own defineWorkflow call so the name and channel schemas are declared
-// exactly once.
+// Captures the manager's authoring contract — name + channels — before the
+// full definition exists. The worker references this header in its
+// foreignWorkflows, breaking the circular dependency. The manager then spreads
+// the header into its own defineWorkflow call so the name and channel schemas
+// are declared exactly once.
 //
 // In a multi-file project this would live in manager.ts and be imported by
 // worker.ts; the circular dependency resolves naturally at module load time.

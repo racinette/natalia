@@ -1,5 +1,10 @@
 import type { StandardSchemaV1 } from "./standard-schema";
-import type { WorkflowDefinition, ChannelDefinitions } from "./definitions";
+import type {
+  WorkflowDefinition,
+  ChannelDefinitions,
+  StreamDefinitions,
+  EventDefinitions,
+} from "./definitions";
 
 // =============================================================================
 // TYPE HELPERS
@@ -28,46 +33,22 @@ export type InferWorkflowChannels<W> = W extends {
   : Record<string, never>;
 
 /**
- * Extract streams from workflow definition.
+ * Extract streams from a workflow definition or public header.
  */
-export type InferWorkflowStreams<W> =
-  W extends WorkflowDefinition<
-    any,
-    any,
-    infer TStreams,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any
-  >
+export type InferWorkflowStreams<W> = W extends { streams?: infer TStreams }
+  ? TStreams extends StreamDefinitions
     ? TStreams
-    : never;
+    : Record<string, never>
+  : Record<string, never>;
 
 /**
- * Extract events from workflow definition.
+ * Extract events from a workflow definition or public header.
  */
-export type InferWorkflowEvents<W> =
-  W extends WorkflowDefinition<
-    any,
-    any,
-    any,
-    infer TEvents,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any
-  >
+export type InferWorkflowEvents<W> = W extends { events?: infer TEvents }
+  ? TEvents extends EventDefinitions
     ? TEvents
-    : never;
+    : Record<string, never>
+  : Record<string, never>;
 
 /**
  * Extract args schema from a workflow definition or header (decoded — z.output).

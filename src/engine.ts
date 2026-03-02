@@ -1,115 +1,8 @@
 import type { Pool } from "pg";
-import type {
-  AnyWorkflowDefinition,
-  WorkflowHandleExternal,
-  StartWorkflowOptions,
-  InferWorkflowResult,
-  InferWorkflowChannels,
-  InferWorkflowStreams,
-  InferWorkflowEvents,
-  InferWorkflowArgsInput,
-  InferWorkflowMetadataInput,
-  WorkflowResult,
-  ExternalWaitOptions,
-} from "./types";
+import type { AnyWorkflowDefinition, ExternalWaitOptions } from "./types";
 import { EngineShutdownError } from "./internal/errors";
 import { ScopeRuntimeRegistry } from "./internal/scope-runtime-registry";
-
-// =============================================================================
-// ENGINE WORKFLOW ACCESSOR
-// =============================================================================
-
-/**
- * Accessor for a workflow at engine level.
- * Provides .start(), .execute(), and .get() methods.
- *
- * Engine-level types retain full result unions (`WorkflowResult<T>` with `ok` field)
- * since engine callers need to handle all outcomes. The `WorkflowResult` includes
- * `error: WorkflowExecutionError` on the `"failed"` status for error observability.
- *
- * Engine-level handles (`WorkflowHandleExternal`) retain `sigterm()` and `sigkill()`
- * for operational lifecycle control.
- */
-export interface EngineWorkflowAccessor<W extends AnyWorkflowDefinition> {
-  /**
-   * Start a new instance of this workflow.
-   *
-   * @param options - Start options (idempotencyKey?, args, metadata, seed, deadlineSeconds, retention).
-   * @returns External handle to the workflow.
-   *
-   * @example
-   * ```typescript
-   * const handle = await engine.workflows.order.start({
-   *   idempotencyKey: 'order-123',
-   *   metadata: { tenantId: 'tenant-acme', correlationId: 'req-42' },
-   *   args: { customerId: 'cust-456', items: [...] },
-   * });
-   * ```
-   */
-  start(
-    options: StartWorkflowOptions<
-      InferWorkflowArgsInput<W>,
-      InferWorkflowMetadataInput<W>
-    >,
-  ): Promise<
-    WorkflowHandleExternal<
-      InferWorkflowResult<W>,
-      InferWorkflowChannels<W>,
-      InferWorkflowStreams<W>,
-      InferWorkflowEvents<W>
-    >
-  >;
-
-  /**
-   * Start a workflow and wait for it to complete (convenience for
-   * start + getResult). Waits indefinitely for the workflow to reach
-   * a terminal state.
-   *
-   * @param options - Start options (idempotencyKey?, args, metadata, seed, deadlineSeconds, retention).
-   * @returns The workflow result.
-   *
-   * @example
-   * ```typescript
-   * const result = await engine.workflows.order.execute({
-   *   idempotencyKey: 'order-123',
-   *   metadata: { tenantId: 'tenant-acme', correlationId: 'req-42' },
-   *   args: { customerId: 'cust-456', items: [...] },
-   * });
-   * if (result.ok) {
-   *   console.log('Order completed:', result.data);
-   * } else if (result.status === 'failed') {
-   *   console.error('Order failed:', result.error.message); // WorkflowExecutionError
-   * }
-   * ```
-   */
-  execute(
-    options: StartWorkflowOptions<
-      InferWorkflowArgsInput<W>,
-      InferWorkflowMetadataInput<W>
-    >,
-  ): Promise<WorkflowResult<InferWorkflowResult<W>>>;
-
-  /**
-   * Get a handle to an existing workflow instance.
-   *
-   * @param idempotencyKey - The workflow idempotency key.
-   * @returns External handle to the workflow.
-   *
-   * @example
-   * ```typescript
-   * const handle = engine.workflows.order.get('order-123');
-   * const status = await handle.getStatus();
-   * ```
-   */
-  get(
-    idempotencyKey: string,
-  ): WorkflowHandleExternal<
-    InferWorkflowResult<W>,
-    InferWorkflowChannels<W>,
-    InferWorkflowStreams<W>,
-    InferWorkflowEvents<W>
-  >;
-}
+import { AbstractWorkflowClient } from "./client";
 
 // =============================================================================
 // ENGINE CONFIGURATION
@@ -246,7 +139,7 @@ export interface WorkflowEngineConfig<
  */
 export class WorkflowEngine<
   TWfs extends Record<string, AnyWorkflowDefinition> = Record<string, never>,
-> {
+> extends AbstractWorkflowClient<TWfs> {
   private readonly config: WorkflowEngineConfig<TWfs>;
   private gcInterval: NodeJS.Timeout | null = null;
   private isStarted = false;
@@ -258,38 +151,9 @@ export class WorkflowEngine<
    */
   private readonly scopeRuntimeRegistry = new ScopeRuntimeRegistry();
 
-  /**
-   * Workflow accessors — populated from constructor.
-   * Use engine.workflows.{workflowName}.start() and
-   * engine.workflows.{workflowName}.get().
-   */
-  public readonly workflows: {
-    [K in keyof TWfs]: EngineWorkflowAccessor<TWfs[K]>;
-  };
-
   constructor(config: WorkflowEngineConfig<TWfs>) {
+    super(config.workflows);
     this.config = config;
-
-    const workflowAccessors: Record<string, EngineWorkflowAccessor<any>> = {};
-    for (const [name] of Object.entries(config.workflows)) {
-      workflowAccessors[name] = {
-        start: async (_options: any) => {
-          this.assertNotShutdown();
-          throw new Error("Not implemented");
-        },
-        execute: async (_options: any) => {
-          this.assertNotShutdown();
-          throw new Error("Not implemented");
-        },
-        get: (_idempotencyKey: string) => {
-          this.assertNotShutdown();
-          throw new Error("Not implemented");
-        },
-      };
-    }
-    this.workflows = workflowAccessors as {
-      [K in keyof TWfs]: EngineWorkflowAccessor<TWfs[K]>;
-    };
   }
 
   /**
@@ -368,6 +232,10 @@ export class WorkflowEngine<
     if (this.isShutdown) {
       throw new EngineShutdownError();
     }
+  }
+
+  protected assertClientAvailable(): void {
+    this.assertNotShutdown();
   }
 
   private startGarbageCollection(): void {

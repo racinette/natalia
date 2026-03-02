@@ -65,6 +65,9 @@ export { defineStep, defineWorkflow, defineWorkflowHeader } from "./workflow";
 // Public API - Engine
 export { WorkflowEngine, type WorkflowEngineConfig } from "./engine";
 
+// Public API - Client
+export { createWorkflowClient } from "./client";
+
 // Public API - Migrations
 export {
   runMigrations,

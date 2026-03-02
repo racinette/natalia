@@ -30,9 +30,7 @@ import type {
   ChannelHandle,
   StreamAccessor,
   EventAccessor,
-  BranchHandle,
   BranchFailureInfo,
-  ScopeEntries,
   EnsureScopeEntries,
   NoInferScope,
   ScopeEntriesCheck,
@@ -216,8 +214,9 @@ export interface StepCall<
  *
  * @typeParam T - Decoded step result type (z.output<Schema>).
  */
-export interface CompensationStepCall<T>
-  extends DeterministicAwaitable<CompensationStepResult<T>> {
+export interface CompensationStepCall<T> extends DeterministicAwaitable<
+  CompensationStepResult<T>
+> {
   /**
    * Override the step's retry policy.
    */
@@ -225,9 +224,7 @@ export interface CompensationStepCall<T>
 
   then<R1 = CompensationStepResult<T>>(
     onfulfilled?:
-      | ((
-          value: CompensationStepResult<T>,
-        ) => R1 | PromiseLike<R1>)
+      | ((value: CompensationStepResult<T>) => R1 | PromiseLike<R1>)
       | null
       | undefined,
   ): DeterministicAwaitable<R1>;
@@ -253,7 +250,9 @@ export interface ForeignWorkflowHandle<
    */
   readonly channels: {
     [K in keyof TChannels]: {
-      send(data: StandardSchemaV1.InferInput<TChannels[K]>): DeterministicAwaitable<void>;
+      send(
+        data: StandardSchemaV1.InferInput<TChannels[K]>,
+      ): DeterministicAwaitable<void>;
     };
   };
 }
@@ -379,8 +378,9 @@ export interface WorkflowCall<
  *
  * @typeParam T - Decoded child workflow result type.
  */
-export interface CompensationWorkflowCall<T>
-  extends DeterministicAwaitable<WorkflowResult<T>> {
+export interface CompensationWorkflowCall<T> extends DeterministicAwaitable<
+  WorkflowResult<T>
+> {
   then<R1 = WorkflowResult<T>>(
     onfulfilled?:
       | ((value: WorkflowResult<T>) => R1 | PromiseLike<R1>)
@@ -928,7 +928,9 @@ export interface WorkflowContext<
    *
    * Base-context selection is channel-only.
    */
-  select<M extends Record<string, BaseSelectableHandle>>(handles: M): Selection<M>;
+  select<M extends Record<string, BaseSelectableHandle>>(
+    handles: M,
+  ): Selection<M>;
 
   /**
    * Create a cron-like schedule handle for recurring execution.
@@ -1038,19 +1040,19 @@ export interface WorkflowConcurrencyContext<
   TRng extends RngDefinitions = Record<string, never>,
   TScopePath extends ScopePath = [],
 > extends Omit<
-    WorkflowContext<
-      TState,
-      TChannels,
-      TStreams,
-      TEvents,
-      TSteps,
-      TChildWorkflows,
-      TForeignWorkflows,
-      TPatches,
-      TRng
-    >,
-    "scope" | "select"
-  > {
+  WorkflowContext<
+    TState,
+    TChannels,
+    TStreams,
+    TEvents,
+    TSteps,
+    TChildWorkflows,
+    TForeignWorkflows,
+    TPatches,
+    TRng
+  >,
+  "scope" | "select"
+> {
   scope<Name extends string, R, E>(
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
@@ -1100,7 +1102,9 @@ export interface WorkflowConcurrencyContext<
   >(
     handles: ScopeFiniteRecordForPath<M, TScopePath>,
     callbacks: C,
-  ): DeterministicAwaitable<MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C>>;
+  ): DeterministicAwaitable<
+    MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C>
+  >;
 
   map<
     M extends Record<string, ScopeFiniteHandle>,
@@ -1111,7 +1115,11 @@ export interface WorkflowConcurrencyContext<
     callbacks: C,
     onFailure: DF,
   ): DeterministicAwaitable<
-    MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C, Awaited<ReturnType<DF>>>
+    MapReturn<
+      ScopeFiniteRecordForPath<M, TScopePath>,
+      C,
+      Awaited<ReturnType<DF>>
+    >
   >;
 }
 
@@ -1137,19 +1145,19 @@ export interface WorkflowCompensationConcurrencyContext<
   TRng extends RngDefinitions = Record<string, never>,
   TScopePath extends ScopePath = [],
 > extends Omit<
-    CompensationContext<
-      TState,
-      TChannels,
-      TStreams,
-      TEvents,
-      TSteps,
-      TChildWorkflows,
-      TForeignWorkflows,
-      TPatches,
-      TRng
-    >,
-    "scope" | "select"
-  > {
+  CompensationContext<
+    TState,
+    TChannels,
+    TStreams,
+    TEvents,
+    TSteps,
+    TChildWorkflows,
+    TForeignWorkflows,
+    TPatches,
+    TRng
+  >,
+  "scope" | "select"
+> {
   scope<Name extends string, R, E>(
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
@@ -1201,7 +1209,9 @@ export interface WorkflowCompensationConcurrencyContext<
   >(
     handles: ScopeFiniteRecordForPath<M, TScopePath>,
     callbacks: C,
-  ): DeterministicAwaitable<MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C>>;
+  ): DeterministicAwaitable<
+    MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C>
+  >;
 
   map<
     M extends Record<string, ScopeFiniteHandle>,
@@ -1214,7 +1224,11 @@ export interface WorkflowCompensationConcurrencyContext<
     callbacks: C,
     onFailure: DF,
   ): DeterministicAwaitable<
-    MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C, Awaited<ReturnType<DF>>>
+    MapReturn<
+      ScopeFiniteRecordForPath<M, TScopePath>,
+      C,
+      Awaited<ReturnType<DF>>
+    >
   >;
 }
 

@@ -1,28 +1,25 @@
-import type { WorkflowEngine } from "../engine";
+import type { WorkflowClient } from "../types";
 import { campaignWorkflow } from "./campaign.example";
 import { compensationHooksWorkflow } from "./compensation-hooks.example";
 import { orderWorkflow } from "./order.example";
 
 /**
- * Engine-level API showcase.
+ * Client API showcase.
  *
- * Demonstrates how to manipulate workflows from the runtime side:
- * - engine lifecycle (`start`, `shutdown`, `runGarbageCollection`)
+ * Demonstrates client-facing workflow access:
  * - workflow accessors (`start`, `execute`, `get`)
  * - handle APIs (`channels`, `streams`, `events`, `lifecycle`, `getResult`)
  * - operational controls (`sigterm`, `setRetention`)
  */
-export async function engineLevelApiShowcase(
-  engine: WorkflowEngine<{
+export async function clientApiShowcase(
+  client: WorkflowClient<{
     compensationHooks: typeof compensationHooksWorkflow;
     order: typeof orderWorkflow;
     campaign: typeof campaignWorkflow;
   }>,
 ): Promise<void> {
-  await engine.start();
-
   // start + wait shortcut
-  const quickOrder = await engine.workflows.order.execute({
+  const quickOrder = await client.workflows.order.execute({
     idempotencyKey: "order-quick-demo",
     seed: "order-quick-seed-v1",
     deadlineSeconds: 300,
@@ -40,7 +37,7 @@ export async function engineLevelApiShowcase(
   }
 
   // metadata is optional but strongly typed when schema is defined
-  await engine.workflows.campaign.execute({
+  await client.workflows.campaign.execute({
     idempotencyKey: "campaign-with-metadata-demo",
     metadata: {
       tenantId: "tenant-acme",
@@ -53,7 +50,7 @@ export async function engineLevelApiShowcase(
   });
 
   // start + handle manipulation
-  const handle = await engine.workflows.compensationHooks.start({
+  const handle = await client.workflows.compensationHooks.start({
     idempotencyKey: "comp-hooks-demo",
     seed: "comp-hooks-seed-v1",
     deadlineSeconds: 600,
@@ -98,7 +95,7 @@ export async function engineLevelApiShowcase(
   }
 
   // get existing handle by idempotency key
-  const sameHandle = engine.workflows.compensationHooks.get("comp-hooks-demo");
+  const sameHandle = client.workflows.compensationHooks.get("comp-hooks-demo");
 
   // operational control
   await sameHandle.setRetention({ failed: 86400 * 14 });
@@ -119,6 +116,9 @@ export async function engineLevelApiShowcase(
     );
   }
 
-  await engine.runGarbageCollection(100);
-  await engine.shutdown({ signal: AbortSignal.timeout(30_000) });
 }
+
+/**
+ * @deprecated Use `clientApiShowcase`.
+ */
+export const engineLevelApiShowcase = clientApiShowcase;

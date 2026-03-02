@@ -6,6 +6,8 @@ import type {
   RetentionSettings,
   WorkflowInvocationBaseOptions,
   DeadlineOptions,
+  AnyPublicWorkflowHeader,
+  AnyWorkflowDefinition,
 } from "./definitions";
 import type {
   ChannelSendResult,
@@ -16,8 +18,17 @@ import type {
   EventCheckResult,
   SignalResult,
   WorkflowResultExternal,
+  WorkflowResult,
   ExternalWaitOptions,
 } from "./results";
+import type {
+  InferWorkflowResult,
+  InferWorkflowChannels,
+  InferWorkflowStreams,
+  InferWorkflowEvents,
+  InferWorkflowArgsInput,
+  InferWorkflowMetadataInput,
+} from "./helpers";
 
 // =============================================================================
 // ENGINE LEVEL — EXTERNAL HANDLES
@@ -222,3 +233,69 @@ export type StartWorkflowOptions<
    */
   retention?: number | RetentionSettings;
 } & DeadlineOptions;
+
+// =============================================================================
+// CLIENT LEVEL — WORKFLOW ACCESS
+// =============================================================================
+
+/**
+ * Accessor for a workflow in client-facing APIs.
+ */
+export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader> {
+  /**
+   * Start a new instance of this workflow and return a typed external handle.
+   */
+  start(
+    options: StartWorkflowOptions<
+      InferWorkflowArgsInput<W>,
+      InferWorkflowMetadataInput<W>
+    >,
+  ): Promise<
+    WorkflowHandleExternal<
+      InferWorkflowResult<W>,
+      InferWorkflowChannels<W>,
+      InferWorkflowStreams<W>,
+      InferWorkflowEvents<W>
+    >
+  >;
+
+  /**
+   * Start and wait for completion (start + getResult convenience).
+   */
+  execute(
+    options: StartWorkflowOptions<
+      InferWorkflowArgsInput<W>,
+      InferWorkflowMetadataInput<W>
+    >,
+  ): Promise<WorkflowResult<InferWorkflowResult<W>>>;
+
+  /**
+   * Get an external handle to an existing workflow instance.
+   */
+  get(
+    idempotencyKey: string,
+  ): WorkflowHandleExternal<
+    InferWorkflowResult<W>,
+    InferWorkflowChannels<W>,
+    InferWorkflowStreams<W>,
+    InferWorkflowEvents<W>
+  >;
+}
+
+/**
+ * Client-facing workflow API surface shared by dedicated clients and the engine.
+ */
+export interface WorkflowClient<
+  TWfs extends Record<string, AnyPublicWorkflowHeader> = Record<string, never>,
+> {
+  readonly workflows: {
+    [K in keyof TWfs]: WorkflowClientAccessor<TWfs[K]>;
+  };
+}
+
+/**
+ * Workflow accessor specialization used by the executable engine.
+ * Restricts registrations to full workflow definitions.
+ */
+export interface EngineWorkflowAccessor<W extends AnyWorkflowDefinition>
+  extends WorkflowClientAccessor<W> {}

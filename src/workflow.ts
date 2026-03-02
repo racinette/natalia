@@ -116,8 +116,14 @@ export function defineStep<
  * Define a minimal workflow descriptor for use in `childWorkflows` and
  * `foreignWorkflows` references before the full workflow is defined.
  *
- * A `WorkflowHeader` captures only the public interface — `name`, optional
- * `channels`, `args`, `metadata`, and `result` — with no implementation.
+ * A `WorkflowHeader` captures a lightweight authoring contract — `name`,
+ * optional `channels`, `args`, `metadata`, and `result` — with no
+ * implementation. It exists to break circular workflow dependencies and enable
+ * self-referential definitions while keeping declarations as a single source
+ * of truth.
+ *
+ * For external/client-facing contracts (including streams/events), use the
+ * `PublicWorkflowHeader` type.
  * Spread it into `defineWorkflow({ ...header, ... })` so the full definition
  * re-uses the same name and schema declarations without duplication.
  *

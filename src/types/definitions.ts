@@ -204,10 +204,59 @@ export type AnyWorkflowDefinition = WorkflowDefinition<
 >;
 
 /**
- * Minimal workflow descriptor — captures only the public interface that other
- * workflows need to reference: the name, channels (for `foreignWorkflows`),
- * and args/metadata/result (for `childWorkflows`). Contains no implementation
- * details (`execute`, `steps`, `state`, etc.).
+ * Public workflow descriptor for external/client-facing APIs.
+ *
+ * Captures the contract clients need to interact with workflow instances:
+ * - identity (`name`)
+ * - start contract (`args`, `metadata`)
+ * - interaction surface (`channels`, `streams`, `events`)
+ * - terminal payload contract (`result`)
+ *
+ * This type intentionally excludes implementation details (`execute`, `steps`,
+ * `state`, `rng`, hooks, etc.). Full `WorkflowDefinition` objects satisfy this
+ * shape structurally and can be used where only client contracts are needed.
+ */
+export interface PublicWorkflowHeader<
+  TChannels extends ChannelDefinitions = Record<string, never>,
+  TStreams extends StreamDefinitions = Record<string, never>,
+  TEvents extends EventDefinitions = Record<string, never>,
+  TArgs extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+    void,
+    void
+  >,
+  TMetadata extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+    void,
+    void
+  >,
+  TResult extends StandardSchemaV1<unknown, unknown> = StandardSchemaV1<
+    void,
+    void
+  >,
+> {
+  readonly name: string;
+  readonly channels?: TChannels;
+  readonly streams?: TStreams;
+  readonly events?: TEvents;
+  readonly args?: TArgs;
+  readonly metadata?: TMetadata;
+  readonly result?: TResult;
+}
+
+/**
+ * Any public workflow descriptor shape.
+ */
+export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
+  any,
+  any,
+  any,
+  any,
+  any,
+  any
+>;
+
+/**
+ * Minimal workflow descriptor used by workflow authoring to break circular
+ * dependencies between workflow modules.
  *
  * Use `defineWorkflowHeader()` to create one. Then:
  *
@@ -421,7 +470,14 @@ export interface WorkflowDefinition<
   >,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
-> {
+> extends PublicWorkflowHeader<
+    TChannels,
+    TStreams,
+    TEvents,
+    TArgs,
+    TMetadata,
+    TResultSchema
+  > {
   /** Unique workflow name */
   readonly name: string;
 
