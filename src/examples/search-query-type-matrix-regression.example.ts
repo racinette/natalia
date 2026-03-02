@@ -193,7 +193,6 @@ export async function searchQueryTypeMatrixRegression(): Promise<void> {
       { namespace: "meta", path: "tenant.flags", direction: "desc" },
     ],
     limit: 50,
-    cursor: searchTypeMatrixCursor,
   });
 
   type _ObjectResultNoAny = Assert<
@@ -303,7 +302,6 @@ export async function searchQueryTypeMatrixRegression(): Promise<void> {
         { namespace: "meta", path: "tenant", direction: "asc" },
       ],
       limit: 20,
-      cursor: searchTypeMatrixCursor,
     },
   );
 
@@ -317,12 +315,13 @@ export async function searchQueryTypeMatrixRegression(): Promise<void> {
     >
   >;
 
+  await client.workflows.searchTypeMatrix.search(searchTypeMatrixCursor);
   // @ts-expect-error cursor must be branded for this workflow search metadata type
-  await client.workflows.searchTypeMatrix.search({ cursor: "plain-string-cursor" });
+  await client.workflows.searchTypeMatrix.search("plain-string-cursor");
   // @ts-expect-error cursor from workflow B cannot be used for workflow A search
-  await client.workflows.searchTypeMatrix.search({ cursor: searchTypeMatrixOtherCursor });
+  await client.workflows.searchTypeMatrix.search(searchTypeMatrixOtherCursor);
   // @ts-expect-error cursor from workflow A cannot be used for workflow B search
-  await client.workflows.searchTypeMatrixOther.search({ cursor: searchTypeMatrixCursor });
+  await client.workflows.searchTypeMatrixOther.search(searchTypeMatrixCursor);
 
   // ---------------------------------------------------------------------------
   // Builder overload: invalid usages

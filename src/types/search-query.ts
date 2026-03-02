@@ -303,7 +303,6 @@ export interface WorkflowSearchQuery<
   where?: WorkflowSearchQueryNode<TMetadata>;
   sort?: readonly WorkflowSearchSort<TMetadata>[];
   limit?: number;
-  cursor?: WorkflowSearchCursor<TMetadata>;
 }
 
 /**

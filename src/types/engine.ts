@@ -31,6 +31,7 @@ import type {
 } from "./helpers";
 import type {
   SearchMetadataFromInput,
+  WorkflowSearchCursor,
   WorkflowSearchQuery,
   WorkflowSearchQueryBuilder,
   WorkflowSearchResultPage,
@@ -285,6 +286,17 @@ export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader> {
     InferWorkflowChannels<W>,
     InferWorkflowStreams<W>,
     InferWorkflowEvents<W>
+  >;
+
+  /**
+   * Continue search pagination using an opaque typed cursor from a previous page.
+   */
+  search(
+    cursor: WorkflowSearchCursor<
+      SearchMetadataFromInput<InferWorkflowMetadataInput<W>>
+    >,
+  ): Promise<
+    WorkflowSearchResultPage<SearchMetadataFromInput<InferWorkflowMetadataInput<W>>>
   >;
 
   /**
