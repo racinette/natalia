@@ -1,5 +1,7 @@
 ## Main points
 
+1. need to figure out whether it is valuable to add synchronous compensations for attached child workflows. whether there is a possible use case at all, and if there is, is it compelling enough to justify the semantical split.
+2. check that compensation is a deterministicpromise, make sure it is.
 3. OTel integration. nuff said, needs exploratory analysis first.
 4. Need more engine-level observability over the compensation stage. We'd need `compensationTerminated` and `compensationFailed` lifecycles as well. Also we'd need a `getResult()` counterpart to the compensation. Or do we? `waitCompensation` returning a terminal status? Needs designing.
 
