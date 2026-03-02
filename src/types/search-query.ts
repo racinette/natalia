@@ -303,7 +303,7 @@ export interface WorkflowSearchQuery<
   where?: WorkflowSearchQueryNode<TMetadata>;
   sort?: readonly WorkflowSearchSort<TMetadata>[];
   limit?: number;
-  cursor?: string;
+  cursor?: WorkflowSearchCursor<TMetadata>;
 }
 
 /**
@@ -323,8 +323,18 @@ export interface WorkflowSearchResultPage<
   TMetadata extends SearchMetadataRecord = Record<string, never>,
 > {
   readonly items: readonly WorkflowSearchItem<TMetadata>[];
-  readonly nextCursor?: string;
+  readonly nextCursor?: WorkflowSearchCursor<TMetadata>;
 }
+
+/**
+ * Opaque pagination cursor branded by workflow search metadata type.
+ *
+ * Prevents passing a cursor from workflow A into a search call for workflow B.
+ */
+declare const workflowSearchCursorBrand: unique symbol;
+export type WorkflowSearchCursor<
+  TMetadata extends SearchMetadataRecord = Record<string, never>,
+> = string & { readonly [workflowSearchCursorBrand]: TMetadata };
 
 // =============================================================================
 // SEARCH QUERY — BUILDER TYPES

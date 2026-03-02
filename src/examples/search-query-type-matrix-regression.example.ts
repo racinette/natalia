@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { createWorkflowClient } from "../client";
-import type { SearchMetadataFromInput, WorkflowSearchQuery } from "../types";
+import type {
+  SearchMetadataFromInput,
+  WorkflowSearchCursor,
+  WorkflowSearchQuery,
+} from "../types";
 import { defineWorkflow, defineWorkflowHeader } from "../workflow";
 
 type Assert<T extends true> = T;
@@ -67,6 +71,19 @@ const SearchTypeMatrixWorkflow = defineWorkflow({
   execute: async () => undefined,
 });
 
+const SearchTypeMatrixOtherMetadata = z.object({
+  project: z.object({
+    id: z.string(),
+    archived: z.boolean(),
+  }),
+});
+
+const SearchTypeMatrixOtherWorkflow = defineWorkflow({
+  name: "searchTypeMatrixOther",
+  metadata: SearchTypeMatrixOtherMetadata,
+  execute: async () => undefined,
+});
+
 const InvalidMetadataSetSchema = z.object({
   set: z.set(z.number()),
 });
@@ -84,6 +101,9 @@ defineWorkflowHeader({
 
 type SearchTypeMatrixQueryMetadata = SearchMetadataFromInput<
   z.input<typeof SearchTypeMatrixMetadata>
+>;
+type SearchTypeMatrixOtherQueryMetadata = SearchMetadataFromInput<
+  z.input<typeof SearchTypeMatrixOtherMetadata>
 >;
 
 type _PresentTypeInferred = UnionObjectProp<
@@ -112,9 +132,15 @@ type _DeepBExpected = Assert<
 >;
 type _DeepDExpected = Assert<IsEqual<_DeepDInferred, number | string | undefined>>;
 
+const searchTypeMatrixCursor =
+  "opaque-cursor" as unknown as WorkflowSearchCursor<SearchTypeMatrixQueryMetadata>;
+const searchTypeMatrixOtherCursor =
+  "opaque-cursor-other" as unknown as WorkflowSearchCursor<SearchTypeMatrixOtherQueryMetadata>;
+
 export async function searchQueryTypeMatrixRegression(): Promise<void> {
   const client = createWorkflowClient({
     searchTypeMatrix: SearchTypeMatrixWorkflow,
+    searchTypeMatrixOther: SearchTypeMatrixOtherWorkflow,
   });
 
   // ---------------------------------------------------------------------------
@@ -167,7 +193,7 @@ export async function searchQueryTypeMatrixRegression(): Promise<void> {
       { namespace: "meta", path: "tenant.flags", direction: "desc" },
     ],
     limit: 50,
-    cursor: "opaque-cursor",
+    cursor: searchTypeMatrixCursor,
   });
 
   type _ObjectResultNoAny = Assert<
@@ -277,7 +303,7 @@ export async function searchQueryTypeMatrixRegression(): Promise<void> {
         { namespace: "meta", path: "tenant", direction: "asc" },
       ],
       limit: 20,
-      cursor: "opaque-cursor-2",
+      cursor: searchTypeMatrixCursor,
     },
   );
 
@@ -285,8 +311,18 @@ export async function searchQueryTypeMatrixRegression(): Promise<void> {
     IsAny<typeof builderQueryResult> extends false ? true : false
   >;
   type _BuilderCursorType = Assert<
-    IsEqual<typeof builderQueryResult.nextCursor, string | undefined>
+    IsEqual<
+      typeof builderQueryResult.nextCursor,
+      WorkflowSearchCursor<SearchTypeMatrixQueryMetadata> | undefined
+    >
   >;
+
+  // @ts-expect-error cursor must be branded for this workflow search metadata type
+  await client.workflows.searchTypeMatrix.search({ cursor: "plain-string-cursor" });
+  // @ts-expect-error cursor from workflow B cannot be used for workflow A search
+  await client.workflows.searchTypeMatrix.search({ cursor: searchTypeMatrixOtherCursor });
+  // @ts-expect-error cursor from workflow A cannot be used for workflow B search
+  await client.workflows.searchTypeMatrixOther.search({ cursor: searchTypeMatrixCursor });
 
   // ---------------------------------------------------------------------------
   // Builder overload: invalid usages
