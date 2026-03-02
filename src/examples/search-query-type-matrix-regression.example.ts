@@ -148,6 +148,8 @@ export async function searchQueryTypeMatrixRegression(): Promise<void> {
     sort: [
       { namespace: "engine", path: "createdAt", direction: "desc" },
       { namespace: "meta", path: "riskScore", direction: "asc" },
+      // positive regression: non-scalar metadata sort path is allowed
+      { namespace: "meta", path: "tenant.flags", direction: "desc" },
     ],
     limit: 50,
     cursor: "opaque-cursor",
@@ -256,6 +258,8 @@ export async function searchQueryTypeMatrixRegression(): Promise<void> {
       sort: [
         { namespace: "engine", path: "createdAt", direction: "desc" },
         { namespace: "meta", path: "riskScore", direction: "asc" },
+        // positive regression: non-scalar metadata sort path is allowed
+        { namespace: "meta", path: "tenant", direction: "asc" },
       ],
       limit: 20,
       cursor: "opaque-cursor-2",

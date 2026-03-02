@@ -137,11 +137,7 @@ type MetaArrayPath<T extends SearchMetadataRecord> = {
     : P;
 }[MetaAnyPath<T>];
 
-type MetaSortablePath<T extends SearchMetadataRecord> = {
-  [P in MetaAnyPath<T>]: [Extract<MetaPathValue<T, P>, SearchMetadataScalar>] extends [never]
-    ? never
-    : P;
-}[MetaAnyPath<T>];
+type MetaSortablePath<T extends SearchMetadataRecord> = MetaAnyPath<T>;
 
 type MetaObjectValueAtKey<
   TValue,
