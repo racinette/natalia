@@ -146,31 +146,51 @@ export const onboardingVerificationWorkflow = defineWorkflow({
       ctx.scope(
         "CollectVerificationProofs",
         {
-          passport: ctx.steps.verifyIdentityProof(
-            "passport",
-            (await ctx.channels.passport.receive()).artifactId,
-            args.userId,
-          ),
-          driverLicense: ctx.steps.verifyIdentityProof(
-            "driverLicense",
-            (await ctx.channels.driverLicense.receive()).artifactId,
-            args.userId,
-          ),
-          nationalId: ctx.steps.verifyIdentityProof(
-            "nationalId",
-            (await ctx.channels.nationalId.receive()).artifactId,
-            args.userId,
-          ),
-          bankId: ctx.steps.verifyIdentityProof(
-            "bankId",
-            (await ctx.channels.bankId.receive()).artifactId,
-            args.userId,
-          ),
-          videoSelfie: ctx.steps.verifyIdentityProof(
-            "videoSelfie",
-            (await ctx.channels.videoSelfie.receive()).artifactId,
-            args.userId,
-          ),
+          passport: async () => {
+            return await ctx.join(
+              ctx.steps.verifyIdentityProof(
+                "passport",
+                (await ctx.channels.passport.receive()).artifactId,
+                args.userId,
+              ),
+            );
+          },
+          driverLicense: async () => {
+            return await ctx.join(
+              ctx.steps.verifyIdentityProof(
+                "driverLicense",
+                (await ctx.channels.driverLicense.receive()).artifactId,
+                args.userId,
+              ),
+            );
+          },
+          nationalId: async () => {
+            return await ctx.join(
+              ctx.steps.verifyIdentityProof(
+                "nationalId",
+                (await ctx.channels.nationalId.receive()).artifactId,
+                args.userId,
+              ),
+            );
+          },
+          bankId: async () => {
+            return await ctx.join(
+              ctx.steps.verifyIdentityProof(
+                "bankId",
+                (await ctx.channels.bankId.receive()).artifactId,
+                args.userId,
+              ),
+            );
+          },
+          videoSelfie: async () => {
+            return await ctx.join(
+              ctx.steps.verifyIdentityProof(
+                "videoSelfie",
+                (await ctx.channels.videoSelfie.receive()).artifactId,
+                args.userId,
+              ),
+            );
+          },
           deadline: async () => {
             await ctx.sleep(3600);
             return "deadline" as const;
