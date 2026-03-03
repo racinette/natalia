@@ -16,8 +16,6 @@
  *     semantics for external side effects. No status checks needed in callbacks.
  *     addCompensation(cb) provides general-purpose cleanup.
  * - BranchFailureInfo: Passed to failure callbacks in map/match for branch handles.
- *     claimCompensation() — transfer ownership and receive a callable compensation runner.
- *     Once claimed, the engine will not run that compensation automatically.
  * - failure/complete builders: { complete, failure } callbacks on concurrency primitives
  *     (match, map) for explicit failure recovery on branch handles.
  * - Select: base `ctx.select(handles)` is channel-only.

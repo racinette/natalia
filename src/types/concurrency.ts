@@ -58,42 +58,11 @@ export interface DeterministicAwaitable<T> {
   ): any;
 }
 
-export type CompensationRunner = () => DeterministicAwaitable<void>;
-
-/**
- * Augment a failure info type with `claimCompensation()`.
- *
- * `claimCompensation()` explicitly transfers compensation ownership to user code
- * and returns the compensation callback as a callable `CompensationRunner`.
- *
- * Once claimed, the engine does NOT run this compensation automatically at scope
- * exit / LIFO unwinding anymore — user code fully owns when (or if) to execute it.
- *
- * **Context switch:** Calling the claimed runner transparently switches the
- * execution context to compensation mode (SIGTERM-resilient). The compensation
- * callback runs to completion even if SIGTERM arrives mid-execution. Control
- * returns to the `failure` handler in normal WorkflowContext after.
- *
- * Only present when a `compensate` callback was registered. If no `compensate`
- * was provided, the failure object does not include `claimCompensation` — full type safety.
- */
-export type WithCompensation<T> = T & {
-  readonly claimCompensation: () => CompensationRunner;
-};
-
 /**
  * Failure information for a scope branch, passed to `failure` callbacks in
  * map and match handlers.
- *
- * Includes `claimCompensation()` to transfer compensation ownership for any
- * compensated steps registered within this branch.
- *
- * If not claimed, the engine runs branch compensations at scope exit (safe default).
- * If claimed, the engine will not take further action for that branch compensation.
  */
-export interface BranchFailureInfo {
-  claimCompensation(): CompensationRunner;
-}
+export type BranchFailureInfo = Record<string, never>;
 
 // =============================================================================
 // CHANNEL HANDLE, STREAM ACCESSOR, EVENT ACCESSOR (WORKFLOW INTERNAL)

@@ -53,7 +53,6 @@ import type {
   ScopeCompensationMapHandlerEntry,
   StepFailureInfo,
   ChildWorkflowFailureInfo,
-  WithCompensation,
 } from "./concurrency";
 
 // =============================================================================
@@ -156,7 +155,6 @@ export interface StepCall<
   /**
    * Register a compensation callback for this step.
    * Runs during LIFO unwinding when the workflow fails.
-   * May be claimed explicitly via `failure.claimCompensation()`.
    */
   compensate(
     cb: (ctx: TCompCtx, result: StepCompensationResult<T>) => Promise<void>,
@@ -172,18 +170,13 @@ export interface StepCall<
   /**
    * Handle step failure explicitly — the workflow does NOT auto-terminate.
    * The callback return value becomes TFail in the resolved union.
-   *
-   * If `.compensate()` was called, the failure object includes
-   * `claimCompensation()` to transfer ownership of compensation execution.
-   * If not called, compensation still runs at scope exit.
    */
-  failure<R>(
-    cb: (
-      failure: HasCompensation extends true
-        ? WithCompensation<StepFailureInfo>
-        : StepFailureInfo,
-    ) => R,
-  ): StepCall<T, Awaited<R>, HasCompensation, TCompCtx>;
+  failure<R>(cb: (failure: StepFailureInfo) => R): StepCall<
+    T,
+    Awaited<R>,
+    HasCompensation,
+    TCompCtx
+  >;
 
   /**
    * Transform the success result.
@@ -292,13 +285,12 @@ export interface WorkflowCallResult<
   /**
    * Handle child workflow failure explicitly — the parent does NOT auto-terminate.
    */
-  failure<R>(
-    cb: (
-      failure: HasCompensation extends true
-        ? WithCompensation<ChildWorkflowFailureInfo>
-        : ChildWorkflowFailureInfo,
-    ) => R,
-  ): WorkflowCallResult<T, Awaited<R>, HasCompensation, TCompCtx>;
+  failure<R>(cb: (failure: ChildWorkflowFailureInfo) => R): WorkflowCallResult<
+    T,
+    Awaited<R>,
+    HasCompensation,
+    TCompCtx
+  >;
 
   /**
    * Transform the child workflow's success result.
@@ -347,13 +339,12 @@ export interface WorkflowCall<
   /**
    * Handle child workflow failure explicitly.
    */
-  failure<R>(
-    cb: (
-      failure: HasCompensation extends true
-        ? WithCompensation<ChildWorkflowFailureInfo>
-        : ChildWorkflowFailureInfo,
-    ) => R,
-  ): WorkflowCallResult<T, Awaited<R>, HasCompensation, TCompCtx>;
+  failure<R>(cb: (failure: ChildWorkflowFailureInfo) => R): WorkflowCallResult<
+    T,
+    Awaited<R>,
+    HasCompensation,
+    TCompCtx
+  >;
 
   /**
    * Transform the child workflow's success result — enters result mode.

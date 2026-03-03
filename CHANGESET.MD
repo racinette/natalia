@@ -1,6 +1,5 @@
 ## Main points
 
-2. check that compensation is a deterministicpromise, make sure it is.
 3. OTel integration. nuff said, needs exploratory analysis first.
 4. (maybe) allow to read the current event flag values inside the workflow
 5. (maybe) allow to read the stream values (I don't think so, why would we?)
