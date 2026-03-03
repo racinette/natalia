@@ -35,6 +35,8 @@
  *     map(handles, callbacks, onFailure?) — partial per-key handlers + optional default failure callback.
  *     Accepts BranchHandle variants and ChannelReceiveCall (not raw ChannelHandle).
  *     Collection handles (BranchHandle[], Map<K, BranchHandle>) pass innerKey to callbacks.
+ * - all: `ctx.all(entries)` sugar for the common "join all and collect results" pattern.
+ *     Preserves input shape (single/array/map) and follows normal failure semantics.
  * - Child workflows: ctx.childWorkflows.* — structured invocation (WorkflowCall<T> thenable).
  *     Supports .compensate(), .failure(), .complete() in result mode.
  *     Use call option `{ detached: true }` for fire-and-forget messaging mode

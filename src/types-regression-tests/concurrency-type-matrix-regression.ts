@@ -158,6 +158,59 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
     );
 
     await ctx.scope(
+      "NestedScopeSelectableRegression",
+      {
+        parentTimer: ctx.sleep(1).then(() => "parent_done" as const),
+      },
+      async (ctx, { parentTimer }) => {
+        const childScope = ctx.scope(
+          "ChildScope",
+          {
+            childTimer: ctx.sleep(1).then(() => "child_done" as const),
+          },
+          async (_ctx, { childTimer }) => {
+            return await childTimer;
+          },
+        );
+
+        const childSel = ctx.select({ parentTimer, childScope });
+        for await (const value of childSel) {
+          type _ChildScopeSelectNoAny = Assert<
+            IsAny<typeof value> extends false ? true : false
+          >;
+          break;
+        }
+      },
+    );
+
+    const allResults = await ctx.all({
+      timer: ctx.sleep(1).then(() => "timed_out" as const),
+      providers: [async () => 1, async () => 2],
+      quotes: new Map<
+        string,
+        (() => Promise<"A">) | DeterministicAwaitable<"B">
+      >([
+        ["a", async () => "A" as const],
+        ["b", ctx.sleep(1).then(() => "B" as const)],
+      ]),
+    });
+    type _AllResultNoAny = Assert<
+      IsAny<typeof allResults> extends false ? true : false
+    >;
+    type _AllTimerLiteral = Assert<
+      IsEqual<typeof allResults.timer, "timed_out">
+    >;
+    type _AllProvidersNoAny = Assert<
+      IsAny<(typeof allResults.providers)[number]> extends false ? true : false
+    >;
+    for (const quote of allResults.quotes.values()) {
+      type _AllQuotesNoAny = Assert<
+        IsAny<typeof quote> extends false ? true : false
+      >;
+      break;
+    }
+
+    await ctx.scope(
       "MatrixScope",
       {
         single: ctx.steps.bookFlight(args.destination, args.customerId),
@@ -335,6 +388,15 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
           );
           type _CompMapNoAny = Assert<
             IsAny<typeof compMapped> extends false ? true : false
+          >;
+
+          const compAll = await ctx.all({
+            timer,
+            cancelAttempt,
+            cancelOnce: ctx.channels.cancel.receive(0),
+          });
+          type _CompAllNoAny = Assert<
+            IsAny<typeof compAll> extends false ? true : false
           >;
         },
       );

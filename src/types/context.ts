@@ -31,10 +31,12 @@ import type {
   StreamAccessor,
   EventAccessor,
   BranchFailureInfo,
+  BranchHandle,
   EnsureScopeEntries,
   NoInferScope,
   ScopeEntriesCheck,
   ScopeHandles,
+  ScopeAllResults,
   ScopePath,
   AppendScopeName,
   ScopeNameArg,
@@ -757,6 +759,17 @@ export interface CompensationContext<
     ..._entriesCheck: ScopeEntriesCheck<E>
   ): DeterministicAwaitable<R>;
 
+  /**
+   * Join all entries concurrently and return resolved values preserving shape.
+   *
+   * Sugar over `scope(...)` for the common "run all and collect results" case.
+   * Any unhandled branch failure follows normal compensation failure semantics.
+   */
+  all<E>(
+    entries: E,
+    ..._entriesCheck: ScopeEntriesCheck<E>
+  ): DeterministicAwaitable<ScopeAllResults<EnsureScopeEntries<NoInferScope<E>>>>;
+
   // ---------------------------------------------------------------------------
   // select — multiplexed waiting
   // ---------------------------------------------------------------------------
@@ -984,6 +997,17 @@ export interface WorkflowContext<
     ..._entriesCheck: ScopeEntriesCheck<E>
   ): DeterministicAwaitable<R>;
 
+  /**
+   * Join all entries concurrently and return resolved values preserving shape.
+   *
+   * Sugar over `scope(...)` for the common "run all and collect results" case.
+   * Any unhandled branch failure follows normal workflow failure semantics.
+   */
+  all<E>(
+    entries: E,
+    ..._entriesCheck: ScopeEntriesCheck<E>
+  ): DeterministicAwaitable<ScopeAllResults<EnsureScopeEntries<NoInferScope<E>>>>;
+
   // ---------------------------------------------------------------------------
   // addCompensation — general purpose LIFO registration
   // ---------------------------------------------------------------------------
@@ -1069,7 +1093,18 @@ export interface WorkflowConcurrencyContext<
       >,
     ) => Promise<R>,
     ..._entriesCheck: ScopeEntriesCheck<E>
-  ): DeterministicAwaitable<R>;
+  ): BranchHandle<R, TScopePath>;
+
+  /**
+   * Join all entries concurrently and return resolved values preserving shape.
+   *
+   * Sugar over `scope(...)` for the common "run all and collect results" case.
+   * Any unhandled branch failure follows normal workflow failure semantics.
+   */
+  all<E>(
+    entries: E,
+    ..._entriesCheck: ScopeEntriesCheck<E>
+  ): DeterministicAwaitable<ScopeAllResults<EnsureScopeEntries<NoInferScope<E>>>>;
 
   /**
    * Create a selection for concurrent waiting over scope branch handles and
@@ -1174,7 +1209,18 @@ export interface WorkflowCompensationConcurrencyContext<
       >,
     ) => Promise<R>,
     ..._entriesCheck: ScopeEntriesCheck<E>
-  ): DeterministicAwaitable<R>;
+  ): BranchHandle<R, TScopePath>;
+
+  /**
+   * Join all entries concurrently and return resolved values preserving shape.
+   *
+   * Sugar over `scope(...)` for the common "run all and collect results" case.
+   * Any unhandled branch failure follows normal compensation failure semantics.
+   */
+  all<E>(
+    entries: E,
+    ..._entriesCheck: ScopeEntriesCheck<E>
+  ): DeterministicAwaitable<ScopeAllResults<EnsureScopeEntries<NoInferScope<E>>>>;
 
   /**
    * Create a selection for concurrent waiting over scope branch handles and

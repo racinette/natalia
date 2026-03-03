@@ -387,6 +387,26 @@ export type ScopeHandles<
         : never;
 };
 
+/**
+ * Maps scope entry values to their resolved data shape, preserving collection
+ * structure (single -> value, array -> array, map -> map).
+ *
+ * Used by `ctx.all(entries)` sugar to return "join-all" results directly.
+ */
+export type ScopeAllResults<E extends ScopeEntries> = {
+  [K in keyof E]: E[K] extends ScopeEntryValue<unknown>
+    ? ScopeEntryResult<E[K]>
+    : E[K] extends (infer U)[]
+      ? U extends ScopeEntryValue<unknown>
+        ? ScopeEntryResult<U>[]
+        : never
+      : E[K] extends Map<infer MK, infer V>
+        ? V extends ScopeEntryValue<unknown>
+          ? Map<MK, ScopeEntryResult<V>>
+          : never
+        : never;
+};
+
 // =============================================================================
 // SELECT — HANDLE TYPES
 // =============================================================================

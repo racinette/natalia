@@ -162,6 +162,41 @@ const winner = await ctx.scope(
 
 The scope resolves to whatever the callback returns. Cleanup happens after the callback returns but before the scope's promise resolves.
 
+Inside a scope callback context, nested `ctx.scope(...)` calls return a `BranchHandle<T>`, so child scopes are directly selectable in the parent:
+
+```typescript
+await ctx.scope("Parent", { timer: ctx.sleep(10).then(() => "timeout" as const) }, async (ctx, { timer }) => {
+  const child = ctx.scope(
+    "Child",
+    { work: ctx.sleep(1).then(() => "done" as const) },
+    async (_ctx, { work }) => await work,
+  );
+
+  const sel = ctx.select({ timer, child });
+  for await (const val of sel.match({
+    timer: (v) => v,
+    child: (v) => v,
+  })) {
+    return val;
+  }
+  return "timeout" as const;
+});
+```
+
+For the common "run everything and collect all resolved values" case, use `ctx.all(entries)`:
+
+```typescript
+const result = await ctx.all({
+  flight: ctx.steps.bookFlight("Paris", "cust-1"),
+  hotels: [
+    async () => ctx.steps.bookHotel("Paris", "2026-03-10", "2026-03-13"),
+    async () => ctx.steps.bookHotel("Paris", "2026-03-11", "2026-03-14"),
+  ],
+});
+// result.flight -> Flight
+// result.hotels -> Hotel[]
+```
+
 **Scope possession and naming rules:**
 
 - Every scope must be named: `ctx.scope("ScopeName", entries, callback)`.
@@ -1242,6 +1277,7 @@ Workflow-internal timeout behavior:
 | `ctx.foreignWorkflows.*`                       | `.get(idempotencyKey)` → `ForeignWorkflowHandle` (channels.send only, fire-and-forget)                                                                                                                       |
 | `ctx.patches.*`                                | `await ctx.patches.name` → boolean, `(callback, default?)` → callback result or default                                                                                                                     |
 | `ctx.scope(name, entries, callback)`           | Structured concurrency boundary — requires explicit scope name; accepts closures and collections                                                                                                             |
+| `ctx.all(entries)`                             | Sugar for "run all + collect results" with shape-preserving output (single/array/Map)                                                                                                                      |
 | `ctx.select()`                                 | Channel-only select on base context — accepts `ChannelHandle` (streaming) or `ChannelReceiveCall` (one-shot)                                                                                                 |
 | `ctx.map()`                                    | Not available on base `WorkflowContext`; use `ctx.scope("Name", entries, async (ctx, handles) => ctx.map(...))`                                                                                             |
 | `ctx.addCompensation()`                        | Register LIFO compensation callback                                                                                                                                                                         |
@@ -1262,6 +1298,7 @@ Workflow-internal timeout behavior:
 | `ctx.events.*`              | `.set()`                                                                                                                                                            |
 | `ctx.childWorkflows.*`      | `(options)` → `CompensationWorkflowCall<T>` — resolves to `WorkflowResult<T>`                                                                                       |
 | `ctx.scope(name, entries, callback)` | Structured concurrency boundary — requires explicit scope name; all unjoined branches settled on exit                                                     |
+| `ctx.all(entries)`                   | Sugar for "run all + collect results" with shape-preserving output (single/array/Map)                                |
 | `ctx.select()`              | Channel-only select on base compensation context — accepts `ChannelHandle` (streaming) or `ChannelReceiveCall` (one-shot) |
 | `ctx.map()`                 | Not available on base `CompensationContext`; use `ctx.scope("Name", entries, async (ctx, handles) => ctx.map(...))`         |
 | `ctx.sleep()` / `ctx.rng.*` | Same as WorkflowContext                                                                                                                                             |
@@ -1400,6 +1437,7 @@ Examples are split into focused files under `src/examples/`.
 - Cron-like scheduler example: `src/examples/cron-scheduler.example.ts` demonstrates the manager/worker split for long-running schedulers — a stable idempotency-key manager loop delegates to bounded-history workers, with `beforeSettle` + `foreignWorkflows` guaranteeing worker handoff delivery on complete/failed/terminated outcomes and detached child starts so workers carry no compensation obligation to the manager.
 - Web scraper example: `src/examples/web-scraper.example.ts` demonstrates `defineWorkflowHeader` for self-referential workflows and URL-as-idempotency-key for automatic cycle prevention — no explicit visited-set needed.
 - Concurrency-focused example: `src/examples/concurrency-primitives.example.ts` demonstrates dynamic Map fan-out, cheapest-flight selection across variable providers (up to 3 hops), concurrent hotel reservation race, and child/foreign workflow orchestration in one realistic flow.
+- New API example: `src/examples/scope-all-and-nested-select.example.ts` demonstrates `ctx.all(entries)` and nested child-scope selection (`ctx.select({ ..., childScope })`) in a parent scope callback.
 - Per-key match example: `src/examples/onboarding-verification.example.ts` demonstrates 5 parallel identity methods, a 1-hour deadline race, 3-of-5 threshold gating, and explicit per-key `{ complete, failure }` handlers for each verification branch.
 - Client API example: `src/examples/engine-level-api.example.ts` demonstrates the shared workflow client API (`workflows.*.start/execute/get`) and handle operations (channels/streams/events/execution/compensation, `setRetention()`, `sigterm()`) via `clientApiShowcase`.
 
@@ -1426,6 +1464,8 @@ Work in Progress — Public API design complete. Internal implementation pending
 - `defineWorkflow()` with full type safety
 - **Callable thenable model** — steps and child workflows return `StepCall<T>` / `WorkflowCall<T>` thenables with builder chains
 - **Structured concurrency with shorthand entries** via `ctx.scope(name, ...)` — entries can be `async () => T` closures or direct thenables; collections (Array, Map) supported for dynamic fan-out
+- **Nested scope handles are selectable** inside scope callbacks — child `ctx.scope(...)` calls return `BranchHandle<T>` in scope-local contexts
+- **`ctx.all(entries)` sugar** for the common "run all + collect" shape-preserving pattern
 - **One compensation callback per handle** — defined via `.compensate(cb)` builder, full `CompensationContext`; compensation is always unconditional (at-least-once semantics)
 - **Scope exit behavior** — branches with compensated steps → compensated; others → settled
 - **Unified failure model** — `.failure(cb)` / `{ complete, failure }` / `{ failure }` handler entries; `onFailure` default for `match()`; `BranchFailureInfo` with `claimCompensation()` for explicit ownership transfer
