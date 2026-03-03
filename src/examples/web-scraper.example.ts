@@ -116,12 +116,12 @@ export const pageScraperWorkflow = defineWorkflow({
 
     const page = await ctx.join(ctx.steps.fetchPage(args.url, args.baseUrl));
 
-    await ctx.join(ctx.streams.discovered.write({
+    await ctx.streams.discovered.write({
       url: args.url,
       title: page.title,
       depth: args.depth,
       linksFound: page.links.length,
-    }));
+    });
 
     // Fan out to child pages in parallel.
     //
@@ -132,7 +132,7 @@ export const pageScraperWorkflow = defineWorkflow({
     // discarded. No explicit cycle detection or visited-set is needed.
     const links = page.links.slice(0, args.maxLinksPerPage);
     for (const link of links) {
-      await ctx.join(ctx.childWorkflows.page({
+      await ctx.childWorkflows.page.startDetached({
         idempotencyKey: link,
         args: {
           url: link,
@@ -141,16 +141,15 @@ export const pageScraperWorkflow = defineWorkflow({
           maxDepth: args.maxDepth,
           maxLinksPerPage: args.maxLinksPerPage,
         },
-        detached: true,
         retention: {
           complete: 7 * 24 * 3600,
           failed: 30 * 24 * 3600,
           terminated: 3600,
         },
-      }));
+      });
     }
 
-    await ctx.join(ctx.events.done.set());
+    await ctx.events.done.set();
     return { url: args.url, title: page.title };
   },
 });

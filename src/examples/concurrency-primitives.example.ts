@@ -151,7 +151,9 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
 
   async execute(ctx, args) {
     if (args.flightProviders.length === 0 || args.hotelProviders.length === 0) {
-      throw new Error("At least one flight provider and one hotel provider is required");
+      throw new Error(
+        "At least one flight provider and one hotel provider is required",
+      );
     }
 
     const flightSearches = new Map(
@@ -159,11 +161,11 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
         provider,
         ctx.steps
           .searchFlightOptions(provider, args.origin, args.destination)
-          .compensate(async (compCtx, result) => {
+          .compensate(async (ctx, result) => {
             if (result.status !== "complete") return;
             for (const itinerary of result.data.itineraries) {
-              await compCtx.join(
-                compCtx.steps.cancelFlightItinerary(
+              await ctx.join(
+                ctx.steps.cancelFlightItinerary(
                   provider,
                   itinerary.itineraryId,
                 ),
@@ -178,10 +180,10 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
         provider,
         ctx.steps
           .reserveHotel(provider, args.destination, args.checkIn, args.checkOut)
-          .compensate(async (compCtx, result) => {
+          .compensate(async (ctx, result) => {
             if (result.status !== "complete") return;
-            await compCtx.join(
-              compCtx.steps.cancelHotelReservation(
+            await ctx.join(
+              ctx.steps.cancelHotelReservation(
                 provider,
                 result.data.reservationId,
               ),
@@ -201,7 +203,9 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
               {
                 flights: {
                   complete: (data, provider) => {
-                    const viable = data.itineraries.filter((it) => it.hops <= 3);
+                    const viable = data.itineraries.filter(
+                      (it) => it.hops <= 3,
+                    );
                     if (viable.length === 0) return null;
                     const cheapest = viable.reduce((best, curr) =>
                       curr.price < best.price ? curr : best,
@@ -215,7 +219,9 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
                     };
                   },
                   failure: async (failure, provider) => {
-                    ctx.logger.warn("Flight search provider failed", { provider });
+                    ctx.logger.warn("Flight search provider failed", {
+                      provider,
+                    });
                     return null;
                   },
                 },
@@ -223,15 +229,13 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
             ),
           );
 
-          let bestFlight:
-            | {
-                provider: string;
-                itineraryId: string;
-                hops: number;
-                price: number;
-                legs: Array<{ from: string; to: string }>;
-              }
-            | null = null;
+          let bestFlight: {
+            provider: string;
+            itineraryId: string;
+            hops: number;
+            price: number;
+            legs: Array<{ from: string; to: string }>;
+          } | null = null;
 
           for (const value of pricedFlights.flights.values()) {
             if (value == null) continue;
@@ -240,16 +244,12 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
             }
           }
 
-          // Non-blocking poll (receive(0) = nowait): check whether a cancel message
-          // arrived while we were searching flights. This demonstrates ctx.map() with
-          // a ChannelReceiveCall — the key resolves immediately (undefined if no message).
-          const earlyCancel = await ctx.join(
-            ctx.map(
-              { cancel: ctx.channels.cancel.receive(0) },
-              { cancel: (msg) => msg },
-            ),
-          );
-          if (earlyCancel.cancel !== undefined) {
+          // Non-blocking poll (receiveNowait): check whether a cancel message
+          // arrived while we were searching flights. Returns immediately — undefined
+          // if no message is available. Cannot be passed to ctx.map() since it
+          // completes atomically and is not a selectable branch.
+          const earlyCancelMsg = await ctx.channels.cancel.receiveNowait();
+          if (earlyCancelMsg !== undefined) {
             return {
               outcome: "cancelled" as const,
               itineraryId: null,
@@ -271,9 +271,11 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
             hotel: hotels,
             cancel: ctx.channels.cancel.receive(),
           });
-          let selectedHotel:
-            | { provider: string; reservationId: string; price: number }
-            | null = null;
+          let selectedHotel: {
+            provider: string;
+            reservationId: string;
+            price: number;
+          } | null = null;
           let cancelled = false;
 
           for await (const val of hotelSel.match({
@@ -343,8 +345,8 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
               .complete((data) => data.receiptId),
           );
 
-          const campaign = await ctx.join(
-            ctx.childWorkflows.campaignWorker({
+          const campaign =
+            await ctx.childWorkflows.campaignWorker.startDetached({
               idempotencyKey: `campaign-${ctx.rng.ids.uuidv4()}`,
               metadata: {
                 tenantId: `tenant-${args.customerId}`,
@@ -352,16 +354,14 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
               },
               seed: `trip-campaign-${args.customerId}`,
               args: { userId: args.customerId },
-              detached: true,
-            }),
-          );
-          await ctx.join(campaign.channels.nudge.send({ type: "nudge" }));
+            });
+          await campaign.channels.nudge.send({ type: "nudge" });
 
           if (args.existingCampaignIdempotencyKey) {
             const existing = ctx.foreignWorkflows.campaignWorker.get(
               args.existingCampaignIdempotencyKey,
             );
-            await ctx.join(existing.channels.nudge.send({ type: "nudge" }));
+            await existing.channels.nudge.send({ type: "nudge" });
           }
 
           return {

@@ -64,17 +64,15 @@ export const compensationHooksWorkflow = defineWorkflow({
 
   beforeCompensate: async ({ ctx, args }) => {
     ctx.logger.info("Compensation starting", { id: ctx.workflowId });
-    await ctx.join(
-      ctx.streams.compLog.write({
-        msg: `Compensation started for ${args.destination}`,
-        ts: ctx.timestamp,
-      }),
-    );
-    await ctx.join(ctx.events.compensationStarted.set());
+    await ctx.streams.compLog.write({
+      msg: `Compensation started for ${args.destination}`,
+      ts: ctx.timestamp,
+    });
+    await ctx.events.compensationStarted.set();
 
-    const ack = await ctx.join(ctx.channels.compAck.receive());
+    const ack = await ctx.channels.compAck.receive();
     ctx.logger.info("Compensation ack received", { type: ack.type });
-    await ctx.join(ctx.sleep(1));
+    await ctx.sleep(1);
   },
 
   afterCompensate: async ({ ctx, args }) => {
@@ -127,96 +125,80 @@ export const compensationHooksWorkflow = defineWorkflow({
       ),
     );
 
-    await ctx.join(
-      ctx.streams.compLog.write({
-        msg: "Compensation finalized",
-        ts: ctx.timestamp,
-      }),
-    );
-    await ctx.join(ctx.events.compensationComplete.set());
+    await ctx.streams.compLog.write({
+      msg: "Compensation finalized",
+      ts: ctx.timestamp,
+    });
+    await ctx.events.compensationComplete.set();
   },
 
   async execute(ctx, args) {
     await ctx.join(
       ctx.steps
         .bookFlight(args.destination, args.customerId)
-        .compensate(async (compCtx) => {
-          let result = await compCtx.join(
-            compCtx.steps
+        .compensate(async (ctx) => {
+          let result = await ctx.join(
+            ctx.steps
               .cancelFlight(args.destination, args.customerId)
               .retry({ maxAttempts: 15, intervalSeconds: 10, backoffRate: 2 }),
           );
 
           if (!result.ok) {
-            compCtx.logger.error("Flight cancellation failed after retries", {
+            ctx.logger.error("Flight cancellation failed after retries", {
               reason: result.reason,
             });
 
             // Human-in-the-loop flow:
             // Compensation cannot be compensated itself, so we must explicitly
             // handle failure paths. Emit durable signals/logs and wait for operator input.
-            await compCtx.join(compCtx.events.manualInterventionRequested.set());
-            await compCtx.join(
-              compCtx.streams.interventionLog.write({
-                kind: "requested",
-                note: `cancelFlight failed (${result.reason}); waiting for operator resolution`,
-                ts: compCtx.timestamp,
-              }),
-            );
+            await ctx.events.manualInterventionRequested.set();
+            await ctx.streams.interventionLog.write({
+              kind: "requested",
+              note: `cancelFlight failed (${result.reason}); waiting for operator resolution`,
+              ts: ctx.timestamp,
+            });
 
-            for await (const resolution of compCtx.channels.operatorResolution) {
+            for await (const resolution of ctx.channels.operatorResolution) {
               if (resolution.action === "retry_cancel") {
-                result = await compCtx.join(
-                  compCtx.steps
+                result = await ctx.join(
+                  ctx.steps
                     .cancelFlight(args.destination, args.customerId)
                     .retry({ maxAttempts: 5, intervalSeconds: 5 }),
                 );
 
                 if (result.ok) {
-                  await compCtx.join(
-                    compCtx.events.manualInterventionResolved.set(),
-                  );
-                  await compCtx.join(
-                    compCtx.streams.interventionLog.write({
-                      kind: "resolved",
-                      note: `operator requested retry and cancellation succeeded: ${resolution.note}`,
-                      ts: compCtx.timestamp,
-                    }),
-                  );
+                  await ctx.events.manualInterventionResolved.set();
+                  await ctx.streams.interventionLog.write({
+                    kind: "resolved",
+                    note: `operator requested retry and cancellation succeeded: ${resolution.note}`,
+                    ts: ctx.timestamp,
+                  });
                   break;
                 }
 
-                await compCtx.join(
-                  compCtx.streams.interventionLog.write({
-                    kind: "retry_failed",
-                    note: `operator retry failed (${result.reason}): ${resolution.note}`,
-                    ts: compCtx.timestamp,
-                  }),
-                );
+                await ctx.streams.interventionLog.write({
+                  kind: "retry_failed",
+                  note: `operator retry failed (${result.reason}): ${resolution.note}`,
+                  ts: ctx.timestamp,
+                });
                 continue;
               }
 
               if (resolution.action === "confirm_resolved") {
-                await compCtx.join(
-                  compCtx.events.manualInterventionResolved.set(),
-                );
-                await compCtx.join(
-                  compCtx.streams.interventionLog.write({
-                    kind: "resolved",
-                    note: `operator confirmed externally resolved: ${resolution.note}`,
-                    ts: compCtx.timestamp,
-                  }),
-                );
+                await ctx.events.manualInterventionResolved.set();
+                await ctx.streams.interventionLog.write({
+                  kind: "resolved",
+                  note: `operator confirmed externally resolved: ${resolution.note}`,
+                  ts: ctx.timestamp,
+                });
                 break;
               }
 
-              await compCtx.join(
-                compCtx.streams.interventionLog.write({
-                  kind: "aborted",
-                  note: `operator aborted compensation path: ${resolution.note}`,
-                  ts: compCtx.timestamp,
-                }),
-              );
+              await ctx.streams.interventionLog.write({
+                kind: "aborted",
+                note: `operator aborted compensation path: ${resolution.note}`,
+                ts: ctx.timestamp,
+              });
               break;
             }
           }
@@ -226,35 +208,33 @@ export const compensationHooksWorkflow = defineWorkflow({
     await ctx.join(
       ctx.steps
         .bookHotel(args.destination, args.checkIn, args.checkOut)
-        .compensate(async (compCtx) => {
-          await compCtx.join(
-            compCtx.scope(
+        .compensate(async (ctx) => {
+          await ctx.join(
+            ctx.scope(
               "HotelCompensationBranches",
               {
-                cancel: compCtx.steps
+                cancel: ctx.steps
                   .cancelHotel(args.destination, args.checkIn, args.checkOut)
                   .retry({ maxAttempts: 10 }),
-                notify: compCtx.steps.sendEmail(
+                notify: ctx.steps.sendEmail(
                   args.notificationEmail,
                   "Hotel Cancelled",
                   `Hotel booking for ${args.destination} was cancelled.`,
                 ),
               },
-              async (compCtx, { cancel, notify }) => {
-                const sel = compCtx.select({ cancel, notify });
+              async (ctx, { cancel, notify }) => {
+                const sel = ctx.select({ cancel, notify });
                 for await (const _data of sel) {
-                  compCtx.logger.debug("Compensation branch resolved");
+                  ctx.logger.debug("Compensation branch resolved");
                 }
               },
             ),
           );
 
-          await compCtx.join(
-            compCtx.streams.compLog.write({
-              msg: `Hotel compensation complete for ${args.destination}`,
-              ts: compCtx.timestamp,
-            }),
-          );
+          await ctx.streams.compLog.write({
+            msg: `Hotel compensation complete for ${args.destination}`,
+            ts: ctx.timestamp,
+          });
         }),
     );
 

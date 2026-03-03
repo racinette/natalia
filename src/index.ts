@@ -3,14 +3,36 @@
  *
  * A type-safe, Postgres-backed, actor-model durable execution engine.
  *
- * Core concepts:
+ * ## Awaitable Tier Hierarchy
+ *
+ * Primitives are split into three tiers based on whether and how they can be awaited:
+ *
+ * **Tier 1 — Join-only (`DeterministicAwaitable<T, TRoot>`):**
+ * Steps, child workflows, scope/map/all results, and BranchHandles.
+ * NOT directly awaitable — must be resolved via `await ctx.join(handle)`.
+ * Enforces at compile time that BranchHandle scope paths are accessible from the current
+ * scope, and that execution-root handles cannot be joined from CompensationContext.
+ *
+ * **Tier 2 — Directly awaitable + valid scope entry (`WorkflowAwaitable<T>`):**
+ * Blocking async operations: `ctx.sleep()`, `ctx.sleepUntil()`, `ctx.channels.X.receive()`,
+ * `scheduleHandle.sleep()`, `lifecycleEvent.wait()`.
+ * Can be `await`-ed directly OR passed as a scope entry to `ctx.scope()` / `ctx.all()`.
+ *
+ * **Tier 3 — Directly awaitable, NOT a scope entry (`DirectAwaitable<T>`):**
+ * Atomic operations synchronous at the engine level:
+ * `ctx.streams.X.write()`, `ctx.events.X.set()`, `ctx.patches.X`,
+ * `foreignHandle.channels.X.send()`, `ctx.channels.X.receiveNowait()`,
+ * `ctx.childWorkflows.X.startDetached()`, `lifecycleEvent.get()`.
+ *
+ * ## Core Concepts
+ *
  * - Workflows: Long-running, durable processes with happy-path-only code
  * - Steps: Durable, retriable operations — calling a step returns a StepCall<T> opaque handle.
  *     Chain builders before joining: .compensate(cb), .retry(policy), .failure(cb), .complete(cb)
  *     Resolve via: `await ctx.join(ctx.steps.myStep(args))`
- * - ctx.join(handle): The ONLY way to resolve a DeterministicAwaitable or BranchHandle.
+ * - ctx.join(handle): The ONLY way to resolve a Tier-1 DeterministicAwaitable or BranchHandle.
  *     Enforces at compile time that BranchHandle scope paths are accessible from the current scope.
- *     Execution-context handles (ExecutionRoot) cannot be joined from CompensationContext, and vice versa.
+ *     Execution-context handles cannot be joined from CompensationContext, and vice versa.
  * - Scopes: Structured concurrency — concurrent branches run as closures inside
  *     ctx.scope(scopeName, entries, callback).
  *     Collections (Array, Map) are supported for dynamic fan-out.
@@ -46,19 +68,21 @@
  * - Child workflows: ctx.childWorkflows.* — structured invocation (WorkflowCall<T> opaque handle).
  *     Supports .compensate(), .failure(), .complete() in result mode.
  *     Resolve via: `await ctx.join(ctx.childWorkflows.myWorkflow(opts).complete(cb))`.
- *     Use call option `{ detached: true }` for fire-and-forget messaging mode
- *     which returns a DeterministicAwaitable<ForeignWorkflowHandle> (also resolved via ctx.join).
+ *     Use `.startDetached(opts)` for fire-and-forget start — returns `DirectAwaitable<ForeignWorkflowHandle>`,
+ *     directly awaitable: `const handle = await ctx.childWorkflows.myWorkflow.startDetached(opts)`.
  * - Foreign workflows: ctx.foreignWorkflows.* — message-only handles to existing instances.
  *     Only channels.send() is available — no lifecycle coupling.
- *     Resolve send via: `await ctx.join(existing.channels.nudge.send(msg))`.
+ *     Directly awaitable: `await existing.channels.nudge.send(msg)`.
  * - Channels: Async message passing (input).
- *     ctx.channels.receive() returns ChannelReceiveCall<T> — resolved via ctx.join() or passed into
- *     select/map for one-shot channel waits. Timeout overloads available:
- *     receive(timeoutSeconds) → T | undefined; receive(timeoutSeconds, defaultValue) → T | TDefault.
- *     receive(0) is a deterministic nowait poll.
+ *     `ctx.channels.X.receive()` returns a directly awaitable `ChannelReceiveCall<T>`.
+ *     Can also be passed into `select`/`map` for one-shot channel waits.
+ *     Timeout overloads: `receive(timeoutSeconds) → T | undefined`, `receive(timeoutSeconds, default) → T | TDefault`.
+ *     `receiveNowait()` — atomic non-blocking poll (Tier 3, NOT a scope entry):
+ *     `await ctx.channels.X.receiveNowait()` or `receiveNowait(defaultValue)`.
  *     Raw ChannelHandle can be passed into select for streaming (multi-message) branches.
- * - Streams: Append-only logs (output). Write via: `await ctx.join(ctx.streams.myStream.write(data))`.
- * - Events: Write-once coordination flags. Set via: `await ctx.join(ctx.events.myEvent.set())`.
+ * - Streams: Append-only logs (output). Directly awaitable: `await ctx.streams.myStream.write(data)`.
+ * - Events: Write-once coordination flags. Directly awaitable: `await ctx.events.myEvent.set()`.
+ * - Patches: Safe workflow code evolution. Directly awaitable: `if (await ctx.patches.myPatch) { ... }`.
  * - Lifecycle Events: Engine-managed workflow state signals (external API only)
  * - Signals: sigterm (graceful) / sigkill (immediate) — engine-level only
  * - CompensationContext: Full structured concurrency with explicit failure visibility;

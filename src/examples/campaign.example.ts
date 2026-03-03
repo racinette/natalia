@@ -101,30 +101,33 @@ export const campaignWorkflow = defineWorkflow({
       wave1Id,
     });
 
-    await ctx.join(ctx.streams.events.write({
+    await ctx.streams.events.write({
       type: "campaign_start",
       data: { campaignId },
-    }));
+    });
 
-    const useLegacySms = await ctx.join(ctx.patches.legacySms);
+    const useLegacySms = await ctx.patches.legacySms;
     if (useLegacySms) {
       ctx.logger.info("Using legacy SMS path (replaying old workflow)");
     }
 
-    const notificationId = await ctx.join(ctx.patches.multiChannel(async () => {
+    let notificationId: string | null;
+    if (await ctx.patches.multiChannel) {
       const result = await ctx.join(ctx.steps.sendNotification(
         args.userId,
         `Campaign ${campaignId}: you are selected for ${selectedTier}`,
       ));
-      return result.notificationId;
-    }, null));
+      notificationId = result.notificationId;
+    } else {
+      notificationId = null;
+    }
 
     ctx.state.sessionId = campaignId;
     ctx.state.cohortSeed = initialCohortSeed;
     ctx.state.launched = true;
 
     // Explicitly schedule the next wave checkpoint on the deterministic clock.
-    await ctx.join(ctx.sleepUntil(new Date(ctx.timestamp + 10 * 60 * 1000)));
+    await ctx.sleepUntil(new Date(ctx.timestamp + 10 * 60 * 1000));
 
     for (const candidate of sampled) {
       await ctx.join(ctx.steps.sendNotification(
@@ -134,9 +137,9 @@ export const campaignWorkflow = defineWorkflow({
       ctx.state.sentCount += 1;
     }
 
-    await ctx.join(ctx.streams.events.write({
+    await ctx.streams.events.write({
       type: "campaign_complete",
       data: { campaignId, notificationId, sent: ctx.state.sentCount },
-    }));
+    });
   },
 });

@@ -1,10 +1,6 @@
 import type { StandardSchemaV1 } from "./standard-schema";
 import type { CompensationContext, WorkflowContext } from "./context";
-import type {
-  DeterministicAwaitable,
-  RootScope,
-  ExecutionRoot,
-} from "./concurrency";
+import type { DirectAwaitable } from "./concurrency";
 import type {
   JsonInput,
   JsonSchemaConstraint,
@@ -78,34 +74,18 @@ export type RngDefinitions = Record<
 /**
  * Accessor for a single patch on ctx.patches.
  *
- * Supports two usage patterns:
+ * Directly await to get a `boolean` — `true` when the patch is active,
+ * `false` when deprecated (but the replaying workflow already entered it).
  *
- * **Boolean form** — await the accessor directly to get true/false.
- * Use for removing code or complex restructuring:
  * ```typescript
- * if (!await ctx.patches.removeLegacyEmail) {
- *   await ctx.steps.sendLegacyEmail(...);
+ * if (await ctx.patches.antifraud) {
+ *   const result = await ctx.join(ctx.steps.fraudCheck(flightId));
+ * } else {
+ *   // legacy path
  * }
  * ```
- *
- * **Callback form** — runs the callback if active, returns default otherwise.
- * Use for adding new code paths (90% of the time):
- * ```typescript
- * const result = await ctx.patches.antifraud(async () => {
- *   return await ctx.steps.fraudCheck(flightId);
- * }, null);
- * ```
  */
-export interface PatchAccessor<TRoot extends RootScope = ExecutionRoot>
-  extends DeterministicAwaitable<boolean, TRoot> {
-  /** Callback form with default — runs callback if active, returns default otherwise */
-  <T, D>(
-    callback: () => Promise<T>,
-    defaultValue: D,
-  ): DeterministicAwaitable<T | D, TRoot>;
-  /** Callback form without default — runs callback if active, returns undefined otherwise */
-  <T>(callback: () => Promise<T>): DeterministicAwaitable<T | undefined, TRoot>;
-}
+export interface PatchAccessor extends DirectAwaitable<boolean> {}
 
 // =============================================================================
 // RETRY POLICY

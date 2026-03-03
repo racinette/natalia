@@ -25,56 +25,58 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
     campaignStarted: z.boolean(),
   }),
   rng: { ids: true },
-  afterCompensate: async ({ ctx: compCtx }) => {
-    compCtx.logger.info("Payment orchestration compensating", {
-      id: compCtx.workflowId,
+  afterCompensate: async ({ ctx: ctx }) => {
+    ctx.logger.info("Payment orchestration compensating", {
+      id: ctx.workflowId,
     });
   },
 
   async execute(ctx, args) {
-    const receiptId = await ctx.join(ctx.childWorkflows
-      .payment({
-        idempotencyKey: `payment-${ctx.rng.ids.uuidv4()}`,
+    const receiptId = await ctx.join(
+      ctx.childWorkflows
+        .payment({
+          idempotencyKey: `payment-${ctx.rng.ids.uuidv4()}`,
+          metadata: {
+            tenantId: `tenant-${args.customerId}`,
+            correlationId: `corr-payment-${args.customerId}`,
+          },
+          seed: `payment-seed-${args.customerId}`,
+          args: { customerId: args.customerId, amount: args.amount },
+        })
+        .compensate(async (ctx, _result) => {
+          ctx.logger.info("Triggering payment child compensation");
+        })
+        .failure(async (failure) => {
+          if (failure.status === "failed") {
+            ctx.logger.error("Payment workflow failed", {
+              error: failure.error.message,
+            });
+          } else {
+            ctx.logger.error("Payment workflow terminated", {
+              reason: failure.reason,
+            });
+          }
+          return null;
+        })
+        .complete((data) => data.receiptId),
+    );
+
+    const campaignHandle =
+      await ctx.childWorkflows.campaignWorker.startDetached({
+        idempotencyKey: `campaign-${ctx.rng.ids.uuidv4()}`,
         metadata: {
           tenantId: `tenant-${args.customerId}`,
-          correlationId: `corr-payment-${args.customerId}`,
+          correlationId: `corr-campaign-${args.customerId}`,
         },
-        seed: `payment-seed-${args.customerId}`,
-        args: { customerId: args.customerId, amount: args.amount },
-      })
-      .compensate(async (compCtx, _result) => {
-        compCtx.logger.info("Triggering payment child compensation");
-      })
-      .failure(async (failure) => {
-        if (failure.status === "failed") {
-          ctx.logger.error("Payment workflow failed", {
-            error: failure.error.message,
-          });
-        } else {
-          ctx.logger.error("Payment workflow terminated", {
-            reason: failure.reason,
-          });
-        }
-        return null;
-      })
-      .complete((data) => data.receiptId));
-
-    const campaignHandle = await ctx.join(ctx.childWorkflows.campaignWorker({
-      idempotencyKey: `campaign-${ctx.rng.ids.uuidv4()}`,
-      metadata: {
-        tenantId: `tenant-${args.customerId}`,
-        correlationId: `corr-campaign-${args.customerId}`,
-      },
-      seed: `campaign-seed-${args.customerId}`,
-      args: { userId: args.customerId },
-      detached: true,
-    }));
+        seed: `campaign-seed-${args.customerId}`,
+        args: { userId: args.customerId },
+      });
 
     const foreign = ctx.foreignWorkflows.campaignWorker.get(
       args.existingCampaignIdempotencyKey,
     );
-    await ctx.join(foreign.channels.nudge.send({ type: "nudge" }));
-    await ctx.join(campaignHandle.channels.nudge.send({ type: "nudge" }));
+    await foreign.channels.nudge.send({ type: "nudge" });
+    await campaignHandle.channels.nudge.send({ type: "nudge" });
 
     return { receiptId, campaignStarted: true };
   },

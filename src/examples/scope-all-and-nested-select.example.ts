@@ -27,9 +27,11 @@ export const scopeAllAndNestedSelectWorkflow = defineWorkflow({
     const quoteBranches = new Map(
       args.providers.map((provider) => [
         provider,
-        ctx.steps.getQuote(provider, args.destination).compensate(async (compCtx) => {
-          await compCtx.join(compCtx.steps.cancelQuote(provider));
-        }),
+        ctx.steps
+          .getQuote(provider, args.destination)
+          .compensate(async (ctx) => {
+            await ctx.join(ctx.steps.cancelQuote(provider));
+          }),
       ]),
     );
 
@@ -37,9 +39,9 @@ export const scopeAllAndNestedSelectWorkflow = defineWorkflow({
       ctx.all({
         flight: ctx.steps
           .bookFlight(args.destination, args.customerId)
-          .compensate(async (compCtx) => {
-            await compCtx.join(
-              compCtx.steps.cancelFlight(args.destination, args.customerId),
+          .compensate(async (ctx) => {
+            await ctx.join(
+              ctx.steps.cancelFlight(args.destination, args.customerId),
             );
           }),
         quotes: quoteBranches,
@@ -51,7 +53,7 @@ export const scopeAllAndNestedSelectWorkflow = defineWorkflow({
         "NestedScopeSelection",
         {
           parentTimer: async () => {
-            await ctx.join(ctx.sleep(5));
+            await ctx.sleep(5);
             return "parent_timeout" as const;
           },
         },
@@ -60,7 +62,7 @@ export const scopeAllAndNestedSelectWorkflow = defineWorkflow({
             "ChildScope",
             {
               childTimer: async () => {
-                await ctx.join(ctx.sleep(1));
+                await ctx.sleep(1);
                 return "child_done" as const;
               },
             },
@@ -68,10 +70,7 @@ export const scopeAllAndNestedSelectWorkflow = defineWorkflow({
           );
 
           const sel = ctx.select({ parentTimer, childScope });
-          for await (const val of sel.match({
-            parentTimer: (v) => v,
-            childScope: (v) => v,
-          })) {
+          for await (const val of sel) {
             return val;
           }
           return "parent_timeout" as const;

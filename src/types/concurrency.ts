@@ -86,6 +86,58 @@ export interface DeterministicAwaitable<
   readonly [phantomValueType]?: T;
 }
 
+declare const directAwaitableBrand: unique symbol;
+declare const workflowAwaitableBrand: unique symbol;
+
+/**
+ * Directly awaitable deterministic workflow primitive.
+ *
+ * Represents atomic (synchronous-at-engine-level) operations such as
+ * `ctx.streams.X.write()`, `ctx.events.X.set()`, `ctx.patches.X`,
+ * `channels.send()`, and `receiveNowait()`.
+ *
+ * These operations are directly awaitable with `await` but are NOT valid
+ * scope entries (they complete atomically and do not represent ongoing
+ * concurrent work).
+ *
+ * @typeParam T - The resolved value type.
+ */
+export interface DirectAwaitable<T> {
+  /** @internal Brand discriminator — do not access at runtime. */
+  readonly [directAwaitableBrand]: true;
+
+  then<TResult = T>(
+    onfulfilled?:
+      | ((value: T) => TResult | PromiseLike<TResult>)
+      | null
+      | undefined,
+  ): DirectAwaitable<TResult>;
+
+  /**
+   * Await-compatibility signature used by TypeScript's `Awaited<T>` extraction.
+   * Keep this overload broad and LAST so normal `.then(...)` calls still
+   * resolve to the strongly typed generic overload above.
+   */
+  then(onfulfilled: (value: T, ...args: any[]) => any): any;
+}
+
+/**
+ * Directly awaitable blocking workflow primitive.
+ *
+ * Extends `DirectAwaitable<T>` with a scope-entry brand, making it valid
+ * as a `ctx.scope()` / `ctx.all()` entry in addition to being directly
+ * awaitable.
+ *
+ * Used for blocking operations that represent ongoing concurrent work:
+ * `ctx.sleep()`, `ctx.sleepUntil()`, and `ctx.channels.X.receive(...)`.
+ *
+ * @typeParam T - The resolved value type.
+ */
+export interface WorkflowAwaitable<T> extends DirectAwaitable<T> {
+  /** @internal Brand discriminator — do not access at runtime. */
+  readonly [workflowAwaitableBrand]: true;
+}
+
 /**
  * Failure information for a scope branch, passed to `failure` callbacks in
  * map and match handlers.
@@ -99,19 +151,17 @@ export type BranchFailureInfo = Record<string, never>;
 /**
  * A one-shot receive future returned by `ChannelHandle.receive(...)`.
  *
- * Not directly awaitable — must be resolved via `ctx.join(handle)`.
- * Can be passed into `ctx.select()` and `ctx.map()` as a finite,
- * one-shot channel wait — the key is removed from `remaining` once the receive
- * resolves, just like a branch handle.
+ * Directly awaitable and can be passed into `ctx.select()` and `ctx.map()`
+ * as a finite, one-shot channel wait — the key is removed from `remaining`
+ * once the receive resolves, just like a branch handle.
  *
  * Unlike passing a raw `ChannelHandle` to `select` (which creates a streaming,
  * never-exhausted branch), a `ChannelReceiveCall` resolves exactly once.
  *
- * @typeParam T    - The resolved value type (may include `undefined` for timeout overloads).
- * @typeParam TRoot - Root context that created this receive call.
+ * @typeParam T - The resolved value type (may include `undefined` or a default
+ *               for timeout overloads).
  */
-export interface ChannelReceiveCall<T, TRoot extends RootScope = RootScope>
-  extends DeterministicAwaitable<T, TRoot> {
+export interface ChannelReceiveCall<T> extends WorkflowAwaitable<T> {
   /** @internal Brand discriminator — do not access at runtime. */
   readonly _kind: "channel_receive_call";
 }
@@ -121,44 +171,57 @@ export interface ChannelReceiveCall<T, TRoot extends RootScope = RootScope>
  * Can be used directly for receive, passed into select, or async-iterated.
  * T is the decoded type (z.output<Schema>).
  *
- * @typeParam T    - The decoded message type.
- * @typeParam TRoot - Root context that owns this channel handle.
+ * @typeParam T - The decoded message type.
  */
-export interface ChannelHandle<T, TRoot extends RootScope = RootScope>
-  extends AsyncIterable<T> {
+export interface ChannelHandle<T> extends AsyncIterable<T> {
   /**
    * Receive a message from this channel (FIFO order).
-   * Blocks until a message arrives. Returns the decoded value directly.
+   * Blocks until a message arrives.
    *
-   * Returns a `ChannelReceiveCall<T, TRoot>` that can be resolved via
-   * `ctx.join()` or passed into `ctx.select()` / `ctx.map()` as a one-shot branch.
+   * Returns a `ChannelReceiveCall<T>` that can be directly awaited or passed
+   * into `ctx.select()` / `ctx.map()` as a one-shot branch.
    */
-  receive(): ChannelReceiveCall<T, TRoot>;
+  receive(): ChannelReceiveCall<T>;
 
   /**
    * Receive with timeout (in seconds).
-   * Returns undefined when the timeout expires before a message arrives.
+   * Returns `undefined` when the timeout expires before a message arrives.
    *
-   * `receive(0)` is a non-blocking poll (nowait).
-   *
-   * Returns a `ChannelReceiveCall<T | undefined, TRoot>` that can be resolved
-   * via `ctx.join()` or passed into `ctx.select()` / `ctx.map()`.
+   * Returns a `ChannelReceiveCall<T | undefined>` that can be directly awaited
+   * or passed into `ctx.select()` / `ctx.map()`.
    */
-  receive(timeoutSeconds: number): ChannelReceiveCall<T | undefined, TRoot>;
+  receive(timeoutSeconds: number): ChannelReceiveCall<T | undefined>;
 
   /**
    * Receive with timeout (in seconds) and an explicit timeout default.
    * Returns `defaultValue` when the timeout expires before a message arrives.
    *
-   * `receive(0, defaultValue)` is a non-blocking poll (nowait).
-   *
-   * Returns a `ChannelReceiveCall<T | TDefault, TRoot>` that can be resolved
-   * via `ctx.join()` or passed into `ctx.select()` / `ctx.map()`.
+   * Returns a `ChannelReceiveCall<T | TDefault>` that can be directly awaited
+   * or passed into `ctx.select()` / `ctx.map()`.
    */
   receive<TDefault>(
     timeoutSeconds: number,
     defaultValue: TDefault,
-  ): ChannelReceiveCall<T | TDefault, TRoot>;
+  ): ChannelReceiveCall<T | TDefault>;
+
+  /**
+   * Non-blocking poll — returns immediately.
+   * Returns `undefined` if no message is available.
+   *
+   * Use this instead of `receive(0)` to avoid return-type ambiguity when the
+   * timeout value is dynamic. Returns a `DirectAwaitable<T | undefined>` that
+   * cannot be passed as a scope entry (it is atomic/non-blocking).
+   */
+  receiveNowait(): DirectAwaitable<T | undefined>;
+
+  /**
+   * Non-blocking poll with an explicit default.
+   * Returns `defaultValue` if no message is available.
+   *
+   * Use this when you need to distinguish a timed-out poll from a real `undefined`
+   * message value.
+   */
+  receiveNowait<TDefault>(defaultValue: TDefault): DirectAwaitable<T | TDefault>;
 
   /**
    * Async iteration over channel messages.
@@ -173,28 +236,25 @@ export interface ChannelHandle<T, TRoot extends RootScope = RootScope>
  * Stream accessor on ctx.streams (for writing from within the workflow).
  * T is the encoded type (z.input<Schema>).
  *
- * @typeParam T    - The encoded record type.
- * @typeParam TRoot - Root context that owns this stream accessor.
+ * @typeParam T - The encoded record type.
  */
-export interface StreamAccessor<T, TRoot extends RootScope = RootScope> {
+export interface StreamAccessor<T> {
   /**
    * Write a record to the stream.
    * @param data - Record data (z.input type — encoded).
    * @returns The offset at which the record was saved.
    */
-  write(data: T): DeterministicAwaitable<number, TRoot>;
+  write(data: T): DirectAwaitable<number>;
 }
 
 /**
  * Event accessor on ctx.events (for setting from within the workflow).
- *
- * @typeParam TRoot - Root context that owns this event accessor.
  */
-export interface EventAccessor<TRoot extends RootScope = RootScope> {
+export interface EventAccessor {
   /**
    * Set the event (idempotent — second call is no-op).
    */
-  set(): DeterministicAwaitable<void, TRoot>;
+  set(): DirectAwaitable<void>;
 }
 
 // =============================================================================
@@ -218,12 +278,15 @@ export type ScopePath = readonly string[];
 /**
  * A scope entry value.
  *
- * Supports two forms:
+ * Supports three forms:
  * - Closure form: `() => Promise<T>` (full flexibility, lazy execution)
- * - Direct deterministic-thenable form: `DeterministicAwaitable<T>`
- *   (short-hand for common step/child calls)
+ * - Join-only deterministic handle: `DeterministicAwaitable<T>` (steps, child workflows)
+ * - Blocking workflow awaitable: `WorkflowAwaitable<T>` (sleeps, channel receives)
  */
-export type ScopeEntryValue<T> = ScopeBranch<T> | DeterministicAwaitable<T>;
+export type ScopeEntryValue<T> =
+  | ScopeBranch<T>
+  | DeterministicAwaitable<T>
+  | WorkflowAwaitable<T>;
 
 /**
  * A handle to a running scope branch.
@@ -348,28 +411,6 @@ export type IsJoinableByPath<
     ? []
     : [
         "Handle scope path is not accessible from the current scope — the handle was created in a scope that has already closed or is not an ancestor of the current scope",
-      ]
-  : [];
-
-/**
- * Rest-parameter constraint for `ctx.join()` root-context enforcement.
- *
- * - Resolves to `[]` when the handle's root context is compatible with the calling context,
- *   i.e. `TContextRoot extends THandleRoot` (the context's root is a subtype of the handle's root).
- * - Resolves to an error tuple otherwise.
- *
- * A handle with `TRoot = RootScope` is joinable from any context (used for `ForeignWorkflowHandle.channels.send()`).
- * A handle with `TRoot = ExecutionRoot` is only joinable from execution contexts.
- * A handle with `TRoot = CompensationRoot` is only joinable from compensation contexts.
- */
-export type IsJoinableByContext<
-  H,
-  TContextRoot extends RootScope,
-> = H extends DeterministicAwaitable<any, infer THandleRoot>
-  ? [TContextRoot] extends [THandleRoot]
-    ? []
-    : [
-        "Handle root context is incompatible — execution handles cannot be joined from compensation context and vice versa",
       ]
   : [];
 

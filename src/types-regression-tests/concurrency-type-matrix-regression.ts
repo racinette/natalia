@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineWorkflow } from "../workflow";
 import type { DeterministicAwaitable } from "../types";
-import { bookFlight, cancelFlight } from "../examples/shared";
+import { bookFlight, cancelFlight, campaignWorker } from "../examples/shared";
 
 type Assert<T extends true> = T;
 type IsAny<T> = 0 extends 1 & T ? true : false;
@@ -15,13 +15,17 @@ type AwaitedDeterministic<T> =
   T extends DeterministicAwaitable<infer U> ? U : never;
 
 // DeterministicAwaitable is no longer natively awaitable — Awaited<> does NOT unwrap it.
-type _AwaitedDeterministicAwaitable = Awaited<DeterministicAwaitable<"timed_out">>;
+type _AwaitedDeterministicAwaitable = Awaited<
+  DeterministicAwaitable<"timed_out">
+>;
 type _AwaitedIsNotUnwrapped = Assert<
   IsEqual<_AwaitedDeterministicAwaitable, DeterministicAwaitable<"timed_out">>
 >;
 
 // AwaitedDeterministic<> still extracts T correctly via the phantom field.
-type _AwaitedDeterministicExtract = AwaitedDeterministic<DeterministicAwaitable<"timed_out">>;
+type _AwaitedDeterministicExtract = AwaitedDeterministic<
+  DeterministicAwaitable<"timed_out">
+>;
 type _AwaitedDeterministicNoAny = Assert<
   IsAny<_AwaitedDeterministicExtract> extends false ? true : false
 >;
@@ -46,25 +50,32 @@ const CancelMessage = z.object({
  * - `ctx.join()` type inference for all handle shapes
  * - Execution / compensation root enforcement on `ctx.join()`
  * - BranchHandle scope-path enforcement on `ctx.join()`
- * - `scope` entry shapes: single, array, map, direct deterministic awaitables
+ * - `scope` entry shapes: single, array, map, direct deterministic awaitables, WorkflowAwaitable
  * - `select` input shapes: BranchHandle, BranchHandle[], Map, ChannelHandle, ChannelReceiveCall
  * - `map` input shapes and callbacks: single/array/map/ChannelReceiveCall
  * - compensation-context `scope/select/map`
  * - negative check: direct raw Promise in scope entries is rejected
- * - negative check: `then()` no longer exists on DeterministicAwaitable
+ * - negative check: `then()` no longer exists on DeterministicAwaitable (tier-1)
+ * - positive check: `then()` exists on DirectAwaitable and WorkflowAwaitable (tier-2/3)
+ * - negative check: DirectAwaitable is NOT a valid scope entry (tier-3 atomic)
+ * - positive check: WorkflowAwaitable IS a valid scope entry (tier-2 blocking)
+ * - `ctx.childWorkflows.X.startDetached()` type inference
  */
 export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
   name: "concurrencyTypeMatrixRegression",
   args: MatrixArgs,
   channels: { cancel: CancelMessage },
+  streams: { log: z.object({ msg: z.string() }) },
   steps: { bookFlight, cancelFlight },
+  childWorkflows: { campaign: campaignWorker },
   result: z.object({ ok: z.boolean() }),
 
   async execute(ctx, args) {
-    // ctx.join() resolves a plain DeterministicAwaitable to its inner type.
-    const sleepResult = await ctx.join(ctx.sleep(30));
+    // WorkflowAwaitable (sleep, sleepUntil) is directly awaitable — no ctx.join() needed.
+    const sleepResult = await ctx.sleep(30);
     type _SleepResultIsVoid = Assert<IsEqual<typeof sleepResult, void>>;
 
+    // ctx.join() resolves a DeterministicAwaitable (step call) to its inner type.
     const stepResult = await ctx.join(
       ctx.steps.bookFlight(args.destination, args.customerId),
     );
@@ -75,16 +86,24 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
       IsEqual<typeof stepResult, { id: string; price: number }>
     >;
 
-    // DeterministicAwaitable no longer has .then() — it is not directly awaitable.
-    // @ts-expect-error DeterministicAwaitable has no then() method
-    ctx.sleep(30).then(() => "bad");
+    // Tier-1 (DeterministicAwaitable): no .then() — join-only.
     // @ts-expect-error StepCall has no then() method
     ctx.steps.bookFlight(args.destination, args.customerId).then(() => "bad");
-    // @ts-expect-error ChannelReceiveCall has no then() method
-    ctx.channels.cancel.receive(0).then(() => "bad");
 
-    // ctx.join() infers the inner type from ChannelReceiveCall.
-    const receiveResult = await ctx.join(ctx.channels.cancel.receive(0));
+    // Tier-2/3: .then() IS available on WorkflowAwaitable and DirectAwaitable.
+    ctx.sleep(30).then(() => "ok");
+    ctx.channels.cancel.receive().then(() => "ok");
+    ctx.channels.cancel.receiveNowait().then(() => "ok");
+    ctx.streams.log.write({ msg: "test" }).then(() => "ok");
+
+    // receiveNowait() returns DirectAwaitable — directly awaitable, non-blocking.
+    const nowaitResult = await ctx.channels.cancel.receiveNowait();
+    type _NowaitResultNoAny = Assert<
+      IsAny<typeof nowaitResult> extends false ? true : false
+    >;
+
+    // Blocking receive is directly awaitable (WorkflowAwaitable).
+    const receiveResult = await ctx.channels.cancel.receive();
     type _ReceiveResultNoAny = Assert<
       IsAny<typeof receiveResult> extends false ? true : false
     >;
@@ -103,10 +122,25 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
 
     // Reject eager promise values as scope entries.
     const eager = Promise.resolve("eager");
-    // @ts-expect-error raw Promise must not be accepted as scope entry
-    await ctx.join(ctx.scope("InvalidRawPromiseEntry", { eager }, async () => {
-      return "never";
-    }));
+    await ctx.join(
+      // @ts-expect-error raw Promise must not be accepted as scope entry
+      ctx.scope("InvalidRawPromiseEntry", { eager }, async () => {
+        return "never";
+      }),
+    );
+
+    // WorkflowAwaitable IS a valid scope entry (tier-2: blocking, concurrent).
+    // DirectAwaitable is NOT a valid scope entry (tier-3: atomic, synchronous).
+    await ctx.join(
+      // @ts-expect-error DirectAwaitable (stream write) must not be a scope entry
+      ctx.scope(
+        "InvalidDirectEntry",
+        {
+          write: ctx.streams.log.write({ msg: "test" }),
+        },
+        async () => {},
+      ),
+    );
 
     // ctx.join() applied to a scope — types thread through correctly.
     await ctx.join(
@@ -114,11 +148,13 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
         "ScopeEntryTypeRegression",
         {
           timer: async () => {
-            await ctx.join(ctx.sleep(5));
+            await ctx.sleep(5);
             return "timed_out" as const;
           },
           booking: async () => {
-            await ctx.join(ctx.steps.bookFlight(args.destination, args.customerId));
+            await ctx.join(
+              ctx.steps.bookFlight(args.destination, args.customerId),
+            );
             return "booked" as const;
           },
         },
@@ -155,7 +191,7 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
         "NestedScopeSelectableRegression",
         {
           parentTimer: async () => {
-            await ctx.join(ctx.sleep(1));
+            await ctx.sleep(1);
             return "parent_done" as const;
           },
         },
@@ -164,7 +200,7 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
             "ChildScope",
             {
               childTimer: async () => {
-                await ctx.join(ctx.sleep(1));
+                await ctx.sleep(1);
                 return "child_done" as const;
               },
             },
@@ -191,39 +227,31 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
     // ==========================================================================
 
     await ctx.join(
-      ctx.scope(
-        "ScopeSiblingRejection",
-        {},
-        async (outerCtx) => {
-          const siblingA = outerCtx.scope(
-            "SiblingA",
-            {
-              data: async () => "sibling_a_data" as const,
-            },
-            async (innerCtxA, { data }) => await innerCtxA.join(data),
-          );
+      ctx.scope("ScopeSiblingRejection", {}, async (outerCtx) => {
+        const siblingA = outerCtx.scope(
+          "SiblingA",
+          {
+            data: async () => "sibling_a_data" as const,
+          },
+          async (innerCtxA, { data }) => await innerCtxA.join(data),
+        );
 
-          await outerCtx.join(
-            outerCtx.scope(
-              "SiblingB",
-              {},
-              async (innerCtxB) => {
-                // siblingA has path ["ScopeSiblingRejection"] (parent path).
-                // innerCtxB's TScopePath = ["ScopeSiblingRejection", "SiblingB"].
-                // IsPrefix<["ScopeSiblingRejection"], ["ScopeSiblingRejection", "SiblingB"]> = true.
-                // A child scope CAN join its parent's BranchHandle.
-                await innerCtxB.join(siblingA);
+        await outerCtx.join(
+          outerCtx.scope("SiblingB", {}, async (innerCtxB) => {
+            // siblingA has path ["ScopeSiblingRejection"] (parent path).
+            // innerCtxB's TScopePath = ["ScopeSiblingRejection", "SiblingB"].
+            // IsPrefix<["ScopeSiblingRejection"], ["ScopeSiblingRejection", "SiblingB"]> = true.
+            // A child scope CAN join its parent's BranchHandle.
+            await innerCtxB.join(siblingA);
 
-                // However, a handle created INSIDE SiblingA (with path
-                // ["ScopeSiblingRejection", "SiblingA"]) cannot be joined from SiblingB.
-                // That would require the handle to have escaped its scope, which our
-                // type system prevents at the point of handle creation (handles only
-                // exist as parameters inside their own scope callback).
-              },
-            ),
-          );
-        },
-      ),
+            // However, a handle created INSIDE SiblingA (with path
+            // ["ScopeSiblingRejection", "SiblingA"]) cannot be joined from SiblingB.
+            // That would require the handle to have escaped its scope, which our
+            // type system prevents at the point of handle creation (handles only
+            // exist as parameters inside their own scope callback).
+          }),
+        );
+      }),
     );
 
     // ==========================================================================
@@ -256,15 +284,25 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
       >;
     });
 
-
     // ==========================================================================
     // ctx.all() — join all and collect
     // ==========================================================================
 
+    // startDetached() returns DirectAwaitable<ForeignWorkflowHandle> — directly awaitable.
+    const detachedHandle = await ctx.childWorkflows.campaign.startDetached({
+      idempotencyKey: "test-campaign",
+      args: { userId: "user-1" },
+    });
+    type _DetachedHandleNoAny = Assert<
+      IsAny<typeof detachedHandle> extends false ? true : false
+    >;
+    // Can send to the detached workflow's channels directly.
+    await detachedHandle.channels.nudge.send({ type: "nudge" });
+
     const allResults = await ctx.join(
       ctx.all({
         timer: async () => {
-          await ctx.join(ctx.sleep(1));
+          await ctx.sleep(1);
           return "timed_out" as const;
         },
         providers: [async () => 1, async () => 2],
@@ -300,7 +338,7 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
         {
           single: ctx.steps.bookFlight(args.destination, args.customerId),
           timeout: async () => {
-            await ctx.join(ctx.sleep(5));
+            await ctx.sleep(5);
             return "timed_out" as const;
           },
           providers: [async () => 1, async () => 2],
@@ -322,7 +360,9 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
           type _SingleDataNotAny = Assert<
             IsAny<typeof singleData> extends false ? true : false
           >;
-          type _SingleDataId = Assert<IsEqual<typeof singleData, { id: string; price: number }>>;
+          type _SingleDataId = Assert<
+            IsEqual<typeof singleData, { id: string; price: number }>
+          >;
 
           // Scope select: all handle shapes
           const sel = ctx.select({
@@ -405,10 +445,15 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
             IsAny<typeof mapped> extends false ? true : false
           >;
           type _MapProvidersNoAny = Assert<
-            IsAny<(typeof mapped.providers)[number]> extends false ? true : false
+            IsAny<(typeof mapped.providers)[number]> extends false
+              ? true
+              : false
           >;
           type _MapProvidersPerItemFallback = Assert<
-            IsEqual<(typeof mapped.providers)[number], string | "default_failed">
+            IsEqual<
+              (typeof mapped.providers)[number],
+              string | "default_failed"
+            >
           >;
           type _MapQuotesNoWholeFallback = Assert<
             IsEqual<Extract<typeof mapped.quotes, "default_failed">, never>
@@ -439,7 +484,7 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
           "CompMatrix",
           {
             timer: async () => {
-              await compCtx.join(compCtx.sleep(1));
+              await compCtx.sleep(1);
               return "done" as const;
             },
             cancelAttempt: compCtx.steps.cancelFlight(

@@ -44,13 +44,13 @@ export const scopeSleepRaceWorkflow = defineWorkflow({
         {
           flight: ctx.steps
             .bookFlight(args.destination, args.customerId)
-            .compensate(async (compCtx) => {
-              await compCtx.join(
-                compCtx.steps.cancelFlight(args.destination, args.customerId),
+            .compensate(async (ctx) => {
+              await ctx.join(
+                ctx.steps.cancelFlight(args.destination, args.customerId),
               );
             }),
           timer: async () => {
-            await ctx.join(ctx.sleep(30));
+            await ctx.sleep(30);
             return "timed_out" as const;
           },
         },
@@ -84,7 +84,7 @@ export const scopeSleepRaceWorkflow = defineWorkflow({
             args: { customerId: args.customerId, amount: args.amount },
           }),
           timer: async () => {
-            await ctx.join(ctx.sleep(45));
+            await ctx.sleep(45);
             return "timed_out" as const;
           },
         },

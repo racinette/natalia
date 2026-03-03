@@ -37,9 +37,9 @@ export const flightBookingWorkflow = defineWorkflow({
         {
           provider1: ctx.steps
             .bookFlight(`${args.destination}/p1`, args.customerId)
-            .compensate(async (compCtx) => {
-              await compCtx.join(
-                compCtx.steps.cancelFlight(
+            .compensate(async (ctx) => {
+              await ctx.join(
+                ctx.steps.cancelFlight(
                   `${args.destination}/p1`,
                   args.customerId,
                 ),
@@ -47,9 +47,9 @@ export const flightBookingWorkflow = defineWorkflow({
             }),
           provider2: ctx.steps
             .bookFlight(`${args.destination}/p2`, args.customerId)
-            .compensate(async (compCtx) => {
-              await compCtx.join(
-                compCtx.steps.cancelFlight(
+            .compensate(async (ctx) => {
+              await ctx.join(
+                ctx.steps.cancelFlight(
                   `${args.destination}/p2`,
                   args.customerId,
                 ),
@@ -73,9 +73,9 @@ export const flightBookingWorkflow = defineWorkflow({
         {
           primary: ctx.steps
             .bookHotel(args.destination, args.checkIn, args.checkOut)
-            .compensate(async (compCtx) => {
-              await compCtx.join(
-                compCtx.steps.cancelHotel(
+            .compensate(async (ctx) => {
+              await ctx.join(
+                ctx.steps.cancelHotel(
                   args.destination,
                   args.checkIn,
                   args.checkOut,
@@ -84,9 +84,9 @@ export const flightBookingWorkflow = defineWorkflow({
             }),
           backup: ctx.steps
             .bookHotel(args.backupDestination, args.checkIn, args.checkOut)
-            .compensate(async (compCtx) => {
-              await compCtx.join(
-                compCtx.steps.cancelHotel(
+            .compensate(async (ctx) => {
+              await ctx.join(
+                ctx.steps.cancelHotel(
                   args.backupDestination,
                   args.checkIn,
                   args.checkOut,
@@ -125,7 +125,9 @@ export const flightBookingWorkflow = defineWorkflow({
               return result.id;
             }
           }
-          throw new Error("No hotel available at primary or backup destination");
+          throw new Error(
+            "No hotel available at primary or backup destination",
+          );
         },
       ),
     );

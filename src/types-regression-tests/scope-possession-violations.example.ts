@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { BranchHandle } from "../types";
 import { defineWorkflow } from "../workflow";
-import { bookFlight, cancelFlight } from "./shared";
+import { bookFlight, cancelFlight } from "../examples/shared";
 
 const ScopeViolationArgs = z.object({
   destination: z.string(),
@@ -70,8 +70,11 @@ export const scopePossessionViolationsWorkflow = defineWorkflow({
           );
 
           // Wrong: descendant-owned handle used from parent scope context.
-          // @ts-ignore Intentional misuse for docs: child handle leaked into parent select.
-          const illegalSelection = ctx.select({ parentTicket, childOwnedHandle });
+          const illegalSelection = ctx.select({
+            parentTicket,
+            // @ts-ignore Intentional misuse for docs: child handle leaked into parent select.
+            childOwnedHandle,
+          });
           for await (const _v of illegalSelection) {
             break;
           }
@@ -108,8 +111,13 @@ export const scopePossessionViolationsWorkflow = defineWorkflow({
         },
         async (ctx, { b }) => {
           // Wrong: handle from sibling scope A consumed inside sibling scope B.
-          // @ts-ignore Intentional misuse for docs: sibling handle leaked across scopes.
-          await ctx.map({ b, siblingAHandle });
+          await ctx.join(
+            ctx.map({
+              b,
+              // @ts-ignore Intentional misuse for docs: sibling handle leaked across scopes.
+              siblingAHandle,
+            }),
+          );
         },
       ),
     );
@@ -122,7 +130,7 @@ export const scopePossessionViolationsWorkflow = defineWorkflow({
         "CollisionParent",
         {
           parentTimer: async () => {
-            await ctx.join(ctx.sleep(0));
+            await ctx.sleep(0);
             return "done" as const;
           },
         },
@@ -135,7 +143,7 @@ export const scopePossessionViolationsWorkflow = defineWorkflow({
               "CollisionParent",
               {
                 childTimer: async () => {
-                  await ctx.join(ctx.sleep(0));
+                  await ctx.sleep(0);
                   return "done" as const;
                 },
               },

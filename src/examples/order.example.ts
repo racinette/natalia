@@ -39,40 +39,46 @@ export const orderWorkflow = defineWorkflow({
     flightId: null as string | null,
     hotelId: null as string | null,
   }),
-  afterCompensate: async ({ ctx: compCtx, args }) => {
-    compCtx.logger.info("Order failed — notifying customer", {
-      id: compCtx.workflowId,
+  afterCompensate: async ({ ctx: ctx, args }) => {
+    ctx.logger.info("Order failed — notifying customer", {
+      id: ctx.workflowId,
     });
-    const result = await compCtx.join(compCtx.steps.sendEmail(
-      args.customerEmail,
-      "Order Failed",
-      "We were unable to complete your order. Any charges have been refunded.",
-    ));
+    const result = await ctx.join(
+      ctx.steps.sendEmail(
+        args.customerEmail,
+        "Order Failed",
+        "We were unable to complete your order. Any charges have been refunded.",
+      ),
+    );
     if (!result.ok) {
-      compCtx.logger.error("Failed to send failure notification");
+      ctx.logger.error("Failed to send failure notification");
     }
   },
 
   async execute(ctx, args) {
-    const flightId = await ctx.join(ctx.steps
-      .bookFlight(args.destination, args.customerId)
-      .compensate(async (compCtx) => {
-        await compCtx.join(compCtx.steps.cancelFlight(args.destination, args.customerId));
-      })
-      .retry({ maxAttempts: 5, intervalSeconds: 2, backoffRate: 1.5 })
-      .failure(async (failure) => {
-        ctx.logger.warn("Flight booking failed", {
-          reason: failure.reason,
-          attempts: failure.errors.count,
-        });
-        return null;
-      })
-      .complete((data) => data.id));
+    const flightId = await ctx.join(
+      ctx.steps
+        .bookFlight(args.destination, args.customerId)
+        .compensate(async (ctx) => {
+          await ctx.join(
+            ctx.steps.cancelFlight(args.destination, args.customerId),
+          );
+        })
+        .retry({ maxAttempts: 5, intervalSeconds: 2, backoffRate: 1.5 })
+        .failure(async (failure) => {
+          ctx.logger.warn("Flight booking failed", {
+            reason: failure.reason,
+            attempts: failure.errors.count,
+          });
+          return null;
+        })
+        .complete((data) => data.id),
+    );
 
     ctx.state.flightId = flightId;
     ctx.state.phase = "flightBooked";
 
-    const approval = await ctx.join(ctx.channels.approval.receive());
+    const approval = await ctx.channels.approval.receive();
     if (!approval.approved) {
       ctx.logger.info("Order rejected", { reason: approval.reason });
       return { flightId: ctx.state.flightId, hotelId: null, approved: false };
@@ -80,35 +86,41 @@ export const orderWorkflow = defineWorkflow({
 
     ctx.state.phase = "approved";
 
-    const hotelId = await ctx.join(ctx.scope(
-      "BookHotel",
-      {
-        hotel: ctx.steps
-          .bookHotel(args.destination, args.checkIn, args.checkOut)
-          .compensate(async (compCtx) => {
-            await compCtx.join(compCtx.steps.cancelHotel(
-              args.destination,
-              args.checkIn,
-              args.checkOut,
-            ));
-          }),
-      },
-      async (ctx, { hotel }) => {
-        const result = await ctx.join(ctx.map(
-          { hotel },
-          {
-            hotel: {
-              complete: (data) => data.id as string | null,
-              failure: (_failure) => {
-                ctx.logger.error("Hotel booking failed");
-                return null;
+    const hotelId = await ctx.join(
+      ctx.scope(
+        "BookHotel",
+        {
+          hotel: ctx.steps
+            .bookHotel(args.destination, args.checkIn, args.checkOut)
+            .compensate(async (ctx) => {
+              await ctx.join(
+                ctx.steps.cancelHotel(
+                  args.destination,
+                  args.checkIn,
+                  args.checkOut,
+                ),
+              );
+            }),
+        },
+        async (ctx, { hotel }) => {
+          const result = await ctx.join(
+            ctx.map(
+              { hotel },
+              {
+                hotel: {
+                  complete: (data) => data.id as string | null,
+                  failure: (_failure) => {
+                    ctx.logger.error("Hotel booking failed");
+                    return null;
+                  },
+                },
               },
-            },
-          },
-        ));
-        return result.hotel ?? null;
-      },
-    ));
+            ),
+          );
+          return result.hotel ?? null;
+        },
+      ),
+    );
 
     ctx.state.hotelId = hotelId;
     ctx.state.phase = "done";

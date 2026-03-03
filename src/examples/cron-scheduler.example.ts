@@ -99,12 +99,12 @@ export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
   // This lets us send workerDone from one place on every outcome.
   beforeSettle: async (params) => {
     const { ctx, args } = params;
-    await ctx.join(ctx.foreignWorkflows.manager
+    await ctx.foreignWorkflows.manager
       .get(args.managerIdempotencyKey)
       .channels.workerDone.send({
         workerId: ctx.workflowId,
         lastTickAt: ctx.state.lastTickAt,
-      }));
+      });
   },
 
   async execute(ctx, args) {
@@ -126,20 +126,19 @@ export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
           deadlineUntil: tick.nextScheduledAt,
         }));
 
-      await ctx.join(ctx.childWorkflows.job({
+      await ctx.childWorkflows.job.startDetached({
         idempotencyKey: `daily-report-${ctx.rng.ids.uuidv4()}`,
         args: {
           userId: args.userId,
           reportDate: tick.scheduledAt.toISOString(),
         },
-        detached: true,
         deadlineUntil: tick.nextScheduledAt,
         retention: {
           complete: 7 * 24 * 3600,
           failed: 30 * 24 * 3600,
           terminated: 7 * 24 * 3600,
         },
-      }));
+      });
 
       ctx.state.lastTickAt = tick.scheduledAt.toISOString();
       if (++count >= args.maxTicks) break;
@@ -182,7 +181,7 @@ export const dailyReportSchedulerManagerWorkflow = defineWorkflow({
     while (true) {
       const workerId = `scheduler-worker-${ctx.rng.gen.uuidv4()}`;
 
-      await ctx.join(ctx.childWorkflows.worker({
+      await ctx.childWorkflows.worker.startDetached({
         idempotencyKey: workerId,
         args: {
           userId: args.userId,
@@ -190,17 +189,16 @@ export const dailyReportSchedulerManagerWorkflow = defineWorkflow({
           resumeAt,
           maxTicks: 1000,
         },
-        detached: true,
-      }));
+      });
 
       // Broadcast the current generation for external observers.
-      await ctx.join(ctx.streams.currentWorker.write({ workerId }));
+      await ctx.streams.currentWorker.write({ workerId });
 
       // Drain stale messages: if the manager replayed after a crash mid-handoff,
       // the previous worker's message may still be in the channel queue.
       let msg;
       do {
-        msg = await ctx.join(ctx.channels.workerDone.receive());
+        msg = await ctx.channels.workerDone.receive();
       } while (msg.workerId !== workerId);
 
       // No lastTickAt means zero progress — keep the same anchor so the next

@@ -148,42 +148,45 @@ export const onboardingVerificationWorkflow = defineWorkflow({
         {
           passport: ctx.steps.verifyIdentityProof(
             "passport",
-            (await ctx.join(ctx.channels.passport.receive())).artifactId,
+            (await ctx.channels.passport.receive()).artifactId,
             args.userId,
           ),
           driverLicense: ctx.steps.verifyIdentityProof(
             "driverLicense",
-            (await ctx.join(ctx.channels.driverLicense.receive())).artifactId,
+            (await ctx.channels.driverLicense.receive()).artifactId,
             args.userId,
           ),
           nationalId: ctx.steps.verifyIdentityProof(
             "nationalId",
-            (await ctx.join(ctx.channels.nationalId.receive())).artifactId,
+            (await ctx.channels.nationalId.receive()).artifactId,
             args.userId,
           ),
           bankId: ctx.steps.verifyIdentityProof(
             "bankId",
-            (await ctx.join(ctx.channels.bankId.receive())).artifactId,
+            (await ctx.channels.bankId.receive()).artifactId,
             args.userId,
           ),
           videoSelfie: ctx.steps.verifyIdentityProof(
             "videoSelfie",
-            (await ctx.join(ctx.channels.videoSelfie.receive())).artifactId,
+            (await ctx.channels.videoSelfie.receive()).artifactId,
             args.userId,
           ),
           deadline: async () => {
-            await ctx.join(ctx.sleep(3600));
+            await ctx.sleep(3600);
             return "deadline" as const;
           },
         },
-        async (ctx, {
-          passport,
-          driverLicense,
-          nationalId,
-          bankId,
-          videoSelfie,
-          deadline,
-        }) => {
+        async (
+          ctx,
+          {
+            passport,
+            driverLicense,
+            nationalId,
+            bankId,
+            videoSelfie,
+            deadline,
+          },
+        ) => {
           const sel = ctx.select({
             passport,
             driverLicense,
@@ -269,10 +272,10 @@ export const onboardingVerificationWorkflow = defineWorkflow({
           const sessionToken = await ctx.join(
             ctx.steps
               .unlockAccount(args.userId, methods)
-              .compensate(async (compCtx, result) => {
+              .compensate(async (ctx, result) => {
                 if (result.status === "complete") {
-                  await compCtx.join(
-                    compCtx.steps.revokeSession(result.data.sessionToken),
+                  await ctx.join(
+                    ctx.steps.revokeSession(result.data.sessionToken),
                   );
                 }
               })

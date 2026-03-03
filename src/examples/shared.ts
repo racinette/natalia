@@ -4,11 +4,17 @@ import { defineStep, defineWorkflow } from "../workflow";
 // Shared schemas
 export const FlightResult = z.object({ id: z.string(), price: z.number() });
 export const HotelResult = z.object({ id: z.string(), price: z.number() });
-export const QuoteResult = z.object({ price: z.number(), provider: z.string() });
+export const QuoteResult = z.object({
+  price: z.number(),
+  provider: z.string(),
+});
 export const CancelResult = z.object({ ok: z.boolean() });
 export const EmailResult = z.object({ sent: z.boolean() });
 export const PaymentResult = z.object({ receiptId: z.string() });
-export const ChargeResult = z.object({ chargeId: z.string(), amount: z.number() });
+export const ChargeResult = z.object({
+  chargeId: z.string(),
+  amount: z.number(),
+});
 export const RefundResult = z.object({ refundId: z.string() });
 export const NotifyResult = z.object({ notificationId: z.string() });
 
@@ -185,11 +191,13 @@ export const paymentWorkflow = defineWorkflow({
 
   async execute(ctx, args) {
     ctx.logger.info("Processing payment", { amount: args.amount });
-    const charge = await ctx.join(ctx.steps
-      .chargeCustomer(args.customerId, args.amount)
-      .compensate(async (compCtx, _result) => {
-        await compCtx.join(compCtx.steps.refundCustomer(charge.chargeId));
-      }));
+    const charge = await ctx.join(
+      ctx.steps
+        .chargeCustomer(args.customerId, args.amount)
+        .compensate(async (ctx, _result) => {
+          await ctx.join(ctx.steps.refundCustomer(charge.chargeId));
+        }),
+    );
     return { receiptId: charge.chargeId };
   },
 });
@@ -209,7 +217,7 @@ export const campaignWorker = defineWorkflow({
 
   async execute(ctx, args) {
     ctx.logger.info("Campaign started", { userId: args.userId });
-    const cmd = await ctx.join(ctx.channels.nudge.receive());
+    const cmd = await ctx.channels.nudge.receive();
     ctx.logger.info("Campaign nudged", { type: cmd.type });
   },
 });

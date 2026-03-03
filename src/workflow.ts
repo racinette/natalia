@@ -164,18 +164,9 @@ export function defineStep<
  */
 export function defineWorkflowHeader<
   TChannels extends ChannelDefinitions = Record<string, never>,
-  TArgs extends JsonSchemaConstraint = StandardSchemaV1<
-    void,
-    void
-  >,
-  TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<
-    void,
-    void
-  >,
-  TResult extends JsonSchemaConstraint = StandardSchemaV1<
-    void,
-    void
-  >,
+  TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
+  TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<void, void>,
+  TResult extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
 >(config: {
   name: string;
   channels?: TChannels;
@@ -273,18 +264,18 @@ export function defineWorkflowHeader<
  *     // Call step directly — failure auto-compensates
  *     const flight = await ctx.steps
  *       .bookFlight(args.destination, args.customerId)
- *       .compensate(async (compCtx) => {
+ *       .compensate(async (ctx) => {
  *         // No status check — compensation is always unconditional.
  *         // The step is idempotent; side effects may exist even on failure.
- *         await compCtx.steps.cancelFlight(args.destination, args.customerId);
+ *         await ctx.steps.cancelFlight(args.destination, args.customerId);
  *       });
  *
  *     // Concurrent with scope — closures as branches
  *     const hotel = await ctx.scope("BookHotel", {
  *       a: async () => ctx.steps
  *         .bookHotel(args.city, args.checkIn, args.checkOut)
- *         .compensate(async (compCtx) => {
- *           await compCtx.steps.cancelHotel(args.city, args.checkIn, args.checkOut);
+ *         .compensate(async (ctx) => {
+ *           await ctx.steps.cancelHotel(args.city, args.checkIn, args.checkOut);
  *         }),
  *     }, async (ctx, { a }) => await a);
  *
@@ -301,18 +292,9 @@ export function defineWorkflow<
   TSteps extends StepDefinitions = Record<string, never>,
   TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
   TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
-  TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<
-    void,
-    void
-  >,
-  TArgs extends JsonSchemaConstraint = StandardSchemaV1<
-    void,
-    void
-  >,
-  TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<
-    void,
-    void
-  >,
+  TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
+  TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
+  TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<void, void>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
 >(config: {
@@ -364,38 +346,40 @@ export function defineWorkflow<
     >;
     args: StandardSchemaV1.InferOutput<TArgs>;
   }) => Promise<void>;
-  beforeSettle?: (params:
-    | {
-        status: "complete";
-        ctx: WorkflowContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng
-        >;
-        args: StandardSchemaV1.InferOutput<TArgs>;
-        result: StandardSchemaV1.InferOutput<TResultSchema>;
-      }
-    | {
-        status: "failed" | "terminated";
-        ctx: CompensationContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng
-        >;
-        args: StandardSchemaV1.InferOutput<TArgs>;
-      }) => Promise<void>;
+  beforeSettle?: (
+    params:
+      | {
+          status: "complete";
+          ctx: WorkflowContext<
+            TState,
+            TChannels,
+            TStreams,
+            TEvents,
+            TSteps,
+            TChildWorkflows,
+            TForeignWorkflows,
+            TPatches,
+            TRng
+          >;
+          args: StandardSchemaV1.InferOutput<TArgs>;
+          result: StandardSchemaV1.InferOutput<TResultSchema>;
+        }
+      | {
+          status: "failed" | "terminated";
+          ctx: CompensationContext<
+            TState,
+            TChannels,
+            TStreams,
+            TEvents,
+            TSteps,
+            TChildWorkflows,
+            TForeignWorkflows,
+            TPatches,
+            TRng
+          >;
+          args: StandardSchemaV1.InferOutput<TArgs>;
+        },
+  ) => Promise<void>;
   execute: (
     ctx: WorkflowContext<
       TState,

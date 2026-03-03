@@ -27,6 +27,8 @@ import type {
 } from "./results";
 import type {
   DeterministicAwaitable,
+  DirectAwaitable,
+  WorkflowAwaitable,
   ChannelHandle,
   StreamAccessor,
   EventAccessor,
@@ -55,9 +57,7 @@ import type {
   ChildWorkflowFailureInfo,
   ExecutionRoot,
   CompensationRoot,
-  RootScope,
   IsJoinableByPath,
-  IsJoinableByContext,
 } from "./concurrency";
 
 // =============================================================================
@@ -101,7 +101,7 @@ export interface ScheduleHandle extends AsyncIterable<ScheduleTick> {
    * Suspend until the next scheduled tick.
    * Returns immediately if the next scheduled time is already in the past.
    */
-  sleep(): DeterministicAwaitable<ScheduleTick, ExecutionRoot>;
+  sleep(): WorkflowAwaitable<ScheduleTick>;
   /**
    * Cancel a pending sleep and stop future iteration.
    */
@@ -239,7 +239,7 @@ export interface ForeignWorkflowHandle<
     [K in keyof TChannels]: {
       send(
         data: StandardSchemaV1.InferInput<TChannels[K]>,
-      ): DeterministicAwaitable<void, RootScope>;
+      ): DirectAwaitable<void>;
     };
   };
 }
@@ -359,17 +359,7 @@ export interface CompensationWorkflowCall<T> extends DeterministicAwaitable<
 // =============================================================================
 
 /**
- * Callable child workflow accessor on `ctx.childWorkflows` in WorkflowContext.
- *
- * Call it with `{ idempotencyKey?, args, seed? }` to get a `WorkflowCall<T>`.
- * Call it with `{ detached: true }` to start detached and get a foreign handle.
- * Chain builders before awaiting:
- * - `.compensate()` — register compensation
- * - `.failure()` — explicit failure handling
- * - `.complete()` — transform success result
- *
- * @typeParam W - The child workflow definition.
- * @typeParam TCompCtx - The parent workflow's CompensationContext type.
+ * Base start options for a child workflow call.
  */
 export type ChildWorkflowStartOptions<W extends AnyWorkflowHeader> =
   WorkflowInvocationBaseOptions<
@@ -383,15 +373,15 @@ export type ChildWorkflowStartOptions<W extends AnyWorkflowHeader> =
  * Retention is inherited from the parent workflow.
  */
 export type AttachedChildWorkflowStartOptions<W extends AnyWorkflowHeader> =
-  ChildWorkflowStartOptions<W> & { detached?: false | undefined };
+  ChildWorkflowStartOptions<W>;
 
 /**
  * Child workflow start options in detached mode.
  * Detached children may override retention independently from the parent.
+ * The `detached: true` flag is implied by calling `.startDetached()`.
  */
-export type DetachedChildWorkflowStartOptions<W extends AnyWorkflowHeader> =
+export type DetachedStartOptions<W extends AnyWorkflowHeader> =
   ChildWorkflowStartOptions<W> & {
-    detached: true;
     retention?: number | RetentionSettings;
   };
 
@@ -417,9 +407,19 @@ export interface ChildWorkflowAccessor<
   (
     options: AttachedChildWorkflowStartOptions<W>,
   ): WorkflowCall<InferWorkflowResult<W>, never, false, TCompCtx>;
-  (
-    options: DetachedChildWorkflowStartOptions<W>,
-  ): DeterministicAwaitable<ForeignWorkflowHandle<InferWorkflowChannels<W>>, ExecutionRoot>;
+
+  /**
+   * Start this child workflow in detached mode.
+   *
+   * The child runs independently — the parent does not wait for its result and
+   * lifecycle is not managed. Returns a `ForeignWorkflowHandle` for fire-and-forget
+   * channel messaging.
+   *
+   * This is an atomic, synchronous-at-engine-level operation — directly awaitable.
+   */
+  startDetached(
+    options: DetachedStartOptions<W>,
+  ): DirectAwaitable<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
 }
 
 /**
@@ -487,17 +487,17 @@ export interface LifecycleEventAccessor {
    * Wait for the lifecycle event to be set.
    * Returns "never" if the workflow reached a terminal state without this event firing.
    */
-  wait(): DeterministicAwaitable<EventWaitResultNoTimeout, ExecutionRoot>;
+  wait(): WorkflowAwaitable<EventWaitResultNoTimeout>;
 
   /**
    * Wait for the lifecycle event to be set, with a timeout (in seconds).
    */
-  wait(timeoutSeconds: number): DeterministicAwaitable<EventWaitResult, ExecutionRoot>;
+  wait(timeoutSeconds: number): WorkflowAwaitable<EventWaitResult>;
 
   /**
    * Check if the lifecycle event is set (non-blocking).
    */
-  get(): DeterministicAwaitable<EventCheckResult, ExecutionRoot>;
+  get(): DirectAwaitable<EventCheckResult>;
 }
 
 /**
@@ -509,17 +509,17 @@ export interface EventAccessorReadonly {
    * Wait for the event to be set.
    * Returns "never" if the workflow reached a terminal state without setting this event.
    */
-  wait(): DeterministicAwaitable<EventWaitResultNoTimeout, ExecutionRoot>;
+  wait(): WorkflowAwaitable<EventWaitResultNoTimeout>;
 
   /**
    * Wait for the event to be set, with a timeout (in seconds).
    */
-  wait(timeoutSeconds: number): DeterministicAwaitable<EventWaitResult, ExecutionRoot>;
+  wait(timeoutSeconds: number): WorkflowAwaitable<EventWaitResult>;
 
   /**
    * Check if the event is set (non-blocking).
    */
-  get(): DeterministicAwaitable<EventCheckResult, ExecutionRoot>;
+  get(): DirectAwaitable<EventCheckResult>;
 }
 
 /**
@@ -547,7 +547,6 @@ export interface BaseContext<
   TEvents extends EventDefinitions,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
-  TRoot extends ExecutionRoot | CompensationRoot = ExecutionRoot,
 > {
   /** Unique internal workflow instance identifier (not the idempotency key). */
   readonly workflowId: string;
@@ -564,8 +563,7 @@ export interface BaseContext<
    */
   readonly channels: {
     [K in keyof TChannels]: ChannelHandle<
-      StandardSchemaV1.InferOutput<TChannels[K]>,
-      TRoot
+      StandardSchemaV1.InferOutput<TChannels[K]>
     >;
   };
 
@@ -575,8 +573,7 @@ export interface BaseContext<
    */
   readonly streams: {
     [K in keyof TStreams]: StreamAccessor<
-      StandardSchemaV1.InferInput<TStreams[K]>,
-      TRoot
+      StandardSchemaV1.InferInput<TStreams[K]>
     >;
   };
 
@@ -584,27 +581,27 @@ export interface BaseContext<
    * Events for signaling.
    */
   readonly events: {
-    [K in keyof TEvents]: EventAccessor<TRoot>;
+    [K in keyof TEvents]: EventAccessor;
   };
 
   /**
    * Patches for safe, incremental workflow evolution.
    */
   readonly patches: {
-    [K in keyof TPatches]: PatchAccessor<TRoot>;
+    [K in keyof TPatches]: PatchAccessor;
   };
 
   /**
    * Durable sleep.
    * @param seconds - Duration in seconds.
    */
-  sleep(seconds: number): DeterministicAwaitable<void, TRoot>;
+  sleep(seconds: number): WorkflowAwaitable<void>;
 
   /**
    * Durable sleep until a target instant.
    * @param target - Target time as Date or epoch milliseconds.
    */
-  sleepUntil(target: Date | number): DeterministicAwaitable<void, TRoot>;
+  sleepUntil(target: Date | number): WorkflowAwaitable<void>;
 
   /**
    * Deterministic random utilities.
@@ -649,7 +646,7 @@ export interface CompensationContext<
   TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
-> extends BaseContext<TState, TChannels, TStreams, TEvents, TPatches, TRng, CompensationRoot> {
+> extends BaseContext<TState, TChannels, TStreams, TEvents, TPatches, TRng> {
   /**
    * Steps for durable operations.
    * Calling a step returns `CompensationStepCall<T>` — awaits to `CompensationStepResult<T>`.
@@ -747,13 +744,10 @@ export interface CompensationContext<
    * The only way to await a `DeterministicAwaitable` or `BranchHandle` from
    * compensation context. For `BranchHandle`s, enforces at compile time that
    * the handle's scope path is a prefix of the current scope path.
-   *
-   * Also accepts handles branded with `RootScope` (joinable from any context),
-   * such as `ForeignWorkflowHandle.channels.send()` results.
    */
-  join<H extends DeterministicAwaitable<any, RootScope>>(
+  join<H extends DeterministicAwaitable<any, CompensationRoot>>(
     handle: H,
-    ..._check: [...IsJoinableByPath<H, []>, ...IsJoinableByContext<H, CompensationRoot>]
+    ..._check: IsJoinableByPath<H, []>
   ): H extends DeterministicAwaitable<infer T, any> ? Promise<T> : Promise<never>;
 
   // ---------------------------------------------------------------------------
@@ -841,7 +835,7 @@ export interface WorkflowContext<
   TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
-> extends BaseContext<TState, TChannels, TStreams, TEvents, TPatches, TRng, ExecutionRoot> {
+> extends BaseContext<TState, TChannels, TStreams, TEvents, TPatches, TRng> {
   /**
    * Steps for durable operations.
    * Calling a step returns a `StepCall<T>` thenable — chain builders before awaiting.
@@ -875,9 +869,8 @@ export interface WorkflowContext<
 
   /**
    * Child workflow accessors — structured invocation (lifecycle managed by parent).
-   * Calling an accessor returns:
-   * - `WorkflowCall<T>` by default (result mode with builders)
-   * - `ForeignWorkflowHandle` when called with `{ detached: true }`
+   * Calling an accessor returns a `WorkflowCall<T>` (result mode with builders).
+   * Use `.startDetached(opts)` to start without lifecycle management.
    */
   readonly childWorkflows: {
     [K in keyof TChildWorkflows]: ChildWorkflowAccessor<
@@ -1005,13 +998,10 @@ export interface WorkflowContext<
    * The only way to await a `DeterministicAwaitable` or `BranchHandle` from
    * execution context. For `BranchHandle`s, enforces at compile time that
    * the handle's scope path is a prefix of the current scope path.
-   *
-   * Also accepts handles branded with `RootScope` (joinable from any context),
-   * such as `ForeignWorkflowHandle.channels.send()` results.
    */
-  join<H extends DeterministicAwaitable<any, RootScope>>(
+  join<H extends DeterministicAwaitable<any, ExecutionRoot>>(
     handle: H,
-    ..._check: [...IsJoinableByPath<H, []>, ...IsJoinableByContext<H, ExecutionRoot>]
+    ..._check: IsJoinableByPath<H, []>
   ): H extends DeterministicAwaitable<infer T, any> ? Promise<T> : Promise<never>;
 
   // ---------------------------------------------------------------------------
@@ -1120,13 +1110,10 @@ export interface WorkflowConcurrencyContext<
    * within a scope. For `BranchHandle`s, enforces at compile time that the
    * handle's scope path is a prefix of the current scope path — preventing
    * handles from escaping their intended lifetime.
-   *
-   * Also accepts handles branded with `RootScope` (joinable from any context),
-   * such as `ForeignWorkflowHandle.channels.send()` results.
    */
-  join<H extends DeterministicAwaitable<any, RootScope>>(
+  join<H extends DeterministicAwaitable<any, ExecutionRoot>>(
     handle: H,
-    ..._check: [...IsJoinableByPath<H, TScopePath>, ...IsJoinableByContext<H, ExecutionRoot>]
+    ..._check: IsJoinableByPath<H, TScopePath>
   ): H extends DeterministicAwaitable<infer T, any> ? Promise<T> : Promise<never>;
 
   /**
@@ -1254,13 +1241,10 @@ export interface WorkflowCompensationConcurrencyContext<
    * The only way to await a `DeterministicAwaitable` or `BranchHandle` from
    * within a compensation scope. For `BranchHandle`s, enforces at compile time
    * that the handle's scope path is a prefix of the current scope path.
-   *
-   * Also accepts handles branded with `RootScope` (joinable from any context),
-   * such as `ForeignWorkflowHandle.channels.send()` results.
    */
-  join<H extends DeterministicAwaitable<any, RootScope>>(
+  join<H extends DeterministicAwaitable<any, CompensationRoot>>(
     handle: H,
-    ..._check: [...IsJoinableByPath<H, TScopePath>, ...IsJoinableByContext<H, CompensationRoot>]
+    ..._check: IsJoinableByPath<H, TScopePath>
   ): H extends DeterministicAwaitable<infer T, any> ? Promise<T> : Promise<never>;
 
   /**
