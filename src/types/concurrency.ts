@@ -29,33 +29,61 @@ export type ChildWorkflowFailureInfo =
       readonly reason: WorkflowTerminationReason;
     };
 
-declare const deterministicAwaitableBrand: unique symbol;
+// =============================================================================
+// ROOT SCOPE BRANDING
+// =============================================================================
+
+declare const executionRoot: unique symbol;
+declare const compensationRoot: unique symbol;
 
 /**
- * Branded awaitable used by deterministic workflow primitives.
+ * Discriminates whether a deterministic handle was created inside a workflow
+ * execution context or a compensation context.
  *
+ * Handles carrying `typeof executionRoot` may only be joined from
+ * `WorkflowContext` / `WorkflowConcurrencyContext`.
+ * Handles carrying `typeof compensationRoot` may only be joined from
+ * `CompensationContext` / `WorkflowCompensationConcurrencyContext`.
+ */
+export type RootScope = typeof executionRoot | typeof compensationRoot;
+
+/** @internal Used as the `TRoot` type parameter on execution-context handles. */
+export type ExecutionRoot = typeof executionRoot;
+
+/** @internal Used as the `TRoot` type parameter on compensation-context handles. */
+export type CompensationRoot = typeof compensationRoot;
+
+declare const deterministicAwaitableBrand: unique symbol;
+declare const rootScopeBrand: unique symbol;
+declare const phantomValueType: unique symbol;
+
+/**
+ * Opaque handle to a deterministic workflow primitive.
+ *
+ * Not directly awaitable — must be resolved via `ctx.join(handle)`.
  * This intentionally excludes native Promise values from structural assignment
  * unless they are explicitly wrapped/typed by the engine as deterministic.
+ *
+ * @typeParam T    - The resolved value type.
+ * @typeParam TRoot - Which root context created this handle
+ *                   (`ExecutionRoot` or `CompensationRoot`).
+ *                   Defaults to the widened `RootScope` for constraint positions.
  */
-export interface DeterministicAwaitable<T> {
+export interface DeterministicAwaitable<
+  T,
+  TRoot extends RootScope = RootScope,
+> {
   /** @internal Brand discriminator — do not access at runtime. */
   readonly [deterministicAwaitableBrand]: true;
-
-  then<TResult = T>(
-    onfulfilled?:
-      | ((value: T) => TResult | PromiseLike<TResult>)
-      | null
-      | undefined,
-  ): DeterministicAwaitable<TResult>;
-
+  /** @internal Root context discriminator — do not access at runtime. */
+  readonly [rootScopeBrand]: TRoot;
   /**
-   * Await-compatibility signature used by TypeScript's `Awaited<T>` extraction.
-   * Keep this overload broad and LAST so normal `.then(...)` calls still
-   * resolve to the strongly typed generic overload above.
+   * @internal Covariant phantom field — allows TypeScript to infer `T` via
+   * `H extends DeterministicAwaitable<infer T, ...>` in conditional types.
+   * Optional so it never appears in required field checks.
+   * Do not access at runtime.
    */
-  then(
-    onfulfilled: (value: T, ...args: any[]) => any,
-  ): any;
+  readonly [phantomValueType]?: T;
 }
 
 /**
@@ -71,17 +99,19 @@ export type BranchFailureInfo = Record<string, never>;
 /**
  * A one-shot receive future returned by `ChannelHandle.receive(...)`.
  *
- * `ChannelReceiveCall<T>` is awaitable (extends `DeterministicAwaitable<T>`) and can be
- * passed into `ctx.select()` and `ctx.map()` as a finite,
+ * Not directly awaitable — must be resolved via `ctx.join(handle)`.
+ * Can be passed into `ctx.select()` and `ctx.map()` as a finite,
  * one-shot channel wait — the key is removed from `remaining` once the receive
  * resolves, just like a branch handle.
  *
  * Unlike passing a raw `ChannelHandle` to `select` (which creates a streaming,
  * never-exhausted branch), a `ChannelReceiveCall` resolves exactly once.
  *
- * @typeParam T - The resolved value type (may include `undefined` for timeout overloads).
+ * @typeParam T    - The resolved value type (may include `undefined` for timeout overloads).
+ * @typeParam TRoot - Root context that created this receive call.
  */
-export interface ChannelReceiveCall<T> extends DeterministicAwaitable<T> {
+export interface ChannelReceiveCall<T, TRoot extends RootScope = RootScope>
+  extends DeterministicAwaitable<T, TRoot> {
   /** @internal Brand discriminator — do not access at runtime. */
   readonly _kind: "channel_receive_call";
 }
@@ -90,16 +120,20 @@ export interface ChannelReceiveCall<T> extends DeterministicAwaitable<T> {
  * Channel handle on ctx.channels.
  * Can be used directly for receive, passed into select, or async-iterated.
  * T is the decoded type (z.output<Schema>).
+ *
+ * @typeParam T    - The decoded message type.
+ * @typeParam TRoot - Root context that owns this channel handle.
  */
-export interface ChannelHandle<T> extends AsyncIterable<T> {
+export interface ChannelHandle<T, TRoot extends RootScope = RootScope>
+  extends AsyncIterable<T> {
   /**
    * Receive a message from this channel (FIFO order).
    * Blocks until a message arrives. Returns the decoded value directly.
    *
-   * Returns a `ChannelReceiveCall<T>` that can be awaited directly or passed
- * into `ctx.select()` or `ctx.map()` as a one-shot branch.
+   * Returns a `ChannelReceiveCall<T, TRoot>` that can be resolved via
+   * `ctx.join()` or passed into `ctx.select()` / `ctx.map()` as a one-shot branch.
    */
-  receive(): ChannelReceiveCall<T>;
+  receive(): ChannelReceiveCall<T, TRoot>;
 
   /**
    * Receive with timeout (in seconds).
@@ -107,10 +141,10 @@ export interface ChannelHandle<T> extends AsyncIterable<T> {
    *
    * `receive(0)` is a non-blocking poll (nowait).
    *
-   * Returns a `ChannelReceiveCall<T | undefined>` that can be awaited directly
- * or passed into `ctx.select()` or `ctx.map()`.
+   * Returns a `ChannelReceiveCall<T | undefined, TRoot>` that can be resolved
+   * via `ctx.join()` or passed into `ctx.select()` / `ctx.map()`.
    */
-  receive(timeoutSeconds: number): ChannelReceiveCall<T | undefined>;
+  receive(timeoutSeconds: number): ChannelReceiveCall<T | undefined, TRoot>;
 
   /**
    * Receive with timeout (in seconds) and an explicit timeout default.
@@ -118,13 +152,13 @@ export interface ChannelHandle<T> extends AsyncIterable<T> {
    *
    * `receive(0, defaultValue)` is a non-blocking poll (nowait).
    *
-   * Returns a `ChannelReceiveCall<T | TDefault>` that can be awaited directly
- * or passed into `ctx.select()` or `ctx.map()`.
+   * Returns a `ChannelReceiveCall<T | TDefault, TRoot>` that can be resolved
+   * via `ctx.join()` or passed into `ctx.select()` / `ctx.map()`.
    */
   receive<TDefault>(
     timeoutSeconds: number,
     defaultValue: TDefault,
-  ): ChannelReceiveCall<T | TDefault>;
+  ): ChannelReceiveCall<T | TDefault, TRoot>;
 
   /**
    * Async iteration over channel messages.
@@ -138,24 +172,29 @@ export interface ChannelHandle<T> extends AsyncIterable<T> {
 /**
  * Stream accessor on ctx.streams (for writing from within the workflow).
  * T is the encoded type (z.input<Schema>).
+ *
+ * @typeParam T    - The encoded record type.
+ * @typeParam TRoot - Root context that owns this stream accessor.
  */
-export interface StreamAccessor<T> {
+export interface StreamAccessor<T, TRoot extends RootScope = RootScope> {
   /**
    * Write a record to the stream.
    * @param data - Record data (z.input type — encoded).
    * @returns The offset at which the record was saved.
    */
-  write(data: T): DeterministicAwaitable<number>;
+  write(data: T): DeterministicAwaitable<number, TRoot>;
 }
 
 /**
  * Event accessor on ctx.events (for setting from within the workflow).
+ *
+ * @typeParam TRoot - Root context that owns this event accessor.
  */
-export interface EventAccessor {
+export interface EventAccessor<TRoot extends RootScope = RootScope> {
   /**
    * Set the event (idempotent — second call is no-op).
    */
-  set(): DeterministicAwaitable<void>;
+  set(): DeterministicAwaitable<void, TRoot>;
 }
 
 // =============================================================================
@@ -187,22 +226,26 @@ export type ScopePath = readonly string[];
 export type ScopeEntryValue<T> = ScopeBranch<T> | DeterministicAwaitable<T>;
 
 /**
- * A handle to a running scope branch — awaitable in the scope callback.
+ * A handle to a running scope branch.
  * Resolves to T when the branch completes successfully.
  *
  * `BranchHandle<T>` values are produced by `ctx.scope()` and can be:
- * - Directly awaited: `const result = await flight`
+ * - Resolved via `ctx.join(handle)` (subject to scope-path lifetime checks)
  * - Passed into `ctx.select()` and `ctx.map()`
  * - Accumulated into collections for dynamic fan-out
  *
- * @typeParam T - The resolved value type.
+ * @typeParam T          - The resolved value type.
+ * @typeParam TScopePath - Scope lineage of the parent scope that spawned this branch.
+ *                        `ctx.join()` enforces `IsPrefix<TScopePath, TCurrentPath>`.
+ * @typeParam TRoot      - Root context that created this branch handle.
  */
 declare const scopePathBrand: unique symbol;
 
 export interface BranchHandle<
   T,
   TScopePath extends ScopePath = ScopePath,
-> extends DeterministicAwaitable<T> {
+  TRoot extends RootScope = RootScope,
+> extends DeterministicAwaitable<T, TRoot> {
   /** @internal Type-level scope ownership brand. */
   readonly [scopePathBrand]: TScopePath;
 }
@@ -290,6 +333,46 @@ type IsPrefix<TPrefix extends ScopePath, TValue extends ScopePath> =
         : false
       : false;
 
+/**
+ * Rest-parameter constraint for `ctx.join()` scope-path enforcement.
+ *
+ * - For a plain `DeterministicAwaitable` (no scope path), resolves to `[]` — no path check needed.
+ * - For a `BranchHandle<T, THandlePath>`, resolves to `[]` when `THandlePath` is a prefix
+ *   of the current scope path `TCurrentPath`, or to an error tuple otherwise.
+ */
+export type IsJoinableByPath<
+  H,
+  TCurrentPath extends ScopePath,
+> = H extends BranchHandle<any, infer THandlePath, any>
+  ? IsPrefix<THandlePath, TCurrentPath> extends true
+    ? []
+    : [
+        "Handle scope path is not accessible from the current scope — the handle was created in a scope that has already closed or is not an ancestor of the current scope",
+      ]
+  : [];
+
+/**
+ * Rest-parameter constraint for `ctx.join()` root-context enforcement.
+ *
+ * - Resolves to `[]` when the handle's root context is compatible with the calling context,
+ *   i.e. `TContextRoot extends THandleRoot` (the context's root is a subtype of the handle's root).
+ * - Resolves to an error tuple otherwise.
+ *
+ * A handle with `TRoot = RootScope` is joinable from any context (used for `ForeignWorkflowHandle.channels.send()`).
+ * A handle with `TRoot = ExecutionRoot` is only joinable from execution contexts.
+ * A handle with `TRoot = CompensationRoot` is only joinable from compensation contexts.
+ */
+export type IsJoinableByContext<
+  H,
+  TContextRoot extends RootScope,
+> = H extends DeterministicAwaitable<any, infer THandleRoot>
+  ? [TContextRoot] extends [THandleRoot]
+    ? []
+    : [
+        "Handle root context is incompatible — execution handles cannot be joined from compensation context and vice versa",
+      ]
+  : [];
+
 type RestrictSelectableHandleToPath<
   H,
   TCurrentPath extends ScopePath,
@@ -330,10 +413,16 @@ type RestrictFiniteHandleToPath<
 
 /**
  * Extract resolved value type from a scope entry value.
+ *
+ * `DeterministicAwaitable<T>` is no longer a native thenable (no `then`), so
+ * `Awaited<DeterministicAwaitable<T>>` would return the handle itself unchanged.
+ * We must explicitly unwrap `DeterministicAwaitable<T>` before falling back to `Awaited`.
  */
 type ScopeEntryResult<V> = V extends (...args: any[]) => infer R
   ? Awaited<R>
-  : Awaited<V>;
+  : V extends DeterministicAwaitable<infer T, any>
+    ? T
+    : Awaited<V>;
 
 /**
  * Maps scope entry values to their corresponding branch handle types,
@@ -342,16 +431,17 @@ type ScopeEntryResult<V> = V extends (...args: any[]) => infer R
 export type ScopeHandles<
   E extends ScopeEntries,
   TScopePath extends ScopePath = ScopePath,
+  TRoot extends RootScope = RootScope,
 > = {
   [K in keyof E]: E[K] extends ScopeEntryValue<unknown>
-    ? BranchHandle<ScopeEntryResult<E[K]>, TScopePath>
+    ? BranchHandle<ScopeEntryResult<E[K]>, TScopePath, TRoot>
     : E[K] extends (infer U)[]
       ? U extends ScopeEntryValue<unknown>
-        ? BranchHandle<ScopeEntryResult<U>, TScopePath>[]
+        ? BranchHandle<ScopeEntryResult<U>, TScopePath, TRoot>[]
         : never
       : E[K] extends Map<infer MK, infer V>
         ? V extends ScopeEntryValue<unknown>
-          ? Map<MK, BranchHandle<ScopeEntryResult<V>, TScopePath>>
+          ? Map<MK, BranchHandle<ScopeEntryResult<V>, TScopePath, TRoot>>
           : never
         : never;
 };

@@ -32,7 +32,7 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
   },
 
   async execute(ctx, args) {
-    const receiptId = await ctx.childWorkflows
+    const receiptId = await ctx.join(ctx.childWorkflows
       .payment({
         idempotencyKey: `payment-${ctx.rng.ids.uuidv4()}`,
         metadata: {
@@ -57,9 +57,9 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
         }
         return null;
       })
-      .complete((data) => data.receiptId);
+      .complete((data) => data.receiptId));
 
-    const campaignHandle = await ctx.childWorkflows.campaignWorker({
+    const campaignHandle = await ctx.join(ctx.childWorkflows.campaignWorker({
       idempotencyKey: `campaign-${ctx.rng.ids.uuidv4()}`,
       metadata: {
         tenantId: `tenant-${args.customerId}`,
@@ -68,13 +68,13 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
       seed: `campaign-seed-${args.customerId}`,
       args: { userId: args.customerId },
       detached: true,
-    });
+    }));
 
     const foreign = ctx.foreignWorkflows.campaignWorker.get(
       args.existingCampaignIdempotencyKey,
     );
-    await foreign.channels.nudge.send({ type: "nudge" });
-    await campaignHandle.channels.nudge.send({ type: "nudge" });
+    await ctx.join(foreign.channels.nudge.send({ type: "nudge" }));
+    await ctx.join(campaignHandle.channels.nudge.send({ type: "nudge" }));
 
     return { receiptId, campaignStarted: true };
   },

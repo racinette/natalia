@@ -28,43 +28,55 @@ export const scopeAllAndNestedSelectWorkflow = defineWorkflow({
       args.providers.map((provider) => [
         provider,
         ctx.steps.getQuote(provider, args.destination).compensate(async (compCtx) => {
-          await compCtx.steps.cancelQuote(provider);
+          await compCtx.join(compCtx.steps.cancelQuote(provider));
         }),
       ]),
     );
 
-    const allResult = await ctx.all({
-      flight: ctx.steps
-        .bookFlight(args.destination, args.customerId)
-        .compensate(async (compCtx) => {
-          await compCtx.steps.cancelFlight(args.destination, args.customerId);
-        }),
-      quotes: quoteBranches,
-    });
+    const allResult = await ctx.join(
+      ctx.all({
+        flight: ctx.steps
+          .bookFlight(args.destination, args.customerId)
+          .compensate(async (compCtx) => {
+            await compCtx.join(
+              compCtx.steps.cancelFlight(args.destination, args.customerId),
+            );
+          }),
+        quotes: quoteBranches,
+      }),
+    );
 
-    const winner = await ctx.scope(
-      "NestedScopeSelection",
-      {
-        parentTimer: ctx.sleep(5).then(() => "parent_timeout" as const),
-      },
-      async (ctx, { parentTimer }) => {
-        const childScope = ctx.scope(
-          "ChildScope",
-          {
-            childTimer: ctx.sleep(1).then(() => "child_done" as const),
+    const winner = await ctx.join(
+      ctx.scope(
+        "NestedScopeSelection",
+        {
+          parentTimer: async () => {
+            await ctx.join(ctx.sleep(5));
+            return "parent_timeout" as const;
           },
-          async (_ctx, { childTimer }) => await childTimer,
-        );
+        },
+        async (ctx, { parentTimer }) => {
+          const childScope = ctx.scope(
+            "ChildScope",
+            {
+              childTimer: async () => {
+                await ctx.join(ctx.sleep(1));
+                return "child_done" as const;
+              },
+            },
+            async (ctx, { childTimer }) => await ctx.join(childTimer),
+          );
 
-        const sel = ctx.select({ parentTimer, childScope });
-        for await (const val of sel.match({
-          parentTimer: (v) => v,
-          childScope: (v) => v,
-        })) {
-          return val;
-        }
-        return "parent_timeout" as const;
-      },
+          const sel = ctx.select({ parentTimer, childScope });
+          for await (const val of sel.match({
+            parentTimer: (v) => v,
+            childScope: (v) => v,
+          })) {
+            return val;
+          }
+          return "parent_timeout" as const;
+        },
+      ),
     );
 
     return {

@@ -30,13 +30,13 @@ export const channelRaceWorkflow = defineWorkflow({
   }),
 
   async execute(ctx, args) {
-    const outcome = await ctx.scope(
+    const outcome = await ctx.join(ctx.scope(
       "BookingCancelRace",
       {
         booking: ctx.steps
           .bookFlight(args.destination, args.customerId)
           .compensate(async (compCtx) => {
-            await compCtx.steps.cancelFlight(args.destination, args.customerId);
+            await compCtx.join(compCtx.steps.cancelFlight(args.destination, args.customerId));
           }),
       },
       async (ctx, { booking }) => {
@@ -59,23 +59,23 @@ export const channelRaceWorkflow = defineWorkflow({
         }
         throw new Error("Selection exhausted unexpectedly");
       },
-    );
+    ));
 
     if (outcome.outcome === "cancelled") {
       ctx.logger.info("Booking cancelled by user");
       return { outcome: "cancelled" as const, flightId: null };
     }
 
-    const cancelMsg = await ctx.scope(
+    const cancelMsg = await ctx.join(ctx.scope(
       "StreamingCancelRace",
       {
         booking2: ctx.steps
           .bookFlight(`${args.destination}-2`, args.customerId)
           .compensate(async (compCtx) => {
-            await compCtx.steps.cancelFlight(
+            await compCtx.join(compCtx.steps.cancelFlight(
               `${args.destination}-2`,
               args.customerId,
-            );
+            ));
           }),
       },
       async (ctx, { booking2 }) => {
@@ -94,7 +94,7 @@ export const channelRaceWorkflow = defineWorkflow({
         }
         throw new Error("Selection exhausted unexpectedly");
       },
-    );
+    ));
 
     ctx.logger.info("Second scope result", { cancelMsg });
     return { outcome: "booked" as const, flightId: outcome.flightId };

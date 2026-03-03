@@ -26,15 +26,15 @@ export const quoteAggregationWorkflow = defineWorkflow({
   async execute(ctx, args) {
     const arrayBranches = args.providers.map((p) =>
       ctx.steps.getQuote(p, args.destination).compensate(async (compCtx) => {
-        await compCtx.steps.cancelQuote(p);
+        await compCtx.join(compCtx.steps.cancelQuote(p));
       }),
     );
 
-    const arrayMapped = await ctx.scope(
+    const arrayMapped = await ctx.join(ctx.scope(
       "ArrayQuoteFanout",
       { quotes: arrayBranches },
       async (ctx, { quotes }) =>
-        ctx.map(
+        ctx.join(ctx.map(
           { quotes },
           {
             quotes: {
@@ -52,23 +52,23 @@ export const quoteAggregationWorkflow = defineWorkflow({
               },
             },
           },
-        ),
-    );
+        )),
+    ));
 
     const mapBranches = new Map(
       args.providers.map((p) => [
         p,
         ctx.steps.getQuote(p, args.destination).compensate(async (compCtx) => {
-          await compCtx.steps.cancelQuote(p);
+          await compCtx.join(compCtx.steps.cancelQuote(p));
         }),
       ]),
     );
 
-    const mapped = await ctx.scope(
+    const mapped = await ctx.join(ctx.scope(
       "MapQuoteFanout",
       { quotes: mapBranches },
       async (ctx, { quotes }) =>
-        ctx.map(
+        ctx.join(ctx.map(
           { quotes },
           {
             quotes: {
@@ -82,8 +82,8 @@ export const quoteAggregationWorkflow = defineWorkflow({
               },
             },
           },
-        ),
-    );
+        )),
+    ));
 
     let bestProvider: string | null = null;
     let lowestPrice: number | null = null;

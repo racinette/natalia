@@ -25,20 +25,20 @@ export const channelTimeoutWorkflow = defineWorkflow({
 
   async execute(ctx) {
     // Non-blocking poll: returns immediately with message or undefined.
-    const nowait = await ctx.channels.inbox.receive(0);
+    const nowait = await ctx.join(ctx.channels.inbox.receive(0));
 
     // Timed receive: returns undefined if no message arrives within 120 seconds.
-    const timed = await ctx.channels.inbox.receive(120);
+    const timed = await ctx.join(ctx.channels.inbox.receive(120));
 
     // Timed receive with fallback: returns fallback object instead of undefined.
-    const timeoutWithDefault = await ctx.channels.inbox.receive(120, {
+    const timeoutWithDefault = await ctx.join(ctx.channels.inbox.receive(120, {
       type: "timeout" as const,
       id: "timeout",
       body: "No inbox message within 120 seconds",
-    });
+    }));
 
     // Plain receive: blocks until a message is available.
-    const blocking = await ctx.channels.inbox.receive();
+    const blocking = await ctx.join(ctx.channels.inbox.receive());
 
     return {
       nowaitMessageId: nowait?.id ?? null,

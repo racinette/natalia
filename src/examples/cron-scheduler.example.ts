@@ -39,10 +39,10 @@ export const dailyReportJobWorkflow = defineWorkflow({
   steps: { sendNotification },
 
   async execute(ctx, args) {
-    await ctx.steps.sendNotification(
+    await ctx.join(ctx.steps.sendNotification(
       args.userId,
       `Your daily report for ${args.reportDate} is ready.`,
-    );
+    ));
   },
 });
 
@@ -99,12 +99,12 @@ export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
   // This lets us send workerDone from one place on every outcome.
   beforeSettle: async (params) => {
     const { ctx, args } = params;
-    await ctx.foreignWorkflows.manager
+    await ctx.join(ctx.foreignWorkflows.manager
       .get(args.managerIdempotencyKey)
       .channels.workerDone.send({
         workerId: ctx.workflowId,
         lastTickAt: ctx.state.lastTickAt,
-      });
+      }));
   },
 
   async execute(ctx, args) {
@@ -115,7 +115,7 @@ export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
 
     let count = 0;
     for await (const tick of schedule) {
-      await ctx.steps
+      await ctx.join(ctx.steps
         .sendNotification(
           args.userId,
           `Preparing daily report for ${tick.scheduledAt.toISOString()}`,
@@ -124,9 +124,9 @@ export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
           maxAttempts: 5,
           intervalSeconds: 10,
           deadlineUntil: tick.nextScheduledAt,
-        });
+        }));
 
-      await ctx.childWorkflows.job({
+      await ctx.join(ctx.childWorkflows.job({
         idempotencyKey: `daily-report-${ctx.rng.ids.uuidv4()}`,
         args: {
           userId: args.userId,
@@ -139,7 +139,7 @@ export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
           failed: 30 * 24 * 3600,
           terminated: 7 * 24 * 3600,
         },
-      });
+      }));
 
       ctx.state.lastTickAt = tick.scheduledAt.toISOString();
       if (++count >= args.maxTicks) break;
@@ -182,7 +182,7 @@ export const dailyReportSchedulerManagerWorkflow = defineWorkflow({
     while (true) {
       const workerId = `scheduler-worker-${ctx.rng.gen.uuidv4()}`;
 
-      await ctx.childWorkflows.worker({
+      await ctx.join(ctx.childWorkflows.worker({
         idempotencyKey: workerId,
         args: {
           userId: args.userId,
@@ -191,16 +191,16 @@ export const dailyReportSchedulerManagerWorkflow = defineWorkflow({
           maxTicks: 1000,
         },
         detached: true,
-      });
+      }));
 
       // Broadcast the current generation for external observers.
-      await ctx.streams.currentWorker.write({ workerId });
+      await ctx.join(ctx.streams.currentWorker.write({ workerId }));
 
       // Drain stale messages: if the manager replayed after a crash mid-handoff,
       // the previous worker's message may still be in the channel queue.
       let msg;
       do {
-        msg = await ctx.channels.workerDone.receive();
+        msg = await ctx.join(ctx.channels.workerDone.receive());
       } while (msg.workerId !== workerId);
 
       // No lastTickAt means zero progress — keep the same anchor so the next

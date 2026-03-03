@@ -142,161 +142,172 @@ export const onboardingVerificationWorkflow = defineWorkflow({
     const verifiedMethods = new Set<z.infer<typeof VerificationMethod>>();
     const failedMethods = new Set<z.infer<typeof VerificationMethod>>();
 
-    const outcome = await ctx.scope(
-      "CollectVerificationProofs",
-      {
-        passport: ctx.steps.verifyIdentityProof(
-          "passport",
-          (await ctx.channels.passport.receive()).artifactId,
-          args.userId,
-        ),
-        driverLicense: ctx.steps.verifyIdentityProof(
-          "driverLicense",
-          (await ctx.channels.driverLicense.receive()).artifactId,
-          args.userId,
-        ),
-        nationalId: ctx.steps.verifyIdentityProof(
-          "nationalId",
-          (await ctx.channels.nationalId.receive()).artifactId,
-          args.userId,
-        ),
-        bankId: ctx.steps.verifyIdentityProof(
-          "bankId",
-          (await ctx.channels.bankId.receive()).artifactId,
-          args.userId,
-        ),
-        videoSelfie: ctx.steps.verifyIdentityProof(
-          "videoSelfie",
-          (await ctx.channels.videoSelfie.receive()).artifactId,
-          args.userId,
-        ),
-        deadline: ctx.sleep(3600).then(() => "deadline" as const),
-      },
-      async (ctx, {
-        passport,
-        driverLicense,
-        nationalId,
-        bankId,
-        videoSelfie,
-        deadline,
-      }) => {
-        const sel = ctx.select({
+    const outcome = await ctx.join(
+      ctx.scope(
+        "CollectVerificationProofs",
+        {
+          passport: ctx.steps.verifyIdentityProof(
+            "passport",
+            (await ctx.join(ctx.channels.passport.receive())).artifactId,
+            args.userId,
+          ),
+          driverLicense: ctx.steps.verifyIdentityProof(
+            "driverLicense",
+            (await ctx.join(ctx.channels.driverLicense.receive())).artifactId,
+            args.userId,
+          ),
+          nationalId: ctx.steps.verifyIdentityProof(
+            "nationalId",
+            (await ctx.join(ctx.channels.nationalId.receive())).artifactId,
+            args.userId,
+          ),
+          bankId: ctx.steps.verifyIdentityProof(
+            "bankId",
+            (await ctx.join(ctx.channels.bankId.receive())).artifactId,
+            args.userId,
+          ),
+          videoSelfie: ctx.steps.verifyIdentityProof(
+            "videoSelfie",
+            (await ctx.join(ctx.channels.videoSelfie.receive())).artifactId,
+            args.userId,
+          ),
+          deadline: async () => {
+            await ctx.join(ctx.sleep(3600));
+            return "deadline" as const;
+          },
+        },
+        async (ctx, {
           passport,
           driverLicense,
           nationalId,
           bankId,
           videoSelfie,
           deadline,
-        });
+        }) => {
+          const sel = ctx.select({
+            passport,
+            driverLicense,
+            nationalId,
+            bankId,
+            videoSelfie,
+            deadline,
+          });
 
-        for await (const kind of sel.match({
-          deadline: () => "deadline" as const,
-          videoSelfie: {
-            complete: (data) => {
-              if (data.confidence < 0.8) {
+          for await (const kind of sel.match({
+            deadline: () => "deadline" as const,
+            videoSelfie: {
+              complete: (data) => {
+                if (data.confidence < 0.8) {
+                  failedMethods.add("videoSelfie");
+                } else {
+                  verifiedMethods.add("videoSelfie");
+                }
+                return "continue" as const;
+              },
+              failure: async () => {
                 failedMethods.add("videoSelfie");
-              } else {
-                verifiedMethods.add("videoSelfie");
-              }
-              return "continue" as const;
+                return "continue" as const;
+              },
             },
-            failure: async () => {
-              failedMethods.add("videoSelfie");
-              return "continue" as const;
+            passport: {
+              complete: () => {
+                verifiedMethods.add("passport");
+                return "continue" as const;
+              },
+              failure: async () => {
+                failedMethods.add("passport");
+                return "continue" as const;
+              },
             },
-          },
-          passport: {
-            complete: () => {
-              verifiedMethods.add("passport");
-              return "continue" as const;
+            driverLicense: {
+              complete: () => {
+                verifiedMethods.add("driverLicense");
+                return "continue" as const;
+              },
+              failure: async () => {
+                failedMethods.add("driverLicense");
+                return "continue" as const;
+              },
             },
-            failure: async () => {
-              failedMethods.add("passport");
-              return "continue" as const;
+            nationalId: {
+              complete: () => {
+                verifiedMethods.add("nationalId");
+                return "continue" as const;
+              },
+              failure: async () => {
+                failedMethods.add("nationalId");
+                return "continue" as const;
+              },
             },
-          },
-          driverLicense: {
-            complete: () => {
-              verifiedMethods.add("driverLicense");
-              return "continue" as const;
+            bankId: {
+              complete: () => {
+                verifiedMethods.add("bankId");
+                return "continue" as const;
+              },
+              failure: async () => {
+                failedMethods.add("bankId");
+                return "continue" as const;
+              },
             },
-            failure: async () => {
-              failedMethods.add("driverLicense");
-              return "continue" as const;
-            },
-          },
-          nationalId: {
-            complete: () => {
-              verifiedMethods.add("nationalId");
-              return "continue" as const;
-            },
-            failure: async () => {
-              failedMethods.add("nationalId");
-              return "continue" as const;
-            },
-          },
-          bankId: {
-            complete: () => {
-              verifiedMethods.add("bankId");
-              return "continue" as const;
-            },
-            failure: async () => {
-              failedMethods.add("bankId");
-              return "continue" as const;
-            },
-          },
-        })) {
-          if (kind === "deadline") break;
-          if (verifiedMethods.size >= 3) break;
-          const remainingPossible = sel.remaining.size;
-          if (verifiedMethods.size + remainingPossible < 3) break;
-        }
+          })) {
+            if (kind === "deadline") break;
+            if (verifiedMethods.size >= 3) break;
+            const remainingPossible = sel.remaining.size;
+            if (verifiedMethods.size + remainingPossible < 3) break;
+          }
 
-        if (verifiedMethods.size < 3) {
+          if (verifiedMethods.size < 3) {
+            return {
+              status: "rejected" as const,
+              risk: null,
+              sessionToken: null,
+              reason: "Insufficient verified identification within 1 hour.",
+            };
+          }
+
+          const methods = Array.from(verifiedMethods);
+          const sessionToken = await ctx.join(
+            ctx.steps
+              .unlockAccount(args.userId, methods)
+              .compensate(async (compCtx, result) => {
+                if (result.status === "complete") {
+                  await compCtx.join(
+                    compCtx.steps.revokeSession(result.data.sessionToken),
+                  );
+                }
+              })
+              .complete((data) => data.sessionToken),
+          );
+
+          const risk = await ctx.join(
+            ctx.childWorkflows
+              .riskAssessment({
+                idempotencyKey: `risk-${args.userId}`,
+                args: { userId: args.userId, methods },
+              })
+              .failure(async (failure) => {
+                if (failure.status === "failed") {
+                  ctx.logger.warn("Risk assessment failed", {
+                    error: failure.error.message,
+                  });
+                } else {
+                  ctx.logger.warn("Risk assessment terminated", {
+                    reason: failure.reason,
+                  });
+                }
+                return "high" as const;
+              })
+              .complete((data) => data.risk),
+          );
+
           return {
-            status: "rejected" as const,
-            risk: null,
-            sessionToken: null,
-            reason: "Insufficient verified identification within 1 hour.",
+            status: "verified" as const,
+            risk,
+            sessionToken,
+            reason: null,
           };
-        }
-
-        const methods = Array.from(verifiedMethods);
-        const sessionToken = await ctx.steps
-          .unlockAccount(args.userId, methods)
-          .compensate(async (compCtx, result) => {
-            if (result.status === "complete") {
-              await compCtx.steps.revokeSession(result.data.sessionToken);
-            }
-          })
-          .complete((data) => data.sessionToken);
-
-        const risk = await ctx.childWorkflows
-          .riskAssessment({
-            idempotencyKey: `risk-${args.userId}`,
-            args: { userId: args.userId, methods },
-          })
-          .failure(async (failure) => {
-            if (failure.status === "failed") {
-              ctx.logger.warn("Risk assessment failed", {
-                error: failure.error.message,
-              });
-            } else {
-              ctx.logger.warn("Risk assessment terminated", {
-                reason: failure.reason,
-              });
-            }
-            return "high" as const;
-          })
-          .complete((data) => data.risk);
-
-        return {
-          status: "verified" as const,
-          risk,
-          sessionToken,
-          reason: null,
-        };
-      },
+        },
+      ),
     );
 
     return {

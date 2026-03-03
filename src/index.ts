@@ -5,12 +5,18 @@
  *
  * Core concepts:
  * - Workflows: Long-running, durable processes with happy-path-only code
- * - Steps: Durable, retriable operations — calling a step returns a StepCall<T> thenable.
- *     Chain builders before awaiting: .compensate(cb), .retry(policy), .failure(cb), .complete(cb)
+ * - Steps: Durable, retriable operations — calling a step returns a StepCall<T> opaque handle.
+ *     Chain builders before joining: .compensate(cb), .retry(policy), .failure(cb), .complete(cb)
+ *     Resolve via: `await ctx.join(ctx.steps.myStep(args))`
+ * - ctx.join(handle): The ONLY way to resolve a DeterministicAwaitable or BranchHandle.
+ *     Enforces at compile time that BranchHandle scope paths are accessible from the current scope.
+ *     Execution-context handles (ExecutionRoot) cannot be joined from CompensationContext, and vice versa.
  * - Scopes: Structured concurrency — concurrent branches run as closures inside
  *     ctx.scope(scopeName, entries, callback).
  *     Collections (Array, Map) are supported for dynamic fan-out.
- * - BranchHandle: Awaitable handle produced by scope entries — passed to select/map
+ *     Resolve the scope result: `await ctx.join(ctx.scope("Name", entries, callback))`
+ * - BranchHandle: Opaque handle produced by scope entries — passed to select/map or resolved via ctx.join().
+ *     BranchHandle<T, TScopePath, TRoot>: scope path enforces lifetime; TRoot enforces context boundary.
  * - Compensation: Registered per-step via .compensate(cb) builder, runs LIFO on failure.
  *     Compensation always runs if any attempt was made — the engine assumes at-least-once
  *     semantics for external side effects. No status checks needed in callbacks.
@@ -29,31 +35,36 @@
  *     Channel inputs: raw ChannelHandle = streaming (never exhausted); ChannelReceiveCall = one-shot.
  * - map: Scope-local primitive only (not on base workflow/compensation contexts).
  *     Use inside `ctx.scope("Name", entries, async (ctx, handles) => ...)`.
+ *     Resolve via: `await ctx.join(ctx.map(handles, callbacks?, onFailure?))`.
  *     map(handles) — identity for all, failure terminates.
  *     map(handles, callbacks, onFailure?) — partial per-key handlers + optional default failure callback.
  *     Accepts BranchHandle variants and ChannelReceiveCall (not raw ChannelHandle).
  *     Collection handles (BranchHandle[], Map<K, BranchHandle>) pass innerKey to callbacks.
  * - all: `ctx.all(entries)` sugar for the common "join all and collect results" pattern.
+ *     Resolve via: `await ctx.join(ctx.all(entries))`.
  *     Preserves input shape (single/array/map) and follows normal failure semantics.
- * - Child workflows: ctx.childWorkflows.* — structured invocation (WorkflowCall<T> thenable).
+ * - Child workflows: ctx.childWorkflows.* — structured invocation (WorkflowCall<T> opaque handle).
  *     Supports .compensate(), .failure(), .complete() in result mode.
+ *     Resolve via: `await ctx.join(ctx.childWorkflows.myWorkflow(opts).complete(cb))`.
  *     Use call option `{ detached: true }` for fire-and-forget messaging mode
- *     which returns a ForeignWorkflowHandle directly.
+ *     which returns a DeterministicAwaitable<ForeignWorkflowHandle> (also resolved via ctx.join).
  * - Foreign workflows: ctx.foreignWorkflows.* — message-only handles to existing instances.
  *     Only channels.send() is available — no lifecycle coupling.
+ *     Resolve send via: `await ctx.join(existing.channels.nudge.send(msg))`.
  * - Channels: Async message passing (input).
- *     ctx.channels.receive() returns ChannelReceiveCall<T> — awaitable directly or passed into
+ *     ctx.channels.receive() returns ChannelReceiveCall<T> — resolved via ctx.join() or passed into
  *     select/map for one-shot channel waits. Timeout overloads available:
  *     receive(timeoutSeconds) → T | undefined; receive(timeoutSeconds, defaultValue) → T | TDefault.
  *     receive(0) is a deterministic nowait poll.
  *     Raw ChannelHandle can be passed into select for streaming (multi-message) branches.
- * - Streams: Append-only logs (output)
- * - Events: Write-once coordination flags with "never" semantics
+ * - Streams: Append-only logs (output). Write via: `await ctx.join(ctx.streams.myStream.write(data))`.
+ * - Events: Write-once coordination flags. Set via: `await ctx.join(ctx.events.myEvent.set())`.
  * - Lifecycle Events: Engine-managed workflow state signals (external API only)
  * - Signals: sigterm (graceful) / sigkill (immediate) — engine-level only
  * - CompensationContext: Full structured concurrency with explicit failure visibility;
  *     step calls resolve to CompensationStepResult<T> (must handle ok/!ok gracefully).
  *     No addCompensation() (no nested compensation chains).
+ *     Handles are CompensationRoot-branded — cannot be joined from execution context.
  */
 
 // Public API - Types

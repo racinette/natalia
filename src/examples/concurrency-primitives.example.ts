@@ -162,9 +162,11 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
           .compensate(async (compCtx, result) => {
             if (result.status !== "complete") return;
             for (const itinerary of result.data.itineraries) {
-              await compCtx.steps.cancelFlightItinerary(
-                provider,
-                itinerary.itineraryId,
+              await compCtx.join(
+                compCtx.steps.cancelFlightItinerary(
+                  provider,
+                  itinerary.itineraryId,
+                ),
               );
             }
           }),
@@ -178,193 +180,205 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
           .reserveHotel(provider, args.destination, args.checkIn, args.checkOut)
           .compensate(async (compCtx, result) => {
             if (result.status !== "complete") return;
-            await compCtx.steps.cancelHotelReservation(
-              provider,
-              result.data.reservationId,
+            await compCtx.join(
+              compCtx.steps.cancelHotelReservation(
+                provider,
+                result.data.reservationId,
+              ),
             );
           }),
       ]),
     );
 
-    const decision = await ctx.scope(
-      "PlanTrip",
-      { flights: flightSearches, hotels: hotelReservations },
-      async (ctx, { flights, hotels }) => {
-        const pricedFlights = await ctx.map(
-          { flights },
-          {
-            flights: {
-              complete: (data, provider) => {
-                const viable = data.itineraries.filter((it) => it.hops <= 3);
-                if (viable.length === 0) return null;
-                const cheapest = viable.reduce((best, curr) =>
-                  curr.price < best.price ? curr : best,
-                );
-                return {
-                  provider,
-                  itineraryId: cheapest.itineraryId,
-                  hops: cheapest.hops,
-                  price: cheapest.price,
-                  legs: cheapest.legs,
-                };
+    const decision = await ctx.join(
+      ctx.scope(
+        "PlanTrip",
+        { flights: flightSearches, hotels: hotelReservations },
+        async (ctx, { flights, hotels }) => {
+          const pricedFlights = await ctx.join(
+            ctx.map(
+              { flights },
+              {
+                flights: {
+                  complete: (data, provider) => {
+                    const viable = data.itineraries.filter((it) => it.hops <= 3);
+                    if (viable.length === 0) return null;
+                    const cheapest = viable.reduce((best, curr) =>
+                      curr.price < best.price ? curr : best,
+                    );
+                    return {
+                      provider,
+                      itineraryId: cheapest.itineraryId,
+                      hops: cheapest.hops,
+                      price: cheapest.price,
+                      legs: cheapest.legs,
+                    };
+                  },
+                  failure: async (failure, provider) => {
+                    ctx.logger.warn("Flight search provider failed", { provider });
+                    return null;
+                  },
+                },
               },
-              failure: async (failure, provider) => {
-                ctx.logger.warn("Flight search provider failed", { provider });
+            ),
+          );
+
+          let bestFlight:
+            | {
+                provider: string;
+                itineraryId: string;
+                hops: number;
+                price: number;
+                legs: Array<{ from: string; to: string }>;
+              }
+            | null = null;
+
+          for (const value of pricedFlights.flights.values()) {
+            if (value == null) continue;
+            if (bestFlight == null || value.price < bestFlight.price) {
+              bestFlight = value;
+            }
+          }
+
+          // Non-blocking poll (receive(0) = nowait): check whether a cancel message
+          // arrived while we were searching flights. This demonstrates ctx.map() with
+          // a ChannelReceiveCall — the key resolves immediately (undefined if no message).
+          const earlyCancel = await ctx.join(
+            ctx.map(
+              { cancel: ctx.channels.cancel.receive(0) },
+              { cancel: (msg) => msg },
+            ),
+          );
+          if (earlyCancel.cancel !== undefined) {
+            return {
+              outcome: "cancelled" as const,
+              itineraryId: null,
+              hops: null,
+              flightProvider: null,
+              hotelReservationId: null,
+              hotelProvider: null,
+              totalPrice: null,
+              paymentReceiptId: null,
+              candidateCount: Array.from(pricedFlights.flights.values()).filter(
+                (v) => v != null,
+              ).length,
+            };
+          }
+
+          // One-shot race: hotel branches exhaust naturally; cancel.receive() resolves
+          // once and is removed from remaining, so the while loop always terminates.
+          const hotelSel = ctx.select({
+            hotel: hotels,
+            cancel: ctx.channels.cancel.receive(),
+          });
+          let selectedHotel:
+            | { provider: string; reservationId: string; price: number }
+            | null = null;
+          let cancelled = false;
+
+          for await (const val of hotelSel.match({
+            cancel: () => {
+              cancelled = true;
+              return null;
+            },
+            hotel: {
+              complete: ({ data, innerKey }) => ({
+                provider: innerKey,
+                reservationId: data.reservationId,
+                price: data.price,
+              }),
+              failure: async () => {
+                ctx.logger.warn("Hotel reservation provider failed");
                 return null;
               },
             },
-          },
-        );
-
-        let bestFlight:
-          | {
-              provider: string;
-              itineraryId: string;
-              hops: number;
-              price: number;
-              legs: Array<{ from: string; to: string }>;
+          })) {
+            if (cancelled) break;
+            if (val != null) {
+              selectedHotel = val;
+              break;
             }
-          | null = null;
-
-        for (const value of pricedFlights.flights.values()) {
-          if (value == null) continue;
-          if (bestFlight == null || value.price < bestFlight.price) {
-            bestFlight = value;
           }
-        }
 
-        // Non-blocking poll (receive(0) = nowait): check whether a cancel message
-        // arrived while we were searching flights. This demonstrates ctx.map() with
-        // a ChannelReceiveCall — the key resolves immediately (undefined if no message).
-        const earlyCancel = await ctx.map(
-          { cancel: ctx.channels.cancel.receive(0) },
-          { cancel: (msg) => msg },
-        );
-        if (earlyCancel.cancel !== undefined) {
-          return {
-            outcome: "cancelled" as const,
-            itineraryId: null,
-            hops: null,
-            flightProvider: null,
-            hotelReservationId: null,
-            hotelProvider: null,
-            totalPrice: null,
-            paymentReceiptId: null,
-            candidateCount: Array.from(pricedFlights.flights.values()).filter(
-              (v) => v != null,
-            ).length,
-          };
-        }
-
-        // One-shot race: hotel branches exhaust naturally; cancel.receive() resolves
-        // once and is removed from remaining, so the while loop always terminates.
-        const hotelSel = ctx.select({
-          hotel: hotels,
-          cancel: ctx.channels.cancel.receive(),
-        });
-        let selectedHotel:
-          | { provider: string; reservationId: string; price: number }
-          | null = null;
-        let cancelled = false;
-
-        for await (const val of hotelSel.match({
-          cancel: () => {
-            cancelled = true;
-            return null;
-          },
-          hotel: {
-            complete: ({ data, innerKey }) => ({
-              provider: innerKey,
-              reservationId: data.reservationId,
-              price: data.price,
-            }),
-            failure: async () => {
-              ctx.logger.warn("Hotel reservation provider failed");
-              return null;
-            },
-          },
-        })) {
-          if (cancelled) break;
-          if (val != null) {
-            selectedHotel = val;
-            break;
+          if (cancelled || bestFlight == null || selectedHotel == null) {
+            return {
+              outcome: "cancelled" as const,
+              itineraryId: null,
+              hops: null,
+              flightProvider: null,
+              hotelReservationId: null,
+              hotelProvider: null,
+              totalPrice: null,
+              paymentReceiptId: null,
+              candidateCount: Array.from(pricedFlights.flights.values()).filter(
+                (v) => v != null,
+              ).length,
+            };
           }
-        }
 
-        if (cancelled || bestFlight == null || selectedHotel == null) {
-          return {
-            outcome: "cancelled" as const,
-            itineraryId: null,
-            hops: null,
-            flightProvider: null,
-            hotelReservationId: null,
-            hotelProvider: null,
-            totalPrice: null,
-            paymentReceiptId: null,
-            candidateCount: Array.from(pricedFlights.flights.values()).filter(
-              (v) => v != null,
-            ).length,
-          };
-        }
-
-        const totalPrice = bestFlight.price + selectedHotel.price;
-        const paymentReceiptId = await ctx.childWorkflows
-          .payment({
-            idempotencyKey: `payment-${ctx.rng.ids.uuidv4()}`,
-            metadata: {
-              tenantId: `tenant-${args.customerId}`,
-              correlationId: `corr-payment-${args.customerId}`,
-            },
-            seed: `trip-payment-${args.customerId}`,
-            args: { customerId: args.customerId, amount: totalPrice },
-          })
-          .failure(async (failure) => {
-            if (failure.status === "failed") {
-              ctx.logger.error("Payment workflow failed", {
-                error: failure.error.message,
-              });
-            } else {
-              ctx.logger.error("Payment workflow terminated", {
-                reason: failure.reason,
-              });
-            }
-            return null;
-          })
-          .complete((data) => data.receiptId);
-
-        const campaign = await ctx.childWorkflows.campaignWorker({
-          idempotencyKey: `campaign-${ctx.rng.ids.uuidv4()}`,
-          metadata: {
-            tenantId: `tenant-${args.customerId}`,
-            correlationId: `corr-campaign-${args.customerId}`,
-          },
-          seed: `trip-campaign-${args.customerId}`,
-          args: { userId: args.customerId },
-          detached: true,
-        });
-        await campaign.channels.nudge.send({ type: "nudge" });
-
-        if (args.existingCampaignIdempotencyKey) {
-          const existing = ctx.foreignWorkflows.campaignWorker.get(
-            args.existingCampaignIdempotencyKey,
+          const totalPrice = bestFlight.price + selectedHotel.price;
+          const paymentReceiptId = await ctx.join(
+            ctx.childWorkflows
+              .payment({
+                idempotencyKey: `payment-${ctx.rng.ids.uuidv4()}`,
+                metadata: {
+                  tenantId: `tenant-${args.customerId}`,
+                  correlationId: `corr-payment-${args.customerId}`,
+                },
+                seed: `trip-payment-${args.customerId}`,
+                args: { customerId: args.customerId, amount: totalPrice },
+              })
+              .failure(async (failure) => {
+                if (failure.status === "failed") {
+                  ctx.logger.error("Payment workflow failed", {
+                    error: failure.error.message,
+                  });
+                } else {
+                  ctx.logger.error("Payment workflow terminated", {
+                    reason: failure.reason,
+                  });
+                }
+                return null;
+              })
+              .complete((data) => data.receiptId),
           );
-          await existing.channels.nudge.send({ type: "nudge" });
-        }
 
-        return {
-          outcome: "booked" as const,
-          itineraryId: bestFlight.itineraryId,
-          hops: bestFlight.hops,
-          flightProvider: bestFlight.provider,
-          hotelReservationId: selectedHotel.reservationId,
-          hotelProvider: selectedHotel.provider,
-          totalPrice,
-          paymentReceiptId,
-          candidateCount: Array.from(pricedFlights.flights.values()).filter(
-            (v) => v != null,
-          ).length,
-        };
-      },
+          const campaign = await ctx.join(
+            ctx.childWorkflows.campaignWorker({
+              idempotencyKey: `campaign-${ctx.rng.ids.uuidv4()}`,
+              metadata: {
+                tenantId: `tenant-${args.customerId}`,
+                correlationId: `corr-campaign-${args.customerId}`,
+              },
+              seed: `trip-campaign-${args.customerId}`,
+              args: { userId: args.customerId },
+              detached: true,
+            }),
+          );
+          await ctx.join(campaign.channels.nudge.send({ type: "nudge" }));
+
+          if (args.existingCampaignIdempotencyKey) {
+            const existing = ctx.foreignWorkflows.campaignWorker.get(
+              args.existingCampaignIdempotencyKey,
+            );
+            await ctx.join(existing.channels.nudge.send({ type: "nudge" }));
+          }
+
+          return {
+            outcome: "booked" as const,
+            itineraryId: bestFlight.itineraryId,
+            hops: bestFlight.hops,
+            flightProvider: bestFlight.provider,
+            hotelReservationId: selectedHotel.reservationId,
+            hotelProvider: selectedHotel.provider,
+            totalPrice,
+            paymentReceiptId,
+            candidateCount: Array.from(pricedFlights.flights.values()).filter(
+              (v) => v != null,
+            ).length,
+          };
+        },
+      ),
     );
 
     return decision;

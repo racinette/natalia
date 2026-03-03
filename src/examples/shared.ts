@@ -185,11 +185,11 @@ export const paymentWorkflow = defineWorkflow({
 
   async execute(ctx, args) {
     ctx.logger.info("Processing payment", { amount: args.amount });
-    const charge = await ctx.steps
+    const charge = await ctx.join(ctx.steps
       .chargeCustomer(args.customerId, args.amount)
       .compensate(async (compCtx, _result) => {
-        await compCtx.steps.refundCustomer(charge.chargeId);
-      });
+        await compCtx.join(compCtx.steps.refundCustomer(charge.chargeId));
+      }));
     return { receiptId: charge.chargeId };
   },
 });
@@ -209,7 +209,7 @@ export const campaignWorker = defineWorkflow({
 
   async execute(ctx, args) {
     ctx.logger.info("Campaign started", { userId: args.userId });
-    const cmd = await ctx.channels.nudge.receive();
+    const cmd = await ctx.join(ctx.channels.nudge.receive());
     ctx.logger.info("Campaign nudged", { type: cmd.type });
   },
 });

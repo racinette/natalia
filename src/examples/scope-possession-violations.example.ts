@@ -31,44 +31,52 @@ export const scopePossessionViolationsWorkflow = defineWorkflow({
       ["ParentScope", "ChildScope"]
     >;
 
-    await ctx.scope(
-      "ParentScope",
-      {
-        parentTicket: ctx.steps
-          .bookFlight(`${args.destination}-parent`, args.customerId)
-          .compensate(async (compCtx) => {
-            await compCtx.steps.cancelFlight(
-              `${args.destination}-parent`,
-              args.customerId,
-            );
-          }),
-      },
-      async (ctx, { parentTicket }) => {
-        await ctx.scope(
-          "ChildScope",
-          {
-            childTicket: ctx.steps
-              .bookFlight(`${args.destination}-child`, args.customerId)
-              .compensate(async (compCtx) => {
-                await compCtx.steps.cancelFlight(
-                  `${args.destination}-child`,
+    await ctx.join(
+      ctx.scope(
+        "ParentScope",
+        {
+          parentTicket: ctx.steps
+            .bookFlight(`${args.destination}-parent`, args.customerId)
+            .compensate(async (compCtx) => {
+              await compCtx.join(
+                compCtx.steps.cancelFlight(
+                  `${args.destination}-parent`,
                   args.customerId,
-                );
-              }),
-          },
-          async (_ctx, { childTicket }) => {
-            childOwnedHandle = childTicket;
-            await childTicket;
-          },
-        );
+                ),
+              );
+            }),
+        },
+        async (ctx, { parentTicket }) => {
+          await ctx.join(
+            ctx.scope(
+              "ChildScope",
+              {
+                childTicket: ctx.steps
+                  .bookFlight(`${args.destination}-child`, args.customerId)
+                  .compensate(async (compCtx) => {
+                    await compCtx.join(
+                      compCtx.steps.cancelFlight(
+                        `${args.destination}-child`,
+                        args.customerId,
+                      ),
+                    );
+                  }),
+              },
+              async (ctx, { childTicket }) => {
+                childOwnedHandle = childTicket;
+                await ctx.join(childTicket);
+              },
+            ),
+          );
 
-        // Wrong: descendant-owned handle used from parent scope context.
-        // @ts-ignore Intentional misuse for docs: child handle leaked into parent select.
-        const illegalSelection = ctx.select({ parentTicket, childOwnedHandle });
-        for await (const _v of illegalSelection) {
-          break;
-        }
-      },
+          // Wrong: descendant-owned handle used from parent scope context.
+          // @ts-ignore Intentional misuse for docs: child handle leaked into parent select.
+          const illegalSelection = ctx.select({ parentTicket, childOwnedHandle });
+          for await (const _v of illegalSelection) {
+            break;
+          }
+        },
+      ),
     );
 
     // -------------------------------------------------------------------------
@@ -79,51 +87,67 @@ export const scopePossessionViolationsWorkflow = defineWorkflow({
       ["SiblingScopeA"]
     >;
 
-    await ctx.scope(
-      "SiblingScopeA",
-      {
-        a: ctx.steps.bookFlight(`${args.destination}-a`, args.customerId),
-      },
-      async (_ctx, { a }) => {
-        siblingAHandle = a;
-        await a;
-      },
+    await ctx.join(
+      ctx.scope(
+        "SiblingScopeA",
+        {
+          a: ctx.steps.bookFlight(`${args.destination}-a`, args.customerId),
+        },
+        async (ctx, { a }) => {
+          siblingAHandle = a;
+          await ctx.join(a);
+        },
+      ),
     );
 
-    await ctx.scope(
-      "SiblingScopeB",
-      {
-        b: ctx.steps.bookFlight(`${args.destination}-b`, args.customerId),
-      },
-      async (ctx, { b }) => {
-        // Wrong: handle from sibling scope A consumed inside sibling scope B.
-        // @ts-ignore Intentional misuse for docs: sibling handle leaked across scopes.
-        await ctx.map({ b, siblingAHandle });
-      },
+    await ctx.join(
+      ctx.scope(
+        "SiblingScopeB",
+        {
+          b: ctx.steps.bookFlight(`${args.destination}-b`, args.customerId),
+        },
+        async (ctx, { b }) => {
+          // Wrong: handle from sibling scope A consumed inside sibling scope B.
+          // @ts-ignore Intentional misuse for docs: sibling handle leaked across scopes.
+          await ctx.map({ b, siblingAHandle });
+        },
+      ),
     );
 
     // -------------------------------------------------------------------------
     // 3) Child scope reuses an ancestor scope name.
     // -------------------------------------------------------------------------
-    await ctx.scope(
-      "CollisionParent",
-      {
-        parentTimer: ctx.sleep(0).then(() => "done" as const),
-      },
-      async (ctx, { parentTimer }) => {
-        // Wrong: child scope name collides with an ancestor name.
-        // @ts-ignore Intentional misuse for docs: descendant scope name collision.
-        await ctx.scope(
-          // @ts-ignore Intentional misuse for docs: colliding scope name.
-          "CollisionParent",
-          { childTimer: ctx.sleep(0).then(() => "done" as const) },
-          async (_ctx, { childTimer }) => {
-            await childTimer;
+    await ctx.join(
+      ctx.scope(
+        "CollisionParent",
+        {
+          parentTimer: async () => {
+            await ctx.join(ctx.sleep(0));
+            return "done" as const;
           },
-        );
+        },
+        async (ctx, { parentTimer }) => {
+          // Wrong: child scope name collides with an ancestor name.
+          // @ts-ignore Intentional misuse for docs: descendant scope name collision.
+          await ctx.join(
+            ctx.scope(
+              // @ts-ignore Intentional misuse for docs: colliding scope name.
+              "CollisionParent",
+              {
+                childTimer: async () => {
+                  await ctx.join(ctx.sleep(0));
+                  return "done" as const;
+                },
+              },
+              async (ctx, { childTimer }) => {
+                await ctx.join(childTimer);
+              },
+            ),
+          );
 
-        await parentTimer;
-      },
+          await ctx.join(parentTimer);
+        },
+      ),
     );
 
     return { ok: true };

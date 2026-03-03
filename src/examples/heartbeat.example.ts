@@ -24,24 +24,24 @@ export const heartbeatWorkflow = defineWorkflow({
     ctx.logger.warn("Example warning for demo");
     ctx.logger.error("Example error for demo");
 
-    await ctx.streams.auditLog.write({
+    await ctx.join(ctx.streams.auditLog.write({
       msg: "Heartbeat check initiated",
       ts: ctx.timestamp,
-    });
+    }));
 
-    await ctx.sleep(1);
+    await ctx.join(ctx.sleep(1));
 
-    await ctx.steps.sendEmail(
+    await ctx.join(ctx.steps.sendEmail(
       "ops@example.com",
       "Heartbeat",
       `System alive as of ${ctx.date.toISOString()}`,
-    );
+    ));
 
-    await ctx.events.done.set();
+    await ctx.join(ctx.events.done.set());
 
-    await ctx.streams.auditLog.write({
+    await ctx.join(ctx.streams.auditLog.write({
       msg: "Heartbeat complete",
       ts: ctx.timestamp,
-    });
+    }));
   },
 });
