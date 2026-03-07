@@ -146,8 +146,7 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
     ctx.channels.cancel.receiveNowait().then(() => "ok");
     ctx.streams.log.write({ msg: "test" }).then(() => "ok");
 
-    // Base context has NO .join() — only .execute()
-    // @ts-expect-error .join() is not available on base WorkflowContext
+    // Base context has .join() — enforces scope-path prefix check
     await ctx.join(ctx.steps.bookFlight(args.destination, args.customerId));
 
     // ctx.execute() with child workflow
@@ -259,9 +258,9 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
                 ? true
                 : false
             >;
-            // branchCtx has execute() but NOT join()
+            // branchCtx has both execute() and join()
             type _HasExecute = Assert<"execute" extends keyof typeof branchCtx ? true : false>;
-            // @ts-expect-error join is not available on branch WorkflowContext
+            type _HasJoin = Assert<"join" extends keyof typeof branchCtx ? true : false>;
             branchCtx.join;
             await branchCtx.sleep(5);
             return "timed_out" as const;
@@ -388,8 +387,7 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
       // @ts-expect-error execution-root handle cannot be executed from CompensationContext
       await compCtx.execute(executionStepHandle);
 
-      // Base CompensationContext has execute() but NOT join()
-      // @ts-expect-error join is not available on base CompensationContext
+      // Base CompensationContext has both execute() and join()
       compCtx.join;
 
       const compStepHandle = compCtx.steps.cancelFlight(

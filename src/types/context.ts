@@ -678,14 +678,33 @@ export interface CompensationContext<
   // ---------------------------------------------------------------------------
 
   /**
-   * Execute (resolve) a deterministic handle created in this compensation context.
+   * Execute (resolve) a lazy deterministic handle created in this compensation context.
    *
-   * Use `ctx.execute()` to await steps, child workflows, `scope()`, `all()`, and `first()`
-   * from base compensation context. For `BranchHandle`s inside a scope callback, use
-   * `ctx.join()` on the `CompensationConcurrencyContext` instead.
+   * Use `ctx.execute()` for steps, child workflows, `scope()`, `all()`, and `first()`.
+   * Use `ctx.join()` for already-running `BranchHandle`s from an ancestor scope.
    */
   execute<H extends DeterministicAwaitable<any, CompensationRoot>>(
     handle: H,
+  ): H extends DeterministicAwaitable<infer T, any>
+    ? Promise<T>
+    : Promise<never>;
+
+  /**
+   * Resolve a branch handle created in an ancestor scope from within a branch
+   * closure of a nested compensation scope.
+   *
+   * Branch closures receive a path-specialized `CompensationContext` whose
+   * `TScopePath` extends the parent scope's path. `join` enforces at compile
+   * time that the handle's scope path is a prefix of the current scope path —
+   * guaranteeing the handle was created in a scope that is still live (i.e. an
+   * ancestor of the current branch).
+   *
+   * Use `ctx.execute()` for lazy (not-yet-running) handles such as steps,
+   * child workflows, and `scope()`/`all()`/`first()` results.
+   */
+  join<H extends DeterministicAwaitable<any, CompensationRoot>>(
+    handle: H,
+    ..._check: IsJoinableByPath<H, TScopePath>
   ): H extends DeterministicAwaitable<infer T, any>
     ? Promise<T>
     : Promise<never>;
@@ -1023,14 +1042,33 @@ export interface WorkflowContext<
   // ---------------------------------------------------------------------------
 
   /**
-   * Execute (resolve) a deterministic handle created in this execution context.
+   * Execute (resolve) a lazy deterministic handle created in this execution context.
    *
-   * Use `ctx.execute()` to await steps, child workflows, `scope()`, `all()`, and `first()`
-   * from base workflow context. For `BranchHandle`s inside a scope callback, use
-   * `ctx.join()` on the `WorkflowConcurrencyContext` instead.
+   * Use `ctx.execute()` for steps, child workflows, `scope()`, `all()`, and `first()`.
+   * Use `ctx.join()` for already-running `BranchHandle`s from an ancestor scope.
    */
   execute<H extends DeterministicAwaitable<any, ExecutionRoot>>(
     handle: H,
+  ): H extends DeterministicAwaitable<infer T, any>
+    ? Promise<T>
+    : Promise<never>;
+
+  /**
+   * Resolve a branch handle created in an ancestor scope from within a branch
+   * closure of a nested scope.
+   *
+   * Branch closures receive a path-specialized `WorkflowContext` whose
+   * `TScopePath` extends the parent scope's path. `join` enforces at compile
+   * time that the handle's scope path is a prefix of the current scope path —
+   * guaranteeing the handle was created in a scope that is still live (i.e. an
+   * ancestor of the current branch).
+   *
+   * Use `ctx.execute()` for lazy (not-yet-running) handles such as steps,
+   * child workflows, and `scope()`/`all()`/`first()` results.
+   */
+  join<H extends DeterministicAwaitable<any, ExecutionRoot>>(
+    handle: H,
+    ..._check: IsJoinableByPath<H, TScopePath>
   ): H extends DeterministicAwaitable<infer T, any>
     ? Promise<T>
     : Promise<never>;
