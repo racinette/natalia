@@ -157,11 +157,6 @@ export type CompensationResultExternal =
 // =============================================================================
 
 /**
- * @deprecated Use T directly — channel receive returns the decoded value directly.
- */
-export type ChannelReceiveResultNoTimeout<T> = T;
-
-/**
  * Result of sending a message to a channel (engine level).
  */
 export type ChannelSendResult =

@@ -318,6 +318,7 @@ export function defineWorkflow<
         failed: number | null;
         terminated: number | null;
       };
+  evictAfterSeconds?: number | null;
   beforeCompensate?: (params: {
     ctx: CompensationContext<
       TState,
@@ -600,6 +601,16 @@ export function defineWorkflow<
       }
     } else {
       throw new Error("retention must be a number or RetentionSettings object");
+    }
+  }
+
+  // Validate evictAfterSeconds if provided
+  if (config.evictAfterSeconds !== undefined && config.evictAfterSeconds !== null) {
+    if (
+      typeof config.evictAfterSeconds !== "number" ||
+      config.evictAfterSeconds <= 0
+    ) {
+      throw new Error("evictAfterSeconds must be a positive number or null");
     }
   }
 
