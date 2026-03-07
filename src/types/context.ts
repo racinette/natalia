@@ -705,6 +705,10 @@ export interface CompensationContext<
    * No per-branch compensation — compensation cannot nest.
    *
    * Resolve the scope result: `await ctx.execute(ctx.scope("Name", entries, callback))`.
+   *
+   * Providing `defaultValue` makes the scope fail-safe: if the callback throws, all
+   * registered compensations within the scope run (LIFO), then `defaultValue` is
+   * returned instead of propagating the failure.
    */
   scope<
     Name extends string,
@@ -749,6 +753,52 @@ export interface CompensationContext<
       >,
     ) => Promise<R>,
   ): DeterministicAwaitable<R, CompensationRoot>;
+
+  scope<
+    Name extends string,
+    E extends Record<
+      string,
+      (
+        ctx: CompensationContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
+        >,
+      ) => Promise<unknown>
+    >,
+    R,
+    TDefault,
+  >(
+    name: ScopeNameArg<TScopePath, Name>,
+    entries: E,
+    callback: (
+      ctx: CompensationConcurrencyContext<
+        TState,
+        TChannels,
+        TStreams,
+        TEvents,
+        TSteps,
+        TChildWorkflows,
+        TForeignWorkflows,
+        TPatches,
+        TRng,
+        AppendScopeName<TScopePath, Name>
+      >,
+      handles: ScopeHandles<
+        E,
+        AppendScopeName<TScopePath, Name>,
+        CompensationRoot
+      >,
+    ) => Promise<R>,
+    defaultValue: TDefault,
+  ): DeterministicAwaitable<R | TDefault, CompensationRoot>;
 
   /**
    * Run all entries concurrently and return all resolved values.
@@ -1013,6 +1063,10 @@ export interface WorkflowContext<
    * - On error (callback throws): all unresolved compensated branches are compensated
    *
    * Resolve the scope result: `await ctx.execute(ctx.scope("Name", entries, callback))`.
+   *
+   * Providing `defaultValue` makes the scope fail-safe: if the callback throws, all
+   * registered compensations within the scope run (LIFO), then `defaultValue` is
+   * returned instead of propagating the failure.
    */
   scope<
     Name extends string,
@@ -1057,6 +1111,52 @@ export interface WorkflowContext<
       >,
     ) => Promise<R>,
   ): DeterministicAwaitable<R, ExecutionRoot>;
+
+  scope<
+    Name extends string,
+    E extends Record<
+      string,
+      (
+        ctx: WorkflowContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
+        >,
+      ) => Promise<unknown>
+    >,
+    R,
+    TDefault,
+  >(
+    name: ScopeNameArg<TScopePath, Name>,
+    entries: E,
+    callback: (
+      ctx: WorkflowConcurrencyContext<
+        TState,
+        TChannels,
+        TStreams,
+        TEvents,
+        TSteps,
+        TChildWorkflows,
+        TForeignWorkflows,
+        TPatches,
+        TRng,
+        AppendScopeName<TScopePath, Name>
+      >,
+      handles: ScopeHandles<
+        E,
+        AppendScopeName<TScopePath, Name>,
+        ExecutionRoot
+      >,
+    ) => Promise<R>,
+    defaultValue: TDefault,
+  ): DeterministicAwaitable<R | TDefault, ExecutionRoot>;
 
   /**
    * Run all entries concurrently and return all resolved values.
@@ -1296,6 +1396,52 @@ export interface WorkflowConcurrencyContext<
       >,
     ) => Promise<R>,
   ): DeterministicAwaitable<R, ExecutionRoot>;
+
+  scope<
+    Name extends string,
+    E extends Record<
+      string,
+      (
+        ctx: WorkflowContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
+        >,
+      ) => Promise<unknown>
+    >,
+    R,
+    TDefault,
+  >(
+    name: ScopeNameArg<TScopePath, Name>,
+    entries: E,
+    callback: (
+      ctx: WorkflowConcurrencyContext<
+        TState,
+        TChannels,
+        TStreams,
+        TEvents,
+        TSteps,
+        TChildWorkflows,
+        TForeignWorkflows,
+        TPatches,
+        TRng,
+        AppendScopeName<TScopePath, Name>
+      >,
+      handles: ScopeHandles<
+        E,
+        AppendScopeName<TScopePath, Name>,
+        ExecutionRoot
+      >,
+    ) => Promise<R>,
+    defaultValue: TDefault,
+  ): DeterministicAwaitable<R | TDefault, ExecutionRoot>;
 
   /**
    * Run all entries concurrently and return all resolved values.
@@ -1552,6 +1698,52 @@ export interface CompensationConcurrencyContext<
       >,
     ) => Promise<R>,
   ): DeterministicAwaitable<R, CompensationRoot>;
+
+  scope<
+    Name extends string,
+    E extends Record<
+      string,
+      (
+        ctx: CompensationContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
+        >,
+      ) => Promise<unknown>
+    >,
+    R,
+    TDefault,
+  >(
+    name: ScopeNameArg<TScopePath, Name>,
+    entries: E,
+    callback: (
+      ctx: CompensationConcurrencyContext<
+        TState,
+        TChannels,
+        TStreams,
+        TEvents,
+        TSteps,
+        TChildWorkflows,
+        TForeignWorkflows,
+        TPatches,
+        TRng,
+        AppendScopeName<TScopePath, Name>
+      >,
+      handles: ScopeHandles<
+        E,
+        AppendScopeName<TScopePath, Name>,
+        CompensationRoot
+      >,
+    ) => Promise<R>,
+    defaultValue: TDefault,
+  ): DeterministicAwaitable<R | TDefault, CompensationRoot>;
 
   /**
    * Run all entries concurrently and return all resolved values.
