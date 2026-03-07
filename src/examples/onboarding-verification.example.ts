@@ -142,50 +142,50 @@ export const onboardingVerificationWorkflow = defineWorkflow({
     const verifiedMethods = new Set<z.infer<typeof VerificationMethod>>();
     const failedMethods = new Set<z.infer<typeof VerificationMethod>>();
 
-    const outcome = await ctx.execute(
-      ctx.scope(
+    const outcome = await ctx
+      .scope(
         "CollectVerificationProofs",
         {
           passport: async (ctx) =>
-            ctx.execute(
-              ctx.steps.verifyIdentityProof(
+            ctx.steps
+              .verifyIdentityProof(
                 "passport",
                 (await ctx.channels.passport.receive()).artifactId,
                 args.userId,
-              ),
-            ),
+              )
+              .resolve(ctx),
           driverLicense: async (ctx) =>
-            ctx.execute(
-              ctx.steps.verifyIdentityProof(
+            ctx.steps
+              .verifyIdentityProof(
                 "driverLicense",
                 (await ctx.channels.driverLicense.receive()).artifactId,
                 args.userId,
-              ),
-            ),
+              )
+              .resolve(ctx),
           nationalId: async (ctx) =>
-            ctx.execute(
-              ctx.steps.verifyIdentityProof(
+            ctx.steps
+              .verifyIdentityProof(
                 "nationalId",
                 (await ctx.channels.nationalId.receive()).artifactId,
                 args.userId,
-              ),
-            ),
+              )
+              .resolve(ctx),
           bankId: async (ctx) =>
-            ctx.execute(
-              ctx.steps.verifyIdentityProof(
+            ctx.steps
+              .verifyIdentityProof(
                 "bankId",
                 (await ctx.channels.bankId.receive()).artifactId,
                 args.userId,
-              ),
-            ),
+              )
+              .resolve(ctx),
           videoSelfie: async (ctx) =>
-            ctx.execute(
-              ctx.steps.verifyIdentityProof(
+            ctx.steps
+              .verifyIdentityProof(
                 "videoSelfie",
                 (await ctx.channels.videoSelfie.receive()).artifactId,
                 args.userId,
-              ),
-            ),
+              )
+              .resolve(ctx),
           deadline: async (ctx) => {
             await ctx.sleep(3600);
             return "deadline" as const;
@@ -284,39 +284,37 @@ export const onboardingVerificationWorkflow = defineWorkflow({
           }
 
           const methods = Array.from(verifiedMethods);
-          const sessionToken = await ctx.execute(
-            ctx.steps
-              .unlockAccount(args.userId, methods)
-              .compensate(async (ctx, result) => {
-                if (result.status === "complete") {
-                  await ctx.execute(
-                    ctx.steps.revokeSession(result.data.sessionToken),
-                  );
-                }
-              })
-              .complete((data) => data.sessionToken),
-          );
+          const sessionToken = await ctx.steps
+            .unlockAccount(args.userId, methods)
+            .compensate(async (ctx, result) => {
+              if (result.status === "complete") {
+                await ctx.steps
+                  .revokeSession(result.data.sessionToken)
+                  .resolve(ctx);
+              }
+            })
+            .complete((data) => data.sessionToken)
+            .resolve(ctx);
 
-          const risk = await ctx.execute(
-            ctx.childWorkflows
-              .riskAssessment({
-                idempotencyKey: `risk-${args.userId}`,
-                args: { userId: args.userId, methods },
-              })
-              .failure(async (failure) => {
-                if (failure.status === "failed") {
-                  ctx.logger.warn("Risk assessment failed", {
-                    error: failure.error.message,
-                  });
-                } else {
-                  ctx.logger.warn("Risk assessment terminated", {
-                    reason: failure.reason,
-                  });
-                }
-                return "high" as const;
-              })
-              .complete((data) => data.risk),
-          );
+          const risk = await ctx.childWorkflows
+            .riskAssessment({
+              idempotencyKey: `risk-${args.userId}`,
+              args: { userId: args.userId, methods },
+            })
+            .failure(async (failure) => {
+              if (failure.status === "failed") {
+                ctx.logger.warn("Risk assessment failed", {
+                  error: failure.error.message,
+                });
+              } else {
+                ctx.logger.warn("Risk assessment terminated", {
+                  reason: failure.reason,
+                });
+              }
+              return "high" as const;
+            })
+            .complete((data) => data.risk)
+            .resolve(ctx);
 
           return {
             status: "verified" as const,
@@ -325,8 +323,8 @@ export const onboardingVerificationWorkflow = defineWorkflow({
             reason: null,
           };
         },
-      ),
-    );
+      )
+      .resolve(ctx);
 
     return {
       status: outcome.status,

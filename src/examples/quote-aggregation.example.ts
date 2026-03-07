@@ -24,32 +24,31 @@ export const quoteAggregationWorkflow = defineWorkflow({
   }),
 
   async execute(ctx, args) {
-    const quoteResults = await ctx.execute(
-      ctx.all(
+    const quoteResults = await ctx
+      .all(
         Object.fromEntries(
           args.providers.map((provider) => [
             provider,
             async (ctx) => {
-              const result = await ctx.execute(
-                ctx.steps
-                  .getQuote(provider, args.destination)
-                  .compensate(async (ctx) => {
-                    await ctx.execute(ctx.steps.cancelQuote(provider));
-                  })
-                  .failure(async (failure) => {
-                    ctx.logger.warn("Quote failed", {
-                      provider,
-                      reason: failure.reason,
-                    });
-                    return null;
-                  }),
-              );
+              const result = await ctx.steps
+                .getQuote(provider, args.destination)
+                .compensate(async (ctx) => {
+                  await ctx.steps.cancelQuote(provider).resolve(ctx);
+                })
+                .failure(async (failure) => {
+                  ctx.logger.warn("Quote failed", {
+                    provider,
+                    reason: failure.reason,
+                  });
+                  return null;
+                })
+                .resolve(ctx);
               return result;
             },
           ]),
         ),
-      ),
-    );
+      )
+      .resolve(ctx);
 
     let bestProvider: string | null = null;
     let lowestPrice: number | null = null;

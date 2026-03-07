@@ -31,20 +31,19 @@ export const scopeSleepRaceWorkflow = defineWorkflow({
   rng: { ids: true },
 
   async execute(ctx, args) {
-    const stepRace = await ctx.execute(
-      ctx.scope(
+    const stepRace = await ctx
+      .scope(
         "StepTimeoutRace",
         {
           flight: async (ctx) =>
-            ctx.execute(
-              ctx.steps
-                .bookFlight(args.destination, args.customerId)
-                .compensate(async (ctx) => {
-                  await ctx.execute(
-                    ctx.steps.cancelFlight(args.destination, args.customerId),
-                  );
-                }),
-            ),
+            ctx.steps
+              .bookFlight(args.destination, args.customerId)
+              .compensate(async (ctx) => {
+                await ctx.steps
+                  .cancelFlight(args.destination, args.customerId)
+                  .resolve(ctx);
+              })
+              .resolve(ctx),
           timer: async (ctx) => {
             await ctx.sleep(30);
             return "timed_out" as const;
@@ -63,16 +62,16 @@ export const scopeSleepRaceWorkflow = defineWorkflow({
           }
           return "timed_out" as const;
         },
-      ),
-    );
+      )
+      .resolve(ctx);
 
-    const childRace = await ctx.execute(
-      ctx.scope(
+    const childRace = await ctx
+      .scope(
         "ChildTimeoutRace",
         {
           payment: async (ctx) =>
-            ctx.execute(
-              ctx.childWorkflows.payment({
+            ctx.childWorkflows
+              .payment({
                 idempotencyKey: `payment-${ctx.rng.ids.uuidv4()}`,
                 metadata: {
                   tenantId: `tenant-${args.customerId}`,
@@ -80,8 +79,8 @@ export const scopeSleepRaceWorkflow = defineWorkflow({
                 },
                 seed: `payment-race-${args.customerId}`,
                 args: { customerId: args.customerId, amount: args.amount },
-              }),
-            ),
+              })
+              .resolve(ctx),
           timer: async (ctx) => {
             await ctx.sleep(45);
             return "timed_out" as const;
@@ -100,8 +99,8 @@ export const scopeSleepRaceWorkflow = defineWorkflow({
           }
           return "timed_out" as const;
         },
-      ),
-    );
+      )
+      .resolve(ctx);
 
     return { stepRace, childRace };
   },

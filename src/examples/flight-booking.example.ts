@@ -31,70 +31,56 @@ export const flightBookingWorkflow = defineWorkflow({
   result: z.object({ flightId: z.string(), hotelId: z.string() }),
 
   async execute(ctx, args) {
-    const flight = await ctx.execute(
-      ctx.first({
+    const flight = await ctx
+      .first({
         provider1: async (ctx) =>
-          ctx.execute(
-            ctx.steps
-              .bookFlight(`${args.destination}/p1`, args.customerId)
-              .compensate(async (ctx) => {
-                await ctx.execute(
-                  ctx.steps.cancelFlight(
-                    `${args.destination}/p1`,
-                    args.customerId,
-                  ),
-                );
-              }),
-          ),
+          ctx.steps
+            .bookFlight(`${args.destination}/p1`, args.customerId)
+            .compensate(async (ctx) => {
+              await ctx.steps
+                .cancelFlight(`${args.destination}/p1`, args.customerId)
+                .resolve(ctx);
+            })
+            .resolve(ctx),
         provider2: async (ctx) =>
-          ctx.execute(
-            ctx.steps
-              .bookFlight(`${args.destination}/p2`, args.customerId)
-              .compensate(async (ctx) => {
-                await ctx.execute(
-                  ctx.steps.cancelFlight(
-                    `${args.destination}/p2`,
-                    args.customerId,
-                  ),
-                );
-              })
-              .retry({ maxAttempts: 5 }),
-          ),
-      }),
-    );
+          ctx.steps
+            .bookFlight(`${args.destination}/p2`, args.customerId)
+            .compensate(async (ctx) => {
+              await ctx.steps
+                .cancelFlight(`${args.destination}/p2`, args.customerId)
+                .resolve(ctx);
+            })
+            .retry({ maxAttempts: 5 })
+            .resolve(ctx),
+      })
+      .resolve(ctx);
 
-    const hotelId = await ctx.execute(
-      ctx.scope(
+    const hotelId = await ctx
+      .scope(
         "PickHotelProvider",
         {
           primary: async (ctx) =>
-            ctx.execute(
-              ctx.steps
-                .bookHotel(args.destination, args.checkIn, args.checkOut)
-                .compensate(async (ctx) => {
-                  await ctx.execute(
-                    ctx.steps.cancelHotel(
-                      args.destination,
-                      args.checkIn,
-                      args.checkOut,
-                    ),
-                  );
-                }),
-            ),
+            ctx.steps
+              .bookHotel(args.destination, args.checkIn, args.checkOut)
+              .compensate(async (ctx) => {
+                await ctx.steps
+                  .cancelHotel(args.destination, args.checkIn, args.checkOut)
+                  .resolve(ctx);
+              })
+              .resolve(ctx),
           backup: async (ctx) =>
-            ctx.execute(
-              ctx.steps
-                .bookHotel(args.backupDestination, args.checkIn, args.checkOut)
-                .compensate(async (ctx) => {
-                  await ctx.execute(
-                    ctx.steps.cancelHotel(
-                      args.backupDestination,
-                      args.checkIn,
-                      args.checkOut,
-                    ),
-                  );
-                }),
-            ),
+            ctx.steps
+              .bookHotel(args.backupDestination, args.checkIn, args.checkOut)
+              .compensate(async (ctx) => {
+                await ctx.steps
+                  .cancelHotel(
+                    args.backupDestination,
+                    args.checkIn,
+                    args.checkOut,
+                  )
+                  .resolve(ctx);
+              })
+              .resolve(ctx),
         },
         async (ctx, { primary, backup }) => {
           const sel = ctx.select({ primary, backup });
@@ -132,16 +118,16 @@ export const flightBookingWorkflow = defineWorkflow({
             "No hotel available at primary or backup destination",
           );
         },
-      ),
-    );
+      )
+      .resolve(ctx);
 
-    await ctx.execute(
-      ctx.steps.sendEmail(
+    await ctx.steps
+      .sendEmail(
         args.customerEmail,
         "Booking Confirmed",
         `Flight: ${flight.result.id}, Hotel: ${hotelId}`,
-      ),
-    );
+      )
+      .resolve(ctx);
 
     return { flightId: flight.result.id, hotelId };
   },

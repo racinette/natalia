@@ -31,11 +31,13 @@ export const heartbeatWorkflow = defineWorkflow({
 
     await ctx.sleep(1);
 
-    await ctx.execute(ctx.steps.sendEmail(
-      "ops@example.com",
-      "Heartbeat",
-      `System alive as of ${ctx.date.toISOString()}`,
-    ));
+    await ctx.steps
+      .sendEmail(
+        "ops@example.com",
+        "Heartbeat",
+        `System alive as of ${ctx.date.toISOString()}`,
+      )
+      .resolve(ctx);
 
     await ctx.events.done.set();
 

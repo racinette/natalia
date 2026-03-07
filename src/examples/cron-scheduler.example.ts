@@ -39,10 +39,12 @@ export const dailyReportJobWorkflow = defineWorkflow({
   steps: { sendNotification },
 
   async execute(ctx, args) {
-    await ctx.execute(ctx.steps.sendNotification(
-      args.userId,
-      `Your daily report for ${args.reportDate} is ready.`,
-    ));
+    await ctx.steps
+      .sendNotification(
+        args.userId,
+        `Your daily report for ${args.reportDate} is ready.`,
+      )
+      .resolve(ctx);
   },
 });
 
@@ -115,7 +117,7 @@ export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
 
     let count = 0;
     for await (const tick of schedule) {
-      await ctx.execute(ctx.steps
+      await ctx.steps
         .sendNotification(
           args.userId,
           `Preparing daily report for ${tick.scheduledAt.toISOString()}`,
@@ -124,7 +126,8 @@ export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
           maxAttempts: 5,
           intervalSeconds: 10,
           deadlineUntil: tick.nextScheduledAt,
-        }));
+        })
+        .resolve(ctx);
 
       await ctx.childWorkflows.job.startDetached({
         idempotencyKey: `daily-report-${ctx.rng.ids.uuidv4()}`,

@@ -1,6 +1,6 @@
 import type { StandardSchemaV1 } from "./standard-schema";
 import type { CompensationContext, WorkflowContext } from "./context";
-import type { DirectAwaitable } from "./concurrency";
+import type { DirectAwaitable } from "./context";
 import type {
   JsonInput,
   JsonSchemaConstraint,

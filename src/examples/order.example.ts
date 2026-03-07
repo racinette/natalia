@@ -43,37 +43,36 @@ export const orderWorkflow = defineWorkflow({
     ctx.logger.info("Order failed — notifying customer", {
       id: ctx.workflowId,
     });
-    const result = await ctx.execute(
-      ctx.steps.sendEmail(
+    const result = await ctx.steps
+      .sendEmail(
         args.customerEmail,
         "Order Failed",
         "We were unable to complete your order. Any charges have been refunded.",
-      ),
-    );
+      )
+      .resolve(ctx);
     if (!result.ok) {
       ctx.logger.error("Failed to send failure notification");
     }
   },
 
   async execute(ctx, args) {
-    const flightId = await ctx.execute(
-      ctx.steps
-        .bookFlight(args.destination, args.customerId)
-        .compensate(async (ctx) => {
-          await ctx.execute(
-            ctx.steps.cancelFlight(args.destination, args.customerId),
-          );
-        })
-        .retry({ maxAttempts: 5, intervalSeconds: 2, backoffRate: 1.5 })
-        .failure(async (failure) => {
-          ctx.logger.warn("Flight booking failed", {
-            reason: failure.reason,
-            attempts: failure.errors.count,
-          });
-          return null;
-        })
-        .complete((data) => data.id),
-    );
+    const flightId = await ctx.steps
+      .bookFlight(args.destination, args.customerId)
+      .compensate(async (ctx) => {
+        await ctx.steps
+          .cancelFlight(args.destination, args.customerId)
+          .resolve(ctx);
+      })
+      .retry({ maxAttempts: 5, intervalSeconds: 2, backoffRate: 1.5 })
+      .failure(async (failure) => {
+        ctx.logger.warn("Flight booking failed", {
+          reason: failure.reason,
+          attempts: failure.errors.count,
+        });
+        return null;
+      })
+      .complete((data) => data.id)
+      .resolve(ctx);
 
     ctx.state.flightId = flightId;
     ctx.state.phase = "flightBooked";
@@ -86,24 +85,19 @@ export const orderWorkflow = defineWorkflow({
 
     ctx.state.phase = "approved";
 
-    const hotelId = await ctx.execute(
-      ctx.scope(
+    const hotelId = await ctx
+      .scope(
         "BookHotel",
         {
           hotel: async (ctx) =>
-            ctx.execute(
-              ctx.steps
-                .bookHotel(args.destination, args.checkIn, args.checkOut)
-                .compensate(async (ctx) => {
-                  await ctx.execute(
-                    ctx.steps.cancelHotel(
-                      args.destination,
-                      args.checkIn,
-                      args.checkOut,
-                    ),
-                  );
-                }),
-            ),
+            ctx.steps
+              .bookHotel(args.destination, args.checkIn, args.checkOut)
+              .compensate(async (ctx) => {
+                await ctx.steps
+                  .cancelHotel(args.destination, args.checkIn, args.checkOut)
+                  .resolve(ctx);
+              })
+              .resolve(ctx),
         },
         async (ctx, { hotel }) => {
           let hotelId: string | null = null;
@@ -121,8 +115,8 @@ export const orderWorkflow = defineWorkflow({
           }
           return hotelId;
         },
-      ),
-    );
+      )
+      .resolve(ctx);
 
     ctx.state.hotelId = hotelId;
     ctx.state.phase = "done";

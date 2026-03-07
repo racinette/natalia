@@ -24,41 +24,39 @@ export const scopeAllAndNestedSelectWorkflow = defineWorkflow({
   }),
 
   async execute(ctx, args) {
-    const allResult = await ctx.execute(
-      ctx.all({
+    const allResult = await ctx
+      .all({
         flight: async (ctx) =>
-          ctx.execute(
-            ctx.steps
-              .bookFlight(args.destination, args.customerId)
-              .compensate(async (ctx) => {
-                await ctx.execute(
-                  ctx.steps.cancelFlight(args.destination, args.customerId),
-                );
-              }),
-          ),
+          ctx.steps
+            .bookFlight(args.destination, args.customerId)
+            .compensate(async (ctx) => {
+              await ctx.steps
+                .cancelFlight(args.destination, args.customerId)
+                .resolve(ctx);
+            })
+            .resolve(ctx),
         quotes: async (ctx) =>
-          ctx.execute(
-            ctx.all(
+          ctx
+            .all(
               Object.fromEntries(
                 args.providers.map((provider) => [
                   provider,
                   async (innerCtx: typeof ctx) =>
-                    innerCtx.execute(
-                      innerCtx.steps
-                        .getQuote(provider, args.destination)
-                        .compensate(async (ctx) => {
-                          await ctx.execute(ctx.steps.cancelQuote(provider));
-                        }),
-                    ),
+                    innerCtx.steps
+                      .getQuote(provider, args.destination)
+                      .compensate(async (ctx) => {
+                        await ctx.steps.cancelQuote(provider).resolve(ctx);
+                      })
+                      .resolve(innerCtx),
                 ]),
               ),
-            ),
-          ),
-      }),
-    );
+            )
+            .resolve(ctx),
+      })
+      .resolve(ctx);
 
-    const winner = await ctx.execute(
-      ctx.scope(
+    const winner = await ctx
+      .scope(
         "NestedScopeSelection",
         {
           parentTimer: async (ctx) => {
@@ -66,8 +64,8 @@ export const scopeAllAndNestedSelectWorkflow = defineWorkflow({
             return "parent_timeout" as const;
           },
           childScope: async (ctx) =>
-            ctx.execute(
-              ctx.scope(
+            ctx
+              .scope(
                 "ChildScope",
                 {
                   childTimer: async (ctx) => {
@@ -76,8 +74,8 @@ export const scopeAllAndNestedSelectWorkflow = defineWorkflow({
                   },
                 },
                 async (ctx, { childTimer }) => await ctx.join(childTimer),
-              ),
-            ),
+              )
+              .resolve(ctx),
         },
         async (ctx, { parentTimer, childScope }) => {
           const sel = ctx.select({ parentTimer, childScope });
@@ -86,8 +84,8 @@ export const scopeAllAndNestedSelectWorkflow = defineWorkflow({
           }
           return "parent_timeout" as const;
         },
-      ),
-    );
+      )
+      .resolve(ctx);
 
     return {
       flightId: allResult.flight.id,

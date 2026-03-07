@@ -30,20 +30,19 @@ export const channelRaceWorkflow = defineWorkflow({
   }),
 
   async execute(ctx, args) {
-    const outcome = await ctx.execute(
-      ctx.scope(
+    const outcome = await ctx
+      .scope(
         "BookingCancelRace",
         {
           booking: async (ctx) =>
-            ctx.execute(
-              ctx.steps
-                .bookFlight(args.destination, args.customerId)
-                .compensate(async (ctx) => {
-                  await ctx.execute(
-                    ctx.steps.cancelFlight(args.destination, args.customerId),
-                  );
-                }),
-            ),
+            ctx.steps
+              .bookFlight(args.destination, args.customerId)
+              .compensate(async (ctx) => {
+                await ctx.steps
+                  .cancelFlight(args.destination, args.customerId)
+                  .resolve(ctx);
+              })
+              .resolve(ctx),
         },
         async (ctx, { booking }) => {
           // One-shot race: booking completes OR a single cancel message arrives.
@@ -65,31 +64,27 @@ export const channelRaceWorkflow = defineWorkflow({
           }
           throw new Error("Selection exhausted unexpectedly");
         },
-      ),
-    );
+      )
+      .resolve(ctx);
 
     if (outcome.outcome === "cancelled") {
       ctx.logger.info("Booking cancelled by user");
       return { outcome: "cancelled" as const, flightId: null };
     }
 
-    const cancelMsg = await ctx.execute(
-      ctx.scope(
+    const cancelMsg = await ctx
+      .scope(
         "StreamingCancelRace",
         {
           booking2: async (ctx) =>
-            ctx.execute(
-              ctx.steps
-                .bookFlight(`${args.destination}-2`, args.customerId)
-                .compensate(async (ctx) => {
-                  await ctx.execute(
-                    ctx.steps.cancelFlight(
-                      `${args.destination}-2`,
-                      args.customerId,
-                    ),
-                  );
-                }),
-            ),
+            ctx.steps
+              .bookFlight(`${args.destination}-2`, args.customerId)
+              .compensate(async (ctx) => {
+                await ctx.steps
+                  .cancelFlight(`${args.destination}-2`, args.customerId)
+                  .resolve(ctx);
+              })
+              .resolve(ctx),
         },
         async (ctx, { booking2 }) => {
           // Streaming channel: passes the raw ChannelHandle so the channel branch
@@ -110,8 +105,8 @@ export const channelRaceWorkflow = defineWorkflow({
           }
           throw new Error("Selection exhausted unexpectedly");
         },
-      ),
-    );
+      )
+      .resolve(ctx);
 
     ctx.logger.info("Second scope result", { cancelMsg });
     return { outcome: "booked" as const, flightId: outcome.flightId };

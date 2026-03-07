@@ -7,9 +7,9 @@
  *
  * Primitives are split into three tiers based on whether and how they can be awaited:
  *
- * **Tier 1 — Execute/join-only (`DeterministicAwaitable<T, TRoot>`):**
+ * **Tier 1 — Resolve-only (`DeterministicAwaitable<T, TRoot>`):**
  * Steps, child workflows, scope/all/first results, and BranchHandles.
- * NOT directly awaitable — must be resolved via `ctx.execute()` or `ctx.join()`.
+ * NOT directly awaitable — must be resolved via `handle.resolve(ctx)` or `ctx.join(handle)`.
  * Enforces at compile time that BranchHandle scope paths are accessible from the current
  * scope, and that execution-root handles cannot be resolved from CompensationContext.
  *
@@ -29,19 +29,21 @@
  * - Workflows: Long-running, durable processes with happy-path-only code
  * - Steps: Durable, retriable operations — calling a step returns a StepCall<T> opaque handle.
  *     Chain builders before executing: .compensate(cb), .retry(policy), .failure(cb), .complete(cb)
- *     Resolve via: `await ctx.execute(ctx.steps.myStep(args))`
+ *     Resolve via: `await ctx.steps.myStep(args).resolve(ctx)`
  *
- * - ctx.execute(handle): Resolves a lazy Tier-1 DeterministicAwaitable.
+ * - handle.resolve(ctx): Resolves a lazy Tier-1 DeterministicAwaitable.
  *     Available on ALL contexts (WorkflowContext, CompensationContext,
  *     WorkflowConcurrencyContext, CompensationConcurrencyContext).
  *     Use for steps, child workflows, scope(), all(), first() results.
- *     Execution-context handles cannot be executed from CompensationContext, and vice versa.
+ *     Execution-context handles cannot be resolved from CompensationContext, and vice versa —
+ *     enforced at compile time via the ExecutionResolver / CompensationResolver marker interfaces.
  *
  * - ctx.join(handle): Resolves an already-running BranchHandle.
  *     Available ONLY on concurrency contexts (WorkflowConcurrencyContext,
- *     CompensationConcurrencyContext). Enforces at compile time that the
- *     handle's scope path is a prefix of the current scope path.
- *     Use ctx.execute() for lazy handles (steps, child workflows), not ctx.join().
+ *     CompensationConcurrencyContext) and on base contexts (WorkflowContext,
+ *     CompensationContext) for joining ancestor-scope handles from within branch closures.
+ *     Enforces at compile time that the handle's scope path is a prefix of the current scope path.
+ *     Use `handle.resolve(ctx)` for lazy handles (steps, child workflows), not ctx.join().
  *
  * - Scopes: Structured concurrency — concurrent branches run as closures inside
  *     ctx.scope(scopeName, entries, callback).
@@ -49,9 +51,9 @@
  *     Each `ctx` is a path-specialized base context (WorkflowContext or CompensationContext)
  *     with scope path `AppendBranchKey<AppendScopeName<ParentPath, Name>, K>`.
  *     This enables compile-time tracking of which branches created which nested scope handles.
- *     Fan-out: use `ctx.execute(ctx.all({...}))` inside closures.
+ *     Fan-out: use `ctx.all({...}).resolve(ctx)` inside closures.
  *     scope() ALWAYS returns DeterministicAwaitable<R, Root> on all contexts.
- *     Resolve: `await ctx.execute(ctx.scope("Name", entries, callback))`
+ *     Resolve: `await ctx.scope("Name", entries, callback).resolve(ctx)`
  *
  * - BranchHandle: Opaque handle produced by scope entries — passed to select() or resolved
  *     via ctx.join() inside the scope callback.
@@ -90,15 +92,15 @@
  *
  * - all: `ctx.all(entries)` for "run all and collect results".
  *     Entries are closure-only: each is `(ctx) => Promise<T>`.
- *     Resolve: `await ctx.execute(ctx.all(entries))`.
+ *     Resolve: `await ctx.all(entries).resolve(ctx)`.
  *
  * - first: `ctx.first(entries)` for "run all, return the first to complete".
  *     Entries are closure-only. Returns `DeterministicAwaitable<{ key, result }>`.
- *     Resolve: `await ctx.execute(ctx.first(entries))` → `{ key: K; result: T }`.
+ *     Resolve: `await ctx.first(entries).resolve(ctx)` → `{ key: K; result: T }`.
  *
  * - Child workflows: ctx.childWorkflows.* — structured invocation (WorkflowCall<T> opaque handle).
  *     Supports .compensate(), .failure(), .complete() in result mode.
- *     Resolve via: `await ctx.execute(ctx.childWorkflows.myWorkflow(opts).complete(cb))`.
+ *     Resolve via: `await ctx.childWorkflows.myWorkflow(opts).complete(cb).resolve(ctx)`.
  *     Use `.startDetached(opts)` for fire-and-forget start — returns `DirectAwaitable<ForeignWorkflowHandle>`,
  *     directly awaitable: `const handle = await ctx.childWorkflows.myWorkflow.startDetached(opts)`.
  * - Foreign workflows: ctx.foreignWorkflows.* — message-only handles to existing instances.

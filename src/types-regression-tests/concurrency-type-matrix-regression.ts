@@ -98,7 +98,7 @@ const CancelMessage = z.object({
  * Regression matrix for the new concurrency API.
  *
  * Validates:
- * - ctx.execute() for steps, child workflows, scope(), all(), first()
+ * - .resolve(ctx) for steps, child workflows, scope(), all(), first()
  * - ctx.join() is only available on concurrency contexts, not base contexts
  * - ctx.join() accepts BranchHandle, rejects StepCall
  * - scope entries' branchCtx is typed as path-specialized WorkflowContext
@@ -121,14 +121,12 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
   result: z.object({ ok: z.boolean() }),
 
   async execute(ctx, args) {
-    // WorkflowAwaitable (sleep, sleepUntil) is directly awaitable — no ctx.execute() needed.
+    // WorkflowAwaitable (sleep, sleepUntil) is directly awaitable — no .resolve(ctx) needed.
     const sleepResult = await ctx.sleep(30);
     type _SleepResultIsVoid = Assert<IsEqual<typeof sleepResult, void>>;
 
-    // ctx.execute() resolves a DeterministicAwaitable (step call) to its inner type.
-    const stepResult = await ctx.execute(
-      ctx.steps.bookFlight(args.destination, args.customerId),
-    );
+    // .resolve(ctx) resolves a DeterministicAwaitable (step call) to its inner type.
+    const stepResult = await ctx.steps.bookFlight(args.destination, args.customerId).resolve(ctx);
     type _StepResultNoAny = Assert<
       IsAny<typeof stepResult> extends false ? true : false
     >;
@@ -149,7 +147,7 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
     // Base context has .join() — enforces scope-path prefix check
     await ctx.join(ctx.steps.bookFlight(args.destination, args.customerId));
 
-    // ctx.execute() with child workflow
+    // .resolve(ctx) with child workflow
     const campaignHandle = await ctx.childWorkflows.campaign.startDetached({
       idempotencyKey: "test-campaign",
       args: { userId: "user-1" },
@@ -194,19 +192,15 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
     ctx.select({ cancel: ctx.channels.cancel });
 
     // ctx.all() with closure entries
-    const allResults = await ctx.execute(
-      ctx.all({
+    const allResults = await ctx.all({
         timer: async (_branchCtx) => {
           await ctx.sleep(1);
           return "timed_out" as const;
         },
         booking: async (branchCtx) => {
-          return branchCtx.execute(
-            branchCtx.steps.bookFlight(args.destination, args.customerId),
-          );
+          return branchCtx.steps.bookFlight(args.destination, args.customerId).resolve(branchCtx);
         },
-      }),
-    );
+      }).resolve(ctx);
     type _AllResultNoAny = Assert<
       IsAny<typeof allResults> extends false ? true : false
     >;
@@ -218,19 +212,15 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
     >;
 
     // ctx.first() return type is discriminated { key, result } union
-    const firstResult = await ctx.execute(
-      ctx.first({
+    const firstResult = await ctx.first({
         timer: async (_branchCtx) => {
           await ctx.sleep(1);
           return "timed_out" as const;
         },
         booking: async (branchCtx) => {
-          return branchCtx.execute(
-            branchCtx.steps.bookFlight(args.destination, args.customerId),
-          );
+          return branchCtx.steps.bookFlight(args.destination, args.customerId).resolve(branchCtx);
         },
-      }),
-    );
+      }).resolve(ctx);
     type _FirstResultNoAny = Assert<
       IsAny<typeof firstResult> extends false ? true : false
     >;
@@ -247,8 +237,7 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
     // WorkflowContext with AppendBranchKey path
     // ==========================================================================
 
-    await ctx.execute(
-      ctx.scope(
+    await ctx.scope(
         "BranchCtxTypingRegression",
         {
           timer: async (branchCtx) => {
@@ -258,17 +247,15 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
                 ? true
                 : false
             >;
-            // branchCtx has both execute() and join()
-            type _HasExecute = Assert<"execute" extends keyof typeof branchCtx ? true : false>;
+            // branchCtx has join() but not execute() — use handle.resolve(ctx)
+            type _NoExecute = Assert<"execute" extends keyof typeof branchCtx ? false : true>;
             type _HasJoin = Assert<"join" extends keyof typeof branchCtx ? true : false>;
             branchCtx.join;
             await branchCtx.sleep(5);
             return "timed_out" as const;
           },
           booking: async (branchCtx) =>
-            branchCtx.execute(
-              branchCtx.steps.bookFlight(args.destination, args.customerId),
-            ),
+            branchCtx.steps.bookFlight(args.destination, args.customerId).resolve(branchCtx),
         },
         async (ctx, { timer, booking }) => {
           // scope() on concurrency context returns DeterministicAwaitable (not BranchHandle)
@@ -290,10 +277,8 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
           >;
           type _TimerLiteral = Assert<IsEqual<typeof timerValue, "timed_out">>;
 
-          // ctx.execute() also works for lazy handles (steps, etc.)
-          const bookingResult = await ctx.execute(
-            ctx.steps.bookFlight(args.destination, args.customerId),
-          );
+          // .resolve(ctx) also works for lazy handles (steps, etc.)
+          const bookingResult = await ctx.steps.bookFlight(args.destination, args.customerId).resolve(ctx);
           type _BookingNotAny = Assert<
             IsAny<typeof bookingResult> extends false ? true : false
           >;
@@ -365,8 +350,7 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
             break;
           }
         },
-      ),
-    );
+      ).resolve(ctx);
 
     // ==========================================================================
     // ctx.join() is NOT available on base WorkflowContext (only on concurrency ctx)
@@ -385,7 +369,7 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
     );
     ctx.addCompensation(async (compCtx) => {
       // @ts-expect-error execution-root handle cannot be executed from CompensationContext
-      await compCtx.execute(executionStepHandle);
+      await executionStepHandle.resolve(compCtx);
 
       // Base CompensationContext has both execute() and join()
       compCtx.join;
@@ -395,10 +379,10 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
         args.customerId,
       );
       // @ts-expect-error compensation-root handle cannot be executed from WorkflowContext
-      await ctx.execute(compStepHandle);
+      await compStepHandle.resolve(ctx);
 
       // Correct: execute from compensation context.
-      const compResult = await compCtx.execute(compStepHandle);
+      const compResult = await compStepHandle.resolve(compCtx);
       type _CompResultNoAny = Assert<
         IsAny<typeof compResult> extends false ? true : false
       >;
@@ -415,19 +399,15 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
       }
 
       // CompensationContext also has all() and first()
-      await compCtx.execute(
-        compCtx.all({
+      await compCtx.all({
           step1: async (branchCtx) =>
-            branchCtx.execute(branchCtx.steps.cancelFlight(args.destination, args.customerId)),
-        }),
-      );
+            branchCtx.steps.cancelFlight(args.destination, args.customerId).resolve(branchCtx),
+        }).resolve(compCtx);
 
-      const firstComp = await compCtx.execute(
-        compCtx.first({
+      const firstComp = await compCtx.first({
           step1: async (branchCtx) =>
-            branchCtx.execute(branchCtx.steps.cancelFlight(args.destination, args.customerId)),
-        }, null),
-      );
+            branchCtx.steps.cancelFlight(args.destination, args.customerId).resolve(branchCtx),
+        }, null).resolve(compCtx);
       type _FirstCompKey = Assert<
         IsAny<typeof firstComp> extends false ? true : false
       >;
@@ -437,8 +417,7 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
     // scope() on concurrency context: returns DeterministicAwaitable always
     // ==========================================================================
 
-    await ctx.execute(
-      ctx.scope(
+    await ctx.scope(
         "ScopeReturnTypeRegression",
         {},
         async (concurrencyCtx) => {
@@ -454,25 +433,21 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
           // NOT a BranchHandle (no scopePathBrand)
           // We just check it's DeterministicAwaitable and not anything we'd
           // erroneously use as a branch handle directly with ctx.select()
-          const result = await concurrencyCtx.execute(innerScope);
+          const result = await innerScope.resolve(concurrencyCtx);
           type _InnerResultIsDone = Assert<IsEqual<typeof result, "done">>;
         },
-      ),
-    );
+      ).resolve(ctx);
 
     // ==========================================================================
     // CompensationConcurrencyContext naming check
     // ==========================================================================
 
     ctx.addCompensation(async (compCtx) => {
-      await compCtx.execute(
-        compCtx.scope(
+      await compCtx.scope(
           "CompMatrix",
           {
             cancelAttempt: async (branchCtx) =>
-              branchCtx.execute(
-                branchCtx.steps.cancelFlight(args.destination, args.customerId),
-              ),
+              branchCtx.steps.cancelFlight(args.destination, args.customerId).resolve(branchCtx),
             timer: async (_branchCtx) => {
               await compCtx.sleep(1);
               return "done" as const;
@@ -485,8 +460,8 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
                 ? true
                 : false
             >;
-            // Has execute() and join()
-            type _HasExecute = Assert<"execute" extends keyof typeof ctx ? true : false>;
+            // Has join() but not execute() — use handle.resolve(ctx)
+            type _NoExecute = Assert<"execute" extends keyof typeof ctx ? false : true>;
             type _HasJoin = Assert<"join" extends keyof typeof ctx ? true : false>;
             // Has select() and match()
             type _HasSelect = Assert<"select" extends keyof typeof ctx ? true : false>;
@@ -532,26 +507,20 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
               break;
             }
 
-            const compAll = await ctx.execute(
-              ctx.all({
+            const compAll = await ctx.all({
                 cancelAttempt: async (branchCtx) =>
-                  branchCtx.execute(
-                    branchCtx.steps.cancelFlight(args.destination, args.customerId),
-                  ),
-              }),
-            );
+                  branchCtx.steps.cancelFlight(args.destination, args.customerId).resolve(branchCtx),
+              }).resolve(ctx);
             type _CompAllNoAny = Assert<
               IsAny<typeof compAll> extends false ? true : false
             >;
 
-            const compFirst = await ctx.execute(
-              ctx.first({
+            const compFirst = await ctx.first({
                 timer: async (_branchCtx) => {
                   await compCtx.sleep(1);
                   return "done" as const;
                 },
-              }, null),
-            );
+              }, null).resolve(ctx);
             type _CompFirstNoAny = Assert<
               IsAny<typeof compFirst> extends false ? true : false
             >;
@@ -559,8 +528,7 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
               IsEqual<typeof compFirst, { key: "timer"; result: "done" } | null>
             >;
           },
-        ),
-      );
+        ).resolve(compCtx);
     });
 
     return { ok: true };

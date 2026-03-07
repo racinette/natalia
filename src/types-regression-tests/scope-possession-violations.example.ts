@@ -36,49 +36,38 @@ export const scopePossessionViolationsWorkflow = defineWorkflow({
       [ScopeDivider, "ParentScope", ScopeDivider, "ChildScope"]
     >;
 
-    await ctx.execute(
-      ctx.scope(
+    await ctx.scope(
         "ParentScope",
         {
           parentTicket: async (branchCtx) =>
-            branchCtx.execute(
-              branchCtx.steps
+            branchCtx.steps
                 .bookFlight(`${args.destination}-parent`, args.customerId)
                 .compensate(async (compCtx) => {
-                  await compCtx.execute(
-                    compCtx.steps.cancelFlight(
+                  await compCtx.steps.cancelFlight(
                       `${args.destination}-parent`,
                       args.customerId,
-                    ),
-                  );
-                }),
-            ),
+                    ).resolve(compCtx);
+                }).resolve(branchCtx),
         },
         async (ctx, { parentTicket }) => {
-          await ctx.execute(
-            ctx.scope(
+          await ctx.scope(
               "ChildScope",
               {
                 childTicket: async (branchCtx) =>
-                  branchCtx.execute(
-                    branchCtx.steps
+                  branchCtx.steps
                       .bookFlight(`${args.destination}-child`, args.customerId)
                       .compensate(async (compCtx) => {
-                        await compCtx.execute(
-                          compCtx.steps.cancelFlight(
+                        await compCtx.steps.cancelFlight(
                             `${args.destination}-child`,
                             args.customerId,
-                          ),
-                        );
-                      }),
-                  ),
+                          ).resolve(compCtx);
+                      }).resolve(branchCtx),
               },
               async (ctx, { childTicket }) => {
                 childOwnedHandle = childTicket;
                 await ctx.join(childTicket);
               },
-            ),
-          );
+            ).resolve(ctx);
 
           // Wrong: descendant-owned handle used from parent scope context.
           const illegalSelection = ctx.select({
@@ -90,8 +79,7 @@ export const scopePossessionViolationsWorkflow = defineWorkflow({
             break;
           }
         },
-      ),
-    );
+      ).resolve(ctx);
 
     // -------------------------------------------------------------------------
     // 2) Handle leaked from one sibling scope into another sibling scope.
@@ -101,44 +89,35 @@ export const scopePossessionViolationsWorkflow = defineWorkflow({
       [ScopeDivider, "SiblingScopeA"]
     >;
 
-    await ctx.execute(
-      ctx.scope(
+    await ctx.scope(
         "SiblingScopeA",
         {
           a: async (branchCtx) =>
-            branchCtx.execute(
-              branchCtx.steps.bookFlight(`${args.destination}-a`, args.customerId),
-            ),
+            branchCtx.steps.bookFlight(`${args.destination}-a`, args.customerId).resolve(branchCtx),
         },
         async (ctx, { a }) => {
           siblingAHandle = a;
           await ctx.join(a);
         },
-      ),
-    );
+      ).resolve(ctx);
 
-    await ctx.execute(
-      ctx.scope(
+    await ctx.scope(
         "SiblingScopeB",
         {
           b: async (branchCtx) =>
-            branchCtx.execute(
-              branchCtx.steps.bookFlight(`${args.destination}-b`, args.customerId),
-            ),
+            branchCtx.steps.bookFlight(`${args.destination}-b`, args.customerId).resolve(branchCtx),
         },
         async (ctx, { b }) => {
           // Wrong: handle from sibling scope A consumed inside sibling scope B.
           // @ts-ignore Intentional misuse for docs: sibling handle leaked across scopes.
           await ctx.join(siblingAHandle);
         },
-      ),
-    );
+      ).resolve(ctx);
 
     // -------------------------------------------------------------------------
     // 3) Child scope reuses an ancestor scope name.
     // -------------------------------------------------------------------------
-    await ctx.execute(
-      ctx.scope(
+    await ctx.scope(
         "CollisionParent",
         {
           parentTimer: async (_branchCtx) => {
@@ -149,8 +128,7 @@ export const scopePossessionViolationsWorkflow = defineWorkflow({
         async (ctx, { parentTimer }) => {
           // Wrong: child scope name collides with an ancestor name.
           // @ts-ignore Intentional misuse for docs: descendant scope name collision.
-          await ctx.execute(
-            ctx.scope(
+          await ctx.scope(
               // @ts-ignore Intentional misuse for docs: colliding scope name.
               "CollisionParent",
               {
@@ -162,13 +140,11 @@ export const scopePossessionViolationsWorkflow = defineWorkflow({
               async (ctx, { childTimer }) => {
                 await ctx.join(childTimer);
               },
-            ),
-          );
+            ).resolve(ctx);
 
           await ctx.join(parentTimer);
         },
-      ),
-    );
+      ).resolve(ctx);
 
     return { ok: true };
   },

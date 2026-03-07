@@ -32,34 +32,33 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
   },
 
   async execute(ctx, args) {
-    const receiptId = await ctx.execute(
-      ctx.childWorkflows
-        .payment({
-          idempotencyKey: `payment-${ctx.rng.ids.uuidv4()}`,
-          metadata: {
-            tenantId: `tenant-${args.customerId}`,
-            correlationId: `corr-payment-${args.customerId}`,
-          },
-          seed: `payment-seed-${args.customerId}`,
-          args: { customerId: args.customerId, amount: args.amount },
-        })
-        .compensate(async (ctx, _result) => {
-          ctx.logger.info("Triggering payment child compensation");
-        })
-        .failure(async (failure) => {
-          if (failure.status === "failed") {
-            ctx.logger.error("Payment workflow failed", {
-              error: failure.error.message,
-            });
-          } else {
-            ctx.logger.error("Payment workflow terminated", {
-              reason: failure.reason,
-            });
-          }
-          return null;
-        })
-        .complete((data) => data.receiptId),
-    );
+    const receiptId = await ctx.childWorkflows
+      .payment({
+        idempotencyKey: `payment-${ctx.rng.ids.uuidv4()}`,
+        metadata: {
+          tenantId: `tenant-${args.customerId}`,
+          correlationId: `corr-payment-${args.customerId}`,
+        },
+        seed: `payment-seed-${args.customerId}`,
+        args: { customerId: args.customerId, amount: args.amount },
+      })
+      .compensate(async (ctx, _result) => {
+        ctx.logger.info("Triggering payment child compensation");
+      })
+      .failure(async (failure) => {
+        if (failure.status === "failed") {
+          ctx.logger.error("Payment workflow failed", {
+            error: failure.error.message,
+          });
+        } else {
+          ctx.logger.error("Payment workflow terminated", {
+            reason: failure.reason,
+          });
+        }
+        return null;
+      })
+      .complete((data) => data.receiptId)
+      .resolve(ctx);
 
     const campaignHandle =
       await ctx.childWorkflows.campaignWorker.startDetached({

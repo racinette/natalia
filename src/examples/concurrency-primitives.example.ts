@@ -155,69 +155,67 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
       );
     }
 
-    const decision = await ctx.execute(
-      ctx.scope(
+    const decision = await ctx
+      .scope(
         "PlanTrip",
         {
           flights: async (ctx) =>
-            ctx.execute(
-              ctx.all(
+            ctx
+              .all(
                 Object.fromEntries(
                   args.flightProviders.map((provider) => [
                     provider,
                     async (innerCtx) =>
-                      innerCtx.execute(
-                        innerCtx.steps
-                          .searchFlightOptions(
-                            provider,
-                            args.origin,
-                            args.destination,
-                          )
-                          .compensate(async (ctx, result) => {
-                            if (result.status !== "complete") return;
-                            for (const itinerary of result.data.itineraries) {
-                              await ctx.execute(
-                                ctx.steps.cancelFlightItinerary(
-                                  provider,
-                                  itinerary.itineraryId,
-                                ),
-                              );
-                            }
-                          }),
-                      ),
+                      innerCtx.steps
+                        .searchFlightOptions(
+                          provider,
+                          args.origin,
+                          args.destination,
+                        )
+                        .compensate(async (ctx, result) => {
+                          if (result.status !== "complete") return;
+                          for (const itinerary of result.data.itineraries) {
+                            await ctx.steps
+                              .cancelFlightItinerary(
+                                provider,
+                                itinerary.itineraryId,
+                              )
+                              .resolve(ctx);
+                          }
+                        })
+                        .resolve(innerCtx),
                   ]),
                 ),
-              ),
-            ),
+              )
+              .resolve(ctx),
           hotels: async (ctx) =>
-            ctx.execute(
-              ctx.all(
+            ctx
+              .all(
                 Object.fromEntries(
                   args.hotelProviders.map((provider) => [
                     provider,
                     async (innerCtx) =>
-                      innerCtx.execute(
-                        innerCtx.steps
-                          .reserveHotel(
-                            provider,
-                            args.destination,
-                            args.checkIn,
-                            args.checkOut,
-                          )
-                          .compensate(async (ctx, result) => {
-                            if (result.status !== "complete") return;
-                            await ctx.execute(
-                              ctx.steps.cancelHotelReservation(
-                                provider,
-                                result.data.reservationId,
-                              ),
-                            );
-                          }),
-                      ),
+                      innerCtx.steps
+                        .reserveHotel(
+                          provider,
+                          args.destination,
+                          args.checkIn,
+                          args.checkOut,
+                        )
+                        .compensate(async (ctx, result) => {
+                          if (result.status !== "complete") return;
+                          await ctx.steps
+                            .cancelHotelReservation(
+                              provider,
+                              result.data.reservationId,
+                            )
+                            .resolve(ctx);
+                        })
+                        .resolve(innerCtx),
                   ]),
                 ),
-              ),
-            ),
+              )
+              .resolve(ctx),
         },
         async (ctx, { flights, hotels }) => {
           const flightResults = await ctx.join(flights);
@@ -314,31 +312,30 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
           }
 
           const totalPrice = bestFlight.price + selectedHotel.price;
-          const paymentReceiptId = await ctx.execute(
-            ctx.childWorkflows
-              .payment({
-                idempotencyKey: `payment-${ctx.rng.ids.uuidv4()}`,
-                metadata: {
-                  tenantId: `tenant-${args.customerId}`,
-                  correlationId: `corr-payment-${args.customerId}`,
-                },
-                seed: `trip-payment-${args.customerId}`,
-                args: { customerId: args.customerId, amount: totalPrice },
-              })
-              .failure(async (failure) => {
-                if (failure.status === "failed") {
-                  ctx.logger.error("Payment workflow failed", {
-                    error: failure.error.message,
-                  });
-                } else {
-                  ctx.logger.error("Payment workflow terminated", {
-                    reason: failure.reason,
-                  });
-                }
-                return null;
-              })
-              .complete((data) => data.receiptId),
-          );
+          const paymentReceiptId = await ctx.childWorkflows
+            .payment({
+              idempotencyKey: `payment-${ctx.rng.ids.uuidv4()}`,
+              metadata: {
+                tenantId: `tenant-${args.customerId}`,
+                correlationId: `corr-payment-${args.customerId}`,
+              },
+              seed: `trip-payment-${args.customerId}`,
+              args: { customerId: args.customerId, amount: totalPrice },
+            })
+            .failure(async (failure) => {
+              if (failure.status === "failed") {
+                ctx.logger.error("Payment workflow failed", {
+                  error: failure.error.message,
+                });
+              } else {
+                ctx.logger.error("Payment workflow terminated", {
+                  reason: failure.reason,
+                });
+              }
+              return null;
+            })
+            .complete((data) => data.receiptId)
+            .resolve(ctx);
 
           const campaign =
             await ctx.childWorkflows.campaignWorker.startDetached({
@@ -371,8 +368,8 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
             candidateCount,
           };
         },
-      ),
-    );
+      )
+      .resolve(ctx);
 
     return decision;
   },

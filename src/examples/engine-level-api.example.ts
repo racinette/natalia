@@ -122,17 +122,16 @@ export async function clientApiShowcase(
     signal: AbortSignal.timeout(180_000),
   });
   if (!compensationResult.ok && compensationResult.status === "failed") {
-    console.error("Compensation phase failed:", compensationResult.error.message);
+    console.error(
+      "Compensation phase failed:",
+      compensationResult.error.message,
+    );
   } else if (
     !compensationResult.ok &&
     compensationResult.status === "terminated"
   ) {
-    console.error(
-      "Compensation phase terminated:",
-      compensationResult.reason,
-    );
+    console.error("Compensation phase terminated:", compensationResult.reason);
   }
-
 }
 
 /**

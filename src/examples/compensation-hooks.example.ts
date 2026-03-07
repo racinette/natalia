@@ -78,28 +78,27 @@ export const compensationHooksWorkflow = defineWorkflow({
   afterCompensate: async ({ ctx, args }) => {
     ctx.logger.info("All compensations done");
 
-    await ctx.execute(
-      ctx.scope(
+    await ctx
+      .scope(
         "CompensationNotifications",
         {
           logEntry: async (ctx) =>
-            ctx.execute(
-              ctx.steps.sendEmail(
+            ctx.steps
+              .sendEmail(
                 args.notificationEmail,
                 "Order Compensated",
                 `Your order to ${args.destination} was cancelled and refunded.`,
-              ),
-            ),
+              )
+              .resolve(ctx),
           auditEntry: async (ctx) =>
-            ctx.execute(
-              ctx.steps
-                .sendEmail(
-                  "audit@example.com",
-                  "Compensation Complete",
-                  `Workflow ${ctx.workflowId} fully compensated.`,
-                )
-                .retry({ maxAttempts: 5 }),
-            ),
+            ctx.steps
+              .sendEmail(
+                "audit@example.com",
+                "Compensation Complete",
+                `Workflow ${ctx.workflowId} fully compensated.`,
+              )
+              .retry({ maxAttempts: 5 })
+              .resolve(ctx),
         },
         async (ctx, { logEntry, auditEntry }) => {
           const sel = ctx.select({ logEntry, auditEntry });
@@ -120,8 +119,8 @@ export const compensationHooksWorkflow = defineWorkflow({
             ctx.logger.warn("Audit notification failed to send");
           }
         },
-      ),
-    );
+      )
+      .resolve(ctx);
 
     await ctx.streams.compLog.write({
       msg: "Compensation finalized",
@@ -131,120 +130,111 @@ export const compensationHooksWorkflow = defineWorkflow({
   },
 
   async execute(ctx, args) {
-    await ctx.execute(
-      ctx.steps
-        .bookFlight(args.destination, args.customerId)
-        .compensate(async (ctx) => {
-          let result = await ctx.execute(
-            ctx.steps
-              .cancelFlight(args.destination, args.customerId)
-              .retry({ maxAttempts: 15, intervalSeconds: 10, backoffRate: 2 }),
-          );
+    await ctx.steps
+      .bookFlight(args.destination, args.customerId)
+      .compensate(async (ctx) => {
+        let result = await ctx.steps
+          .cancelFlight(args.destination, args.customerId)
+          .retry({ maxAttempts: 15, intervalSeconds: 10, backoffRate: 2 })
+          .resolve(ctx);
 
-          if (!result.ok) {
-            ctx.logger.error("Flight cancellation failed after retries", {
-              reason: result.reason,
-            });
+        if (!result.ok) {
+          ctx.logger.error("Flight cancellation failed after retries", {
+            reason: result.reason,
+          });
 
-            // Human-in-the-loop flow:
-            // Compensation cannot be compensated itself, so we must explicitly
-            // handle failure paths. Emit durable signals/logs and wait for operator input.
-            await ctx.events.manualInterventionRequested.set();
-            await ctx.streams.interventionLog.write({
-              kind: "requested",
-              note: `cancelFlight failed (${result.reason}); waiting for operator resolution`,
-              ts: ctx.timestamp,
-            });
+          // Human-in-the-loop flow:
+          // Compensation cannot be compensated itself, so we must explicitly
+          // handle failure paths. Emit durable signals/logs and wait for operator input.
+          await ctx.events.manualInterventionRequested.set();
+          await ctx.streams.interventionLog.write({
+            kind: "requested",
+            note: `cancelFlight failed (${result.reason}); waiting for operator resolution`,
+            ts: ctx.timestamp,
+          });
 
-            for await (const resolution of ctx.channels.operatorResolution) {
-              if (resolution.action === "retry_cancel") {
-                result = await ctx.execute(
-                  ctx.steps
-                    .cancelFlight(args.destination, args.customerId)
-                    .retry({ maxAttempts: 5, intervalSeconds: 5 }),
-                );
+          for await (const resolution of ctx.channels.operatorResolution) {
+            if (resolution.action === "retry_cancel") {
+              result = await ctx.steps
+                .cancelFlight(args.destination, args.customerId)
+                .retry({ maxAttempts: 5, intervalSeconds: 5 })
+                .resolve(ctx);
 
-                if (result.ok) {
-                  await ctx.events.manualInterventionResolved.set();
-                  await ctx.streams.interventionLog.write({
-                    kind: "resolved",
-                    note: `operator requested retry and cancellation succeeded: ${resolution.note}`,
-                    ts: ctx.timestamp,
-                  });
-                  break;
-                }
-
-                await ctx.streams.interventionLog.write({
-                  kind: "retry_failed",
-                  note: `operator retry failed (${result.reason}): ${resolution.note}`,
-                  ts: ctx.timestamp,
-                });
-                continue;
-              }
-
-              if (resolution.action === "confirm_resolved") {
+              if (result.ok) {
                 await ctx.events.manualInterventionResolved.set();
                 await ctx.streams.interventionLog.write({
                   kind: "resolved",
-                  note: `operator confirmed externally resolved: ${resolution.note}`,
+                  note: `operator requested retry and cancellation succeeded: ${resolution.note}`,
                   ts: ctx.timestamp,
                 });
                 break;
               }
 
               await ctx.streams.interventionLog.write({
-                kind: "aborted",
-                note: `operator aborted compensation path: ${resolution.note}`,
+                kind: "retry_failed",
+                note: `operator retry failed (${result.reason}): ${resolution.note}`,
+                ts: ctx.timestamp,
+              });
+              continue;
+            }
+
+            if (resolution.action === "confirm_resolved") {
+              await ctx.events.manualInterventionResolved.set();
+              await ctx.streams.interventionLog.write({
+                kind: "resolved",
+                note: `operator confirmed externally resolved: ${resolution.note}`,
                 ts: ctx.timestamp,
               });
               break;
             }
+
+            await ctx.streams.interventionLog.write({
+              kind: "aborted",
+              note: `operator aborted compensation path: ${resolution.note}`,
+              ts: ctx.timestamp,
+            });
+            break;
           }
-        }),
-    );
+        }
+      })
+      .resolve(ctx);
 
-    await ctx.execute(
-      ctx.steps
-        .bookHotel(args.destination, args.checkIn, args.checkOut)
-        .compensate(async (ctx) => {
-          await ctx.execute(
-            ctx.scope(
-              "HotelCompensationBranches",
-              {
-                cancel: async (ctx) =>
-                  ctx.execute(
-                    ctx.steps
-                      .cancelHotel(
-                        args.destination,
-                        args.checkIn,
-                        args.checkOut,
-                      )
-                      .retry({ maxAttempts: 10 }),
-                  ),
-                notify: async (ctx) =>
-                  ctx.execute(
-                    ctx.steps.sendEmail(
-                      args.notificationEmail,
-                      "Hotel Cancelled",
-                      `Hotel booking for ${args.destination} was cancelled.`,
-                    ),
-                  ),
-              },
-              async (ctx, { cancel, notify }) => {
-                const sel = ctx.select({ cancel, notify });
-                for await (const _event of ctx.match(sel)) {
-                  ctx.logger.debug("Compensation branch resolved");
-                }
-              },
-            ),
-          );
+    await ctx.steps
+      .bookHotel(args.destination, args.checkIn, args.checkOut)
+      .compensate(async (ctx) => {
+        await ctx
+          .scope(
+            "HotelCompensationBranches",
+            {
+              cancel: async (ctx) =>
+                ctx.steps
+                  .cancelHotel(args.destination, args.checkIn, args.checkOut)
+                  .retry({ maxAttempts: 10 })
+                  .resolve(ctx),
+              notify: async (ctx) =>
+                ctx.steps
+                  .sendEmail(
+                    args.notificationEmail,
+                    "Hotel Cancelled",
+                    `Hotel booking for ${args.destination} was cancelled.`,
+                  )
+                  .resolve(ctx),
+            },
+            async (ctx, { cancel, notify }) => {
+              const sel = ctx.select({ cancel, notify });
+              for await (const _event of ctx.match(sel)) {
+                ctx.logger.debug("Compensation branch resolved");
+              }
+            },
+          )
+          .resolve(ctx);
 
-          await ctx.streams.compLog.write({
-            msg: `Hotel compensation complete for ${args.destination}`,
-            ts: ctx.timestamp,
-          });
-        }),
-    );
+        await ctx.streams.compLog.write({
+          msg: `Hotel compensation complete for ${args.destination}`,
+          ts: ctx.timestamp,
+        });
+      })
+      .resolve(ctx);
 
     throw new Error("Intentional failure to trigger compensation demo");
   },
