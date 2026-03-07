@@ -66,6 +66,25 @@ export interface WorkflowEngineConfig<
   gcIntervalSeconds?: number | null;
 
   /**
+   * Default passivation threshold for workflow instances that do not specify
+   * their own `evictAfterSeconds`.
+   *
+   * When a workflow is suspended (sleeping, awaiting a step, child workflow,
+   * or channel), the engine may evict it from memory once it has been idle for
+   * at least this many seconds, then replay it when the awaited operation
+   * resolves.
+   *
+   * - If a positive number: use as the engine-wide default idle threshold.
+   * - If `null`: never evict by default (all workflows stay resident unless
+   *   they individually opt in via `evictAfterSeconds`).
+   * - If `undefined`: same as `null` — no eviction unless the workflow definition
+   *   explicitly sets `evictAfterSeconds`.
+   *
+   * @default undefined (no eviction)
+   */
+  defaultEvictAfterSeconds?: number | null;
+
+  /**
    * Polling intervals for notifications fallback.
    */
   polling?: {

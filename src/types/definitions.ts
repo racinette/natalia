@@ -522,6 +522,21 @@ export interface WorkflowDefinition<
   readonly retention?: number | RetentionSettings;
 
   /**
+   * Passivation threshold for this workflow definition.
+   *
+   * When a workflow instance is suspended (e.g. sleeping, awaiting a step or
+   * child workflow), the engine may evict it from memory and replay it later
+   * once the awaited operation resolves — avoiding holding idle state in RAM.
+   *
+   * - If a positive number: evict after the workflow has been idle for at least
+   *   this many seconds. The engine uses this as a hint; actual eviction timing
+   *   may vary based on scheduler load.
+   * - If `null`: never evict this workflow (keep it resident for the full lifetime).
+   * - If `undefined`: inherit the engine-level `defaultEvictAfterSeconds`.
+   */
+  readonly evictAfterSeconds?: number | null;
+
+  /**
    * Called before compensations run.
    * Receives CompensationContext — has full structured concurrency capabilities.
    */
