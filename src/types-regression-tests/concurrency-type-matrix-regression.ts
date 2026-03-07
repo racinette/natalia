@@ -1,6 +1,20 @@
 import { z } from "zod";
 import { defineWorkflow } from "../workflow";
-import type { DeterministicAwaitable } from "../types";
+import type {
+  DeterministicAwaitable,
+  FirstResult,
+  Listener,
+  ListenerEvent,
+  SelectDataKeyedUnion,
+  WorkflowContext,
+  CompensationContext,
+  WorkflowConcurrencyContext,
+  CompensationConcurrencyContext,
+  ScopeDivider,
+  BranchDivider,
+  AppendScopeName,
+  AppendBranchKey,
+} from "../types";
 import { bookFlight, cancelFlight, campaignWorker } from "../examples/shared";
 
 type Assert<T extends true> = T;
@@ -33,6 +47,43 @@ type _AwaitedDeterministicIsLiteral = Assert<
   IsEqual<_AwaitedDeterministicExtract, "timed_out">
 >;
 
+// =============================================================================
+// ScopePath symbol types
+// =============================================================================
+
+// AppendScopeName inserts a ScopeDivider before the name.
+type _AppendedScope = AppendScopeName<[], "MyScope">;
+type _AppendedScopeShape = Assert<
+  IsEqual<_AppendedScope, [ScopeDivider, "MyScope"]>
+>;
+
+// AppendBranchKey inserts a BranchDivider before the key.
+type _AppendedBranch = AppendBranchKey<[ScopeDivider, "MyScope"], "myKey">;
+type _AppendedBranchShape = Assert<
+  IsEqual<_AppendedBranch, [ScopeDivider, "MyScope", BranchDivider, "myKey"]>
+>;
+
+// =============================================================================
+// FirstResult type
+// =============================================================================
+
+type _SampleEntries = {
+  timer: () => Promise<"timed_out">;
+  booking: () => Promise<{ id: string }>;
+};
+type _SampleFirstResult = FirstResult<_SampleEntries>;
+type _FirstResultIsDiscriminated = Assert<
+  IsEqual<
+    _SampleFirstResult,
+    | { key: "timer"; result: "timed_out" }
+    | { key: "booking"; result: { id: string } }
+  >
+>;
+
+// =============================================================================
+// Listener type
+// =============================================================================
+
 const MatrixArgs = z.object({
   destination: z.string(),
   customerId: z.string(),
@@ -44,22 +95,21 @@ const CancelMessage = z.object({
 });
 
 /**
- * Regression matrix for deterministic concurrency typing.
+ * Regression matrix for the new concurrency API.
  *
- * Covers:
- * - `ctx.join()` type inference for all handle shapes
- * - Execution / compensation root enforcement on `ctx.join()`
- * - BranchHandle scope-path enforcement on `ctx.join()`
- * - `scope` entry shapes: single, array, map, direct deterministic awaitables, WorkflowAwaitable
- * - `select` input shapes: BranchHandle, BranchHandle[], Map, ChannelHandle, ChannelReceiveCall
- * - `map` input shapes and callbacks: single/array/map/ChannelReceiveCall
- * - compensation-context `scope/select/map`
- * - negative check: direct raw Promise in scope entries is rejected
- * - negative check: `then()` no longer exists on DeterministicAwaitable (tier-1)
- * - positive check: `then()` exists on DirectAwaitable and WorkflowAwaitable (tier-2/3)
- * - negative check: DirectAwaitable is NOT a valid scope entry (tier-3 atomic)
- * - positive check: WorkflowAwaitable IS a valid scope entry (tier-2 blocking)
- * - `ctx.childWorkflows.X.startDetached()` type inference
+ * Validates:
+ * - ctx.execute() for steps, child workflows, scope(), all(), first()
+ * - ctx.join() is only available on concurrency contexts, not base contexts
+ * - ctx.join() accepts BranchHandle, rejects StepCall
+ * - scope entries' branchCtx is typed as path-specialized WorkflowContext
+ * - scope() on concurrency context returns DeterministicAwaitable (not BranchHandle)
+ * - ctx.listen() available on all contexts; yields { key, message }
+ * - ctx.select() only on concurrency contexts
+ * - ctx.match(sel) returns AsyncIterable<SelectDataKeyedUnion<M>>
+ * - ctx.match(sel, onFailure) overload works
+ * - ctx.first() return type is discriminated { key, result } union
+ * - CompensationConcurrencyContext naming (no WorkflowCompensationConcurrencyContext)
+ * - execution-root handles cannot be executed from CompensationContext
  */
 export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
   name: "concurrencyTypeMatrixRegression",
@@ -71,12 +121,12 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
   result: z.object({ ok: z.boolean() }),
 
   async execute(ctx, args) {
-    // WorkflowAwaitable (sleep, sleepUntil) is directly awaitable — no ctx.join() needed.
+    // WorkflowAwaitable (sleep, sleepUntil) is directly awaitable — no ctx.execute() needed.
     const sleepResult = await ctx.sleep(30);
     type _SleepResultIsVoid = Assert<IsEqual<typeof sleepResult, void>>;
 
-    // ctx.join() resolves a DeterministicAwaitable (step call) to its inner type.
-    const stepResult = await ctx.join(
+    // ctx.execute() resolves a DeterministicAwaitable (step call) to its inner type.
+    const stepResult = await ctx.execute(
       ctx.steps.bookFlight(args.destination, args.customerId),
     );
     type _StepResultNoAny = Assert<
@@ -86,7 +136,7 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
       IsEqual<typeof stepResult, { id: string; price: number }>
     >;
 
-    // Tier-1 (DeterministicAwaitable): no .then() — join-only.
+    // Tier-1 (DeterministicAwaitable): no .then() — execute-only.
     // @ts-expect-error StepCall has no then() method
     ctx.steps.bookFlight(args.destination, args.customerId).then(() => "bad");
 
@@ -95,6 +145,20 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
     ctx.channels.cancel.receive().then(() => "ok");
     ctx.channels.cancel.receiveNowait().then(() => "ok");
     ctx.streams.log.write({ msg: "test" }).then(() => "ok");
+
+    // Base context has NO .join() — only .execute()
+    // @ts-expect-error .join() is not available on base WorkflowContext
+    await ctx.join(ctx.steps.bookFlight(args.destination, args.customerId));
+
+    // ctx.execute() with child workflow
+    const campaignHandle = await ctx.childWorkflows.campaign.startDetached({
+      idempotencyKey: "test-campaign",
+      args: { userId: "user-1" },
+    });
+    type _DetachedHandleNoAny = Assert<
+      IsAny<typeof campaignHandle> extends false ? true : false
+    >;
+    await campaignHandle.channels.nudge.send({ type: "nudge" });
 
     // receiveNowait() returns DirectAwaitable — directly awaitable, non-blocking.
     const nowaitResult = await ctx.channels.cancel.receiveNowait();
@@ -108,208 +172,40 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
       IsAny<typeof receiveResult> extends false ? true : false
     >;
 
-    // Base context select (channel-only).
-    const baseSel = ctx.select({
+    // Base context listen (channel-only) — replaces old base context select.
+    const baseListener = ctx.listen({
       cancelStream: ctx.channels.cancel,
       cancelOnce: ctx.channels.cancel.receive(0),
     });
-    for await (const data of baseSel) {
-      type _BaseSelNoAny = Assert<
-        IsAny<typeof data> extends false ? true : false
+    type _BaseListenerIsListener = Assert<
+      typeof baseListener extends Listener<any> ? true : false
+    >;
+    for await (const { key, message } of baseListener) {
+      type _BaseListenKeyNoAny = Assert<
+        IsAny<typeof key> extends false ? true : false
+      >;
+      type _BaseListenMessageNoAny = Assert<
+        IsAny<typeof message> extends false ? true : false
       >;
       break;
     }
 
-    // Reject eager promise values as scope entries.
-    const eager = Promise.resolve("eager");
-    await ctx.join(
-      // @ts-expect-error raw Promise must not be accepted as scope entry
-      ctx.scope("InvalidRawPromiseEntry", { eager }, async () => {
-        return "never";
-      }),
-    );
+    // Base context does NOT have select()
+    // @ts-expect-error ctx.select is not available on base WorkflowContext
+    ctx.select({ cancel: ctx.channels.cancel });
 
-    // WorkflowAwaitable IS a valid scope entry (tier-2: blocking, concurrent).
-    // DirectAwaitable is NOT a valid scope entry (tier-3: atomic, synchronous).
-    await ctx.join(
-      // @ts-expect-error DirectAwaitable (stream write) must not be a scope entry
-      ctx.scope(
-        "InvalidDirectEntry",
-        {
-          write: ctx.streams.log.write({ msg: "test" }),
-        },
-        async () => {},
-      ),
-    );
-
-    // ctx.join() applied to a scope — types thread through correctly.
-    await ctx.join(
-      ctx.scope(
-        "ScopeEntryTypeRegression",
-        {
-          timer: async () => {
-            await ctx.sleep(5);
-            return "timed_out" as const;
-          },
-          booking: async () => {
-            await ctx.join(
-              ctx.steps.bookFlight(args.destination, args.customerId),
-            );
-            return "booked" as const;
-          },
-        },
-        async (ctx, { timer, booking }) => {
-          const timerValue = await ctx.join(timer);
-          const bookingValue = await ctx.join(booking);
-
-          type _TimerNotAny = Assert<
-            IsAny<typeof timerValue> extends false ? true : false
-          >;
-          type _BookingNotAny = Assert<
-            IsAny<typeof bookingValue> extends false ? true : false
-          >;
-          type _TimerLiteral = Assert<IsEqual<typeof timerValue, "timed_out">>;
-          type _BookingLiteral = Assert<IsEqual<typeof bookingValue, "booked">>;
-
-          const sel = ctx.select({ timer, booking });
-          for await (const value of sel.match({
-            timer: () => "timed_out" as const,
-            booking: () => "booked" as const,
-          })) {
-            type _MatchNotAny = Assert<
-              IsAny<typeof value> extends false ? true : false
-            >;
-            break;
-          }
-        },
-      ),
-    );
-
-    // Nested scope: child scope handle is selectable from parent — IsPrefix check.
-    await ctx.join(
-      ctx.scope(
-        "NestedScopeSelectableRegression",
-        {
-          parentTimer: async () => {
-            await ctx.sleep(1);
-            return "parent_done" as const;
-          },
-        },
-        async (ctx, { parentTimer }) => {
-          const childScope = ctx.scope(
-            "ChildScope",
-            {
-              childTimer: async () => {
-                await ctx.sleep(1);
-                return "child_done" as const;
-              },
-            },
-            async (ctx, { childTimer }) => {
-              return await ctx.join(childTimer);
-            },
-          );
-
-          // Child can join parent handle (IsPrefix<["NestedScopeSelectableRegression"], ["NestedScopeSelectableRegression", "ChildScope"]> = true).
-          // Both parentTimer (path ["NestedScopeSelectableRegression"]) and childScope (BranchHandle on parent's path) are selectable from here.
-          const childSel = ctx.select({ parentTimer, childScope });
-          for await (const value of childSel) {
-            type _ChildScopeSelectNoAny = Assert<
-              IsAny<typeof value> extends false ? true : false
-            >;
-            break;
-          }
-        },
-      ),
-    );
-
-    // ==========================================================================
-    // SCOPE PATH LIFETIME ENFORCEMENT: sibling handles cannot be joined
-    // ==========================================================================
-
-    await ctx.join(
-      ctx.scope("ScopeSiblingRejection", {}, async (outerCtx) => {
-        const siblingA = outerCtx.scope(
-          "SiblingA",
-          {
-            data: async () => "sibling_a_data" as const,
-          },
-          async (innerCtxA, { data }) => await innerCtxA.join(data),
-        );
-
-        await outerCtx.join(
-          outerCtx.scope("SiblingB", {}, async (innerCtxB) => {
-            // siblingA has path ["ScopeSiblingRejection"] (parent path).
-            // innerCtxB's TScopePath = ["ScopeSiblingRejection", "SiblingB"].
-            // IsPrefix<["ScopeSiblingRejection"], ["ScopeSiblingRejection", "SiblingB"]> = true.
-            // A child scope CAN join its parent's BranchHandle.
-            await innerCtxB.join(siblingA);
-
-            // However, a handle created INSIDE SiblingA (with path
-            // ["ScopeSiblingRejection", "SiblingA"]) cannot be joined from SiblingB.
-            // That would require the handle to have escaped its scope, which our
-            // type system prevents at the point of handle creation (handles only
-            // exist as parameters inside their own scope callback).
-          }),
-        );
-      }),
-    );
-
-    // ==========================================================================
-    // EXECUTION / COMPENSATION ROOT ENFORCEMENT
-    // ==========================================================================
-
-    // An execution-context handle cannot be joined from compensation context.
-    const executionStepHandle = ctx.steps.bookFlight(
-      args.destination,
-      args.customerId,
-    );
-    ctx.addCompensation(async (compCtx) => {
-      // @ts-expect-error execution-root handle cannot be joined from CompensationContext
-      await compCtx.join(executionStepHandle);
-    });
-
-    // A compensation-context handle cannot be joined from execution context.
-    ctx.addCompensation(async (compCtx) => {
-      const compStepHandle = compCtx.steps.cancelFlight(
-        args.destination,
-        args.customerId,
-      );
-      // @ts-expect-error compensation-root handle cannot be joined from WorkflowContext
-      await ctx.join(compStepHandle);
-
-      // Correct: join from compensation context.
-      const compResult = await compCtx.join(compStepHandle);
-      type _CompResultNoAny = Assert<
-        IsAny<typeof compResult> extends false ? true : false
-      >;
-    });
-
-    // ==========================================================================
-    // ctx.all() — join all and collect
-    // ==========================================================================
-
-    // startDetached() returns DirectAwaitable<ForeignWorkflowHandle> — directly awaitable.
-    const detachedHandle = await ctx.childWorkflows.campaign.startDetached({
-      idempotencyKey: "test-campaign",
-      args: { userId: "user-1" },
-    });
-    type _DetachedHandleNoAny = Assert<
-      IsAny<typeof detachedHandle> extends false ? true : false
-    >;
-    // Can send to the detached workflow's channels directly.
-    await detachedHandle.channels.nudge.send({ type: "nudge" });
-
-    const allResults = await ctx.join(
+    // ctx.all() with closure entries
+    const allResults = await ctx.execute(
       ctx.all({
-        timer: async () => {
+        timer: async (_branchCtx) => {
           await ctx.sleep(1);
           return "timed_out" as const;
         },
-        providers: [async () => 1, async () => 2],
-        quotes: new Map<string, () => Promise<"A" | "B">>([
-          ["a", async () => "A" as const],
-          ["b", async () => "B" as const],
-        ]),
+        booking: async (branchCtx) => {
+          return branchCtx.execute(
+            branchCtx.steps.bookFlight(args.destination, args.customerId),
+          );
+        },
       }),
     );
     type _AllResultNoAny = Assert<
@@ -318,181 +214,288 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
     type _AllTimerLiteral = Assert<
       IsEqual<typeof allResults.timer, "timed_out">
     >;
-    type _AllProvidersNoAny = Assert<
-      IsAny<(typeof allResults.providers)[number]> extends false ? true : false
+    type _AllBookingId = Assert<
+      IsEqual<typeof allResults.booking, { id: string; price: number }>
     >;
-    for (const quote of allResults.quotes.values()) {
-      type _AllQuotesNoAny = Assert<
-        IsAny<typeof quote> extends false ? true : false
-      >;
-      break;
-    }
+
+    // ctx.first() return type is discriminated { key, result } union
+    const firstResult = await ctx.execute(
+      ctx.first({
+        timer: async (_branchCtx) => {
+          await ctx.sleep(1);
+          return "timed_out" as const;
+        },
+        booking: async (branchCtx) => {
+          return branchCtx.execute(
+            branchCtx.steps.bookFlight(args.destination, args.customerId),
+          );
+        },
+      }),
+    );
+    type _FirstResultNoAny = Assert<
+      IsAny<typeof firstResult> extends false ? true : false
+    >;
+    type _FirstResultIsDiscriminatedUnion = Assert<
+      IsEqual<
+        typeof firstResult,
+        | { key: "timer"; result: "timed_out" }
+        | { key: "booking"; result: { id: string; price: number } }
+      >
+    >;
 
     // ==========================================================================
-    // Full matrix scope: select + map with all handle shapes
+    // scope() on base WorkflowContext: branch closure receives path-specialized
+    // WorkflowContext with AppendBranchKey path
     // ==========================================================================
 
-    await ctx.join(
+    await ctx.execute(
       ctx.scope(
-        "MatrixScope",
+        "BranchCtxTypingRegression",
         {
-          single: ctx.steps.bookFlight(args.destination, args.customerId),
-          timeout: async () => {
-            await ctx.sleep(5);
+          timer: async (branchCtx) => {
+            // branchCtx is WorkflowContext with path-specialized scope path
+            type _BranchCtxIsWorkflowContext = Assert<
+              typeof branchCtx extends WorkflowContext<any, any, any, any, any, any, any, any, any, any>
+                ? true
+                : false
+            >;
+            // branchCtx has execute() but NOT join()
+            type _HasExecute = Assert<"execute" extends keyof typeof branchCtx ? true : false>;
+            // @ts-expect-error join is not available on branch WorkflowContext
+            branchCtx.join;
+            await branchCtx.sleep(5);
             return "timed_out" as const;
           },
-          providers: [async () => 1, async () => 2],
-          quotes: new Map<string, () => Promise<"A" | "B">>([
-            ["a", async () => "A" as const],
-            ["b", async () => "B" as const],
-          ]),
+          booking: async (branchCtx) =>
+            branchCtx.execute(
+              branchCtx.steps.bookFlight(args.destination, args.customerId),
+            ),
         },
-        async (ctx, { single, timeout, providers, quotes }) => {
-          const timeoutValue = await ctx.join(timeout);
-          type _TimeoutNotAny = Assert<
-            IsAny<typeof timeoutValue> extends false ? true : false
-          >;
-          type _TimeoutLiteral = Assert<
-            IsEqual<typeof timeoutValue, "timed_out">
-          >;
-
-          const singleData = await ctx.join(single);
-          type _SingleDataNotAny = Assert<
-            IsAny<typeof singleData> extends false ? true : false
-          >;
-          type _SingleDataId = Assert<
-            IsEqual<typeof singleData, { id: string; price: number }>
-          >;
-
-          // Scope select: all handle shapes
-          const sel = ctx.select({
-            single,
-            providers,
-            quotes,
-            timeout,
-            cancelOnce: ctx.channels.cancel.receive(0),
-            cancelStream: ctx.channels.cancel,
-          });
-
-          for await (const value of sel.match(
+        async (ctx, { timer, booking }) => {
+          // scope() on concurrency context returns DeterministicAwaitable (not BranchHandle)
+          const innerScope = ctx.scope(
+            "InnerScope",
             {
-              single: {
-                complete: (data) => data.id,
-                failure: () => "single_failed" as const,
-              },
-              providers: {
-                complete: ({ data, innerKey }) => `${innerKey}:${data}`,
-                failure: () => "provider_failed",
-              },
-              quotes: {
-                complete: ({
-                  data,
-                  innerKey,
-                }: {
-                  data: "A" | "B";
-                  innerKey: string;
-                }) => `${innerKey}:${data}`,
-                failure: () => "quote_failed",
-              },
-              timeout: (v) => v,
-              cancelOnce: (msg) => (msg ? msg.reason : "none"),
-              cancelStream: (msg) => msg.reason,
+              inner: async (_branchCtx) => "inner_done" as const,
+            },
+            async (innerCtx, { inner }) => await innerCtx.join(inner),
+          );
+          type _InnerScopeIsDeterministicAwaitable = Assert<
+            typeof innerScope extends DeterministicAwaitable<any, any> ? true : false
+          >;
+
+          // ctx.join() works for BranchHandles
+          const timerValue = await ctx.join(timer);
+          type _TimerNotAny = Assert<
+            IsAny<typeof timerValue> extends false ? true : false
+          >;
+          type _TimerLiteral = Assert<IsEqual<typeof timerValue, "timed_out">>;
+
+          // ctx.execute() also works for lazy handles (steps, etc.)
+          const bookingResult = await ctx.execute(
+            ctx.steps.bookFlight(args.destination, args.customerId),
+          );
+          type _BookingNotAny = Assert<
+            IsAny<typeof bookingResult> extends false ? true : false
+          >;
+
+          // ctx.select() is available on concurrency context
+          const sel = ctx.select({ timer, booking });
+
+          // ctx.match(sel) — no handler, yields { key, result } keyed union
+          for await (const event of ctx.match(sel)) {
+            type _EventKeyedUnion = Assert<
+              IsEqual<
+                typeof event,
+                SelectDataKeyedUnion<{
+                  timer: typeof timer;
+                  booking: typeof booking;
+                }>
+              >
+            >;
+            type _EventNoAny = Assert<IsAny<typeof event> extends false ? true : false>;
+            break;
+          }
+
+          // ctx.match(sel, onFailure) — no handlers, just default failure callback
+          for await (const val of ctx.match(
+            ctx.select({ timer, booking }),
+            () => "default_failed" as const,
+          )) {
+            type _ValNoAny = Assert<IsAny<typeof val> extends false ? true : false>;
+            break;
+          }
+
+          // ctx.match(sel, handlers) — per-key handlers
+          for await (const val of ctx.match(
+            ctx.select({ timer, booking }),
+            {
+              timer: () => "timed_out" as const,
+              booking: () => "booked" as const,
+            },
+          )) {
+            type _MatchNotAny = Assert<IsAny<typeof val> extends false ? true : false>;
+            break;
+          }
+
+          // ctx.match(sel, handlers, onFailure) — per-key handlers + default failure
+          for await (const val of ctx.match(
+            ctx.select({ timer, booking }),
+            {
+              timer: () => "timed_out" as const,
             },
             () => "default_failed" as const,
           )) {
-            type _SelectMatchNoAny = Assert<
-              IsAny<typeof value> extends false ? true : false
+            type _MatchHandlersFailureNoAny = Assert<
+              IsAny<typeof val> extends false ? true : false
             >;
             break;
           }
 
-          // Scope map: identity mode
-          const mappedIdentity = await ctx.join(
-            ctx.map({
-              single,
-              providers,
-              quotes,
-              timeout,
-              cancelOnce: ctx.channels.cancel.receive(0),
-            }),
-          );
-          type _MapIdentityNoAny = Assert<
-            IsAny<typeof mappedIdentity> extends false ? true : false
-          >;
-          type _MapTimeoutLiteral = Assert<
-            IsEqual<typeof mappedIdentity.timeout, "timed_out">
-          >;
-
-          // Scope map: callback mode
-          const mapped = await ctx.join(
-            ctx.map(
-              {
-                providers,
-                quotes,
-                timeout,
-                cancelOnce: ctx.channels.cancel.receive(0),
-              },
-              {
-                providers: (n, i) => `${i}:${n}`,
-                quotes: (q: "A" | "B", key: string) => `${key}:${q}`,
-                timeout: (v) => v,
-                cancelOnce: (msg) => (msg ? msg.reason : "none"),
-              },
-              () => "default_failed" as const,
-            ),
-          );
-          type _MapNoAny = Assert<
-            IsAny<typeof mapped> extends false ? true : false
-          >;
-          type _MapProvidersNoAny = Assert<
-            IsAny<(typeof mapped.providers)[number]> extends false
-              ? true
-              : false
-          >;
-          type _MapProvidersPerItemFallback = Assert<
-            IsEqual<
-              (typeof mapped.providers)[number],
-              string | "default_failed"
-            >
-          >;
-          type _MapQuotesNoWholeFallback = Assert<
-            IsEqual<Extract<typeof mapped.quotes, "default_failed">, never>
-          >;
-          for (const quoteValue of mapped.quotes.values()) {
-            type _MapQuotesNoAny = Assert<
-              IsAny<typeof quoteValue> extends false ? true : false
+          // ctx.listen() also available on concurrency context
+          const concurrencyListener = ctx.listen({
+            cancel: ctx.channels.cancel,
+          });
+          for await (const { key, message } of concurrencyListener) {
+            type _ListenerEventKeyNoAny = Assert<
+              IsAny<typeof key> extends false ? true : false
+            >;
+            type _ListenerMessageIsCancel = Assert<
+              IsEqual<typeof message, { type: "cancel"; reason: string }>
             >;
             break;
           }
-          type _MapTimeoutUnion = Assert<
-            IsEqual<typeof mapped.timeout, "timed_out" | "default_failed">
-          >;
-          type _MapChannelReceiveNoFailureFallback = Assert<
-            IsEqual<typeof mapped.cancelOnce, string>
-          >;
         },
       ),
     );
 
     // ==========================================================================
-    // Compensation context matrix
+    // ctx.join() is NOT available on base WorkflowContext (only on concurrency ctx)
+    // ==========================================================================
+
+    // ctx.join() should be unavailable on base context
+    // (already tested above with @ts-expect-error)
+
+    // ==========================================================================
+    // EXECUTION / COMPENSATION ROOT ENFORCEMENT
+    // ==========================================================================
+
+    const executionStepHandle = ctx.steps.bookFlight(
+      args.destination,
+      args.customerId,
+    );
+    ctx.addCompensation(async (compCtx) => {
+      // @ts-expect-error execution-root handle cannot be executed from CompensationContext
+      await compCtx.execute(executionStepHandle);
+
+      // Base CompensationContext has execute() but NOT join()
+      // @ts-expect-error join is not available on base CompensationContext
+      compCtx.join;
+
+      const compStepHandle = compCtx.steps.cancelFlight(
+        args.destination,
+        args.customerId,
+      );
+      // @ts-expect-error compensation-root handle cannot be executed from WorkflowContext
+      await ctx.execute(compStepHandle);
+
+      // Correct: execute from compensation context.
+      const compResult = await compCtx.execute(compStepHandle);
+      type _CompResultNoAny = Assert<
+        IsAny<typeof compResult> extends false ? true : false
+      >;
+
+      // CompensationContext also has listen()
+      const compListener = compCtx.listen({
+        cancel: compCtx.channels.cancel,
+      });
+      for await (const { key, message } of compListener) {
+        type _CompListenKeyNoAny = Assert<
+          IsAny<typeof key> extends false ? true : false
+        >;
+        break;
+      }
+
+      // CompensationContext also has all() and first()
+      await compCtx.execute(
+        compCtx.all({
+          step1: async (branchCtx) =>
+            branchCtx.execute(branchCtx.steps.cancelFlight(args.destination, args.customerId)),
+        }),
+      );
+
+      const firstComp = await compCtx.execute(
+        compCtx.first({
+          step1: async (branchCtx) =>
+            branchCtx.execute(branchCtx.steps.cancelFlight(args.destination, args.customerId)),
+        }),
+      );
+      type _FirstCompKey = Assert<
+        IsAny<typeof firstComp> extends false ? true : false
+      >;
+    });
+
+    // ==========================================================================
+    // scope() on concurrency context: returns DeterministicAwaitable always
+    // ==========================================================================
+
+    await ctx.execute(
+      ctx.scope(
+        "ScopeReturnTypeRegression",
+        {},
+        async (concurrencyCtx) => {
+          // scope() on WorkflowConcurrencyContext returns DeterministicAwaitable
+          const innerScope = concurrencyCtx.scope(
+            "InnerDet",
+            {},
+            async () => "done" as const,
+          );
+          type _InnerScopeIsDeterministic = Assert<
+            typeof innerScope extends DeterministicAwaitable<"done", any> ? true : false
+          >;
+          // NOT a BranchHandle (no scopePathBrand)
+          // We just check it's DeterministicAwaitable and not anything we'd
+          // erroneously use as a branch handle directly with ctx.select()
+          const result = await concurrencyCtx.execute(innerScope);
+          type _InnerResultIsDone = Assert<IsEqual<typeof result, "done">>;
+        },
+      ),
+    );
+
+    // ==========================================================================
+    // CompensationConcurrencyContext naming check
     // ==========================================================================
 
     ctx.addCompensation(async (compCtx) => {
-      await compCtx.join(
+      await compCtx.execute(
         compCtx.scope(
           "CompMatrix",
           {
-            timer: async () => {
+            cancelAttempt: async (branchCtx) =>
+              branchCtx.execute(
+                branchCtx.steps.cancelFlight(args.destination, args.customerId),
+              ),
+            timer: async (_branchCtx) => {
               await compCtx.sleep(1);
               return "done" as const;
             },
-            cancelAttempt: compCtx.steps.cancelFlight(
-              args.destination,
-              args.customerId,
-            ),
           },
-          async (ctx, { timer, cancelAttempt }) => {
+          async (ctx, { cancelAttempt, timer }) => {
+            // ctx is CompensationConcurrencyContext
+            type _IsCompConcurrencyCtx = Assert<
+              typeof ctx extends CompensationConcurrencyContext<any, any, any, any, any, any, any, any, any, any>
+                ? true
+                : false
+            >;
+            // Has execute() and join()
+            type _HasExecute = Assert<"execute" extends keyof typeof ctx ? true : false>;
+            type _HasJoin = Assert<"join" extends keyof typeof ctx ? true : false>;
+            // Has select() and match()
+            type _HasSelect = Assert<"select" extends keyof typeof ctx ? true : false>;
+            type _HasMatch = Assert<"match" extends keyof typeof ctx ? true : false>;
+            // Has listen()
+            type _HasListen = Assert<"listen" extends keyof typeof ctx ? true : false>;
+
             const timerValue = await ctx.join(timer);
             type _CompTimerNotAny = Assert<
               IsAny<typeof timerValue> extends false ? true : false
@@ -505,7 +508,14 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
               cancelOnce: ctx.channels.cancel.receive(0),
             });
 
-            for await (const value of compSel.match({
+            for await (const { key, result } of ctx.match(compSel)) {
+              type _CompMatchKeyedUnionNoAny = Assert<
+                IsAny<typeof key> extends false ? true : false
+              >;
+              break;
+            }
+
+            for await (const value of ctx.match(compSel, {
               timer: (v) => v,
               cancelAttempt: (r) => r.status,
               cancelOnce: (msg) => (msg ? msg.reason : "none"),
@@ -516,33 +526,39 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
               break;
             }
 
-            const compMapped = await ctx.join(
-              ctx.map(
-                {
-                  timer,
-                  cancelAttempt,
-                  cancelOnce: ctx.channels.cancel.receive(0),
-                },
-                {
-                  timer: (v) => v,
-                  cancelAttempt: (r) => r.status,
-                  cancelOnce: (msg) => (msg ? msg.reason : "none"),
-                },
-              ),
-            );
-            type _CompMapNoAny = Assert<
-              IsAny<typeof compMapped> extends false ? true : false
-            >;
+            // ctx.match(sel, onFailure) overload
+            for await (const value of ctx.match(compSel, () => "failed" as const)) {
+              type _CompMatchOnFailureNoAny = Assert<
+                IsAny<typeof value> extends false ? true : false
+              >;
+              break;
+            }
 
-            const compAll = await ctx.join(
+            const compAll = await ctx.execute(
               ctx.all({
-                timer,
-                cancelAttempt,
-                cancelOnce: ctx.channels.cancel.receive(0),
+                cancelAttempt: async (branchCtx) =>
+                  branchCtx.execute(
+                    branchCtx.steps.cancelFlight(args.destination, args.customerId),
+                  ),
               }),
             );
             type _CompAllNoAny = Assert<
               IsAny<typeof compAll> extends false ? true : false
+            >;
+
+            const compFirst = await ctx.execute(
+              ctx.first({
+                timer: async (_branchCtx) => {
+                  await compCtx.sleep(1);
+                  return "done" as const;
+                },
+              }),
+            );
+            type _CompFirstNoAny = Assert<
+              IsAny<typeof compFirst> extends false ? true : false
+            >;
+            type _CompFirstIsDiscriminated = Assert<
+              IsEqual<typeof compFirst, { key: "timer"; result: "done" }>
             >;
           },
         ),

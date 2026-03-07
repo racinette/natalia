@@ -43,7 +43,7 @@ declare const compensationRoot: unique symbol;
  * Handles carrying `typeof executionRoot` may only be joined from
  * `WorkflowContext` / `WorkflowConcurrencyContext`.
  * Handles carrying `typeof compensationRoot` may only be joined from
- * `CompensationContext` / `WorkflowCompensationConcurrencyContext`.
+ * `CompensationContext` / `CompensationConcurrencyContext`.
  */
 export type RootScope = typeof executionRoot | typeof compensationRoot;
 
@@ -60,7 +60,7 @@ declare const phantomValueType: unique symbol;
 /**
  * Opaque handle to a deterministic workflow primitive.
  *
- * Not directly awaitable — must be resolved via `ctx.join(handle)`.
+ * Not directly awaitable — must be resolved via `ctx.execute(handle)` or `ctx.join(handle)`.
  * This intentionally excludes native Promise values from structural assignment
  * unless they are explicitly wrapped/typed by the engine as deterministic.
  *
@@ -140,7 +140,7 @@ export interface WorkflowAwaitable<T> extends DirectAwaitable<T> {
 
 /**
  * Failure information for a scope branch, passed to `failure` callbacks in
- * map and match handlers.
+ * match handlers.
  */
 export type BranchFailureInfo = Record<string, never>;
 
@@ -151,11 +151,11 @@ export type BranchFailureInfo = Record<string, never>;
 /**
  * A one-shot receive future returned by `ChannelHandle.receive(...)`.
  *
- * Directly awaitable and can be passed into `ctx.select()` and `ctx.map()`
+ * Directly awaitable and can be passed into `ctx.select()` and `ctx.listen()`
  * as a finite, one-shot channel wait — the key is removed from `remaining`
  * once the receive resolves, just like a branch handle.
  *
- * Unlike passing a raw `ChannelHandle` to `select` (which creates a streaming,
+ * Unlike passing a raw `ChannelHandle` to `listen` (which creates a streaming,
  * never-exhausted branch), a `ChannelReceiveCall` resolves exactly once.
  *
  * @typeParam T - The resolved value type (may include `undefined` or a default
@@ -168,7 +168,7 @@ export interface ChannelReceiveCall<T> extends WorkflowAwaitable<T> {
 
 /**
  * Channel handle on ctx.channels.
- * Can be used directly for receive, passed into select, or async-iterated.
+ * Can be used directly for receive, passed into listen, or async-iterated.
  * T is the decoded type (z.output<Schema>).
  *
  * @typeParam T - The decoded message type.
@@ -179,7 +179,7 @@ export interface ChannelHandle<T> extends AsyncIterable<T> {
    * Blocks until a message arrives.
    *
    * Returns a `ChannelReceiveCall<T>` that can be directly awaited or passed
-   * into `ctx.select()` / `ctx.map()` as a one-shot branch.
+   * into `ctx.select()` / `ctx.listen()` as a one-shot branch.
    */
   receive(): ChannelReceiveCall<T>;
 
@@ -188,7 +188,7 @@ export interface ChannelHandle<T> extends AsyncIterable<T> {
    * Returns `undefined` when the timeout expires before a message arrives.
    *
    * Returns a `ChannelReceiveCall<T | undefined>` that can be directly awaited
-   * or passed into `ctx.select()` / `ctx.map()`.
+   * or passed into `ctx.select()` / `ctx.listen()`.
    */
   receive(timeoutSeconds: number): ChannelReceiveCall<T | undefined>;
 
@@ -197,7 +197,7 @@ export interface ChannelHandle<T> extends AsyncIterable<T> {
    * Returns `defaultValue` when the timeout expires before a message arrives.
    *
    * Returns a `ChannelReceiveCall<T | TDefault>` that can be directly awaited
-   * or passed into `ctx.select()` / `ctx.map()`.
+   * or passed into `ctx.select()` / `ctx.listen()`.
    */
   receive<TDefault>(
     timeoutSeconds: number,
@@ -221,7 +221,9 @@ export interface ChannelHandle<T> extends AsyncIterable<T> {
    * Use this when you need to distinguish a timed-out poll from a real `undefined`
    * message value.
    */
-  receiveNowait<TDefault>(defaultValue: TDefault): DirectAwaitable<T | TDefault>;
+  receiveNowait<TDefault>(
+    defaultValue: TDefault,
+  ): DirectAwaitable<T | TDefault>;
 
   /**
    * Async iteration over channel messages.
@@ -258,44 +260,122 @@ export interface EventAccessor {
 }
 
 // =============================================================================
-// SCOPE TYPES — CLOSURES AND BRANCH HANDLES
+// SCOPE PATH — SYMBOLS AND TYPES
 // =============================================================================
 
+declare const scopeDivider: unique symbol;
+declare const branchDivider: unique symbol;
+
 /**
- * A scope branch — an async closure that runs on the virtual event loop.
- * Passed into `ctx.scope()` entries. The engine interleaves branch execution
- * at durable yield points (step calls, child workflow calls, channel receives, etc.).
- *
- * @typeParam T - The resolved value type of the branch.
+ * Divider inserted into a scope path between a scope's parent path and its name.
+ * Distinguishes scope name transitions from branch key transitions.
  */
-export type ScopeBranch<T> = () => Promise<T>;
+export type ScopeDivider = typeof scopeDivider;
+
+/**
+ * Divider inserted into a scope path between a scope name and a branch key.
+ * Distinguishes branch key transitions from scope name transitions.
+ */
+export type BranchDivider = typeof branchDivider;
+
+/** Runtime-accessible scope divider value for path inspection. */
+export { scopeDivider, branchDivider };
 
 /**
  * Ordered scope lineage from root to current scope.
+ * Elements are strings (scope names / branch keys) interleaved with
+ * `ScopeDivider` and `BranchDivider` symbols to maintain structural
+ * unambiguity at both type level and runtime.
  */
-export type ScopePath = readonly string[];
+export type ScopePath = readonly (string | ScopeDivider | BranchDivider)[];
+
+type IsPrefix<
+  TPrefix extends ScopePath,
+  TValue extends ScopePath,
+> = TPrefix extends []
+  ? true
+  : TValue extends readonly [infer VH, ...infer VT extends ScopePath]
+    ? TPrefix extends readonly [infer PH, ...infer PT extends ScopePath]
+      ? [PH] extends [VH]
+        ? [VH] extends [PH]
+          ? IsPrefix<PT, VT>
+          : false
+        : false
+      : false
+    : false;
 
 /**
- * A scope entry value.
- *
- * Supports three forms:
- * - Closure form: `() => Promise<T>` (full flexibility, lazy execution)
- * - Join-only deterministic handle: `DeterministicAwaitable<T>` (steps, child workflows)
- * - Blocking workflow awaitable: `WorkflowAwaitable<T>` (sleeps, channel receives)
+ * Append a named scope to the current lineage, inserting a `scopeDivider` before the name.
  */
-export type ScopeEntryValue<T> =
-  | ScopeBranch<T>
-  | DeterministicAwaitable<T>
-  | WorkflowAwaitable<T>;
+export type AppendScopeName<
+  TScopePath extends ScopePath,
+  TName extends string,
+> = [...TScopePath, ScopeDivider, TName];
+
+/**
+ * Append a branch key to the current lineage, inserting a `branchDivider` before the key.
+ */
+export type AppendBranchKey<
+  TScopePath extends ScopePath,
+  TKey extends string,
+> = [...TScopePath, BranchDivider, TKey];
+
+/**
+ * Scope name guard:
+ * - literal names cannot reuse any ancestor scope name (string elements only)
+ * - widened `string` is allowed but loses compile-time collision guarantees
+ */
+export type ScopeNameArg<
+  TScopePath extends ScopePath,
+  TName extends string,
+> = string extends TName
+  ? TName
+  : string extends Extract<TScopePath[number], string>
+    ? TName
+    : TName extends Extract<TScopePath[number], string>
+      ? never
+      : TName;
+
+/**
+ * Rest-parameter constraint for `ctx.join()` scope-path enforcement.
+ *
+ * - For a plain `DeterministicAwaitable` (no scope path), resolves to `[]` — no path check needed.
+ * - For a `BranchHandle<T, THandlePath>`, resolves to `[]` when `THandlePath` is a prefix
+ *   of the current scope path `TCurrentPath`, or to an error tuple otherwise.
+ */
+export type IsJoinableByPath<H, TCurrentPath extends ScopePath> =
+  H extends BranchHandle<any, infer THandlePath, any>
+    ? IsPrefix<THandlePath, TCurrentPath> extends true
+      ? []
+      : [
+          "Handle scope path is not accessible from the current scope — the handle was created in a scope that has already closed or is not an ancestor of the current scope",
+        ]
+    : [];
+
+// =============================================================================
+// SCOPE TYPES — ENTRY, BRANCH HANDLES
+// =============================================================================
+
+/**
+ * A scope entry — an async closure that receives a path-specialized base context
+ * and runs on the virtual event loop.
+ *
+ * `Tctx` is instantiated by `context.ts` with the path-specialized
+ * `WorkflowContext<..., AppendBranchKey<AppendScopeName<TScopePath, Name>, K>>`
+ * or the compensation equivalent, so branch identity stays precise.
+ *
+ * @typeParam Tctx - The path-specialized context for this branch.
+ * @typeParam T          - The resolved value type of the branch.
+ */
+export type ScopeEntry<Tctx, T = unknown> = (ctx: Tctx) => Promise<T>;
 
 /**
  * A handle to a running scope branch.
  * Resolves to T when the branch completes successfully.
  *
  * `BranchHandle<T>` values are produced by `ctx.scope()` and can be:
- * - Resolved via `ctx.join(handle)` (subject to scope-path lifetime checks)
- * - Passed into `ctx.select()` and `ctx.map()`
- * - Accumulated into collections for dynamic fan-out
+ * - Resolved via `ctx.execute(handle)` on base contexts or `ctx.join(handle)` on concurrency contexts
+ * - Passed into `ctx.select()` and `ctx.match()`
  *
  * @typeParam T          - The resolved value type.
  * @typeParam TScopePath - Scope lineage of the parent scope that spawned this branch.
@@ -314,246 +394,59 @@ export interface BranchHandle<
 }
 
 /**
- * A group of branch handles — single, array, or map.
- * Used as input to `ctx.select()` and `ctx.map()`.
+ * Maps closure entries to their corresponding branch handle types.
  *
- * - Single: `BranchHandle<T>` — one branch
- * - Array: `BranchHandle<T>[]` — N parallel branches
- * - Map: `Map<K, BranchHandle<T>>` — keyed parallel branches
- *
- * @typeParam T - The branch value type.
- * @typeParam K - The map key type (only relevant for Map variant).
- */
-export type HandleGroup<T, K = any> =
-  | BranchHandle<T>
-  | BranchHandle<T>[]
-  | Map<K, BranchHandle<T>>;
-
-/**
- * Valid entry values for `ctx.scope()` declarations.
- * Each entry can be either:
- * - a closure (`() => Promise<T>`)
- * - a direct deterministic thenable (`DeterministicAwaitable<T>`)
- *
- * Collections (array/map) accept the same two forms per element.
- */
-export type ScopeEntries = Record<
-  string,
-  | ScopeEntryValue<unknown>
-  | ScopeEntryValue<unknown>[]
-  | Map<unknown, ScopeEntryValue<unknown>>
->;
-
-/**
- * Validates that an inferred generic type is compatible with `ScopeEntries`
- * without forcing contextual typing of object literals to the constraint.
- */
-export type EnsureScopeEntries<E> = E extends ScopeEntries ? E : never;
-
-/** Prevent callback parameter positions from widening inferred scope entries. */
-export type NoInferScope<T> = [T][T extends any ? 0 : never];
-
-/**
- * Rest-parameter tuple used to validate scope entries while keeping the
- * `entries` argument itself free from contextual-typing widening.
- */
-export type ScopeEntriesCheck<E> = E extends ScopeEntries
-  ? []
-  : ["Invalid scope entries"];
-
-/**
- * Append a named scope to the current lineage.
- */
-export type AppendScopeName<
-  TScopePath extends ScopePath,
-  TName extends string,
-> = [...TScopePath, TName];
-
-/**
- * Scope name guard:
- * - literal names cannot reuse any ancestor scope name
- * - widened `string` is allowed but loses compile-time collision guarantees
- */
-export type ScopeNameArg<
-  TScopePath extends ScopePath,
-  TName extends string,
-> = string extends TName ? TName : TName extends TScopePath[number] ? never : TName;
-
-type IsPrefix<TPrefix extends ScopePath, TValue extends ScopePath> =
-  TPrefix extends []
-    ? true
-    : TValue extends readonly [
-          infer TValueHead extends string,
-          ...infer TValueTail extends ScopePath,
-        ]
-      ? TPrefix extends readonly [
-            infer TPrefixHead extends string,
-            ...infer TPrefixTail extends ScopePath,
-          ]
-        ? TPrefixHead extends TValueHead
-          ? IsPrefix<TPrefixTail, TValueTail>
-          : false
-        : false
-      : false;
-
-/**
- * Rest-parameter constraint for `ctx.join()` scope-path enforcement.
- *
- * - For a plain `DeterministicAwaitable` (no scope path), resolves to `[]` — no path check needed.
- * - For a `BranchHandle<T, THandlePath>`, resolves to `[]` when `THandlePath` is a prefix
- *   of the current scope path `TCurrentPath`, or to an error tuple otherwise.
- */
-export type IsJoinableByPath<
-  H,
-  TCurrentPath extends ScopePath,
-> = H extends BranchHandle<any, infer THandlePath, any>
-  ? IsPrefix<THandlePath, TCurrentPath> extends true
-    ? []
-    : [
-        "Handle scope path is not accessible from the current scope — the handle was created in a scope that has already closed or is not an ancestor of the current scope",
-      ]
-  : [];
-
-type RestrictSelectableHandleToPath<
-  H,
-  TCurrentPath extends ScopePath,
-> = H extends BranchHandle<infer T, infer THandlePath>
-  ? IsPrefix<THandlePath, TCurrentPath> extends true
-    ? BranchHandle<T, THandlePath>
-    : never
-  : H extends BranchHandle<infer T, infer THandlePath>[]
-    ? IsPrefix<THandlePath, TCurrentPath> extends true
-      ? BranchHandle<T, THandlePath>[]
-      : never
-    : H extends Map<infer MK, BranchHandle<infer T, infer THandlePath>>
-      ? IsPrefix<THandlePath, TCurrentPath> extends true
-        ? Map<MK, BranchHandle<T, THandlePath>>
-        : never
-      : H extends ChannelHandle<any> | ChannelReceiveCall<any>
-        ? H
-        : never;
-
-type RestrictFiniteHandleToPath<
-  H,
-  TCurrentPath extends ScopePath,
-> = H extends BranchHandle<infer T, infer THandlePath>
-  ? IsPrefix<THandlePath, TCurrentPath> extends true
-    ? BranchHandle<T, THandlePath>
-    : never
-  : H extends BranchHandle<infer T, infer THandlePath>[]
-    ? IsPrefix<THandlePath, TCurrentPath> extends true
-      ? BranchHandle<T, THandlePath>[]
-      : never
-    : H extends Map<infer MK, BranchHandle<infer T, infer THandlePath>>
-      ? IsPrefix<THandlePath, TCurrentPath> extends true
-        ? Map<MK, BranchHandle<T, THandlePath>>
-        : never
-      : H extends ChannelReceiveCall<any>
-        ? H
-        : never;
-
-/**
- * Extract resolved value type from a scope entry value.
- *
- * `DeterministicAwaitable<T>` is no longer a native thenable (no `then`), so
- * `Awaited<DeterministicAwaitable<T>>` would return the handle itself unchanged.
- * We must explicitly unwrap `DeterministicAwaitable<T>` before falling back to `Awaited`.
- */
-type ScopeEntryResult<V> = V extends (...args: any[]) => infer R
-  ? Awaited<R>
-  : V extends DeterministicAwaitable<infer T, any>
-    ? T
-    : Awaited<V>;
-
-/**
- * Maps scope entry values to their corresponding branch handle types,
- * preserving collection structure (single → BranchHandle, array → array, map → map).
+ * @typeParam E          - Record of branch closures `(ctx: any) => Promise<unknown>`.
+ * @typeParam TScopePath - The scope path where these handles are created.
+ * @typeParam TRoot      - The root context.
  */
 export type ScopeHandles<
-  E extends ScopeEntries,
-  TScopePath extends ScopePath = ScopePath,
-  TRoot extends RootScope = RootScope,
+  E extends Record<string, (ctx: any) => Promise<unknown>>,
+  TScopePath extends ScopePath,
+  TRoot extends RootScope,
 > = {
-  [K in keyof E]: E[K] extends ScopeEntryValue<unknown>
-    ? BranchHandle<ScopeEntryResult<E[K]>, TScopePath, TRoot>
-    : E[K] extends (infer U)[]
-      ? U extends ScopeEntryValue<unknown>
-        ? BranchHandle<ScopeEntryResult<U>, TScopePath, TRoot>[]
-        : never
-      : E[K] extends Map<infer MK, infer V>
-        ? V extends ScopeEntryValue<unknown>
-          ? Map<MK, BranchHandle<ScopeEntryResult<V>, TScopePath, TRoot>>
-          : never
-        : never;
+  [K in keyof E]: BranchHandle<Awaited<ReturnType<E[K]>>, TScopePath, TRoot>;
 };
 
 /**
- * Maps scope entry values to their resolved data shape, preserving collection
- * structure (single -> value, array -> array, map -> map).
+ * Result type for `ctx.first()` — a discriminated union of `{ key, result }` pairs
+ * for the first branch to complete.
  *
- * Used by `ctx.all(entries)` sugar to return "join-all" results directly.
+ * @typeParam E - Record of branch closures.
  */
-export type ScopeAllResults<E extends ScopeEntries> = {
-  [K in keyof E]: E[K] extends ScopeEntryValue<unknown>
-    ? ScopeEntryResult<E[K]>
-    : E[K] extends (infer U)[]
-      ? U extends ScopeEntryValue<unknown>
-        ? ScopeEntryResult<U>[]
-        : never
-      : E[K] extends Map<infer MK, infer V>
-        ? V extends ScopeEntryValue<unknown>
-          ? Map<MK, ScopeEntryResult<V>>
-          : never
-        : never;
-};
+export type FirstResult<
+  E extends Record<string, (ctx: any) => Promise<unknown>>,
+> = {
+  [K in keyof E]: { key: K; result: Awaited<ReturnType<E[K]>> };
+}[keyof E];
 
 // =============================================================================
-// SELECT — HANDLE TYPES
+// SELECT / LISTEN — HANDLE TYPES
 // =============================================================================
 
 /**
- * Handle types that can be passed into `ctx.select()`.
+ * Handle types that can be passed into `ctx.select()` (concurrency contexts only).
  *
- * - `BranchHandle` variants — scope branches (finite, can fail).
+ * - `BranchHandle<T>` — scope branches (finite, can fail).
  * - `ChannelHandle<T>` — stream-like; the branch is **never exhausted** and
  *   delivers a new message each time it is selected. Use when you want to keep
  *   reading from a channel indefinitely (e.g. long-running consumer loops).
- *   Note: `sel.remaining` will never drop the channel key, so
- *   `while (sel.remaining.size > 0)` loops will not terminate on their own.
+ *   Note: `sel.remaining` will never drop the channel key.
  * - `ChannelReceiveCall<T>` — one-shot; produced by `ctx.channels.<n>.receive(...)`.
  *   The key is removed from `remaining` once the receive resolves.
  */
 export type ScopeSelectableHandle =
   | BranchHandle<any>
-  | BranchHandle<any>[]
-  | Map<any, BranchHandle<any>>
   | ChannelHandle<any>
   | ChannelReceiveCall<any>;
 
 /**
- * Handle types that can be passed into base-context `ctx.select()`.
+ * Handle types that can be passed into `ctx.listen()` (all contexts).
  *
- * Base context only supports channel-based waiting and does not allow
- * branch-handle selection (branch handles are scope-local by design).
+ * Listen is channel-only — branch handles are not allowed.
+ * Use `ctx.select()` on concurrency contexts for branch handle coordination.
  */
-export type BaseSelectableHandle =
-  | ChannelHandle<any>
-  | ChannelReceiveCall<any>;
-
-/**
- * Finite handle types — all handles that resolve exactly once and are removed
- * from `remaining` upon completion.
- *
- * Used as the accepted input type for `ctx.map()`, which
- * require every branch to have a definite end. Raw `ChannelHandle` is excluded
- * because it never exhausts. Use `ctx.channels.<n>.receive(...)` to get a
- * finite one-shot `ChannelReceiveCall<T>` instead.
- */
-export type ScopeFiniteHandle =
-  | BranchHandle<any>
-  | BranchHandle<any>[]
-  | Map<any, BranchHandle<any>>
-  | ChannelReceiveCall<any>;
+export type ListenableHandle = ChannelHandle<any> | ChannelReceiveCall<any>;
 
 export type ScopeSelectableRecordForPath<
   M extends Record<string, ScopeSelectableHandle>,
@@ -562,12 +455,14 @@ export type ScopeSelectableRecordForPath<
   [K in keyof M & string]: RestrictSelectableHandleToPath<M[K], TCurrentPath>;
 };
 
-export type ScopeFiniteRecordForPath<
-  M extends Record<string, ScopeFiniteHandle>,
-  TCurrentPath extends ScopePath,
-> = {
-  [K in keyof M & string]: RestrictFiniteHandleToPath<M[K], TCurrentPath>;
-};
+type RestrictSelectableHandleToPath<H, TCurrentPath extends ScopePath> =
+  H extends BranchHandle<infer T, infer THandlePath>
+    ? IsPrefix<THandlePath, TCurrentPath> extends true
+      ? BranchHandle<T, THandlePath>
+      : never
+    : H extends ChannelHandle<any> | ChannelReceiveCall<any>
+      ? H
+      : never;
 
 // =============================================================================
 // SELECT — EVENT TYPES (WorkflowContext)
@@ -577,8 +472,6 @@ export type ScopeFiniteRecordForPath<
  * Map a handle type to its select event result type.
  *
  * - BranchHandle: `{ key, status: "complete", data: T } | { key, status: "failed", failure }`
- * - BranchHandle[]: `{ key, innerKey: number, status: "complete", data: T } | { key, innerKey: number, status: "failed", failure }`
- * - Map<K, BranchHandle>: `{ key, innerKey: K, status: "complete", data: T } | { key, innerKey: K, status: "failed", failure }`
  * - ChannelHandle: `{ key, data: T }` (fires repeatedly — never exhausted)
  * - ChannelReceiveCall: `{ key, data: T }` (fires once — key removed from remaining)
  */
@@ -587,51 +480,27 @@ export type HandleSelectEvent<K extends string, H> =
     ?
         | { key: K; status: "complete"; data: T }
         | { key: K; status: "failed"; failure: BranchFailureInfo }
-    : H extends BranchHandle<infer T>[]
-      ?
-          | { key: K; innerKey: number; status: "complete"; data: T }
-          | {
-              key: K;
-              innerKey: number;
-              status: "failed";
-              failure: BranchFailureInfo;
-            }
-      : H extends Map<infer MK, BranchHandle<infer T>>
-        ?
-            | { key: K; innerKey: MK; status: "complete"; data: T }
-            | {
-                key: K;
-                innerKey: MK;
-                status: "failed";
-                failure: BranchFailureInfo;
-              }
-        : H extends ChannelHandle<infer T>
-          ? { key: K; data: T }
-          : H extends ChannelReceiveCall<infer T>
-            ? { key: K; data: T }
-            : never;
+    : H extends ChannelHandle<infer T>
+      ? { key: K; data: T }
+      : H extends ChannelReceiveCall<infer T>
+        ? { key: K; data: T }
+        : never;
 
 /**
  * What a match handler receives for a specific key.
  *
  * - BranchHandle<T>: `T` directly
- * - BranchHandle<T>[]: `{ data: T; innerKey: number }`
- * - Map<K, BranchHandle<T>>: `{ data: T; innerKey: K }`
  * - ChannelHandle<T>: `T` directly (fires repeatedly)
  * - ChannelReceiveCall<T>: `T` directly (fires once)
  */
 export type HandleMatchData<H> =
   H extends BranchHandle<infer T>
     ? T
-    : H extends BranchHandle<infer T>[]
-      ? { data: T; innerKey: number }
-      : H extends Map<infer MK, BranchHandle<infer T>>
-        ? { data: T; innerKey: MK }
-        : H extends ChannelHandle<infer T>
-          ? T
-          : H extends ChannelReceiveCall<infer T>
-            ? T
-            : never;
+    : H extends ChannelHandle<infer T>
+      ? T
+      : H extends ChannelReceiveCall<infer T>
+        ? T
+        : never;
 
 /**
  * Union of all possible events from a select record.
@@ -642,30 +511,24 @@ export type SelectEvent<M extends Record<string, ScopeSelectableHandle>> = {
 
 /**
  * Extract the successful data type from any selectable handle.
- * Used to build `SelectDataUnion`.
  */
 type SelectHandleData<H> =
   H extends BranchHandle<infer T>
     ? T
-    : H extends BranchHandle<infer T>[]
+    : H extends ChannelHandle<infer T>
       ? T
-      : H extends Map<any, BranchHandle<infer T>>
+      : H extends ChannelReceiveCall<infer T>
         ? T
-        : H extends ChannelHandle<infer T>
-          ? T
-          : H extends ChannelReceiveCall<infer T>
-            ? T
-            : never;
+        : never;
 
 /**
- * Union of successful data values yielded by `for await...of` on a Selection.
- * Branch handles yield their result type T; channel handles yield their message
- * type T; one-shot receive calls yield their resolved type T.
- * For collections (array/map), the per-element data type is yielded.
- * A branch failure auto-terminates the workflow when iterating with `for await`.
+ * Keyed union type yielded by `ctx.match(sel)` (no-handler form).
+ * Each element is `{ key: K; result: SelectHandleData<M[K]> }`.
  */
-export type SelectDataUnion<M extends Record<string, ScopeSelectableHandle>> = {
-  [K in keyof M & string]: SelectHandleData<M[K]>;
+export type SelectDataKeyedUnion<
+  M extends Record<string, ScopeSelectableHandle>,
+> = {
+  [K in keyof M & string]: { key: K; result: SelectHandleData<M[K]> };
 }[keyof M & string];
 
 // =============================================================================
@@ -673,7 +536,7 @@ export type SelectDataUnion<M extends Record<string, ScopeSelectableHandle>> = {
 // =============================================================================
 
 /**
- * Extract the return type from a match/map handler entry.
+ * Extract the return type from a match handler entry.
  *
  * - Plain function: returns the function's return type.
  * - `{ complete, failure }`: returns the union of both return types.
@@ -684,28 +547,28 @@ export type SelectDataUnion<M extends Record<string, ScopeSelectableHandle>> = {
  * TData is the raw data type for the handle — used as the identity return
  * when `complete` is not explicitly provided.
  */
-type ExtractHandlerReturn<H, TData = never> =
-  H extends undefined
-    ? TData
-    : H extends (...args: any[]) => infer R
-      ? Awaited<R>
-      : H extends {
-            complete: (...args: any[]) => infer R;
-            failure: (...args: any[]) => infer R2;
-          }
-        ? Awaited<R> | Awaited<R2>
-        : H extends { failure: (...args: any[]) => infer R2 }
-          ? TData | Awaited<R2>
-          : H extends { complete: (...args: any[]) => infer R }
-            ? Awaited<R>
-            : TData;
+type ExtractHandlerReturn<H, TData = never> = H extends undefined
+  ? TData
+  : H extends (...args: any[]) => infer R
+    ? Awaited<R>
+    : H extends {
+          complete: (...args: any[]) => infer R;
+          failure: (...args: any[]) => infer R2;
+        }
+      ? Awaited<R> | Awaited<R2>
+      : H extends { failure: (...args: any[]) => infer R2 }
+        ? TData | Awaited<R2>
+        : H extends { complete: (...args: any[]) => infer R }
+          ? Awaited<R>
+          : TData;
 
 /**
  * True when a handler entry has an explicit `failure` callback.
  * Used to determine whether the default failure handler applies.
  */
-type HasExplicitFailure<H> =
-  H extends { failure: (...args: any[]) => any } ? true : false;
+type HasExplicitFailure<H> = H extends { failure: (...args: any[]) => any }
+  ? true
+  : false;
 
 // =============================================================================
 // MATCH HANDLER ENTRY TYPES
@@ -714,7 +577,7 @@ type HasExplicitFailure<H> =
 /**
  * A match handler entry for a specific key.
  *
- * For BranchHandle keys (single or collection), four forms are accepted:
+ * For BranchHandle keys, four forms are accepted:
  * - Plain function: handles complete only; failure auto-terminates (or uses `onFailure`).
  * - `{ complete, failure }`: both paths handled explicitly.
  * - `{ complete }` only: failure auto-terminates (or uses `onFailure`).
@@ -723,29 +586,27 @@ type HasExplicitFailure<H> =
  * For channel handles and one-shot receive calls, only a plain function is allowed
  * (channels never fail).
  */
-export type MatchHandlerEntry<H extends ScopeSelectableHandle> = H extends
-  | BranchHandle<any>
-  | BranchHandle<any>[]
-  | Map<any, BranchHandle<any>>
-  ?
-      | ((data: HandleMatchData<H>) => any)
-      | {
-          complete: (data: HandleMatchData<H>) => any;
-          failure: (failure: BranchFailureInfo) => any;
-        }
-      | { complete: (data: HandleMatchData<H>) => any }
-      | { failure: (failure: BranchFailureInfo) => any }
-  : (data: HandleMatchData<H>) => any;
+export type MatchHandlerEntry<H extends ScopeSelectableHandle> =
+  H extends BranchHandle<any>
+    ?
+        | ((data: HandleMatchData<H>) => any)
+        | {
+            complete: (data: HandleMatchData<H>) => any;
+            failure: (failure: BranchFailureInfo) => any;
+          }
+        | { complete: (data: HandleMatchData<H>) => any }
+        | { failure: (failure: BranchFailureInfo) => any }
+    : (data: HandleMatchData<H>) => any;
 
 /**
- * Handler map for Selection.match().
+ * Handler map for `ctx.match()`.
  */
 export type MatchHandlers<M extends Record<string, ScopeSelectableHandle>> = {
   [K in keyof M & string]?: MatchHandlerEntry<M[K]>;
 };
 
 /**
- * Yield type of `sel.match()` iteration.
+ * Yield type of `ctx.match()` iteration.
  *
  * Iterates over ALL keys in M (not just those in H):
  * - Keys in H with an explicit `failure` handler: sealed — `DF` does not apply.
@@ -768,72 +629,19 @@ export type MatchReturn<
 }[keyof M & string];
 
 // =============================================================================
-// SELECTION (WorkflowContext)
+// SELECTION (WorkflowConcurrencyContext)
 // =============================================================================
 
 /**
  * A selection — multiplexes multiple handles and yields events as they arrive.
  * Events are ordered by global_sequence for deterministic replay.
  *
- * **`for await...of`** — the primary iteration surface.
- * Yields `SelectDataUnion<M>` (successful data values) until all handles are exhausted.
- * Any branch failure auto-terminates the workflow and triggers LIFO compensation.
- * Use this for simple "process everything, fail on any error" patterns.
- *
- * **`.match(handlers, onFailure?)`** — key-aware async iteration.
- * Yields a transformed value for every event across all handles. Handlers in the
- * map override the default behavior for their key; unhandled keys yield their data
- * unchanged (identity). The iteration ends when all handles are exhausted.
- *
- * Handler forms for BranchHandle keys:
- * - Plain function: complete path only; failure auto-terminates (or uses `onFailure`).
- * - `{ complete, failure }`: both paths handled explicitly.
- * - `{ complete }` only: failure auto-terminates (or uses `onFailure`).
- * - `{ failure }` only: complete yields data unchanged; failure handled explicitly.
- *
- * The optional `onFailure` callback is the default failure handler — applied to any
- * key that does not have its own explicit `failure` handler. Its return value is
- * yielded instead of auto-terminating the workflow.
- *
- * For collection handles (BranchHandle[], Map<K, BranchHandle>), each element
- * produces its own event with an `innerKey`.
+ * Iterate over events using `ctx.match(sel, ...)` on the concurrency context.
+ * `sel.remaining` tracks which handles are still active.
  *
  * @typeParam M - The handle record type.
  */
-export interface Selection<
-  M extends Record<string, ScopeSelectableHandle>,
-> extends AsyncIterable<SelectDataUnion<M>> {
-  /**
-   * Iterate over all events with a default failure handler and no per-key transforms.
-   * Equivalent to `match({}, onFailure)`: all keys yield data unchanged on complete;
-   * any branch failure yields `onFailure`'s return value instead of terminating.
-   *
-   * Declared first so TypeScript's overload resolution correctly routes a bare
-   * function argument here rather than to the `match(handlers)` overload.
-   */
-  match<DF extends (failure: BranchFailureInfo) => any>(
-    onFailure: DF,
-  ): AsyncIterable<MatchReturn<M, Record<never, never>, Awaited<ReturnType<DF>>>>;
-
-  /**
-   * Iterate over matching events.
-   * Yields a transformed value for each event; unhandled keys yield data unchanged.
-   * Ends when all handles are exhausted.
-   */
-  match<H extends MatchHandlers<M>>(
-    handlers: H,
-  ): AsyncIterable<MatchReturn<M, H>>;
-
-  /**
-   * Iterate over matching events with a default failure handler.
-   * `onFailure` is called for branch failures on keys that have no explicit
-   * `failure` handler — its return value is yielded instead of terminating.
-   */
-  match<H extends MatchHandlers<M>, DF extends (failure: BranchFailureInfo) => any>(
-    handlers: H,
-    onFailure: DF,
-  ): AsyncIterable<MatchReturn<M, H, Awaited<ReturnType<DF>>>>;
-
+export interface Selection<M extends Record<string, ScopeSelectableHandle>> {
   /**
    * Live set of unresolved handle keys.
    */
@@ -841,210 +649,54 @@ export interface Selection<
 }
 
 // =============================================================================
-// SELECTION (CompensationContext)
+// SELECTION (CompensationConcurrencyContext)
 // =============================================================================
 
 /**
- * A selection in CompensationContext.
+ * A selection in CompensationConcurrencyContext.
  *
- * **`for await...of`** — yields `SelectDataUnion<M>` until all handles are exhausted.
- * Any branch failure auto-terminates the compensation scope.
- *
- * **`.match(handlers, onFailure?)`** — key-aware async iteration with optional default
- * failure handler for granular recovery during compensation.
+ * Iterate over events using `ctx.match(sel, ...)` on the compensation concurrency context.
+ * `sel.remaining` tracks which handles are still active.
  */
 export interface CompensationSelection<
   M extends Record<string, ScopeSelectableHandle>,
-> extends AsyncIterable<SelectDataUnion<M>> {
-  /** All keys identity, all failures caught by `onFailure`. Equivalent to `match({}, onFailure)`. */
-  match<DF extends (failure: BranchFailureInfo) => any>(
-    onFailure: DF,
-  ): AsyncIterable<MatchReturn<M, Record<never, never>, Awaited<ReturnType<DF>>>>;
-
-  /** Iterate over matching events; unhandled keys yield data unchanged. */
-  match<H extends MatchHandlers<M>>(
-    handlers: H,
-  ): AsyncIterable<MatchReturn<M, H>>;
-
-  /** Iterate with a default failure handler for keys without explicit failure handling. */
-  match<H extends MatchHandlers<M>, DF extends (failure: BranchFailureInfo) => any>(
-    handlers: H,
-    onFailure: DF,
-  ): AsyncIterable<MatchReturn<M, H, Awaited<ReturnType<DF>>>>;
-
-  /** Live set of unresolved handle keys. */
+> {
+  /**
+   * Live set of unresolved handle keys.
+   */
   readonly remaining: ReadonlySet<keyof M & string>;
 }
 
 // =============================================================================
-// map — HANDLER ENTRY TYPES
+// LISTENER — for ctx.listen() (all contexts)
 // =============================================================================
 
 /**
- * Extract data type from a finite handle or collection.
- * For branch collections, this is the element's data type (innerKey is separate).
- * For ChannelReceiveCall, this is the resolved value type.
+ * Event type yielded by a `Listener<M>` on each iteration.
+ * Each event is `{ key: K; message: T }` where T is the channel's message type.
  */
-export type FiniteHandleData<H> =
-  H extends BranchHandle<infer T>
-    ? T
-    : H extends BranchHandle<infer T>[]
+export type ListenerEvent<M extends Record<string, ListenableHandle>> = {
+  [K in keyof M & string]: {
+    key: K;
+    message: M[K] extends ChannelHandle<infer T>
       ? T
-      : H extends Map<any, BranchHandle<infer T>>
+      : M[K] extends ChannelReceiveCall<infer T>
         ? T
-        : H extends ChannelReceiveCall<infer T>
-          ? T
-          : never;
+        : never;
+  };
+}[keyof M & string];
 
 /**
- * Extract the inner key type for collection handles.
- * Single BranchHandle and ChannelReceiveCall have no innerKey (never).
- */
-type FiniteHandleInnerKey<H> =
-  H extends BranchHandle<any>
-    ? never
-    : H extends BranchHandle<any>[]
-      ? number
-      : H extends Map<infer K, BranchHandle<any>>
-        ? K
-        : H extends ChannelReceiveCall<any>
-          ? never
-          : never;
-
-/**
- * A map handler entry for a finite handle or collection.
- * Handles the same input shapes (single/array/map/one-shot receive) and returns a value.
+ * A listener — channel-only multiplexed iteration handle returned by `ctx.listen()`.
  *
- * `ctx.map()` return type mirrors the collection structure:
- * - Single BranchHandle / ChannelReceiveCall → single transformed value
- * - Array → array of transformed values
- * - Map → Map of transformed values
+ * Directly iterable via `for await (const { key, message } of listener) { ... }`.
+ * `listener.remaining` tracks which one-shot receives are still pending
+ * (raw `ChannelHandle` keys are never removed).
  *
- * Handler forms for BranchHandle keys:
- * - Plain function: complete path only; failure auto-terminates.
- * - `{ complete, failure }`: both paths handled explicitly.
- * - `{ complete }` only: failure auto-terminates.
- * - `{ failure }` only: complete yields data unchanged (identity); failure handled explicitly.
+ * @typeParam M - Record of `ListenableHandle` values.
  */
-export type ScopeMapHandlerEntry<H extends ScopeFiniteHandle> = H extends
-  | BranchHandle<any>
-  | BranchHandle<any>[]
-  | Map<any, BranchHandle<any>>
-  ? FiniteHandleInnerKey<H> extends never
-    ? // Single BranchHandle
-        | ((data: FiniteHandleData<H>) => any)
-        | {
-            complete: (data: FiniteHandleData<H>) => any;
-            failure: (failure: BranchFailureInfo) => any;
-          }
-        | { complete: (data: FiniteHandleData<H>) => any }
-        | { failure: (failure: BranchFailureInfo) => any }
-    : // Collection BranchHandle
-        | ((
-            data: FiniteHandleData<H>,
-            innerKey: FiniteHandleInnerKey<H>,
-          ) => any)
-        | {
-            complete: (
-              data: FiniteHandleData<H>,
-              innerKey: FiniteHandleInnerKey<H>,
-            ) => any;
-            failure: (
-              failure: BranchFailureInfo,
-              innerKey: FiniteHandleInnerKey<H>,
-            ) => any;
-          }
-        | {
-            complete: (
-              data: FiniteHandleData<H>,
-              innerKey: FiniteHandleInnerKey<H>,
-            ) => any;
-          }
-        | {
-            failure: (
-              failure: BranchFailureInfo,
-              innerKey: FiniteHandleInnerKey<H>,
-            ) => any;
-          }
-  : H extends ChannelReceiveCall<any>
-    ? (data: FiniteHandleData<H>) => any
-    : never;
-
-/**
- * Mirror the map output structure to match the input collection structure.
- * - BranchHandle<T> → ExtractHandlerReturn<C, T>
- * - BranchHandle<T>[] → ExtractHandlerReturn<C, T>[]
- * - Map<K, BranchHandle<T>> → Map<K, ExtractHandlerReturn<C, T>>
- * - ChannelReceiveCall<T> → ExtractHandlerReturn<C, T>
- *
- * FiniteHandleData<H> is passed as TData so that omitting `complete` in a
- * `{ failure }` handler yields the raw data unchanged (identity semantics).
- */
-export type MapOutputFor<H, C> =
-  H extends BranchHandle<any>
-    ? ExtractHandlerReturn<C, FiniteHandleData<H>>
-    : H extends BranchHandle<any>[]
-      ? ExtractHandlerReturn<C, FiniteHandleData<H>>[]
-      : H extends Map<infer K, BranchHandle<any>>
-        ? Map<K, ExtractHandlerReturn<C, FiniteHandleData<H>>>
-        : H extends ChannelReceiveCall<any>
-          ? ExtractHandlerReturn<C, FiniteHandleData<H>>
-          : never;
-
-/**
- * Return type for `ctx.map()` with partial callbacks and an optional default
- * failure handler `DF`.
- *
- * Failure fallback semantics are shape-preserving:
- * - `BranchHandle<T>`: `X | DF`
- * - `BranchHandle<T>[]`: `Array<X | DF>` (fallback applies per element)
- * - `Map<K, BranchHandle<T>>`: `Map<K, X | DF>` (fallback applies per map entry)
- * - `ChannelReceiveCall<T>`: no failure path, so `DF` is ignored.
- *
- * For each key `K` in `M`:
- * - In `C` with explicit `failure` handler: sealed output (`DF` excluded).
- * - In `C` without explicit `failure`: `DF` applies per failing branch element.
- * - Not in `C`: identity complete behavior with the same per-element `DF` semantics.
- */
-type MapOutputForWithDefault<H, C, DF> =
-  H extends BranchHandle<any>
-    ? ExtractHandlerReturn<C, FiniteHandleData<H>> | DF
-    : H extends BranchHandle<any>[]
-      ? Array<ExtractHandlerReturn<C, FiniteHandleData<H>> | DF>
-      : H extends Map<infer K, BranchHandle<any>>
-        ? Map<K, ExtractHandlerReturn<C, FiniteHandleData<H>> | DF>
-        : H extends ChannelReceiveCall<any>
-          ? ExtractHandlerReturn<C, FiniteHandleData<H>>
-          : never;
-
-export type MapReturn<
-  M extends Record<string, ScopeFiniteHandle>,
-  C extends Partial<Record<keyof M & string, any>>,
-  DF = never,
-> = {
-  [K in keyof M & string]: K extends keyof C & string
-    ? HasExplicitFailure<C[K]> extends true
-      ? MapOutputFor<M[K], C[K]>
-      : MapOutputForWithDefault<M[K], C[K], DF>
-    : MapOutputForWithDefault<M[K], undefined, DF>;
-};
-
-// =============================================================================
-// map — HANDLER ENTRY TYPES (CompensationContext)
-// =============================================================================
-
-/**
- * A map handler entry for CompensationContext.
- * Plain function — receives the branch data directly.
- * Also accepts `ChannelReceiveCall<T>` for one-shot channel waits in compensation.
- */
-export type ScopeCompensationMapHandlerEntry<H extends ScopeFiniteHandle> =
-  H extends BranchHandle<any>
-    ? (data: FiniteHandleData<H>) => any
-    : H extends BranchHandle<any>[]
-      ? (data: FiniteHandleData<H>, innerKey: number) => any
-      : H extends Map<infer K, BranchHandle<any>>
-        ? (data: FiniteHandleData<H>, innerKey: K) => any
-        : H extends ChannelReceiveCall<any>
-          ? (data: FiniteHandleData<H>) => any
-          : never;
+export interface Listener<
+  M extends Record<string, ListenableHandle>,
+> extends AsyncIterable<ListenerEvent<M>> {
+  readonly remaining: ReadonlySet<keyof M & string>;
+}

@@ -113,7 +113,7 @@ export const campaignWorkflow = defineWorkflow({
 
     let notificationId: string | null;
     if (await ctx.patches.multiChannel) {
-      const result = await ctx.join(ctx.steps.sendNotification(
+      const result = await ctx.execute(ctx.steps.sendNotification(
         args.userId,
         `Campaign ${campaignId}: you are selected for ${selectedTier}`,
       ));
@@ -130,7 +130,7 @@ export const campaignWorkflow = defineWorkflow({
     await ctx.sleepUntil(new Date(ctx.timestamp + 10 * 60 * 1000));
 
     for (const candidate of sampled) {
-      await ctx.join(ctx.steps.sendNotification(
+      await ctx.execute(ctx.steps.sendNotification(
         candidate,
         `Campaign wave from ${args.userId}, token: ${token}`,
       ));

@@ -32,7 +32,7 @@ export const paymentOrchestrationWorkflow = defineWorkflow({
   },
 
   async execute(ctx, args) {
-    const receiptId = await ctx.join(
+    const receiptId = await ctx.execute(
       ctx.childWorkflows
         .payment({
           idempotencyKey: `payment-${ctx.rng.ids.uuidv4()}`,

@@ -43,7 +43,7 @@ export const orderWorkflow = defineWorkflow({
     ctx.logger.info("Order failed — notifying customer", {
       id: ctx.workflowId,
     });
-    const result = await ctx.join(
+    const result = await ctx.execute(
       ctx.steps.sendEmail(
         args.customerEmail,
         "Order Failed",
@@ -56,11 +56,11 @@ export const orderWorkflow = defineWorkflow({
   },
 
   async execute(ctx, args) {
-    const flightId = await ctx.join(
+    const flightId = await ctx.execute(
       ctx.steps
         .bookFlight(args.destination, args.customerId)
         .compensate(async (ctx) => {
-          await ctx.join(
+          await ctx.execute(
             ctx.steps.cancelFlight(args.destination, args.customerId),
           );
         })
@@ -86,38 +86,40 @@ export const orderWorkflow = defineWorkflow({
 
     ctx.state.phase = "approved";
 
-    const hotelId = await ctx.join(
+    const hotelId = await ctx.execute(
       ctx.scope(
         "BookHotel",
         {
-          hotel: ctx.steps
-            .bookHotel(args.destination, args.checkIn, args.checkOut)
-            .compensate(async (ctx) => {
-              await ctx.join(
-                ctx.steps.cancelHotel(
-                  args.destination,
-                  args.checkIn,
-                  args.checkOut,
-                ),
-              );
-            }),
+          hotel: async (ctx) =>
+            ctx.execute(
+              ctx.steps
+                .bookHotel(args.destination, args.checkIn, args.checkOut)
+                .compensate(async (ctx) => {
+                  await ctx.execute(
+                    ctx.steps.cancelHotel(
+                      args.destination,
+                      args.checkIn,
+                      args.checkOut,
+                    ),
+                  );
+                }),
+            ),
         },
         async (ctx, { hotel }) => {
-          const result = await ctx.join(
-            ctx.map(
-              { hotel },
-              {
-                hotel: {
-                  complete: (data) => data.id as string | null,
-                  failure: (_failure) => {
-                    ctx.logger.error("Hotel booking failed");
-                    return null;
-                  },
-                },
+          let hotelId: string | null = null;
+          for await (const result of ctx.match(ctx.select({ hotel }), {
+            hotel: {
+              complete: (data) => data.id as string | null,
+              failure: (_failure) => {
+                ctx.logger.error("Hotel booking failed");
+                return null;
               },
-            ),
-          );
-          return result.hotel ?? null;
+            },
+          })) {
+            hotelId = result;
+            break;
+          }
+          return hotelId;
         },
       ),
     );

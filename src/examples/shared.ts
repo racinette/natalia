@@ -191,11 +191,11 @@ export const paymentWorkflow = defineWorkflow({
 
   async execute(ctx, args) {
     ctx.logger.info("Processing payment", { amount: args.amount });
-    const charge = await ctx.join(
+    const charge = await ctx.execute(
       ctx.steps
         .chargeCustomer(args.customerId, args.amount)
         .compensate(async (ctx, _result) => {
-          await ctx.join(ctx.steps.refundCustomer(charge.chargeId));
+          await ctx.execute(ctx.steps.refundCustomer(charge.chargeId));
         }),
     );
     return { receiptId: charge.chargeId };

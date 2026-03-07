@@ -114,7 +114,7 @@ export const pageScraperWorkflow = defineWorkflow({
       return { url: args.url, title: "" };
     }
 
-    const page = await ctx.join(ctx.steps.fetchPage(args.url, args.baseUrl));
+    const page = await ctx.execute(ctx.steps.fetchPage(args.url, args.baseUrl));
 
     await ctx.streams.discovered.write({
       url: args.url,

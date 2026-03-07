@@ -35,7 +35,7 @@ const OperatorResolution = z.discriminatedUnion("action", [
 /**
  * Showcases:
  * - beforeCompensate / afterCompensate
- * - compensation context scope/map/select/sleep/channels/streams/events
+ * - compensation context scope/select/match/sleep/channels/streams/events
  * - CompensationStepCall.retry()
  * - human-in-the-loop compensation via channels + events + streams
  */
@@ -78,22 +78,20 @@ export const compensationHooksWorkflow = defineWorkflow({
   afterCompensate: async ({ ctx, args }) => {
     ctx.logger.info("All compensations done");
 
-    await ctx.join(
+    await ctx.execute(
       ctx.scope(
         "CompensationNotifications",
         {
-          logEntry: async () => {
-            const result = await ctx.join(
+          logEntry: async (ctx) =>
+            ctx.execute(
               ctx.steps.sendEmail(
                 args.notificationEmail,
                 "Order Compensated",
                 `Your order to ${args.destination} was cancelled and refunded.`,
               ),
-            );
-            return result;
-          },
-          auditEntry: async () => {
-            const result = await ctx.join(
+            ),
+          auditEntry: async (ctx) =>
+            ctx.execute(
               ctx.steps
                 .sendEmail(
                   "audit@example.com",
@@ -101,20 +99,20 @@ export const compensationHooksWorkflow = defineWorkflow({
                   `Workflow ${ctx.workflowId} fully compensated.`,
                 )
                 .retry({ maxAttempts: 5 }),
-            );
-            return result;
-          },
+            ),
         },
         async (ctx, { logEntry, auditEntry }) => {
-          const notificationResults = await ctx.join(
-            ctx.map(
-              { logEntry, auditEntry },
-              {
-                logEntry: (data) => data.ok,
-                auditEntry: (data) => data.ok,
-              },
-            ),
-          );
+          const sel = ctx.select({ logEntry, auditEntry });
+          const notificationResults: {
+            logEntry?: boolean;
+            auditEntry?: boolean;
+          } = {};
+          for await (const result of ctx.match(sel, {
+            logEntry: (data) => ({ key: "logEntry" as const, ok: data.ok }),
+            auditEntry: (data) => ({ key: "auditEntry" as const, ok: data.ok }),
+          })) {
+            notificationResults[result.key] = result.ok;
+          }
           if (!notificationResults.logEntry) {
             ctx.logger.warn("Customer notification failed to send");
           }
@@ -133,11 +131,11 @@ export const compensationHooksWorkflow = defineWorkflow({
   },
 
   async execute(ctx, args) {
-    await ctx.join(
+    await ctx.execute(
       ctx.steps
         .bookFlight(args.destination, args.customerId)
         .compensate(async (ctx) => {
-          let result = await ctx.join(
+          let result = await ctx.execute(
             ctx.steps
               .cancelFlight(args.destination, args.customerId)
               .retry({ maxAttempts: 15, intervalSeconds: 10, backoffRate: 2 }),
@@ -160,7 +158,7 @@ export const compensationHooksWorkflow = defineWorkflow({
 
             for await (const resolution of ctx.channels.operatorResolution) {
               if (resolution.action === "retry_cancel") {
-                result = await ctx.join(
+                result = await ctx.execute(
                   ctx.steps
                     .cancelFlight(args.destination, args.customerId)
                     .retry({ maxAttempts: 5, intervalSeconds: 5 }),
@@ -205,26 +203,36 @@ export const compensationHooksWorkflow = defineWorkflow({
         }),
     );
 
-    await ctx.join(
+    await ctx.execute(
       ctx.steps
         .bookHotel(args.destination, args.checkIn, args.checkOut)
         .compensate(async (ctx) => {
-          await ctx.join(
+          await ctx.execute(
             ctx.scope(
               "HotelCompensationBranches",
               {
-                cancel: ctx.steps
-                  .cancelHotel(args.destination, args.checkIn, args.checkOut)
-                  .retry({ maxAttempts: 10 }),
-                notify: ctx.steps.sendEmail(
-                  args.notificationEmail,
-                  "Hotel Cancelled",
-                  `Hotel booking for ${args.destination} was cancelled.`,
-                ),
+                cancel: async (ctx) =>
+                  ctx.execute(
+                    ctx.steps
+                      .cancelHotel(
+                        args.destination,
+                        args.checkIn,
+                        args.checkOut,
+                      )
+                      .retry({ maxAttempts: 10 }),
+                  ),
+                notify: async (ctx) =>
+                  ctx.execute(
+                    ctx.steps.sendEmail(
+                      args.notificationEmail,
+                      "Hotel Cancelled",
+                      `Hotel booking for ${args.destination} was cancelled.`,
+                    ),
+                  ),
               },
               async (ctx, { cancel, notify }) => {
                 const sel = ctx.select({ cancel, notify });
-                for await (const _data of sel) {
+                for await (const _event of ctx.match(sel)) {
                   ctx.logger.debug("Compensation branch resolved");
                 }
               },

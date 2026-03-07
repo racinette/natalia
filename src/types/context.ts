@@ -34,25 +34,21 @@ import type {
   EventAccessor,
   BranchFailureInfo,
   BranchHandle,
-  EnsureScopeEntries,
-  NoInferScope,
-  ScopeEntriesCheck,
   ScopeHandles,
-  ScopeAllResults,
+  FirstResult,
   ScopePath,
   AppendScopeName,
+  AppendBranchKey,
   ScopeNameArg,
-  BaseSelectableHandle,
+  ListenableHandle,
+  Listener,
   ScopeSelectableHandle,
-  ScopeFiniteHandle,
   ScopeSelectableRecordForPath,
-  ScopeFiniteRecordForPath,
-  FiniteHandleData,
   Selection,
   CompensationSelection,
-  ScopeMapHandlerEntry,
-  MapReturn,
-  ScopeCompensationMapHandlerEntry,
+  SelectDataKeyedUnion,
+  MatchHandlers,
+  MatchReturn,
   StepFailureInfo,
   ChildWorkflowFailureInfo,
   ExecutionRoot,
@@ -143,45 +139,39 @@ export interface WorkflowLogger {
  * - `.failure()` — handle failure explicitly instead of auto-terminating; return TFail
  * - `.complete()` — transform success result
  *
- * Await the call to resolve to `T | TFail` (happy path when no `.failure()` is
- * chained auto-terminates the workflow on failure).
+ * Await the call via `ctx.execute(stepCall)` to resolve to `T | TFail`.
  *
  * @typeParam T - Decoded step result type (z.output<Schema>).
  * @typeParam TFail - Return type of the `.failure()` callback (never if not used).
  * @typeParam HasCompensation - Whether `.compensate()` has been called.
- * @typeParam TCompCtx - The CompensationContext type for this workflow.
+ * @typeParam Tctx - The CompensationContext type for this workflow.
  */
 export interface StepCall<
   T,
   TFail = never,
   HasCompensation extends boolean = false,
-  TCompCtx = unknown,
+  Tctx = unknown,
 > extends DeterministicAwaitable<T | TFail, ExecutionRoot> {
   /**
    * Register a compensation callback for this step.
    * Runs during LIFO unwinding when the workflow fails.
    */
   compensate(
-    cb: (ctx: TCompCtx, result: StepCompensationResult<T>) => Promise<void>,
-  ): StepCall<T, TFail, true, TCompCtx>;
+    cb: (ctx: Tctx, result: StepCompensationResult<T>) => Promise<void>,
+  ): StepCall<T, TFail, true, Tctx>;
 
   /**
    * Override the step's retry policy.
    */
-  retry(
-    policy: RetryPolicyOptions,
-  ): StepCall<T, TFail, HasCompensation, TCompCtx>;
+  retry(policy: RetryPolicyOptions): StepCall<T, TFail, HasCompensation, Tctx>;
 
   /**
    * Handle step failure explicitly — the workflow does NOT auto-terminate.
    * The callback return value becomes TFail in the resolved union.
    */
-  failure<R>(cb: (failure: StepFailureInfo) => R): StepCall<
-    T,
-    Awaited<R>,
-    HasCompensation,
-    TCompCtx
-  >;
+  failure<R>(
+    cb: (failure: StepFailureInfo) => R,
+  ): StepCall<T, Awaited<R>, HasCompensation, Tctx>;
 
   /**
    * Transform the success result.
@@ -189,7 +179,7 @@ export interface StepCall<
    */
   complete<R>(
     cb: (data: T) => R,
-  ): StepCall<Awaited<R>, TFail, HasCompensation, TCompCtx>;
+  ): StepCall<Awaited<R>, TFail, HasCompensation, Tctx>;
 }
 
 // =============================================================================
@@ -255,13 +245,13 @@ export interface ForeignWorkflowHandle<
  * @typeParam T - Decoded child workflow result type.
  * @typeParam TFail - Return type of the `.failure()` callback (never if not used).
  * @typeParam HasCompensation - Whether `.compensate()` has been called.
- * @typeParam TCompCtx - The CompensationContext type for the parent workflow.
+ * @typeParam Tctx - The CompensationContext type for the parent workflow.
  */
 export interface WorkflowCallResult<
   T,
   TFail = never,
   HasCompensation extends boolean = false,
-  TCompCtx = unknown,
+  Tctx = unknown,
 > extends DeterministicAwaitable<T | TFail, ExecutionRoot> {
   /**
    * Register a compensation callback for this child workflow invocation.
@@ -269,27 +259,24 @@ export interface WorkflowCallResult<
    */
   compensate(
     cb: (
-      ctx: TCompCtx,
+      ctx: Tctx,
       result: ChildWorkflowCompensationResult<T>,
     ) => Promise<void>,
-  ): WorkflowCallResult<T, TFail, true, TCompCtx>;
+  ): WorkflowCallResult<T, TFail, true, Tctx>;
 
   /**
    * Handle child workflow failure explicitly — the parent does NOT auto-terminate.
    */
-  failure<R>(cb: (failure: ChildWorkflowFailureInfo) => R): WorkflowCallResult<
-    T,
-    Awaited<R>,
-    HasCompensation,
-    TCompCtx
-  >;
+  failure<R>(
+    cb: (failure: ChildWorkflowFailureInfo) => R,
+  ): WorkflowCallResult<T, Awaited<R>, HasCompensation, Tctx>;
 
   /**
    * Transform the child workflow's success result.
    */
   complete<R>(
     cb: (data: T) => R,
-  ): WorkflowCallResult<Awaited<R>, TFail, HasCompensation, TCompCtx>;
+  ): WorkflowCallResult<Awaited<R>, TFail, HasCompensation, Tctx>;
 }
 
 /**
@@ -303,40 +290,37 @@ export interface WorkflowCallResult<
  * @typeParam T - Decoded child workflow result type.
  * @typeParam TFail - Return type of `.failure()` callback (never if not used).
  * @typeParam HasCompensation - Whether `.compensate()` has been called.
- * @typeParam TCompCtx - The CompensationContext type for the parent workflow.
+ * @typeParam Tctx - The CompensationContext type for the parent workflow.
  */
 export interface WorkflowCall<
   T,
   TFail = never,
   HasCompensation extends boolean = false,
-  TCompCtx = unknown,
+  Tctx = unknown,
 > extends DeterministicAwaitable<T | TFail, ExecutionRoot> {
   /**
    * Register a compensation callback.
    */
   compensate(
     cb: (
-      ctx: TCompCtx,
+      ctx: Tctx,
       result: ChildWorkflowCompensationResult<T>,
     ) => Promise<void>,
-  ): WorkflowCallResult<T, TFail, true, TCompCtx>;
+  ): WorkflowCallResult<T, TFail, true, Tctx>;
 
   /**
    * Handle child workflow failure explicitly.
    */
-  failure<R>(cb: (failure: ChildWorkflowFailureInfo) => R): WorkflowCallResult<
-    T,
-    Awaited<R>,
-    HasCompensation,
-    TCompCtx
-  >;
+  failure<R>(
+    cb: (failure: ChildWorkflowFailureInfo) => R,
+  ): WorkflowCallResult<T, Awaited<R>, HasCompensation, Tctx>;
 
   /**
    * Transform the child workflow's success result — enters result mode.
    */
   complete<R>(
     cb: (data: T) => R,
-  ): WorkflowCallResult<Awaited<R>, TFail, HasCompensation, TCompCtx>;
+  ): WorkflowCallResult<Awaited<R>, TFail, HasCompensation, Tctx>;
 }
 
 // =============================================================================
@@ -398,15 +382,15 @@ export type CompensationChildWorkflowStartOptions<W extends AnyWorkflowHeader> =
  * Callable child workflow accessor on `ctx.childWorkflows` in WorkflowContext.
  *
  * @typeParam W - The child workflow definition.
- * @typeParam TCompCtx - The parent workflow's CompensationContext type.
+ * @typeParam Tctx - The parent workflow's CompensationContext type.
  */
 export interface ChildWorkflowAccessor<
   W extends AnyWorkflowHeader,
-  TCompCtx = unknown,
+  Tctx = unknown,
 > {
   (
     options: AttachedChildWorkflowStartOptions<W>,
-  ): WorkflowCall<InferWorkflowResult<W>, never, false, TCompCtx>;
+  ): WorkflowCall<InferWorkflowResult<W>, never, false, Tctx>;
 
   /**
    * Start this child workflow in detached mode.
@@ -625,9 +609,9 @@ export interface BaseContext<
  * Key differences from WorkflowContext:
  * - Steps return `CompensationStepResult<T>` via `CompensationStepCall<T>` —
  *   compensation code MUST handle failures gracefully.
- * - Has `scope(name, ...)` and channel-only `select()`.
- * - Full structured-concurrency primitives (`select` with branch handles, `map`)
- *   are available only inside `scope(name, ...)` via `WorkflowCompensationConcurrencyContext`.
+ * - Has `scope(name, ...)`, `all(...)`, `first(...)`, and `listen()`.
+ * - Full structured-concurrency primitives (`select` with branch handles, `match`)
+ *   are available only inside `scope(name, ...)` via `CompensationConcurrencyContext`.
  * - `childWorkflows` return `CompensationWorkflowCall<T>` → `WorkflowResult<T>`.
  * - No `addCompensation()` (prevents nested compensation chains).
  * - No `foreignWorkflows` accessor (fire-and-forget not needed in compensation).
@@ -635,6 +619,10 @@ export interface BaseContext<
  * The engine transparently interleaves compensation callbacks from the same
  * scope via a virtual event loop. Each callback looks like normal sequential
  * code — the engine handles concurrency at durable operation yield points.
+ *
+ * @typeParam TScopePath - The scope path of this context instance. Defaults to `[]`
+ *   for the root compensation context; branch closures receive a path-specialized
+ *   instance with `AppendBranchKey<AppendScopeName<...>, K>`.
  */
 export interface CompensationContext<
   TState,
@@ -646,6 +634,7 @@ export interface CompensationContext<
   TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
+  TScopePath extends ScopePath = [],
 > extends BaseContext<TState, TChannels, TStreams, TEvents, TPatches, TRng> {
   /**
    * Steps for durable operations.
@@ -686,23 +675,63 @@ export interface CompensationContext<
   };
 
   // ---------------------------------------------------------------------------
+  // execute — resolve a deterministic handle
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Execute (resolve) a deterministic handle created in this compensation context.
+   *
+   * Use `ctx.execute()` to await steps, child workflows, `scope()`, `all()`, and `first()`
+   * from base compensation context. For `BranchHandle`s inside a scope callback, use
+   * `ctx.join()` on the `CompensationConcurrencyContext` instead.
+   */
+  execute<H extends DeterministicAwaitable<any, CompensationRoot>>(
+    handle: H,
+  ): H extends DeterministicAwaitable<infer T, any>
+    ? Promise<T>
+    : Promise<never>;
+
+  // ---------------------------------------------------------------------------
   // scope — structured concurrency in compensation (closure-based)
   // ---------------------------------------------------------------------------
 
   /**
    * Create a scope for structured concurrency in compensation.
    *
-   * Entries can be async closures OR direct thenables (or collections of either).
-   * The engine runs them on a virtual event loop, interleaving at durable yield points.
+   * Each entry is an async closure `(ctx: CompensationContext<..., BranchPath>) => Promise<T>`.
+   * The `ctx` argument is a path-specialized `CompensationContext` with the branch's
+   * exact scope path, enabling compile-time lifetime tracking.
    *
    * On scope exit, all running branches are awaited to completion.
    * No per-branch compensation — compensation cannot nest.
+   *
+   * Resolve the scope result: `await ctx.execute(ctx.scope("Name", entries, callback))`.
    */
-  scope<Name extends string, R, E>(
-    name: Name,
+  scope<
+    Name extends string,
+    E extends Record<
+      string,
+      (
+        ctx: CompensationContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
+        >,
+      ) => Promise<unknown>
+    >,
+    R,
+  >(
+    name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     callback: (
-      ctx: WorkflowCompensationConcurrencyContext<
+      ctx: CompensationConcurrencyContext<
         TState,
         TChannels,
         TStreams,
@@ -712,58 +741,90 @@ export interface CompensationContext<
         TForeignWorkflows,
         TPatches,
         TRng,
-        AppendScopeName<[], Name>
+        AppendScopeName<TScopePath, Name>
       >,
       handles: ScopeHandles<
-        EnsureScopeEntries<NoInferScope<E>>,
-        AppendScopeName<[], Name>,
+        E,
+        AppendScopeName<TScopePath, Name>,
         CompensationRoot
       >,
     ) => Promise<R>,
-    ..._entriesCheck: ScopeEntriesCheck<E>
   ): DeterministicAwaitable<R, CompensationRoot>;
 
   /**
-   * Join all entries concurrently and return resolved values preserving shape.
+   * Run all entries concurrently and return all resolved values.
    *
-   * Sugar over `scope(...)` for the common "run all and collect results" case.
-   * Any unhandled branch failure follows normal compensation failure semantics.
+   * Each entry is `(ctx: CompensationContext<...>) => Promise<T>`.
+   * Resolve: `await ctx.execute(ctx.all(entries))`.
    */
-  all<E>(
+  all<
+    E extends Record<
+      string,
+      (
+        ctx: CompensationContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          any
+        >,
+      ) => Promise<unknown>
+    >,
+  >(
     entries: E,
-    ..._entriesCheck: ScopeEntriesCheck<E>
-  ): DeterministicAwaitable<ScopeAllResults<EnsureScopeEntries<NoInferScope<E>>>, CompensationRoot>;
+  ): DeterministicAwaitable<
+    { [K in keyof E]: Awaited<ReturnType<E[K]>> },
+    CompensationRoot
+  >;
+
+  /**
+   * Run all entries concurrently and return the first to complete.
+   *
+   * Each entry is `(ctx: CompensationContext<...>) => Promise<T>`.
+   * Resolve: `await ctx.execute(ctx.first(entries))`.
+   * Returns `{ key, result }` discriminated union.
+   */
+  first<
+    E extends Record<
+      string,
+      (
+        ctx: CompensationContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          any
+        >,
+      ) => Promise<unknown>
+    >,
+  >(
+    entries: E,
+  ): DeterministicAwaitable<FirstResult<E>, CompensationRoot>;
 
   // ---------------------------------------------------------------------------
-  // join — resolve a deterministic handle
+  // listen — channel-only multiplexed waiting (all contexts)
   // ---------------------------------------------------------------------------
 
   /**
-   * Resolve a deterministic handle created in this compensation context.
+   * Create a listener for concurrent channel waiting.
    *
-   * The only way to await a `DeterministicAwaitable` or `BranchHandle` from
-   * compensation context. For `BranchHandle`s, enforces at compile time that
-   * the handle's scope path is a prefix of the current scope path.
-   */
-  join<H extends DeterministicAwaitable<any, CompensationRoot>>(
-    handle: H,
-    ..._check: IsJoinableByPath<H, []>
-  ): H extends DeterministicAwaitable<infer T, any> ? Promise<T> : Promise<never>;
-
-  // ---------------------------------------------------------------------------
-  // select — multiplexed waiting
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Create a selection for concurrent waiting in compensation.
+   * Accepts only channel handles (`ChannelHandle` and `ChannelReceiveCall`).
+   * Directly iterable: `for await (const { key, message } of listener) { ... }`.
    *
-   * Two channel input forms with distinct semantics:
-   * - `ctx.channels.<n>` (`ChannelHandle`) — streaming branch; never exhausted.
-   * - `ctx.channels.<n>.receive(...)` (`ChannelReceiveCall`) — one-shot branch.
+   * - `ChannelHandle` — streaming; never removed from `remaining`.
+   * - `ChannelReceiveCall` — one-shot; removed from `remaining` after resolving.
    */
-  select<M extends Record<string, BaseSelectableHandle>>(
-    handles: M,
-  ): CompensationSelection<M>;
+  listen<M extends Record<string, ListenableHandle>>(handles: M): Listener<M>;
 }
 
 /**
@@ -811,19 +872,20 @@ export type CompensationCallback<
  * - `.failure(cb)` — handle failure without auto-termination
  * - `.complete(cb)` — transform success result
  *
- * Structured concurrency via `ctx.scope(name, ...)`: every concurrent branch runs as a
- * closure or direct thenable entry. Branches with compensated steps are
- * compensated on scope exit.
+ * Structured concurrency via `ctx.scope(name, entries, callback)`:
+ * every concurrent branch runs as a closure `(ctx) => Promise<T>`.
+ * Branches with compensated steps are compensated on scope exit.
  *
- * Dynamic fan-out: scope entries accept collections (arrays, Maps) of closures
- * and/or thenables.
- * Base `ctx.select()` is channel-only (`ChannelHandle` and `ChannelReceiveCall`).
- * Full concurrency primitives (`select` with branch handles and `map`) are
+ * Resolve handles with `ctx.execute(handle)`. Inside scope callbacks, use
+ * `ctx.join(handle)` on the `WorkflowConcurrencyContext` for branch handle coordination.
+ *
+ * Base `ctx.listen()` is channel-only.
+ * Full concurrency primitives (`select` with branch handles and `match`) are
  * available only inside `ctx.scope(name, ...)` via `WorkflowConcurrencyContext`.
  *
- * Child workflow access is split by semantics:
- * - `ctx.childWorkflows.*` — structured invocation (lifecycle managed, compensation supported)
- * - `ctx.foreignWorkflows.*` — message-only access to existing workflow instances
+ * @typeParam TScopePath - The scope path of this context instance. Defaults to `[]`
+ *   for the root execution context; branch closures receive a path-specialized
+ *   instance with `AppendBranchKey<AppendScopeName<...>, K>`.
  */
 export interface WorkflowContext<
   TState,
@@ -835,10 +897,11 @@ export interface WorkflowContext<
   TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
+  TScopePath extends ScopePath = [],
 > extends BaseContext<TState, TChannels, TStreams, TEvents, TPatches, TRng> {
   /**
    * Steps for durable operations.
-   * Calling a step returns a `StepCall<T>` thenable — chain builders before awaiting.
+   * Calling a step returns a `StepCall<T>` thenable — chain builders before executing.
    * Without `.failure()`, failure auto-terminates the workflow.
    */
   readonly steps: {
@@ -900,23 +963,22 @@ export interface WorkflowContext<
     >;
   };
 
+  // ---------------------------------------------------------------------------
+  // execute — resolve a deterministic handle
+  // ---------------------------------------------------------------------------
+
   /**
-   * Create a selection for concurrent waiting.
-   * Pass a record of named handles — use `for await...of` or `.match()` to consume events.
+   * Execute (resolve) a deterministic handle created in this execution context.
    *
-   * Two channel input forms with distinct semantics:
-   * - `ctx.channels.<n>` (`ChannelHandle`) — streaming branch; fires on every
-   *   new message and is **never removed** from `remaining`. Suitable for
-   *   long-running consumer loops where channel reads continue indefinitely.
-   * - `ctx.channels.<n>.receive(...)` (`ChannelReceiveCall`) — one-shot branch;
-   *   resolves exactly once and is removed from `remaining` afterwards. Use
-   *   when you want a single message (or a timeout fallback) in a race.
-   *
-   * Base-context selection is channel-only.
+   * Use `ctx.execute()` to await steps, child workflows, `scope()`, `all()`, and `first()`
+   * from base workflow context. For `BranchHandle`s inside a scope callback, use
+   * `ctx.join()` on the `WorkflowConcurrencyContext` instead.
    */
-  select<M extends Record<string, BaseSelectableHandle>>(
-    handles: M,
-  ): Selection<M>;
+  execute<H extends DeterministicAwaitable<any, ExecutionRoot>>(
+    handle: H,
+  ): H extends DeterministicAwaitable<infer T, any>
+    ? Promise<T>
+    : Promise<never>;
 
   /**
    * Create a cron-like schedule handle for recurring execution.
@@ -936,24 +998,39 @@ export interface WorkflowContext<
   /**
    * Create a scope for structured concurrency.
    *
-   * Entries can be async closures OR direct thenables (or collections of either).
-   * The engine runs them on a virtual event loop, interleaving at durable yield points.
-   * The callback receives a `WorkflowConcurrencyContext` as first argument and
-   * `BranchHandle<T>` values as second argument. Use the callback context for all
-   * branch-aware `select/map` operations.
+   * Each entry is an async closure `(ctx: WorkflowContext<..., BranchPath>) => Promise<T>`.
+   * The `ctx` argument is a path-specialized `WorkflowContext` with the branch's
+   * exact scope path, enabling compile-time lifetime tracking.
    *
    * Scope exit behavior:
    * - Branches with compensated steps that weren't consumed → compensation runs
    * - Branches without compensation that weren't consumed → awaited, result ignored
    * - On error (callback throws): all unresolved compensated branches are compensated
    *
-   * Entries can be single values or collections:
-   * - `flight: async () => T` OR `flight: ctx.steps.bookFlight(...)` → `BranchHandle<T>`
-   * - `providers: Array<() => Promise<T> | DeterministicAwaitable<T>>` → `BranchHandle<T>[]`
-   * - `quotes: Map<K, () => Promise<T> | DeterministicAwaitable<T>>` → `Map<K, BranchHandle<T>>`
+   * Resolve the scope result: `await ctx.execute(ctx.scope("Name", entries, callback))`.
    */
-  scope<Name extends string, R, E>(
-    name: Name,
+  scope<
+    Name extends string,
+    E extends Record<
+      string,
+      (
+        ctx: WorkflowContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
+        >,
+      ) => Promise<unknown>
+    >,
+    R,
+  >(
+    name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     callback: (
       ctx: WorkflowConcurrencyContext<
@@ -966,43 +1043,90 @@ export interface WorkflowContext<
         TForeignWorkflows,
         TPatches,
         TRng,
-        AppendScopeName<[], Name>
+        AppendScopeName<TScopePath, Name>
       >,
       handles: ScopeHandles<
-        EnsureScopeEntries<NoInferScope<E>>,
-        AppendScopeName<[], Name>,
+        E,
+        AppendScopeName<TScopePath, Name>,
         ExecutionRoot
       >,
     ) => Promise<R>,
-    ..._entriesCheck: ScopeEntriesCheck<E>
   ): DeterministicAwaitable<R, ExecutionRoot>;
 
   /**
-   * Join all entries concurrently and return resolved values preserving shape.
+   * Run all entries concurrently and return all resolved values.
    *
-   * Sugar over `scope(...)` for the common "run all and collect results" case.
-   * Any unhandled branch failure follows normal workflow failure semantics.
+   * Each entry is `(ctx: WorkflowContext<...>) => Promise<T>`.
+   * Resolve: `await ctx.execute(ctx.all(entries))`.
    */
-  all<E>(
+  all<
+    E extends Record<
+      string,
+      (
+        ctx: WorkflowContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          any
+        >,
+      ) => Promise<unknown>
+    >,
+  >(
     entries: E,
-    ..._entriesCheck: ScopeEntriesCheck<E>
-  ): DeterministicAwaitable<ScopeAllResults<EnsureScopeEntries<NoInferScope<E>>>, ExecutionRoot>;
+  ): DeterministicAwaitable<
+    { [K in keyof E]: Awaited<ReturnType<E[K]>> },
+    ExecutionRoot
+  >;
+
+  /**
+   * Run all entries concurrently and return the first to complete.
+   *
+   * Each entry is `(ctx: WorkflowContext<...>) => Promise<T>`.
+   * Resolve: `await ctx.execute(ctx.first(entries))`.
+   * Returns `{ key, result }` discriminated union.
+   */
+  first<
+    E extends Record<
+      string,
+      (
+        ctx: WorkflowContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          any
+        >,
+      ) => Promise<unknown>
+    >,
+  >(
+    entries: E,
+  ): DeterministicAwaitable<FirstResult<E>, ExecutionRoot>;
 
   // ---------------------------------------------------------------------------
-  // join — resolve a deterministic handle
+  // listen — channel-only multiplexed waiting (all contexts)
   // ---------------------------------------------------------------------------
 
   /**
-   * Resolve a deterministic handle created in this execution context.
+   * Create a listener for concurrent channel waiting.
    *
-   * The only way to await a `DeterministicAwaitable` or `BranchHandle` from
-   * execution context. For `BranchHandle`s, enforces at compile time that
-   * the handle's scope path is a prefix of the current scope path.
+   * Accepts only channel handles (`ChannelHandle` and `ChannelReceiveCall`).
+   * Directly iterable: `for await (const { key, message } of listener) { ... }`.
+   *
+   * - `ChannelHandle` — streaming; never removed from `remaining`.
+   * - `ChannelReceiveCall` — one-shot; removed from `remaining` after resolving.
    */
-  join<H extends DeterministicAwaitable<any, ExecutionRoot>>(
-    handle: H,
-    ..._check: IsJoinableByPath<H, []>
-  ): H extends DeterministicAwaitable<infer T, any> ? Promise<T> : Promise<never>;
+  listen<M extends Record<string, ListenableHandle>>(handles: M): Listener<M>;
 
   // ---------------------------------------------------------------------------
   // addCompensation — general purpose LIFO registration
@@ -1039,8 +1163,10 @@ export interface WorkflowContext<
 /**
  * Scope-local context for structured concurrency in workflow execution.
  *
- * Exposes full branch-aware concurrency primitives (`select`, `map`) and is
+ * Exposes full branch-aware concurrency primitives (`select`, `match`) and is
  * provided only as the first argument to `WorkflowContext.scope(...)`.
+ * Use `ctx.execute()` for lazy handles (steps, child workflows, scope/all/first)
+ * and `ctx.join()` for already-running `BranchHandle`s.
  */
 export interface WorkflowConcurrencyContext<
   TState,
@@ -1063,11 +1189,59 @@ export interface WorkflowConcurrencyContext<
     TChildWorkflows,
     TForeignWorkflows,
     TPatches,
-    TRng
+    TRng,
+    TScopePath
   >,
-  "scope" | "select" | "join"
+  "scope" | "listen" | "execute"
 > {
-  scope<Name extends string, R, E>(
+  /**
+   * Execute (resolve) a deterministic handle created in this execution context.
+   *
+   * Use for steps, child workflows, `scope()`, `all()`, `first()`.
+   */
+  execute<H extends DeterministicAwaitable<any, ExecutionRoot>>(
+    handle: H,
+  ): H extends DeterministicAwaitable<infer T, any>
+    ? Promise<T>
+    : Promise<never>;
+
+  /**
+   * Resolve a branch handle created in this scope or an ancestor scope.
+   *
+   * For `BranchHandle`s, enforces at compile time that the handle's scope path
+   * is a prefix of the current scope path — preventing handles from escaping
+   * their intended lifetime.
+   *
+   * Use `ctx.execute()` for lazy (not-yet-running) handles like steps and child workflows.
+   */
+  join<H extends DeterministicAwaitable<any, ExecutionRoot>>(
+    handle: H,
+    ..._check: IsJoinableByPath<H, TScopePath>
+  ): H extends DeterministicAwaitable<infer T, any>
+    ? Promise<T>
+    : Promise<never>;
+
+  scope<
+    Name extends string,
+    E extends Record<
+      string,
+      (
+        ctx: WorkflowContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
+        >,
+      ) => Promise<unknown>
+    >,
+    R,
+  >(
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     callback: (
@@ -1084,37 +1258,76 @@ export interface WorkflowConcurrencyContext<
         AppendScopeName<TScopePath, Name>
       >,
       handles: ScopeHandles<
-        EnsureScopeEntries<NoInferScope<E>>,
+        E,
         AppendScopeName<TScopePath, Name>,
         ExecutionRoot
       >,
     ) => Promise<R>,
-    ..._entriesCheck: ScopeEntriesCheck<E>
-  ): BranchHandle<R, TScopePath, ExecutionRoot>;
+  ): DeterministicAwaitable<R, ExecutionRoot>;
 
   /**
-   * Join all entries concurrently and return resolved values preserving shape.
+   * Run all entries concurrently and return all resolved values.
    *
-   * Sugar over `scope(...)` for the common "run all and collect results" case.
-   * Any unhandled branch failure follows normal workflow failure semantics.
+   * Each entry is `(ctx: WorkflowContext<...>) => Promise<T>`.
+   * Resolve: `await ctx.execute(ctx.all(entries))`.
    */
-  all<E>(
+  all<
+    E extends Record<
+      string,
+      (
+        ctx: WorkflowContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          any
+        >,
+      ) => Promise<unknown>
+    >,
+  >(
     entries: E,
-    ..._entriesCheck: ScopeEntriesCheck<E>
-  ): DeterministicAwaitable<ScopeAllResults<EnsureScopeEntries<NoInferScope<E>>>, ExecutionRoot>;
+  ): DeterministicAwaitable<
+    { [K in keyof E]: Awaited<ReturnType<E[K]>> },
+    ExecutionRoot
+  >;
 
   /**
-   * Resolve a deterministic handle created in this execution context.
+   * Run all entries concurrently and return the first to complete.
    *
-   * The only way to await a `DeterministicAwaitable` or `BranchHandle` from
-   * within a scope. For `BranchHandle`s, enforces at compile time that the
-   * handle's scope path is a prefix of the current scope path — preventing
-   * handles from escaping their intended lifetime.
+   * Resolve: `await ctx.execute(ctx.first(entries))`.
+   * Returns `{ key, result }` discriminated union.
    */
-  join<H extends DeterministicAwaitable<any, ExecutionRoot>>(
-    handle: H,
-    ..._check: IsJoinableByPath<H, TScopePath>
-  ): H extends DeterministicAwaitable<infer T, any> ? Promise<T> : Promise<never>;
+  first<
+    E extends Record<
+      string,
+      (
+        ctx: WorkflowContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          any
+        >,
+      ) => Promise<unknown>
+    >,
+  >(
+    entries: E,
+  ): DeterministicAwaitable<FirstResult<E>, ExecutionRoot>;
+
+  /**
+   * Create a listener for concurrent channel waiting.
+   */
+  listen<M extends Record<string, ListenableHandle>>(handles: M): Listener<M>;
 
   /**
    * Create a selection for concurrent waiting over scope branch handles and
@@ -1125,43 +1338,52 @@ export interface WorkflowConcurrencyContext<
   ): Selection<ScopeSelectableRecordForPath<M, TScopePath>>;
 
   /**
-   * Collect transformed results from all finite scope handles.
+   * Iterate over a selection, yielding `{ key, result }` for each event.
+   * Branch failures auto-terminate the workflow.
    */
-  map<M extends Record<string, ScopeFiniteHandle>>(
-    handles: ScopeFiniteRecordForPath<M, TScopePath>,
-  ): DeterministicAwaitable<{
-    [K in keyof M & string]: FiniteHandleData<
-      ScopeFiniteRecordForPath<M, TScopePath>[K]
-    >;
-  }, ExecutionRoot>;
+  match<M extends Record<string, ScopeSelectableHandle>>(
+    sel: Selection<M>,
+  ): AsyncIterable<SelectDataKeyedUnion<M>>;
 
-  map<
-    M extends Record<string, ScopeFiniteHandle>,
-    C extends Partial<{ [K in keyof M & string]: ScopeMapHandlerEntry<M[K]> }>,
-  >(
-    handles: ScopeFiniteRecordForPath<M, TScopePath>,
-    callbacks: C,
-  ): DeterministicAwaitable<
-    MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C>,
-    ExecutionRoot
-  >;
-
-  map<
-    M extends Record<string, ScopeFiniteHandle>,
-    C extends Partial<{ [K in keyof M & string]: ScopeMapHandlerEntry<M[K]> }>,
+  /**
+   * Iterate over a selection with a default failure handler.
+   * Failures on keys without an explicit handler call `onFailure`.
+   */
+  match<
+    M extends Record<string, ScopeSelectableHandle>,
     DF extends (failure: BranchFailureInfo) => any,
   >(
-    handles: ScopeFiniteRecordForPath<M, TScopePath>,
-    callbacks: C,
+    sel: Selection<M>,
     onFailure: DF,
-  ): DeterministicAwaitable<
-    MapReturn<
-      ScopeFiniteRecordForPath<M, TScopePath>,
-      C,
-      Awaited<ReturnType<DF>>
-    >,
-    ExecutionRoot
+  ): AsyncIterable<
+    MatchReturn<M, Record<never, never>, Awaited<ReturnType<DF>>>
   >;
+
+  /**
+   * Iterate over a selection with per-key handlers.
+   * Unhandled keys yield data unchanged (identity) on complete; failure auto-terminates.
+   */
+  match<
+    M extends Record<string, ScopeSelectableHandle>,
+    H extends MatchHandlers<M>,
+  >(
+    sel: Selection<M>,
+    handlers: H,
+  ): AsyncIterable<MatchReturn<M, H>>;
+
+  /**
+   * Iterate over a selection with per-key handlers and a default failure handler.
+   * `onFailure` applies to keys without an explicit `failure` handler.
+   */
+  match<
+    M extends Record<string, ScopeSelectableHandle>,
+    H extends MatchHandlers<M>,
+    DF extends (failure: BranchFailureInfo) => any,
+  >(
+    sel: Selection<M>,
+    handlers: H,
+    onFailure: DF,
+  ): AsyncIterable<MatchReturn<M, H, Awaited<ReturnType<DF>>>>;
 }
 
 // =============================================================================
@@ -1171,10 +1393,12 @@ export interface WorkflowConcurrencyContext<
 /**
  * Scope-local context for structured concurrency in compensation execution.
  *
- * Exposes full branch-aware concurrency primitives (`select`, `map`) and is
+ * Exposes full branch-aware concurrency primitives (`select`, `match`) and is
  * provided only as the first argument to `CompensationContext.scope(...)`.
+ * Use `ctx.execute()` for lazy handles (steps, child workflows, scope/all/first)
+ * and `ctx.join()` for already-running `BranchHandle`s.
  */
-export interface WorkflowCompensationConcurrencyContext<
+export interface CompensationConcurrencyContext<
   TState,
   TChannels extends ChannelDefinitions,
   TStreams extends StreamDefinitions,
@@ -1195,15 +1419,62 @@ export interface WorkflowCompensationConcurrencyContext<
     TChildWorkflows,
     TForeignWorkflows,
     TPatches,
-    TRng
+    TRng,
+    TScopePath
   >,
-  "scope" | "select" | "join"
+  "scope" | "listen" | "execute"
 > {
-  scope<Name extends string, R, E>(
+  /**
+   * Execute (resolve) a deterministic handle created in this compensation context.
+   *
+   * Use for steps, child workflows, `scope()`, `all()`, `first()`.
+   */
+  execute<H extends DeterministicAwaitable<any, CompensationRoot>>(
+    handle: H,
+  ): H extends DeterministicAwaitable<infer T, any>
+    ? Promise<T>
+    : Promise<never>;
+
+  /**
+   * Resolve a branch handle created in this scope or an ancestor scope.
+   *
+   * For `BranchHandle`s, enforces at compile time that the handle's scope path
+   * is a prefix of the current scope path.
+   *
+   * Use `ctx.execute()` for lazy (not-yet-running) handles.
+   */
+  join<H extends DeterministicAwaitable<any, CompensationRoot>>(
+    handle: H,
+    ..._check: IsJoinableByPath<H, TScopePath>
+  ): H extends DeterministicAwaitable<infer T, any>
+    ? Promise<T>
+    : Promise<never>;
+
+  scope<
+    Name extends string,
+    E extends Record<
+      string,
+      (
+        ctx: CompensationContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
+        >,
+      ) => Promise<unknown>
+    >,
+    R,
+  >(
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     callback: (
-      ctx: WorkflowCompensationConcurrencyContext<
+      ctx: CompensationConcurrencyContext<
         TState,
         TChannels,
         TStreams,
@@ -1216,36 +1487,76 @@ export interface WorkflowCompensationConcurrencyContext<
         AppendScopeName<TScopePath, Name>
       >,
       handles: ScopeHandles<
-        EnsureScopeEntries<NoInferScope<E>>,
+        E,
         AppendScopeName<TScopePath, Name>,
         CompensationRoot
       >,
     ) => Promise<R>,
-    ..._entriesCheck: ScopeEntriesCheck<E>
-  ): BranchHandle<R, TScopePath, CompensationRoot>;
+  ): DeterministicAwaitable<R, CompensationRoot>;
 
   /**
-   * Join all entries concurrently and return resolved values preserving shape.
+   * Run all entries concurrently and return all resolved values.
    *
-   * Sugar over `scope(...)` for the common "run all and collect results" case.
-   * Any unhandled branch failure follows normal compensation failure semantics.
+   * Each entry is `(ctx: CompensationContext<...>) => Promise<T>`.
+   * Resolve: `await ctx.execute(ctx.all(entries))`.
    */
-  all<E>(
+  all<
+    E extends Record<
+      string,
+      (
+        ctx: CompensationContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          any
+        >,
+      ) => Promise<unknown>
+    >,
+  >(
     entries: E,
-    ..._entriesCheck: ScopeEntriesCheck<E>
-  ): DeterministicAwaitable<ScopeAllResults<EnsureScopeEntries<NoInferScope<E>>>, CompensationRoot>;
+  ): DeterministicAwaitable<
+    { [K in keyof E]: Awaited<ReturnType<E[K]>> },
+    CompensationRoot
+  >;
 
   /**
-   * Resolve a deterministic handle created in this compensation context.
+   * Run all entries concurrently and return the first to complete.
    *
-   * The only way to await a `DeterministicAwaitable` or `BranchHandle` from
-   * within a compensation scope. For `BranchHandle`s, enforces at compile time
-   * that the handle's scope path is a prefix of the current scope path.
+   * Resolve: `await ctx.execute(ctx.first(entries))`.
+   * Returns `{ key, result }` discriminated union.
    */
-  join<H extends DeterministicAwaitable<any, CompensationRoot>>(
-    handle: H,
-    ..._check: IsJoinableByPath<H, TScopePath>
-  ): H extends DeterministicAwaitable<infer T, any> ? Promise<T> : Promise<never>;
+  first<
+    E extends Record<
+      string,
+      (
+        ctx: CompensationContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          any
+        >,
+      ) => Promise<unknown>
+    >,
+  >(
+    entries: E,
+  ): DeterministicAwaitable<FirstResult<E>, CompensationRoot>;
+
+  /**
+   * Create a listener for concurrent channel waiting.
+   */
+  listen<M extends Record<string, ListenableHandle>>(handles: M): Listener<M>;
 
   /**
    * Create a selection for concurrent waiting over scope branch handles and
@@ -1256,47 +1567,49 @@ export interface WorkflowCompensationConcurrencyContext<
   ): CompensationSelection<ScopeSelectableRecordForPath<M, TScopePath>>;
 
   /**
-   * Collect transformed results from all finite scope handles.
+   * Iterate over a compensation selection, yielding `{ key, result }` for each event.
+   * Branch failures auto-terminate the compensation scope.
    */
-  map<M extends Record<string, ScopeFiniteHandle>>(
-    handles: ScopeFiniteRecordForPath<M, TScopePath>,
-  ): DeterministicAwaitable<{
-    [K in keyof M & string]: FiniteHandleData<
-      ScopeFiniteRecordForPath<M, TScopePath>[K]
-    >;
-  }, CompensationRoot>;
+  match<M extends Record<string, ScopeSelectableHandle>>(
+    sel: CompensationSelection<M>,
+  ): AsyncIterable<SelectDataKeyedUnion<M>>;
 
-  map<
-    M extends Record<string, ScopeFiniteHandle>,
-    C extends Partial<{
-      [K in keyof M & string]: ScopeCompensationMapHandlerEntry<M[K]>;
-    }>,
-  >(
-    handles: ScopeFiniteRecordForPath<M, TScopePath>,
-    callbacks: C,
-  ): DeterministicAwaitable<
-    MapReturn<ScopeFiniteRecordForPath<M, TScopePath>, C>,
-    CompensationRoot
-  >;
-
-  map<
-    M extends Record<string, ScopeFiniteHandle>,
-    C extends Partial<{
-      [K in keyof M & string]: ScopeCompensationMapHandlerEntry<M[K]>;
-    }>,
+  /**
+   * Iterate over a compensation selection with a default failure handler.
+   */
+  match<
+    M extends Record<string, ScopeSelectableHandle>,
     DF extends (failure: BranchFailureInfo) => any,
   >(
-    handles: ScopeFiniteRecordForPath<M, TScopePath>,
-    callbacks: C,
+    sel: CompensationSelection<M>,
     onFailure: DF,
-  ): DeterministicAwaitable<
-    MapReturn<
-      ScopeFiniteRecordForPath<M, TScopePath>,
-      C,
-      Awaited<ReturnType<DF>>
-    >,
-    CompensationRoot
+  ): AsyncIterable<
+    MatchReturn<M, Record<never, never>, Awaited<ReturnType<DF>>>
   >;
+
+  /**
+   * Iterate over a compensation selection with per-key handlers.
+   */
+  match<
+    M extends Record<string, ScopeSelectableHandle>,
+    H extends MatchHandlers<M>,
+  >(
+    sel: CompensationSelection<M>,
+    handlers: H,
+  ): AsyncIterable<MatchReturn<M, H>>;
+
+  /**
+   * Iterate over a compensation selection with per-key handlers and a default failure handler.
+   */
+  match<
+    M extends Record<string, ScopeSelectableHandle>,
+    H extends MatchHandlers<M>,
+    DF extends (failure: BranchFailureInfo) => any,
+  >(
+    sel: CompensationSelection<M>,
+    handlers: H,
+    onFailure: DF,
+  ): AsyncIterable<MatchReturn<M, H, Awaited<ReturnType<DF>>>>;
 }
 
 // =============================================================================

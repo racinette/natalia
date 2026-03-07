@@ -72,12 +72,10 @@ const flight = await ctx.join(ctx.steps.bookFlight("Paris", "cust-1"));
 // With compensation — callback ALWAYS runs if an attempt was made.
 // The step is idempotent and side effects may have occurred even on failure.
 const flight = await ctx.join(
-  ctx.steps
-    .bookFlight("Paris", "cust-1")
-    .compensate(async (compCtx) => {
-      // No status check — always attempt to cancel.
-      await compCtx.join(compCtx.steps.cancelFlight("Paris", "cust-1"));
-    }),
+  ctx.steps.bookFlight("Paris", "cust-1").compensate(async (ctx) => {
+    // No status check — always attempt to cancel.
+    await ctx.join(ctx.steps.cancelFlight("Paris", "cust-1"));
+  }),
 );
 
 // With retry override
@@ -94,8 +92,8 @@ const flight = await ctx.join(
 const flightId = await ctx.join(
   ctx.steps
     .bookFlight("Paris", "cust-1")
-    .compensate(async (compCtx) => {
-      await compCtx.join(compCtx.steps.cancelFlight("Paris", "cust-1"));
+    .compensate(async (ctx) => {
+      await ctx.join(ctx.steps.cancelFlight("Paris", "cust-1"));
     })
     .failure(async (failure) => {
       ctx.logger.warn("Flight booking failed", { reason: failure.reason });
@@ -117,27 +115,25 @@ const carId = await ctx.join(
 
 ```typescript
 // Sequential compensation
-const cancelResult = await compCtx.join(
-  compCtx.steps.cancelFlight("Paris", "cust-1"),
-);
+const cancelResult = await ctx.join(ctx.steps.cancelFlight("Paris", "cust-1"));
 if (!cancelResult.ok) {
-  compCtx.logger.error("Failed to cancel flight", {
+  ctx.logger.error("Failed to cancel flight", {
     reason: cancelResult.status,
     errors: await cancelResult.errors.all(),
   });
 }
 
 // Concurrent compensation with scope
-await compCtx.join(
-  compCtx.scope(
+await ctx.join(
+  ctx.scope(
     "NotifyAndCancel",
     {
-      cancel: compCtx.steps.cancelFlight("Paris", "cust-1"),
-      notify: compCtx.steps.sendEmail("customer@example.com", "Cancelled", "..."),
+      cancel: ctx.steps.cancelFlight("Paris", "cust-1"),
+      notify: ctx.steps.sendEmail("customer@example.com", "Cancelled", "..."),
     },
-    async (compCtx, { cancel, notify }) => {
-      const cancelResult = await compCtx.join(cancel);
-      const notifyResult = await compCtx.join(notify);
+    async (ctx, { cancel, notify }) => {
+      const cancelResult = await ctx.join(cancel);
+      const notifyResult = await ctx.join(notify);
     },
   ),
 );
@@ -166,16 +162,14 @@ const winner = await ctx.join(
       // DeterministicAwaitable entry (step call)
       flight: ctx.steps
         .bookFlight("Paris", "cust-1")
-        .compensate(async (compCtx) => {
-          await compCtx.join(compCtx.steps.cancelFlight("Paris", "cust-1"));
+        .compensate(async (ctx) => {
+          await ctx.join(ctx.steps.cancelFlight("Paris", "cust-1"));
         }),
       // closure form for complex logic
       hotel: async () =>
-        ctx.steps
-          .bookHotel(city, checkIn, checkOut)
-          .compensate(async (compCtx) => {
-            await compCtx.join(compCtx.steps.cancelHotel(city, checkIn, checkOut));
-          }),
+        ctx.steps.bookHotel(city, checkIn, checkOut).compensate(async (ctx) => {
+          await ctx.join(ctx.steps.cancelHotel(city, checkIn, checkOut));
+        }),
     },
     async (ctx, { flight, hotel }) => {
       // ctx is WorkflowConcurrencyContext
@@ -296,17 +290,15 @@ Each handle has at most **one compensation callback**, registered via the `.comp
 
 ```typescript
 const flight = await ctx.join(
-  ctx.steps
-    .bookFlight("Paris", "cust-1")
-    .compensate(async (compCtx, result) => {
-      // result: StepCompensationResult<T> — available if you need it, but
-      // compensation should ALWAYS run regardless of result.status.
-      //
-      // Rationale: if any attempt was made, the remote system may have already
-      // processed the request but failed to send the response. The step is
-      // idempotent; the compensation callback assumes at-least-once delivery.
-      await compCtx.join(compCtx.steps.cancelFlight("Paris", "cust-1"));
-    }),
+  ctx.steps.bookFlight("Paris", "cust-1").compensate(async (ctx, result) => {
+    // result: StepCompensationResult<T> — available if you need it, but
+    // compensation should ALWAYS run regardless of result.status.
+    //
+    // Rationale: if any attempt was made, the remote system may have already
+    // processed the request but failed to send the response. The step is
+    // idempotent; the compensation callback assumes at-least-once delivery.
+    await ctx.join(ctx.steps.cancelFlight("Paris", "cust-1"));
+  }),
 );
 ```
 
@@ -323,8 +315,8 @@ Properties:
 Available on `WorkflowContext` for non-step cleanup. Not available on `CompensationContext` (no nesting).
 
 ```typescript
-ctx.addCompensation(async (compCtx) => {
-  await compCtx.channels.notifications.send({ type: "rollback" });
+ctx.addCompensation(async (ctx) => {
+  await ctx.channels.notifications.send({ type: "rollback" });
 });
 ```
 
@@ -548,7 +540,9 @@ Collects results from all finite handles concurrently and is available on the sc
 
 ```typescript
 // Identity collect
-const raw = await ctx.join(ctx.map({ flight: flightHandle, hotel: hotelHandle }));
+const raw = await ctx.join(
+  ctx.map({ flight: flightHandle, hotel: hotelHandle }),
+);
 
 // Per-key handlers
 const ids = await ctx.join(
@@ -581,7 +575,9 @@ const result = await ctx.join(
       ctx.map(
         {
           booking,
-          cancel: ctx.channels.cancel.receive(300, { type: "timeout" as const }),
+          cancel: ctx.channels.cancel.receive(300, {
+            type: "timeout" as const,
+          }),
         },
         {
           booking: {
@@ -589,7 +585,10 @@ const result = await ctx.join(
             failure: () => ({ status: "failed" as const, id: null }),
           },
           cancel: (msg) => ({
-            status: msg.type === "cancel" ? ("cancelled" as const) : ("timeout" as const),
+            status:
+              msg.type === "cancel"
+                ? ("cancelled" as const)
+                : ("timeout" as const),
             id: null,
           }),
         },
@@ -629,7 +628,9 @@ const result = await ctx.join(
       seed: "payment-seed-cust-123",
       args: { amount: 100, customerId: "cust-123" },
     })
-    .compensate(async (compCtx, result) => { /* ... */ }),
+    .compensate(async (ctx, result) => {
+      /* ... */
+    }),
 );
 
 // Concurrent — via scope closure
@@ -718,13 +719,13 @@ beforeSettle: async (params) => {
 
 ### Hook Ordering Table
 
-| Path | Hook order | `beforeSettle` params | Final status behavior |
-| --- | --- | --- | --- |
-| `execute` returns successfully, `beforeSettle` succeeds | `beforeSettle` | `{ status: "complete", ctx: WorkflowContext, result, args }` | Settles as `complete` |
-| `execute` returns successfully, `beforeSettle` throws | `beforeSettle` -> `beforeCompensate` -> LIFO compensations -> `afterCompensate` | Initial call uses `{ status: "complete", ... }` | Transitions and settles as `failed`; `beforeSettle` is not called again |
-| `execute` throws (non-signal failure) | `beforeCompensate` -> LIFO compensations -> `afterCompensate` -> `beforeSettle` | `{ status: "failed", ctx: CompensationContext, args }` | Settles as `failed` |
-| SIGTERM (graceful termination with compensation) | `beforeCompensate` -> LIFO compensations -> `afterCompensate` -> `beforeSettle` | `{ status: "terminated", ctx: CompensationContext, args }` | Settles as `terminated` |
-| SIGKILL (immediate termination) | _none_ | _none_ | Immediate termination; no hooks/compensation |
+| Path                                                    | Hook order                                                                      | `beforeSettle` params                                        | Final status behavior                                                   |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `execute` returns successfully, `beforeSettle` succeeds | `beforeSettle`                                                                  | `{ status: "complete", ctx: WorkflowContext, result, args }` | Settles as `complete`                                                   |
+| `execute` returns successfully, `beforeSettle` throws   | `beforeSettle` -> `beforeCompensate` -> LIFO compensations -> `afterCompensate` | Initial call uses `{ status: "complete", ... }`              | Transitions and settles as `failed`; `beforeSettle` is not called again |
+| `execute` throws (non-signal failure)                   | `beforeCompensate` -> LIFO compensations -> `afterCompensate` -> `beforeSettle` | `{ status: "failed", ctx: CompensationContext, args }`       | Settles as `failed`                                                     |
+| SIGTERM (graceful termination with compensation)        | `beforeCompensate` -> LIFO compensations -> `afterCompensate` -> `beforeSettle` | `{ status: "terminated", ctx: CompensationContext, args }`   | Settles as `terminated`                                                 |
+| SIGKILL (immediate termination)                         | _none_                                                                          | _none_                                                       | Immediate termination; no hooks/compensation                            |
 
 ### Workflow Headers
 
@@ -885,7 +886,10 @@ const paymentOrDefault = await ctx.channels.payment.receive(300, {
 // Non-blocking poll — receiveNowait() is Tier 3 (DirectAwaitable)
 // Directly awaitable; NOT valid as a scope/select/map entry
 const nowait = await ctx.channels.payment.receiveNowait();
-const nowaitWithDefault = await ctx.channels.payment.receiveNowait({ amount: 0, txnId: "none" });
+const nowaitWithDefault = await ctx.channels.payment.receiveNowait({
+  amount: 0,
+  txnId: "none",
+});
 
 // From another workflow — send via foreign handle (Tier 3 — directly awaitable)
 const handle = ctx.foreignWorkflows.order.get("order-123");
@@ -946,12 +950,12 @@ Engine-managed phase events are available on every workflow handle via:
 
 Each phase exposes the same event names:
 
-| Event        | Meaning for that phase |
-| ------------ | ---------------------- |
-| `started`    | Phase execution begins |
+| Event        | Meaning for that phase       |
+| ------------ | ---------------------------- |
+| `started`    | Phase execution begins       |
 | `complete`   | Phase completes successfully |
-| `failed`     | Phase fails with an error |
-| `terminated` | Phase is terminated |
+| `failed`     | Phase fails with an error    |
+| `terminated` | Phase is terminated          |
 
 ### State
 
@@ -1074,15 +1078,15 @@ interface WorkflowExecutionError {
 
 Every schema has **input** (encoded for DB) and **output** (decoded for runtime) types:
 
-| Context                        | Type               | Reason           |
-| ------------------------------ | ------------------ | ---------------- |
-| Step execute **returns**       | `z.input<Schema>`  | Encoded to JSONB |
-| Step call **resolves**         | `z.output<Schema>` | Decoded from DB  |
-| Channel **send** accepts       | `z.input<Schema>`  | Saved to DB      |
-| Channel **receive** returns    | `z.output<Schema>` | Decoded from DB  |
-| Stream **write** accepts       | `z.input<Schema>`  | Saved to DB      |
-| Stream **read** returns        | `z.output<Schema>` | Decoded from DB  |
-| Workflow **execute** returns   | `z.input<Schema>`  | Saved to DB      |
+| Context                               | Type               | Reason           |
+| ------------------------------------- | ------------------ | ---------------- |
+| Step execute **returns**              | `z.input<Schema>`  | Encoded to JSONB |
+| Step call **resolves**                | `z.output<Schema>` | Decoded from DB  |
+| Channel **send** accepts              | `z.input<Schema>`  | Saved to DB      |
+| Channel **receive** returns           | `z.output<Schema>` | Decoded from DB  |
+| Stream **write** accepts              | `z.input<Schema>`  | Saved to DB      |
+| Stream **read** returns               | `z.output<Schema>` | Decoded from DB  |
+| Workflow **execute** returns          | `z.input<Schema>`  | Saved to DB      |
 | Workflow **execution.wait()** returns | `z.output<Schema>` | Decoded from DB  |
 
 ## Result Types
@@ -1118,14 +1122,14 @@ type CompensationStepResult<T> =
 
 ### Channel, Stream, Event Results
 
-| Type                       | Success    | Failure Statuses                 | Notes                           |
-| -------------------------- | ---------- | -------------------------------- | ------------------------------- |
-| `ChannelSendResult`        | `sent`     | `not_found`                      | Engine-level send               |
-| `StreamReadResult`         | `received` | `closed`, `not_found`            | Engine-level random-access read |
-| `StreamIteratorReadResult` | `record`   | `closed`                         | Engine-level iterator read      |
-| `EventWaitResultNoTimeout` | `set`      | `never`                          | Engine-level event wait         |
-| `EventCheckResult`         | `set`      | `not_set`, `never`, `not_found`  | Engine-level non-blocking check |
-| `SignalResult`             | `sent`     | `already_finished`, `not_found`  | Engine-level signal             |
+| Type                       | Success    | Failure Statuses                | Notes                           |
+| -------------------------- | ---------- | ------------------------------- | ------------------------------- |
+| `ChannelSendResult`        | `sent`     | `not_found`                     | Engine-level send               |
+| `StreamReadResult`         | `received` | `closed`, `not_found`           | Engine-level random-access read |
+| `StreamIteratorReadResult` | `record`   | `closed`                        | Engine-level iterator read      |
+| `EventWaitResultNoTimeout` | `set`      | `never`                         | Engine-level event wait         |
+| `EventCheckResult`         | `set`      | `not_set`, `never`, `not_found` | Engine-level non-blocking check |
+| `SignalResult`             | `sent`     | `already_finished`, `not_found` | Engine-level signal             |
 
 Workflow-internal `ChannelHandle` receive overloads (all return Tier 2 `ChannelReceiveCall` — directly awaitable):
 
@@ -1140,10 +1144,10 @@ Non-blocking poll (Tier 3 `DirectAwaitable` — not a scope/select/map entry):
 
 ### Engine-Level Results
 
-| Type                     | Success    | Failure Statuses                                                              |
-| ------------------------ | ---------- | ----------------------------------------------------------------------------- |
-| `WorkflowResult`         | `complete` | `failed` (with `error`), `terminated` (with `reason`)                         |
-| `ExecutionResultExternal` | `complete` | `failed` (with `error`), `terminated` (with `reason`), `not_found` |
+| Type                         | Success    | Failure Statuses                                                   |
+| ---------------------------- | ---------- | ------------------------------------------------------------------ |
+| `WorkflowResult`             | `complete` | `failed` (with `error`), `terminated` (with `reason`)              |
+| `ExecutionResultExternal`    | `complete` | `failed` (with `error`), `terminated` (with `reason`), `not_found` |
 | `CompensationResultExternal` | `complete` | `failed` (with `error`), `terminated` (with `reason`), `not_found` |
 
 `WorkflowTerminationReason` values: `"deadline_exceeded" | "terminated_by_signal" | "terminated_by_parent"`.
@@ -1176,72 +1180,72 @@ Engine-level wait APIs use `{ signal?: AbortSignal }` for runtime cancellation:
 
 | Resource                                       | Operations                                                                                                                                                                                                              |
 | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ctx.steps.*`                                  | `(args)` → `StepCall<T>` (Tier 1) — chain `.compensate()`, `.retry()`, `.failure()`, `.complete()` then resolve via `ctx.join()`                                                                                       |
+| `ctx.steps.*`                                  | `(args)` → `StepCall<T>` (Tier 1) — chain `.compensate()`, `.retry()`, `.failure()`, `.complete()` then resolve via `ctx.join()`                                                                                        |
 | `ctx.channels.*`                               | `.receive()` → `ChannelReceiveCall<T>` (Tier 2, directly awaitable or scope/select/map entry); `.receiveNowait()` → `DirectAwaitable<T \| undefined>` (Tier 3, directly awaitable, NOT a scope entry); `for await...of` |
-| `ctx.streams.*`                                | `.write()` → `DirectAwaitable<number>` (Tier 3 — directly awaitable)                                                                                                                                                   |
-| `ctx.events.*`                                 | `.set()` → `DirectAwaitable<void>` (Tier 3 — directly awaitable)                                                                                                                                                       |
-| `ctx.childWorkflows.*`                         | `(options)` → `WorkflowCall<T>` (Tier 1, join-only); `.startDetached(options)` → `DirectAwaitable<ForeignWorkflowHandle>` (Tier 3)                                                                                     |
-| `ctx.foreignWorkflows.*`                       | `.get(key)` → `ForeignWorkflowHandle`; `.channels.*.send()` → `DirectAwaitable<void>` (Tier 3)                                                                                                                         |
-| `ctx.patches.*`                                | `await ctx.patches.name` → `boolean` (Tier 3 — directly awaitable)                                                                                                                                                     |
-| `ctx.scope(name, entries, callback)`           | Structured concurrency boundary → `DeterministicAwaitable<R>` (Tier 1) — resolve via `ctx.join()`                                                                                                                      |
-| `ctx.all(entries)`                             | "Run all + collect results" → `DeterministicAwaitable<...>` (Tier 1) — resolve via `ctx.join()`                                                                                                                        |
+| `ctx.streams.*`                                | `.write()` → `DirectAwaitable<number>` (Tier 3 — directly awaitable)                                                                                                                                                    |
+| `ctx.events.*`                                 | `.set()` → `DirectAwaitable<void>` (Tier 3 — directly awaitable)                                                                                                                                                        |
+| `ctx.childWorkflows.*`                         | `(options)` → `WorkflowCall<T>` (Tier 1, join-only); `.startDetached(options)` → `DirectAwaitable<ForeignWorkflowHandle>` (Tier 3)                                                                                      |
+| `ctx.foreignWorkflows.*`                       | `.get(key)` → `ForeignWorkflowHandle`; `.channels.*.send()` → `DirectAwaitable<void>` (Tier 3)                                                                                                                          |
+| `ctx.patches.*`                                | `await ctx.patches.name` → `boolean` (Tier 3 — directly awaitable)                                                                                                                                                      |
+| `ctx.scope(name, entries, callback)`           | Structured concurrency boundary → `DeterministicAwaitable<R>` (Tier 1) — resolve via `ctx.join()`                                                                                                                       |
+| `ctx.all(entries)`                             | "Run all + collect results" → `DeterministicAwaitable<...>` (Tier 1) — resolve via `ctx.join()`                                                                                                                         |
 | `ctx.select()`                                 | Channel-only select on base context — accepts `ChannelHandle` (streaming) or `ChannelReceiveCall` (one-shot)                                                                                                            |
 | `ctx.map()`                                    | Not available on base `WorkflowContext`; use inside `ctx.scope("Name", entries, async (ctx, handles) => ctx.join(ctx.map(...)))`                                                                                        |
-| `ctx.join(handle)`                             | Resolves any Tier 1 handle; enforces scope-path lifetime for `BranchHandle` at compile time                                                                                                                            |
+| `ctx.join(handle)`                             | Resolves any Tier 1 handle; enforces scope-path lifetime for `BranchHandle` at compile time                                                                                                                             |
 | `ctx.addCompensation()`                        | Register LIFO compensation callback                                                                                                                                                                                     |
 | `ctx.schedule(cron, { timezone?, resumeAt? })` | Durable cron-like schedule handle                                                                                                                                                                                       |
-| `ctx.sleep(seconds)`                           | `WorkflowAwaitable<void>` (Tier 2 — directly awaitable, valid scope entry)                                                                                                                                             |
-| `ctx.sleepUntil(target)`                       | `WorkflowAwaitable<void>` (Tier 2 — directly awaitable, valid scope entry)                                                                                                                                             |
+| `ctx.sleep(seconds)`                           | `WorkflowAwaitable<void>` (Tier 2 — directly awaitable, valid scope entry)                                                                                                                                              |
+| `ctx.sleepUntil(target)`                       | `WorkflowAwaitable<void>` (Tier 2 — directly awaitable, valid scope entry)                                                                                                                                              |
 | `ctx.rng.*`                                    | Typed deterministic RNG streams                                                                                                                                                                                         |
 | `ctx.timestamp` / `ctx.date`                   | Deterministic time                                                                                                                                                                                                      |
 | `ctx.logger`                                   | Replay-aware logger                                                                                                                                                                                                     |
 
 ### Inside Compensation (`CompensationContext`)
 
-| Resource                    | Operations                                                                                                                                              |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ctx.steps.*`               | `(args)` → `CompensationStepCall<T>` (Tier 1) — chain `.retry()` then resolve via `ctx.join()`; resolves to `CompensationStepResult<T>`               |
-| `ctx.channels.*`            | `.receive()` → `ChannelReceiveCall<T>` (Tier 2); `.receiveNowait()` → `DirectAwaitable<T \| undefined>` (Tier 3)                                      |
-| `ctx.streams.*`             | `.write()` → `DirectAwaitable<number>` (Tier 3)                                                                                                        |
-| `ctx.events.*`              | `.set()` → `DirectAwaitable<void>` (Tier 3)                                                                                                            |
-| `ctx.childWorkflows.*`      | `(options)` → `CompensationWorkflowCall<T>` (Tier 1) — resolve via `ctx.join()`; resolves to `WorkflowResult<T>`                                      |
-| `ctx.foreignWorkflows.*`    | `.get(key)` → `ForeignWorkflowHandle`; `.channels.*.send()` → `DirectAwaitable<void>` (Tier 3)                                                        |
-| `ctx.patches.*`             | `await ctx.patches.name` → `boolean` (Tier 3)                                                                                                          |
-| `ctx.scope(name, entries, callback)` | Structured concurrency → `DeterministicAwaitable<R>` (Tier 1) — resolve via `ctx.join()`; all unjoined branches settled on exit             |
-| `ctx.all(entries)`          | → `DeterministicAwaitable<...>` (Tier 1) — resolve via `ctx.join()`                                                                                   |
-| `ctx.select()`              | Channel-only select — accepts `ChannelHandle` or `ChannelReceiveCall`                                                                                  |
-| `ctx.map()`                 | Not available on base `CompensationContext`; use inside `ctx.scope("Name", entries, async (ctx, handles) => ctx.join(ctx.map(...)))`                   |
-| `ctx.join(handle)`          | Resolves any Tier 1 handle; enforces scope-path lifetime for `BranchHandle`                                                                            |
-| `ctx.sleep()` / `ctx.rng.*` | Same as WorkflowContext                                                                                                                                 |
-| `ctx.logger`                | Replay-aware logger                                                                                                                                     |
+| Resource                             | Operations                                                                                                                              |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `ctx.steps.*`                        | `(args)` → `CompensationStepCall<T>` (Tier 1) — chain `.retry()` then resolve via `ctx.join()`; resolves to `CompensationStepResult<T>` |
+| `ctx.channels.*`                     | `.receive()` → `ChannelReceiveCall<T>` (Tier 2); `.receiveNowait()` → `DirectAwaitable<T \| undefined>` (Tier 3)                        |
+| `ctx.streams.*`                      | `.write()` → `DirectAwaitable<number>` (Tier 3)                                                                                         |
+| `ctx.events.*`                       | `.set()` → `DirectAwaitable<void>` (Tier 3)                                                                                             |
+| `ctx.childWorkflows.*`               | `(options)` → `CompensationWorkflowCall<T>` (Tier 1) — resolve via `ctx.join()`; resolves to `WorkflowResult<T>`                        |
+| `ctx.foreignWorkflows.*`             | `.get(key)` → `ForeignWorkflowHandle`; `.channels.*.send()` → `DirectAwaitable<void>` (Tier 3)                                          |
+| `ctx.patches.*`                      | `await ctx.patches.name` → `boolean` (Tier 3)                                                                                           |
+| `ctx.scope(name, entries, callback)` | Structured concurrency → `DeterministicAwaitable<R>` (Tier 1) — resolve via `ctx.join()`; all unjoined branches settled on exit         |
+| `ctx.all(entries)`                   | → `DeterministicAwaitable<...>` (Tier 1) — resolve via `ctx.join()`                                                                     |
+| `ctx.select()`                       | Channel-only select — accepts `ChannelHandle` or `ChannelReceiveCall`                                                                   |
+| `ctx.map()`                          | Not available on base `CompensationContext`; use inside `ctx.scope("Name", entries, async (ctx, handles) => ctx.join(ctx.map(...)))`    |
+| `ctx.join(handle)`                   | Resolves any Tier 1 handle; enforces scope-path lifetime for `BranchHandle`                                                             |
+| `ctx.sleep()` / `ctx.rng.*`          | Same as WorkflowContext                                                                                                                 |
+| `ctx.logger`                         | Replay-aware logger                                                                                                                     |
 
 ### `ForeignWorkflowHandle`
 
-| Resource      | Operations                                          |
-| ------------- | --------------------------------------------------- |
+| Resource      | Operations                                                       |
+| ------------- | ---------------------------------------------------------------- |
 | `.channels.*` | `.send()` → `DirectAwaitable<void>` (Tier 3, directly awaitable) |
 
 ### External (`engine.workflows.*`)
 
-| Resource     | Operations                                                                                                                                |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `.start()`   | Start workflow (`idempotencyKey?`, optional `metadata`, optional `seed`, optional `deadlineSeconds`), returns `WorkflowHandleExternal`    |
-| `.execute()` | Start + wait for execution result (sugar for `start + handle.execution.wait()`)                                                           |
-| `.get()`     | Get handle to existing workflow                                                                                                            |
+| Resource     | Operations                                                                                                                             |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `.start()`   | Start workflow (`idempotencyKey?`, optional `metadata`, optional `seed`, optional `deadlineSeconds`), returns `WorkflowHandleExternal` |
+| `.execute()` | Start + wait for execution result (sugar for `start + handle.execution.wait()`)                                                        |
+| `.get()`     | Get handle to existing workflow                                                                                                        |
 
 ### External Handle (`WorkflowHandleExternal`)
 
-| Resource                    | Operations                                                                 |
-| --------------------------- | -------------------------------------------------------------------------- |
-| `.channels.*`               | `.send()`                                                                  |
-| `.streams.*`                | `.read(offset, { signal? })`, `.iterator()`, `.isOpen()`, `for await...of` |
-| `.events.*`                 | `.wait({ signal? })`, `.isSet()`                                           |
-| `.execution.lifecycle.*`    | `.wait({ signal? })`, `.get()`                                             |
-| `.compensation.lifecycle.*` | `.wait({ signal? })`, `.get()`                                             |
-| `.execution.wait({ signal? })`   | Wait for execution phase result                                       |
-| `.compensation.wait({ signal? })` | Wait for compensation phase result                                   |
-| `.sigterm()` / `.sigkill()` | Send signals (engine-level only)                                           |
-| `.setRetention()`           | Update retention policy                                                    |
+| Resource                          | Operations                                                                 |
+| --------------------------------- | -------------------------------------------------------------------------- |
+| `.channels.*`                     | `.send()`                                                                  |
+| `.streams.*`                      | `.read(offset, { signal? })`, `.iterator()`, `.isOpen()`, `for await...of` |
+| `.events.*`                       | `.wait({ signal? })`, `.isSet()`                                           |
+| `.execution.lifecycle.*`          | `.wait({ signal? })`, `.get()`                                             |
+| `.compensation.lifecycle.*`       | `.wait({ signal? })`, `.get()`                                             |
+| `.execution.wait({ signal? })`    | Wait for execution phase result                                            |
+| `.compensation.wait({ signal? })` | Wait for compensation phase result                                         |
+| `.sigterm()` / `.sigkill()`       | Send signals (engine-level only)                                           |
+| `.setRetention()`                 | Update retention policy                                                    |
 
 External stream async iteration:
 

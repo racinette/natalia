@@ -106,7 +106,7 @@ const OnboardingVerificationArgs = z.object({
 /**
  * Showcases:
  * - onboarding with 5 identity methods and "at least 3" threshold
- * - `ctx.select().match()` with explicit handlers per identity method
+ * - `ctx.select()` + `ctx.match()` with explicit handlers per identity method
  * - explicit deadline branch using `ctx.sleep()` (1 hour)
  * - gating progression until threshold is reached
  * - child workflow call after verification (`riskAssessment`)
@@ -142,56 +142,51 @@ export const onboardingVerificationWorkflow = defineWorkflow({
     const verifiedMethods = new Set<z.infer<typeof VerificationMethod>>();
     const failedMethods = new Set<z.infer<typeof VerificationMethod>>();
 
-    const outcome = await ctx.join(
+    const outcome = await ctx.execute(
       ctx.scope(
         "CollectVerificationProofs",
         {
-          passport: async () => {
-            return await ctx.join(
+          passport: async (ctx) =>
+            ctx.execute(
               ctx.steps.verifyIdentityProof(
                 "passport",
                 (await ctx.channels.passport.receive()).artifactId,
                 args.userId,
               ),
-            );
-          },
-          driverLicense: async () => {
-            return await ctx.join(
+            ),
+          driverLicense: async (ctx) =>
+            ctx.execute(
               ctx.steps.verifyIdentityProof(
                 "driverLicense",
                 (await ctx.channels.driverLicense.receive()).artifactId,
                 args.userId,
               ),
-            );
-          },
-          nationalId: async () => {
-            return await ctx.join(
+            ),
+          nationalId: async (ctx) =>
+            ctx.execute(
               ctx.steps.verifyIdentityProof(
                 "nationalId",
                 (await ctx.channels.nationalId.receive()).artifactId,
                 args.userId,
               ),
-            );
-          },
-          bankId: async () => {
-            return await ctx.join(
+            ),
+          bankId: async (ctx) =>
+            ctx.execute(
               ctx.steps.verifyIdentityProof(
                 "bankId",
                 (await ctx.channels.bankId.receive()).artifactId,
                 args.userId,
               ),
-            );
-          },
-          videoSelfie: async () => {
-            return await ctx.join(
+            ),
+          videoSelfie: async (ctx) =>
+            ctx.execute(
               ctx.steps.verifyIdentityProof(
                 "videoSelfie",
                 (await ctx.channels.videoSelfie.receive()).artifactId,
                 args.userId,
               ),
-            );
-          },
-          deadline: async () => {
+            ),
+          deadline: async (ctx) => {
             await ctx.sleep(3600);
             return "deadline" as const;
           },
@@ -216,7 +211,7 @@ export const onboardingVerificationWorkflow = defineWorkflow({
             deadline,
           });
 
-          for await (const kind of sel.match({
+          for await (const kind of ctx.match(sel, {
             deadline: () => "deadline" as const,
             videoSelfie: {
               complete: (data) => {
@@ -289,12 +284,12 @@ export const onboardingVerificationWorkflow = defineWorkflow({
           }
 
           const methods = Array.from(verifiedMethods);
-          const sessionToken = await ctx.join(
+          const sessionToken = await ctx.execute(
             ctx.steps
               .unlockAccount(args.userId, methods)
               .compensate(async (ctx, result) => {
                 if (result.status === "complete") {
-                  await ctx.join(
+                  await ctx.execute(
                     ctx.steps.revokeSession(result.data.sessionToken),
                   );
                 }
@@ -302,7 +297,7 @@ export const onboardingVerificationWorkflow = defineWorkflow({
               .complete((data) => data.sessionToken),
           );
 
-          const risk = await ctx.join(
+          const risk = await ctx.execute(
             ctx.childWorkflows
               .riskAssessment({
                 idempotencyKey: `risk-${args.userId}`,

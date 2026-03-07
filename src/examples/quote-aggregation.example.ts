@@ -9,9 +9,9 @@ const QuoteAggregationArgs = z.object({
 
 /**
  * Showcases:
- * - Array fan-out + Map fan-out
- * - map innerKey handling
- * - map output structure mirroring
+ * - dynamic provider fan-out using closure entries
+ * - ctx.all() for aggregating results
+ * - explicit result collection with per-provider failure handling
  */
 export const quoteAggregationWorkflow = defineWorkflow({
   name: "quoteAggregation",
@@ -24,97 +24,47 @@ export const quoteAggregationWorkflow = defineWorkflow({
   }),
 
   async execute(ctx, args) {
-    const arrayBranches = args.providers.map((p) =>
-      ctx.steps.getQuote(p, args.destination).compensate(async (ctx) => {
-        await ctx.join(ctx.steps.cancelQuote(p));
-      }),
-    );
-
-    const arrayMapped = await ctx.join(
-      ctx.scope(
-        "ArrayQuoteFanout",
-        { quotes: arrayBranches },
-        async (ctx, { quotes }) =>
-          ctx.join(
-            ctx.map(
-              { quotes },
-              {
-                quotes: {
-                  complete: (data, innerKey) => {
-                    ctx.logger.info("Array quote received", {
-                      idx: innerKey,
-                      provider: data.provider,
-                      price: data.price,
+    const quoteResults = await ctx.execute(
+      ctx.all(
+        Object.fromEntries(
+          args.providers.map((provider) => [
+            provider,
+            async (ctx) => {
+              const result = await ctx.execute(
+                ctx.steps
+                  .getQuote(provider, args.destination)
+                  .compensate(async (ctx) => {
+                    await ctx.execute(ctx.steps.cancelQuote(provider));
+                  })
+                  .failure(async (failure) => {
+                    ctx.logger.warn("Quote failed", {
+                      provider,
+                      reason: failure.reason,
                     });
-                    return data.price;
-                  },
-                  failure: (_failure, innerKey) => {
-                    ctx.logger.warn("Array quote failed", { idx: innerKey });
                     return null;
-                  },
-                },
-              },
-            ),
-          ),
-      ),
-    );
-
-    const mapBranches = new Map(
-      args.providers.map((p) => [
-        p,
-        ctx.steps.getQuote(p, args.destination).compensate(async (ctx) => {
-          await ctx.join(ctx.steps.cancelQuote(p));
-        }),
-      ]),
-    );
-
-    const mapped = await ctx.join(
-      ctx.scope(
-        "MapQuoteFanout",
-        { quotes: mapBranches },
-        async (ctx, { quotes }) =>
-          ctx.join(
-            ctx.map(
-              { quotes },
-              {
-                quotes: {
-                  complete: (data, innerKey) => ({
-                    price: data.price,
-                    provider: innerKey,
                   }),
-                  failure: (_failure, innerKey) => {
-                    ctx.logger.warn("Map quote failed", { provider: innerKey });
-                    return null;
-                  },
-                },
-              },
-            ),
-          ),
+              );
+              return result;
+            },
+          ]),
+        ),
       ),
     );
 
     let bestProvider: string | null = null;
     let lowestPrice: number | null = null;
-    const allPrices = new Map<string, number>();
-    const arrayPrices = arrayMapped.quotes.filter((price) => price != null);
-    ctx.logger.info("Array quote fan-out complete", {
-      requested: args.providers.length,
-      received: arrayPrices.length,
-    });
+    const allPrices: Record<string, number> = {};
 
-    for (const [provider, entry] of mapped.quotes ?? []) {
-      if (entry == null) continue;
-      allPrices.set(provider, entry.price);
-      if (lowestPrice == null || entry.price < lowestPrice) {
-        lowestPrice = entry.price;
+    for (const [provider, result] of Object.entries(quoteResults)) {
+      if (result == null) continue;
+      ctx.logger.info("Quote received", { provider, price: result.price });
+      allPrices[provider] = result.price;
+      if (lowestPrice == null || result.price < lowestPrice) {
+        lowestPrice = result.price;
         bestProvider = provider;
       }
     }
 
-    return {
-      bestProvider,
-      lowestPrice,
-      allPrices: Object.fromEntries(allPrices),
-    };
+    return { bestProvider, lowestPrice, allPrices };
   },
 });

@@ -39,7 +39,7 @@ export const dailyReportJobWorkflow = defineWorkflow({
   steps: { sendNotification },
 
   async execute(ctx, args) {
-    await ctx.join(ctx.steps.sendNotification(
+    await ctx.execute(ctx.steps.sendNotification(
       args.userId,
       `Your daily report for ${args.reportDate} is ready.`,
     ));
@@ -115,7 +115,7 @@ export const dailyReportSchedulerWorkerWorkflow = defineWorkflow({
 
     let count = 0;
     for await (const tick of schedule) {
-      await ctx.join(ctx.steps
+      await ctx.execute(ctx.steps
         .sendNotification(
           args.userId,
           `Preparing daily report for ${tick.scheduledAt.toISOString()}`,

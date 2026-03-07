@@ -24,54 +24,65 @@ export const scopeAllAndNestedSelectWorkflow = defineWorkflow({
   }),
 
   async execute(ctx, args) {
-    const quoteBranches = new Map(
-      args.providers.map((provider) => [
-        provider,
-        ctx.steps
-          .getQuote(provider, args.destination)
-          .compensate(async (ctx) => {
-            await ctx.join(ctx.steps.cancelQuote(provider));
-          }),
-      ]),
-    );
-
-    const allResult = await ctx.join(
+    const allResult = await ctx.execute(
       ctx.all({
-        flight: ctx.steps
-          .bookFlight(args.destination, args.customerId)
-          .compensate(async (ctx) => {
-            await ctx.join(
-              ctx.steps.cancelFlight(args.destination, args.customerId),
-            );
-          }),
-        quotes: quoteBranches,
+        flight: async (ctx) =>
+          ctx.execute(
+            ctx.steps
+              .bookFlight(args.destination, args.customerId)
+              .compensate(async (ctx) => {
+                await ctx.execute(
+                  ctx.steps.cancelFlight(args.destination, args.customerId),
+                );
+              }),
+          ),
+        quotes: async (ctx) =>
+          ctx.execute(
+            ctx.all(
+              Object.fromEntries(
+                args.providers.map((provider) => [
+                  provider,
+                  async (innerCtx: typeof ctx) =>
+                    innerCtx.execute(
+                      innerCtx.steps
+                        .getQuote(provider, args.destination)
+                        .compensate(async (ctx) => {
+                          await ctx.execute(ctx.steps.cancelQuote(provider));
+                        }),
+                    ),
+                ]),
+              ),
+            ),
+          ),
       }),
     );
 
-    const winner = await ctx.join(
+    const winner = await ctx.execute(
       ctx.scope(
         "NestedScopeSelection",
         {
-          parentTimer: async () => {
+          parentTimer: async (ctx) => {
             await ctx.sleep(5);
             return "parent_timeout" as const;
           },
+          childScope: async (ctx) =>
+            ctx.execute(
+              ctx.scope(
+                "ChildScope",
+                {
+                  childTimer: async (ctx) => {
+                    await ctx.sleep(1);
+                    return "child_done" as const;
+                  },
+                },
+                async (ctx, { childTimer }) => await ctx.join(childTimer),
+              ),
+            ),
         },
-        async (ctx, { parentTimer }) => {
-          const childScope = ctx.scope(
-            "ChildScope",
-            {
-              childTimer: async () => {
-                await ctx.sleep(1);
-                return "child_done" as const;
-              },
-            },
-            async (ctx, { childTimer }) => await ctx.join(childTimer),
-          );
-
+        async (ctx, { parentTimer, childScope }) => {
           const sel = ctx.select({ parentTimer, childScope });
-          for await (const val of sel) {
-            return val;
+          for await (const { result } of ctx.match(sel)) {
+            return result;
           }
           return "parent_timeout" as const;
         },
@@ -80,7 +91,7 @@ export const scopeAllAndNestedSelectWorkflow = defineWorkflow({
 
     return {
       flightId: allResult.flight.id,
-      quoteCount: allResult.quotes.size,
+      quoteCount: Object.keys(allResult.quotes).length,
       winner,
     };
   },

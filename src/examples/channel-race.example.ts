@@ -15,9 +15,9 @@ const CancelCommand = z.object({
 /**
  * Showcases:
  * - channels.receive standalone
- * - select({ branch, channel.receive() }) with for-await (one-shot race)
- * - select({ branch, channel }) with match() (streaming channel in select)
- * - match() with explicit handlers for all keys including streaming channel
+ * - select({ branch, channel.receive() }) with ctx.match() (one-shot race)
+ * - select({ branch, channel }) with ctx.match() (streaming channel in select)
+ * - ctx.match() with explicit handlers for all keys including streaming channel
  */
 export const channelRaceWorkflow = defineWorkflow({
   name: "channelRace",
@@ -30,17 +30,20 @@ export const channelRaceWorkflow = defineWorkflow({
   }),
 
   async execute(ctx, args) {
-    const outcome = await ctx.join(
+    const outcome = await ctx.execute(
       ctx.scope(
         "BookingCancelRace",
         {
-          booking: ctx.steps
-            .bookFlight(args.destination, args.customerId)
-            .compensate(async (ctx) => {
-              await ctx.join(
-                ctx.steps.cancelFlight(args.destination, args.customerId),
-              );
-            }),
+          booking: async (ctx) =>
+            ctx.execute(
+              ctx.steps
+                .bookFlight(args.destination, args.customerId)
+                .compensate(async (ctx) => {
+                  await ctx.execute(
+                    ctx.steps.cancelFlight(args.destination, args.customerId),
+                  );
+                }),
+            ),
         },
         async (ctx, { booking }) => {
           // One-shot race: booking completes OR a single cancel message arrives.
@@ -50,12 +53,12 @@ export const channelRaceWorkflow = defineWorkflow({
             booking,
             cancel: ctx.channels.cancel.receive(),
           });
-          for await (const data of sel) {
-            ctx.logger.info("Race event received", { data });
-            if ("id" in data) {
+          for await (const { key, result } of ctx.match(sel)) {
+            ctx.logger.info("Race event received", { key });
+            if (key === "booking") {
               return {
                 outcome: "booked" as const,
-                flightId: (data as { id: string }).id,
+                flightId: (result as { id: string }).id,
               };
             }
             return { outcome: "cancelled" as const, flightId: null };
@@ -70,27 +73,30 @@ export const channelRaceWorkflow = defineWorkflow({
       return { outcome: "cancelled" as const, flightId: null };
     }
 
-    const cancelMsg = await ctx.join(
+    const cancelMsg = await ctx.execute(
       ctx.scope(
         "StreamingCancelRace",
         {
-          booking2: ctx.steps
-            .bookFlight(`${args.destination}-2`, args.customerId)
-            .compensate(async (ctx) => {
-              await ctx.join(
-                ctx.steps.cancelFlight(
-                  `${args.destination}-2`,
-                  args.customerId,
-                ),
-              );
-            }),
+          booking2: async (ctx) =>
+            ctx.execute(
+              ctx.steps
+                .bookFlight(`${args.destination}-2`, args.customerId)
+                .compensate(async (ctx) => {
+                  await ctx.execute(
+                    ctx.steps.cancelFlight(
+                      `${args.destination}-2`,
+                      args.customerId,
+                    ),
+                  );
+                }),
+            ),
         },
         async (ctx, { booking2 }) => {
           // Streaming channel: passes the raw ChannelHandle so the channel branch
           // fires on each incoming cancel message (never removed from remaining).
-          // match() iterates events; we break after the first to get a one-shot result.
+          // ctx.match() iterates events; we break after the first to get a one-shot result.
           const sel2 = ctx.select({ booking2, cancel2: ctx.channels.cancel });
-          for await (const result of sel2.match({
+          for await (const result of ctx.match(sel2, {
             booking2: {
               complete: (data) => ({ type: "booked" as const, id: data.id }),
               failure: async () => ({ type: "failed" as const, id: null }),

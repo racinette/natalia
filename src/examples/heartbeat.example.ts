@@ -31,7 +31,7 @@ export const heartbeatWorkflow = defineWorkflow({
 
     await ctx.sleep(1);
 
-    await ctx.join(ctx.steps.sendEmail(
+    await ctx.execute(ctx.steps.sendEmail(
       "ops@example.com",
       "Heartbeat",
       `System alive as of ${ctx.date.toISOString()}`,
