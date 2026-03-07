@@ -165,7 +165,7 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
                 Object.fromEntries(
                   args.flightProviders.map((provider) => [
                     provider,
-                    async (innerCtx: typeof ctx) =>
+                    async (innerCtx) =>
                       innerCtx.execute(
                         innerCtx.steps
                           .searchFlightOptions(
@@ -195,7 +195,7 @@ export const concurrencyPrimitivesWorkflow = defineWorkflow({
                 Object.fromEntries(
                   args.hotelProviders.map((provider) => [
                     provider,
-                    async (innerCtx: typeof ctx) =>
+                    async (innerCtx) =>
                       innerCtx.execute(
                         innerCtx.steps
                           .reserveHotel(

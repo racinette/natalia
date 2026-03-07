@@ -32,45 +32,35 @@ export const flightBookingWorkflow = defineWorkflow({
 
   async execute(ctx, args) {
     const flight = await ctx.execute(
-      ctx.scope(
-        "PickFlightProvider",
-        {
-          provider1: async (ctx) =>
-            ctx.execute(
-              ctx.steps
-                .bookFlight(`${args.destination}/p1`, args.customerId)
-                .compensate(async (ctx) => {
-                  await ctx.execute(
-                    ctx.steps.cancelFlight(
-                      `${args.destination}/p1`,
-                      args.customerId,
-                    ),
-                  );
-                }),
-            ),
-          provider2: async (ctx) =>
-            ctx.execute(
-              ctx.steps
-                .bookFlight(`${args.destination}/p2`, args.customerId)
-                .compensate(async (ctx) => {
-                  await ctx.execute(
-                    ctx.steps.cancelFlight(
-                      `${args.destination}/p2`,
-                      args.customerId,
-                    ),
-                  );
-                })
-                .retry({ maxAttempts: 5 }),
-            ),
-        },
-        async (ctx, { provider1, provider2 }) => {
-          const sel = ctx.select({ provider1, provider2 });
-          for await (const { result } of ctx.match(sel)) {
-            return result;
-          }
-          throw new Error("All flight providers exhausted");
-        },
-      ),
+      ctx.first({
+        provider1: async (ctx) =>
+          ctx.execute(
+            ctx.steps
+              .bookFlight(`${args.destination}/p1`, args.customerId)
+              .compensate(async (ctx) => {
+                await ctx.execute(
+                  ctx.steps.cancelFlight(
+                    `${args.destination}/p1`,
+                    args.customerId,
+                  ),
+                );
+              }),
+          ),
+        provider2: async (ctx) =>
+          ctx.execute(
+            ctx.steps
+              .bookFlight(`${args.destination}/p2`, args.customerId)
+              .compensate(async (ctx) => {
+                await ctx.execute(
+                  ctx.steps.cancelFlight(
+                    `${args.destination}/p2`,
+                    args.customerId,
+                  ),
+                );
+              })
+              .retry({ maxAttempts: 5 }),
+          ),
+      }),
     );
 
     const hotelId = await ctx.execute(
@@ -149,10 +139,10 @@ export const flightBookingWorkflow = defineWorkflow({
       ctx.steps.sendEmail(
         args.customerEmail,
         "Booking Confirmed",
-        `Flight: ${flight.id}, Hotel: ${hotelId}`,
+        `Flight: ${flight.result.id}, Hotel: ${hotelId}`,
       ),
     );
 
-    return { flightId: flight.id, hotelId };
+    return { flightId: flight.result.id, hotelId };
   },
 });
