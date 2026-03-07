@@ -117,7 +117,7 @@ export const flightBookingWorkflow = defineWorkflow({
                   id: data.id,
                   dest: args.destination,
                 }),
-                failure: (_failure) => {
+                failure: () => {
                   ctx.logger.warn("Primary hotel failed — falling back");
                   return { ok: false as const, id: null, dest: null };
                 },

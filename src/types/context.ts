@@ -32,7 +32,6 @@ import type {
   ChannelHandle,
   StreamAccessor,
   EventAccessor,
-  BranchFailureInfo,
   BranchHandle,
   ScopeHandles,
   FirstResult,
@@ -788,6 +787,10 @@ export interface CompensationContext<
    * Each entry is `(ctx: CompensationContext<...>) => Promise<T>`.
    * Resolve: `await ctx.execute(ctx.first(entries))`.
    * Returns `{ key, result }` discriminated union.
+   *
+   * If all branches fail, the workflow is terminated unless `defaultValue` is provided.
+   * On `CompensationContext`, `defaultValue` is required — compensation must always
+   * produce a meaningful result even if all branches fail.
    */
   first<
     E extends Record<
@@ -807,9 +810,11 @@ export interface CompensationContext<
         >,
       ) => Promise<unknown>
     >,
+    TDefault,
   >(
     entries: E,
-  ): DeterministicAwaitable<FirstResult<E>, CompensationRoot>;
+    defaultValue: TDefault,
+  ): DeterministicAwaitable<FirstResult<E> | TDefault, CompensationRoot>;
 
   // ---------------------------------------------------------------------------
   // listen — channel-only multiplexed waiting (all contexts)
@@ -1090,6 +1095,9 @@ export interface WorkflowContext<
    * Each entry is `(ctx: WorkflowContext<...>) => Promise<T>`.
    * Resolve: `await ctx.execute(ctx.first(entries))`.
    * Returns `{ key, result }` discriminated union.
+   *
+   * If all branches fail without a `defaultValue`, the workflow is terminated.
+   * Providing `defaultValue` returns it instead of terminating.
    */
   first<
     E extends Record<
@@ -1112,6 +1120,30 @@ export interface WorkflowContext<
   >(
     entries: E,
   ): DeterministicAwaitable<FirstResult<E>, ExecutionRoot>;
+
+  first<
+    E extends Record<
+      string,
+      (
+        ctx: WorkflowContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          any
+        >,
+      ) => Promise<unknown>
+    >,
+    TDefault,
+  >(
+    entries: E,
+    defaultValue: TDefault,
+  ): DeterministicAwaitable<FirstResult<E> | TDefault, ExecutionRoot>;
 
   // ---------------------------------------------------------------------------
   // listen — channel-only multiplexed waiting (all contexts)
@@ -1301,6 +1333,9 @@ export interface WorkflowConcurrencyContext<
    *
    * Resolve: `await ctx.execute(ctx.first(entries))`.
    * Returns `{ key, result }` discriminated union.
+   *
+   * If all branches fail without a `defaultValue`, the workflow is terminated.
+   * Providing `defaultValue` returns it instead of terminating.
    */
   first<
     E extends Record<
@@ -1323,6 +1358,30 @@ export interface WorkflowConcurrencyContext<
   >(
     entries: E,
   ): DeterministicAwaitable<FirstResult<E>, ExecutionRoot>;
+
+  first<
+    E extends Record<
+      string,
+      (
+        ctx: WorkflowContext<
+          TState,
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TChildWorkflows,
+          TForeignWorkflows,
+          TPatches,
+          TRng,
+          any
+        >,
+      ) => Promise<unknown>
+    >,
+    TDefault,
+  >(
+    entries: E,
+    defaultValue: TDefault,
+  ): DeterministicAwaitable<FirstResult<E> | TDefault, ExecutionRoot>;
 
   /**
    * Create a listener for concurrent channel waiting.
@@ -1351,7 +1410,7 @@ export interface WorkflowConcurrencyContext<
    */
   match<
     M extends Record<string, ScopeSelectableHandle>,
-    DF extends (failure: BranchFailureInfo) => any,
+    DF extends () => any,
   >(
     sel: Selection<M>,
     onFailure: DF,
@@ -1378,7 +1437,7 @@ export interface WorkflowConcurrencyContext<
   match<
     M extends Record<string, ScopeSelectableHandle>,
     H extends MatchHandlers<M>,
-    DF extends (failure: BranchFailureInfo) => any,
+    DF extends () => any,
   >(
     sel: Selection<M>,
     handlers: H,
@@ -1530,6 +1589,9 @@ export interface CompensationConcurrencyContext<
    *
    * Resolve: `await ctx.execute(ctx.first(entries))`.
    * Returns `{ key, result }` discriminated union.
+   *
+   * On `CompensationConcurrencyContext`, `defaultValue` is required — compensation
+   * must always produce a meaningful result even if all branches fail.
    */
   first<
     E extends Record<
@@ -1549,9 +1611,11 @@ export interface CompensationConcurrencyContext<
         >,
       ) => Promise<unknown>
     >,
+    TDefault,
   >(
     entries: E,
-  ): DeterministicAwaitable<FirstResult<E>, CompensationRoot>;
+    defaultValue: TDefault,
+  ): DeterministicAwaitable<FirstResult<E> | TDefault, CompensationRoot>;
 
   /**
    * Create a listener for concurrent channel waiting.
@@ -1579,7 +1643,7 @@ export interface CompensationConcurrencyContext<
    */
   match<
     M extends Record<string, ScopeSelectableHandle>,
-    DF extends (failure: BranchFailureInfo) => any,
+    DF extends () => any,
   >(
     sel: CompensationSelection<M>,
     onFailure: DF,
@@ -1604,7 +1668,7 @@ export interface CompensationConcurrencyContext<
   match<
     M extends Record<string, ScopeSelectableHandle>,
     H extends MatchHandlers<M>,
-    DF extends (failure: BranchFailureInfo) => any,
+    DF extends () => any,
   >(
     sel: CompensationSelection<M>,
     handlers: H,

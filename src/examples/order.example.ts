@@ -110,7 +110,7 @@ export const orderWorkflow = defineWorkflow({
           for await (const result of ctx.match(ctx.select({ hotel }), {
             hotel: {
               complete: (data) => data.id as string | null,
-              failure: (_failure) => {
+              failure: () => {
                 ctx.logger.error("Hotel booking failed");
                 return null;
               },

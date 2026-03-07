@@ -7,8 +7,8 @@ A type-safe, Postgres-backed durable execution engine for TypeScript.
 - **A library, not a bible.** Gradual adoption, lightweight in-process durable execution without additional infrastructure.
 - **Postgres backed.** No additional infra needed, only a Postgres instance.
 - **Fully typed.** Everything is type safe thanks to standard schema support (Zod v4, etc.).
-- **Three-tier awaitable hierarchy.** A compile-time enforced separation between join-only handles (steps, scopes), directly awaitable blocking primitives (sleep, channel receives), and directly awaitable atomic operations (stream writes, event sets, etc.).
-- **Closure-based structured concurrency.** Scope entries are plain `async () => T` closures or directly awaitable blocking primitives. Collections (Array, Map) are supported natively for dynamic fan-out.
+- **Three-tier awaitable hierarchy.** A compile-time enforced separation between execute-only handles (steps, scopes), directly awaitable blocking primitives (sleep, channel receives), and directly awaitable atomic operations (stream writes, event sets, etc.).
+- **Closure-based structured concurrency.** Scope entries are always `(ctx) => Promise<T>` closures. Each branch closure receives a path-specialized context — no context leaking across branch boundaries.
 - **One compensation callback per handle.** Defined via `.compensate(cb)` builder. Full `CompensationContext` with structured concurrency.
 - **The actor model.** Workflows are independent and decoupled from each other.
 - **State is not stored.** Workflow state is derived from replay — keeps workflows modifiable.
@@ -17,8 +17,8 @@ A type-safe, Postgres-backed durable execution engine for TypeScript.
 
 - **Happy path by default, explicit when needed** — Workflow code describes business intent, not error handling plumbing. The engine handles retries, compensation, and cleanup. `.failure(cb)` opts in to explicit error handling for individual operations.
 - **Explicit over implicit** — No decorators, no global state, no magic.
-- **Structured concurrency** — Every concurrent branch lives inside `ctx.scope(name, ...)` using closures (`async () => ...`) or directly awaitable blocking handles. Branches with compensated steps are compensated on exit; others are settled.
-- **Sound compensation** — One callback per handle via `.compensate(cb)` builder. `{ complete, failure }`, `{ failure }`, and `onFailure` handler forms for explicit failure recovery. Virtual event loop for concurrent compensation execution.
+- **Structured concurrency** — Every concurrent branch lives inside `ctx.scope(name, entries, callback)` as a closure `(ctx) => Promise<T>`. Branches with compensated steps are compensated on exit; others are settled.
+- **Sound compensation** — One callback per handle via `.compensate(cb)` builder. `{ complete, failure }`, `{ failure }`, and `onFailure` handler forms for explicit failure recovery. Virtual event loop for concurrent compensation execution. Branch `failure` callbacks take no arguments — branch closures handle their own error logic internally.
 - **Type safety** — Full TypeScript inference with standard schemas. Impossible states are unrepresentable.
 - **Deterministic replay** — Global sequence ordering for reproducible execution.
 
@@ -27,16 +27,16 @@ A type-safe, Postgres-backed durable execution engine for TypeScript.
 Primitives are split into three tiers based on how they can be awaited. This is enforced at compile time — no runtime checks needed.
 
 ```
-DeterministicAwaitable<T, TRoot>   — join-only; no then(); requires ctx.join()
+DeterministicAwaitable<T, TRoot>   — execute-only; no then(); requires ctx.execute() or ctx.join()
   └── BranchHandle<T, TScopePath, TRoot>
 
 DirectAwaitable<T>                 — has then(); directly awaitable; NOT a scope entry
   └── WorkflowAwaitable<T>         — has then(); directly awaitable; CAN be a scope entry
-        └── ChannelReceiveCall<T>  — accepted by select/map
+        └── ChannelReceiveCall<T>  — accepted by select/listen
 ```
 
-**Tier 1 — Join-only (`DeterministicAwaitable`, `BranchHandle`):**
-Steps, child workflows (result mode), scope/all/map results. Must be resolved via `await ctx.join(handle)`. The scope-path brand on `BranchHandle` gives compile-time lifetime guarantees.
+**Tier 1 — Execute-only (`DeterministicAwaitable`, `BranchHandle`):**
+Steps, child workflows (result mode), scope/all/first results. Must be resolved via `await ctx.execute(handle)` on base contexts, or `await ctx.join(branchHandle)` on concurrency contexts. The scope-path brand on `BranchHandle` gives compile-time lifetime guarantees.
 
 **Tier 2 — Blocking, directly awaitable and valid scope entry (`WorkflowAwaitable`):**
 `ctx.sleep()`, `ctx.sleepUntil()`, `ctx.channels.X.receive()` (all overloads), `scheduleHandle.sleep()`, `lifecycleEvent.wait()`. Directly `await`-able or passable as a scope entry.
@@ -62,24 +62,24 @@ const bookFlight = defineStep({
 });
 ```
 
-**In `WorkflowContext`:** calling a step returns a `StepCall<T>` (Tier 1 — join-only). Chain builders before resolving via `ctx.join()`:
+**In `WorkflowContext`:** calling a step returns a `StepCall<T>` (Tier 1 — execute-only). Chain builders before resolving via `ctx.execute()`:
 
 ```typescript
-// Happy path — resolve via ctx.join()
-const flight = await ctx.join(ctx.steps.bookFlight("Paris", "cust-1"));
+// Happy path — resolve via ctx.execute()
+const flight = await ctx.execute(ctx.steps.bookFlight("Paris", "cust-1"));
 // flight is { id: string, price: number } — the decoded result
 
 // With compensation — callback ALWAYS runs if an attempt was made.
 // The step is idempotent and side effects may have occurred even on failure.
-const flight = await ctx.join(
+const flight = await ctx.execute(
   ctx.steps.bookFlight("Paris", "cust-1").compensate(async (ctx) => {
     // No status check — always attempt to cancel.
-    await ctx.join(ctx.steps.cancelFlight("Paris", "cust-1"));
+    await ctx.execute(ctx.steps.cancelFlight("Paris", "cust-1"));
   }),
 );
 
 // With retry override
-const flight = await ctx.join(
+const flight = await ctx.execute(
   ctx.steps
     .bookFlight("Paris", "cust-1")
     .retry({ maxAttempts: 5, intervalSeconds: 3 }),
@@ -89,11 +89,11 @@ const flight = await ctx.join(
 **`.failure()` / `.complete()` — explicit error handling:** When you need to observe step failures without auto-terminating the workflow, chain `.failure(cb)`. Optionally `.complete(cb)` to transform the success result:
 
 ```typescript
-const flightId = await ctx.join(
+const flightId = await ctx.execute(
   ctx.steps
     .bookFlight("Paris", "cust-1")
     .compensate(async (ctx) => {
-      await ctx.join(ctx.steps.cancelFlight("Paris", "cust-1"));
+      await ctx.execute(ctx.steps.cancelFlight("Paris", "cust-1"));
     })
     .failure(async (failure) => {
       ctx.logger.warn("Flight booking failed", { reason: failure.reason });
@@ -103,7 +103,7 @@ const flightId = await ctx.join(
 );
 
 // Without .compensate()
-const carId = await ctx.join(
+const carId = await ctx.execute(
   ctx.steps
     .reserveCar("Paris", "dates")
     .failure(() => null)
@@ -111,11 +111,11 @@ const carId = await ctx.join(
 );
 ```
 
-**In `CompensationContext`:** calling a step returns a `CompensationStepCall<T>` (Tier 1 — join-only) that resolves to `CompensationStepResult<T>` — a discriminated union that compensation code must handle gracefully.
+**In `CompensationContext`:** calling a step returns a `CompensationStepCall<T>` (Tier 1 — execute-only) that resolves to `CompensationStepResult<T>` — a discriminated union that compensation code must handle gracefully.
 
 ```typescript
 // Sequential compensation
-const cancelResult = await ctx.join(ctx.steps.cancelFlight("Paris", "cust-1"));
+const cancelResult = await ctx.execute(ctx.steps.cancelFlight("Paris", "cust-1"));
 if (!cancelResult.ok) {
   ctx.logger.error("Failed to cancel flight", {
     reason: cancelResult.status,
@@ -124,12 +124,13 @@ if (!cancelResult.ok) {
 }
 
 // Concurrent compensation with scope
-await ctx.join(
+await ctx.execute(
   ctx.scope(
     "NotifyAndCancel",
     {
-      cancel: ctx.steps.cancelFlight("Paris", "cust-1"),
-      notify: ctx.steps.sendEmail("customer@example.com", "Cancelled", "..."),
+      cancel: async (ctx) => ctx.execute(ctx.steps.cancelFlight("Paris", "cust-1")),
+      notify: async (ctx) =>
+        ctx.execute(ctx.steps.sendEmail("customer@example.com", "Cancelled", "...")),
     },
     async (ctx, { cancel, notify }) => {
       const cancelResult = await ctx.join(cancel);
@@ -145,38 +146,36 @@ Steps have no lifecycle control — they are function calls, not processes. They
 
 ### Structured Concurrency (`ctx.scope(name, entries, callback)`)
 
-Every concurrent branch must exist within a **scope** — a lexical boundary that manages branch lifecycle. Entries support two forms:
+Every concurrent branch must exist within a **scope** — a lexical boundary that manages branch lifecycle. Entries are always async closures: `(ctx) => Promise<T>`.
 
-- **Closure form** (`async () => T`) — full control for complex branch logic.
-- **Directly awaitable form** (`WorkflowAwaitable<T>`) — pass blocking primitives (like step/child-workflow thenables, sleep handles) directly for concise common cases.
+Each closure receives a path-specialized context as its argument — a `WorkflowContext` (or `CompensationContext`) typed with the branch's exact scope path. This prevents accidental closure over the outer context and enables compile-time lifetime tracking.
 
-Both forms can be mixed in the same scope. The scope callback receives a scope-local concurrency context as its first argument, and `BranchHandle<T>` values (Tier 1 — join-only) as its second argument.
-
-`ctx.scope(...)` itself returns a Tier 1 `DeterministicAwaitable` — resolve it via `ctx.join()`:
+`ctx.scope(...)` always returns a Tier 1 `DeterministicAwaitable` — resolve it via `ctx.execute()`:
 
 ```typescript
-const winner = await ctx.join(
+const winner = await ctx.execute(
   ctx.scope(
     "BookTravelOptions",
     {
-      // DeterministicAwaitable entry (step call)
-      flight: ctx.steps
-        .bookFlight("Paris", "cust-1")
-        .compensate(async (ctx) => {
-          await ctx.join(ctx.steps.cancelFlight("Paris", "cust-1"));
-        }),
-      // closure form for complex logic
-      hotel: async () =>
-        ctx.steps.bookHotel(city, checkIn, checkOut).compensate(async (ctx) => {
-          await ctx.join(ctx.steps.cancelHotel(city, checkIn, checkOut));
-        }),
+      flight: async (ctx) =>
+        ctx.execute(
+          ctx.steps.bookFlight("Paris", "cust-1").compensate(async (ctx) => {
+            await ctx.execute(ctx.steps.cancelFlight("Paris", "cust-1"));
+          }),
+        ),
+      hotel: async (ctx) =>
+        ctx.execute(
+          ctx.steps.bookHotel(city, checkIn, checkOut).compensate(async (ctx) => {
+            await ctx.execute(ctx.steps.cancelHotel(city, checkIn, checkOut));
+          }),
+        ),
     },
     async (ctx, { flight, hotel }) => {
       // ctx is WorkflowConcurrencyContext
-      // flight, hotel are BranchHandle<T> (Tier 1) — join them or pass to select/map
+      // flight, hotel are BranchHandle<T> (Tier 1) — join them or pass to select
       const sel = ctx.select({ flight, hotel });
-      for await (const data of sel) {
-        return data;
+      for await (const { key, result } of ctx.match(sel)) {
+        return result;
       }
       throw new Error("All handles exhausted");
     },
@@ -184,36 +183,38 @@ const winner = await ctx.join(
 );
 ```
 
-Inside a scope callback context, nested `ctx.scope(...)` calls return a `BranchHandle<T>`, so child scopes are directly selectable in the parent:
+To race a child scope against an outer branch, place the inner scope in entries rather than creating it inside the callback:
 
 ```typescript
-await ctx.join(
+await ctx.execute(
   ctx.scope(
     "Parent",
     {
-      timer: async () => {
-        await ctx.sleep(10); // sleep is WorkflowAwaitable — directly awaitable
+      timer: async (ctx) => {
+        await ctx.sleep(10);
         return "timeout" as const;
       },
+      child: async (ctx) =>
+        ctx.execute(
+          ctx.scope(
+            "Child",
+            {
+              work: async (ctx) => {
+                await ctx.sleep(1);
+                return "done" as const;
+              },
+            },
+            async (ctx, { work }) => await ctx.join(work),
+          ),
+        ),
     },
-    async (ctx, { timer }) => {
-      const child = ctx.scope(
-        "Child",
-        {
-          work: async () => {
-            await ctx.sleep(1);
-            return "done" as const;
-          },
-        },
-        async (_ctx, { work }) => await _ctx.join(work),
-      );
-
+    async (ctx, { timer, child }) => {
       const sel = ctx.select({ timer, child });
-      for await (const val of sel.match({
+      for await (const { key, result } of ctx.match(sel, {
         timer: (v) => v,
         child: (v) => v,
       })) {
-        return val;
+        return result;
       }
       return "timeout" as const;
     },
@@ -224,56 +225,65 @@ await ctx.join(
 For the common "run everything and collect all resolved values" case, use `ctx.all(entries)`:
 
 ```typescript
-const result = await ctx.join(
+const result = await ctx.execute(
   ctx.all({
-    flight: ctx.steps.bookFlight("Paris", "cust-1"),
-    hotels: [
-      async () => ctx.steps.bookHotel("Paris", "2026-03-10", "2026-03-13"),
-      async () => ctx.steps.bookHotel("Paris", "2026-03-11", "2026-03-14"),
-    ],
+    flight: async (ctx) => ctx.execute(ctx.steps.bookFlight("Paris", "cust-1")),
+    hotel: async (ctx) => ctx.execute(ctx.steps.bookHotel("Paris", checkIn, checkOut)),
   }),
 );
 // result.flight -> Flight
-// result.hotels -> Hotel[]
+// result.hotel -> Hotel
+```
+
+For dynamic fan-out over a runtime-determined set, use `ctx.all()` inside a single branch closure:
+
+```typescript
+const quotes = await ctx.execute(
+  ctx.scope(
+    "QuoteFanout",
+    {
+      allQuotes: async (ctx) =>
+        ctx.execute(
+          ctx.all(
+            Object.fromEntries(
+              args.providers.map((p) => [
+                p,
+                async (ctx) => ctx.execute(ctx.steps.getQuote(p, args.destination)),
+              ]),
+            ),
+          ),
+        ),
+    },
+    async (ctx, { allQuotes }) => ctx.join(allQuotes),
+  ),
+);
+```
+
+For returning the first branch to complete, use `ctx.first(entries)`:
+
+```typescript
+const winner = await ctx.execute(
+  ctx.first({
+    fast: async (ctx) => ctx.execute(ctx.steps.fastRoute(destination)),
+    cheap: async (ctx) => ctx.execute(ctx.steps.cheapRoute(destination)),
+  }),
+);
+// winner: { key: "fast" | "cheap"; result: Route }
+
+// With a fallback if all branches fail (required on CompensationContext):
+const winner = await ctx.execute(
+  ctx.first({ ... }, null),
+);
+// winner: { key: ...; result: Route } | null
 ```
 
 **Scope possession and naming rules:**
 
 - Every scope must be named: `ctx.scope("ScopeName", entries, callback)`.
-- Branch handles are branded with the scope lineage and can only be consumed by `select/map` in the current scope or descendant scopes.
+- Branch handles are branded with the scope lineage and can only be consumed by `select` or `join` in the current scope or descendant scopes.
 - Child scopes cannot reuse an ancestor scope name (compile-time check for literal names).
 - Under the same parent scope, duplicate active child scope names are rejected at runtime.
-- Widened `string` names are allowed, but literal names provide the strongest compile-time guarantees.
-
-**Dynamic fan-out with collections:** Scope entries can also be arrays or Maps for parallel dispatch over unknown-at-definition-time sets:
-
-```typescript
-const providers = new Map<string, () => Promise<Quote>>();
-for (const p of args.providerCodes) {
-  providers.set(p, async () => ctx.steps.getQuote(p, args.destination));
-}
-
-const result = await ctx.join(
-  ctx.scope(
-    "CollectQuoteFanout",
-    { flight: ctx.steps.bookFlight(...), quotes: providers },
-    async (ctx, { flight, quotes }) => {
-      // flight: BranchHandle<Flight>
-      // quotes: Map<string, BranchHandle<Quote>>
-      const mapped = await ctx.join(
-        ctx.map(
-          { flight, quotes },
-          {
-            flight: { complete: (d) => d.id, failure: () => null },
-            quotes: { complete: (d, innerKey) => d.price, failure: () => Infinity },
-          },
-        ),
-      );
-      return mapped;
-    },
-  ),
-);
-```
+- Widened `string` names are allowed, but once a dynamic key appears in the scope path, compile-time ancestor-name collision detection is disabled for all nested scopes. You are responsible for uniqueness manually in that case.
 
 ### Scope Exit Behavior
 
@@ -289,7 +299,7 @@ The presence of a `.compensate()` builder determines what happens to unjoined br
 Each handle has at most **one compensation callback**, registered via the `.compensate(cb)` builder before resolving. The callback receives a full `CompensationContext`.
 
 ```typescript
-const flight = await ctx.join(
+const flight = await ctx.execute(
   ctx.steps.bookFlight("Paris", "cust-1").compensate(async (ctx, result) => {
     // result: StepCompensationResult<T> — available if you need it, but
     // compensation should ALWAYS run regardless of result.status.
@@ -297,7 +307,7 @@ const flight = await ctx.join(
     // Rationale: if any attempt was made, the remote system may have already
     // processed the request but failed to send the response. The step is
     // idempotent; the compensation callback assumes at-least-once delivery.
-    await ctx.join(ctx.steps.cancelFlight("Paris", "cust-1"));
+    await ctx.execute(ctx.steps.cancelFlight("Paris", "cust-1"));
   }),
 );
 ```
@@ -305,7 +315,7 @@ const flight = await ctx.join(
 Properties:
 
 - **Full `CompensationContext`** — has steps, childWorkflows, channels, streams, events, and scope.
-- **Scope-local concurrency context** — full `select/map` with branch handles is available as the first callback argument of `ctx.scope(name, ...)`.
+- **Scope-local concurrency context** — full `select/match` with branch handles is available as the first callback argument of `ctx.scope(name, ...)`.
 - **Has access to the outcome** via `result` parameter — available if needed, but unconditional compensation is the safe default.
 - **Pushed onto the LIFO compensation stack** at call time.
 - **Virtual event loop** — when multiple compensation callbacks from the same scope need to run, the engine transparently interleaves their execution at durable operation `await` points for concurrency, while keeping each callback's code sequential.
@@ -325,100 +335,79 @@ ctx.addCompensation(async (ctx) => {
 The `.failure(cb)` builder on `StepCall` / `WorkflowCall` provides explicit failure handling without auto-terminating the workflow. Chain after `.compensate()` if needed — compensation remains engine-managed and runs during normal LIFO unwinding.
 
 ```typescript
-// { complete, failure } pattern for map handlers (scope-local)
-const ids = await ctx.join(
+const ids = await ctx.execute(
   ctx.scope(
-    "MapBookingHandles",
-    { flight: flightHandle, hotel: hotelHandle },
-    async (ctx, { flight, hotel }) =>
-      ctx.map(
-        { flight, hotel },
-        {
-          flight: {
-            complete: (data) => data.id,
-            failure: async (_failure) => null,
-          },
-          hotel: (data) => data.id,
-          // Plain function -> failure crashes the workflow (happy-path default)
+    "BookHandles",
+    {
+      flight: async (ctx) =>
+        ctx.execute(ctx.steps.bookFlight(dest, customerId)),
+      hotel: async (ctx) =>
+        ctx.execute(ctx.steps.bookHotel(dest, checkIn, checkOut)),
+    },
+    async (ctx, { flight, hotel }) => {
+      for await (const { key, result } of ctx.match(ctx.select({ flight, hotel }), {
+        flight: {
+          complete: (data) => ({ flightId: data.id, hotelId: null }),
+          failure: () => ({ flightId: null, hotelId: null }),
         },
-      ),
+        hotel: {
+          complete: (data) => ({ flightId: null, hotelId: data.id }),
+          failure: () => ({ flightId: null, hotelId: null }),
+        },
+      })) {
+        return result;
+      }
+      throw new Error("Selection exhausted");
+    },
   ),
 );
-ctx.state.flightId = ids.flight;
-ctx.state.hotelId = ids.hotel;
 ```
-
-**`BranchFailureInfo`:**
-
-- Passed to branch `failure` callbacks in `select.match(...)` and `map(...)`.
-- Use it as an explicit failure-path signal; compensation itself remains automatic.
-- For `map` and `match`, per-key `failure` callbacks and the `onFailure` default can return fallback values instead of terminating.
-- **Step failure info:** `StepFailureInfo` — `{ reason: "attempts_exhausted" | "timeout", errors: StepErrorAccessor }` — passed directly to `.failure(cb)` on a `StepCall`.
-- **Child workflow failure info:** `ChildWorkflowFailureInfo` — discriminated union: `{ status: "failed", error: WorkflowExecutionError } | { status: "terminated", reason: WorkflowTerminationReason }` — passed to `.failure(cb)` on a `WorkflowCall`.
 
 **Handler shapes for concurrency primitives:**
 
 - `(data) => ...` — plain function. Receives successful data `T`. Failure crashes the workflow (branch handles) or resolves with the received value (channel receive calls).
-- `{ complete, failure }` — explicit handling for branch handles only.
+- `{ complete, failure }` — explicit handling for branch handles only. `failure` callback takes no arguments — branch closures handle their own error logic internally.
+- `{ complete }` only — failure auto-terminates (or uses `onFailure`).
+- `{ failure }` only — complete yields data unchanged (identity); failure handled explicitly.
 
-### Select (Concurrency Primitive)
+**Step and child workflow failure info:**
 
-The `select` primitive multiplexes multiple handles and yields events as they arrive. Two access patterns are available.
+- `StepFailureInfo` — `{ reason: "attempts_exhausted" | "timeout", errors: StepErrorAccessor }` — passed to `.failure(cb)` on a `StepCall`.
+- `ChildWorkflowFailureInfo` — discriminated union: `{ status: "failed", error: WorkflowExecutionError } | { status: "terminated", reason: WorkflowTerminationReason }` — passed to `.failure(cb)` on a `WorkflowCall`.
+
+### Select and Match (Concurrency Primitives)
+
+`ctx.select()` and `ctx.match()` are available only on concurrency contexts (inside scope callbacks). Use `ctx.listen()` on any context for channel-only multiplexing.
+
+#### `ctx.select()` — branch + channel multiplexing
+
+```typescript
+// One-shot receive: key removed from `remaining` after resolving
+const sel = ctx.select({
+  flight: flightHandle,
+  cancel: ctx.channels.cancel.receive(), // ChannelReceiveCall — one-shot
+});
+
+// Streaming channel: key NEVER removed from `remaining`
+const sel2 = ctx.select({
+  booking: bookingHandle,
+  cancel: ctx.channels.cancel, // ChannelHandle — fires on every message
+});
+```
 
 **Channel input forms — two distinct semantics:**
 
-```typescript
-// Streaming channel branch: ctx.channels.<n> (ChannelHandle)
-// - Fires on every new message; the key is NEVER removed from `remaining`.
-// - Use for long-running consumer loops where channel reads continue indefinitely.
-// - Note: `while (sel.remaining.size > 0)` will not terminate on its own.
-const sel = ctx.select({
-  flight: flightHandle,
-  cancel: ctx.channels.cancel, // streaming — reads forever
-});
+- `ctx.channels.<n>` (`ChannelHandle`) — streaming; fires on every new message; the key is **never** removed from `remaining`. Use for long-running consumer loops.
+- `ctx.channels.<n>.receive(...)` (`ChannelReceiveCall` — Tier 2) — one-shot; resolves exactly once; key **is** removed from `remaining`.
 
-// One-shot receive branch: ctx.channels.<n>.receive(...) (ChannelReceiveCall — Tier 2)
-// - Directly awaitable OR passable to select/map for one-shot channel waits.
-// - Resolves exactly once; key IS removed from `remaining` afterwards.
-const sel = ctx.select({
-  flight: flightHandle,
-  cancel: ctx.channels.cancel.receive(), // one-shot — terminates
-  payment: ctx.channels.payment.receive(300), // with timeout (T | undefined)
-  confirm: ctx.channels.confirm.receive(60, false), // with default (T | false)
-});
-```
+#### `ctx.match()` — key-aware async iteration
 
-#### Primary: `for await...of`
+Primary iteration surface for `Selection<M>`. Four call forms:
 
-The primary iteration surface. Yields `SelectDataUnion<M>` — the successful data values from all handles — until all handles are exhausted. Any branch failure **auto-terminates** the workflow (LIFO compensation fires).
-
-```typescript
-// Simple "process all" loop — works correctly when all handles are finite
-for await (const data of sel) {
-  ctx.logger.info("Handle resolved", { data });
-}
-
-// Race pattern — return on first value, scope cleans up the rest
-for await (const data of sel) {
-  return data;
-}
-```
-
-#### `.match()` — key-aware async iteration
-
-Returns an `AsyncIterable` that yields a transformed value for every event across all handles. Three call forms:
-
-- `sel.match(onFailure)` — identity for all keys, `onFailure` catches every branch failure.
-- `sel.match(handlers)` — per-key handlers; omitted keys yield data unchanged.
-- `sel.match(handlers, onFailure)` — per-key handlers + default failure catch-all.
-
-**Handler forms** (for BranchHandle keys):
-
-- Plain function: complete only; failure auto-terminates (or uses `onFailure`).
-- `{ complete, failure }`: both paths handled explicitly.
-- `{ complete }` only: failure auto-terminates (or uses `onFailure`).
-- `{ failure }` only: complete yields data unchanged (identity); failure handled explicitly.
-- Key omitted from map: yields data unchanged on complete; failure auto-terminates (or uses `onFailure`).
+- `ctx.match(sel)` — identity for all keys; yields `{ key, result }`. Branch failures auto-terminate.
+- `ctx.match(sel, onFailure)` — identity, `onFailure` catches every branch failure.
+- `ctx.match(sel, handlers)` — per-key handlers; omitted keys yield data unchanged.
+- `ctx.match(sel, handlers, onFailure)` — per-key handlers + default failure catch-all.
 
 ```typescript
 const sel = ctx.select({
@@ -427,17 +416,33 @@ const sel = ctx.select({
   cancel: ctx.channels.cancel.receive(),
 });
 
-for await (const result of sel.match(
+for await (const result of ctx.match(
+  sel,
   {
     flight: {
       complete: (data) => ({ ok: true as const, id: data.id }),
-      failure: async (_failure) => ({ ok: false as const, id: null }),
+      failure: () => ({ ok: false as const, id: null }),
     },
     cancel: () => ({ ok: false as const, id: null }),
   },
-  async (_failure) => ({ ok: false as const, id: null }),
+  () => ({ ok: false as const, id: null }),
 )) {
   if (result.ok) return result.id;
+}
+```
+
+#### `ctx.listen()` — channel-only multiplexing (all contexts)
+
+Available on all contexts (base and concurrency). Accepts only `ChannelHandle` and `ChannelReceiveCall`. Returns a `Listener<M>` — directly iterable, yields `{ key, message }`:
+
+```typescript
+// Available even outside a scope callback
+for await (const { key, message } of ctx.listen({
+  cancel: ctx.channels.cancel,
+  payment: ctx.channels.payment.receive(300),
+})) {
+  if (key === "cancel") break;
+  if (key === "payment") handlePayment(message);
 }
 ```
 
@@ -447,19 +452,19 @@ Sleep (`ctx.sleep()`, `ctx.sleepUntil()`) is a Tier 2 `WorkflowAwaitable` — di
 
 ```typescript
 // Step race: step result vs timer
-const stepRace = await ctx.join(
+const stepRace = await ctx.execute(
   ctx.scope(
     "StepTimeoutRace",
     {
-      flight: ctx.steps.bookFlight(dest, customerId),
-      timer: async () => {
-        await ctx.sleep(30); // directly awaitable inside closure
+      flight: async (ctx) => ctx.execute(ctx.steps.bookFlight(dest, customerId)),
+      timer: async (ctx) => {
+        await ctx.sleep(30);
         return "timed_out" as const;
       },
     },
     async (ctx, { flight, timer }) => {
       const sel = ctx.select({ flight, timer });
-      for await (const val of sel.match({
+      for await (const val of ctx.match(sel, {
         flight: {
           complete: () => "booked" as const,
           failure: () => "timed_out" as const,
@@ -474,22 +479,25 @@ const stepRace = await ctx.join(
 );
 
 // Child workflow race: child completion vs timer
-const childRace = await ctx.join(
+const childRace = await ctx.execute(
   ctx.scope(
     "ChildTimeoutRace",
     {
-      payment: ctx.childWorkflows.payment({
-        idempotencyKey: "payment-1",
-        args: { amount: 100, customerId: "cust-1" },
-      }),
-      timer: async () => {
+      payment: async (ctx) =>
+        ctx.execute(
+          ctx.childWorkflows.payment({
+            idempotencyKey: "payment-1",
+            args: { amount: 100, customerId: "cust-1" },
+          }),
+        ),
+      timer: async (ctx) => {
         await ctx.sleep(45);
         return "timed_out" as const;
       },
     },
     async (ctx, { payment, timer }) => {
       const sel = ctx.select({ payment, timer });
-      for await (const val of sel.match({
+      for await (const val of ctx.match(sel, {
         payment: {
           complete: () => "completed" as const,
           failure: () => "timed_out" as const,
@@ -511,7 +519,7 @@ let nextRunAt = ctx.timestamp;
 while (true) {
   nextRunAt += 10 * 60 * 1000;
   await ctx.sleepUntil(nextRunAt); // WorkflowAwaitable — directly awaitable
-  await ctx.join(ctx.steps.runTick());
+  await ctx.execute(ctx.steps.runTick());
 }
 ```
 
@@ -522,80 +530,6 @@ console.log(sel.remaining); // ReadonlySet<'flight' | 'hotel' | 'cancel'>
 ```
 
 `remaining` tracks keys that have not yet been removed. Branch handle keys are removed when the branch completes or fails. `ChannelReceiveCall` keys are removed after the single receive resolves. **Raw `ChannelHandle` keys are never removed** — they represent an infinite stream.
-
-### map (Batch Processing, Scope-Local)
-
-Collects results from all finite handles concurrently and is available on the scope callback context. Three call forms:
-
-- `ctx.map(handles)` — identity for all keys; failure auto-terminates. Returns raw resolved data.
-- `ctx.map(handles, callbacks)` — partial per-key handlers; omitted keys yield data unchanged.
-- `ctx.map(handles, callbacks, onFailure)` — same, plus a default failure callback.
-
-`ctx.map(...)` returns a Tier 1 `DeterministicAwaitable` — resolve it via `ctx.join()`.
-
-**Accepted handle types (`ScopeFiniteHandle`):**
-
-- `BranchHandle<T>` (single, array, or `Map`)
-- `ChannelReceiveCall<T>` — produced by `ctx.channels.<n>.receive(...)`
-
-```typescript
-// Identity collect
-const raw = await ctx.join(
-  ctx.map({ flight: flightHandle, hotel: hotelHandle }),
-);
-
-// Per-key handlers
-const ids = await ctx.join(
-  ctx.map(
-    { flight: flightHandle, hotel: hotelHandle },
-    {
-      flight: {
-        complete: (data) => data.id,
-        failure: async (_failure) => "FAILED",
-      },
-      hotel: { failure: async (_failure) => "FAILED" },
-    },
-  ),
-);
-
-// Non-blocking cancel poll alongside a branch handle
-// receiveNowait() is Tier 3 (DirectAwaitable) — directly awaitable but NOT a scope/map entry.
-// For a map-able one-shot channel poll, use receive() with a short timeout instead.
-const earlyCancelMsg = await ctx.channels.cancel.receiveNowait();
-if (earlyCancelMsg !== undefined) {
-  // a cancel message was already queued — abort early
-}
-
-// Timed channel receive in a map — ChannelReceiveCall IS a valid map entry
-const result = await ctx.join(
-  ctx.scope(
-    "BookingAndCancelMap",
-    { booking: ctx.steps.bookFlight(dest, customerId) },
-    async (ctx, { booking }) =>
-      ctx.map(
-        {
-          booking,
-          cancel: ctx.channels.cancel.receive(300, {
-            type: "timeout" as const,
-          }),
-        },
-        {
-          booking: {
-            complete: (data) => ({ status: "booked" as const, id: data.id }),
-            failure: () => ({ status: "failed" as const, id: null }),
-          },
-          cancel: (msg) => ({
-            status:
-              msg.type === "cancel"
-                ? ("cancelled" as const)
-                : ("timeout" as const),
-            id: null,
-          }),
-        },
-      ),
-  ),
-);
-```
 
 ### Child Workflows
 
@@ -619,8 +553,8 @@ const checkoutWorkflow = defineWorkflow({
 ```
 
 ```typescript
-// Sequential — childWorkflows call returns WorkflowCall<T> (Tier 1 — join-only)
-const result = await ctx.join(
+// Sequential — childWorkflows call returns WorkflowCall<T> (Tier 1 — execute-only)
+const result = await ctx.execute(
   ctx.childWorkflows
     .payment({
       idempotencyKey: `payment-${ctx.rng.paymentId.uuidv4()}`,
@@ -634,12 +568,12 @@ const result = await ctx.join(
 );
 
 // Concurrent — via scope closure
-const receiptId = await ctx.join(
+const receiptId = await ctx.execute(
   ctx.scope(
     "AwaitPaymentReceipt",
     {
-      child: async () => {
-        const result = await ctx.join(
+      child: async (ctx) => {
+        const result = await ctx.execute(
           ctx.childWorkflows.payment({
             idempotencyKey: "payment-1",
             metadata: { tenantId: "tenant-acme" },
@@ -675,7 +609,7 @@ await existing.channels.commands.send({ type: "nudge" }); // directly awaitable
 
 **Child workflow start modes:**
 
-- **Result mode** (default): call without `.startDetached()` and chain `.compensate()`, `.failure()`, `.complete()`. Requires `ctx.join()` to resolve.
+- **Result mode** (default): call without `.startDetached()` and chain `.compensate()`, `.failure()`, `.complete()`. Requires `ctx.execute()` to resolve.
 - **Detached mode**: call `.startDetached(opts)` and `await` directly. Returns `ForeignWorkflowHandle`. The child runs independently — not terminated when parent fails. Retention may be overridden in detached options.
 
 **Engine-level handles (`WorkflowHandleExternal`) retain `sigterm()` and `sigkill()`** — these are operational concerns for engine callers.
@@ -811,7 +745,7 @@ const schedule = ctx.schedule("0 9 * * 1-5", {
 
 for await (const tick of schedule) {
   // Step-level deadline tied to this schedule window
-  await ctx.join(
+  await ctx.execute(
     ctx.steps
       .sendNotification("ops@example.com", `Starting tick ${tick.index}`)
       .retry({
@@ -843,23 +777,24 @@ Both extend a shared `BaseContext` with channels, streams, events, patches, slee
 
 **`WorkflowContext`** (happy-path):
 
-- Steps: calling a step returns `StepCall<T>` (Tier 1) — chain `.compensate()`, `.retry()`, `.failure()`, `.complete()` then resolve via `ctx.join()`
+- Steps: calling a step returns `StepCall<T>` (Tier 1) — chain `.compensate()`, `.retry()`, `.failure()`, `.complete()` then resolve via `ctx.execute()`
 - Child workflows: `ctx.childWorkflows.*` returns `WorkflowCall<T>` (Tier 1) by default; `.startDetached()` returns `DirectAwaitable<ForeignWorkflowHandle>` (Tier 3)
 - Foreign workflows: `ctx.foreignWorkflows.*` returns `ForeignWorkflowHandle` (`channels.send()` is Tier 3 — directly awaitable)
-- Has `scope(name, entries, callback)`, channel-only base `select()`, and `addCompensation()`
-- Full branch-aware `select()` and `map()` are available only on scope callback context
+- Has `scope(name, entries, callback)`, `all(entries)`, `first(entries)`, `listen()`, and `addCompensation()`
+- Full branch-aware `select()` and `match()` are available only on scope callback context (`WorkflowConcurrencyContext`)
 
 **`CompensationContext`** (defensive, full structured concurrency):
 
-- Steps: calling a step returns `CompensationStepCall<T>` (Tier 1) — resolves to `CompensationStepResult<T>` via `ctx.join()`
-- Child workflows: `ctx.childWorkflows.*` returns `CompensationWorkflowCall<T>` (Tier 1) — resolves to `WorkflowResult<T>` via `ctx.join()`
-- Has `scope(name, entries, callback)` and channel-only base `select()`
+- Steps: calling a step returns `CompensationStepCall<T>` (Tier 1) — resolves to `CompensationStepResult<T>` via `ctx.execute()`
+- Child workflows: `ctx.childWorkflows.*` returns `CompensationWorkflowCall<T>` (Tier 1) — resolves to `WorkflowResult<T>` via `ctx.execute()`
+- Has `scope(name, entries, callback)`, `all(entries)`, `first(entries, defaultValue)`, and `listen()`
+- `first()` requires a `defaultValue` — compensation must always produce a meaningful result
 - No `addCompensation()` (prevents nesting)
 - No `.compensate()` builders or `{ complete, failure }` handlers
 
 ### Channels (Message Passing)
 
-Async communication between workflows. `channels.receive()` returns a Tier 2 `WorkflowAwaitable` (`ChannelReceiveCall`) — directly awaitable or passable to `select`/`map`.
+Async communication between workflows. `channels.receive()` returns a Tier 2 `WorkflowAwaitable` (`ChannelReceiveCall`) — directly awaitable or passable to `select`/`listen`.
 
 ```typescript
 // Blocking receive — directly awaitable (Tier 2)
@@ -884,7 +819,7 @@ const paymentOrDefault = await ctx.channels.payment.receive(300, {
 });
 
 // Non-blocking poll — receiveNowait() is Tier 3 (DirectAwaitable)
-// Directly awaitable; NOT valid as a scope/select/map entry
+// Directly awaitable; NOT valid as a scope/select/listen entry
 const nowait = await ctx.channels.payment.receiveNowait();
 const nowaitWithDefault = await ctx.channels.payment.receiveNowait({
   amount: 0,
@@ -989,12 +924,12 @@ const workflow = defineWorkflow({
   async execute(ctx) {
     // Boolean form — await directly (Tier 3)
     if (await ctx.patches.antifraud) {
-      const result = await ctx.join(ctx.steps.fraudCheck(args.flightId));
+      const result = await ctx.execute(ctx.steps.fraudCheck(args.flightId));
       // use result ...
     }
 
     if (!(await ctx.patches.removeLegacyEmail)) {
-      await ctx.join(ctx.steps.sendLegacyEmail(...));
+      await ctx.execute(ctx.steps.sendLegacyEmail(...));
     }
   },
 });
@@ -1093,7 +1028,7 @@ Every schema has **input** (encoded for DB) and **output** (decoded for runtime)
 
 ### Workflow-Internal (happy-path model)
 
-Step and child workflow calls in `WorkflowContext` return Tier 1 `DeterministicAwaitable` handles. Resolve via `ctx.join()` — failure auto-terminates the workflow when no `.failure()` builder is chained.
+Step and child workflow calls in `WorkflowContext` return Tier 1 `DeterministicAwaitable` handles. Resolve via `ctx.execute()` — failure auto-terminates the workflow when no `.failure()` builder is chained.
 
 ### Workflow-Internal (builder-based error handling)
 
@@ -1103,7 +1038,7 @@ Step and child workflow calls in `WorkflowContext` return Tier 1 `DeterministicA
 
 - Register compensation via `.compensate(cb)` (or `ctx.addCompensation()` for general cleanup).
 - The engine owns compensation execution and runs callbacks in LIFO order during unwind.
-- `failure` callbacks (`.failure(cb)`, `match`, `map`, `onFailure`) can return fallbacks, but do not manually trigger/claim compensation.
+- `failure` callbacks (`.failure(cb)`, `match`, `onFailure`) can return fallbacks, but do not manually trigger/claim compensation.
 
 ### Compensation-Internal
 
@@ -1137,7 +1072,7 @@ Workflow-internal `ChannelHandle` receive overloads (all return Tier 2 `ChannelR
 - `receive(timeoutSeconds)` → `T | undefined`
 - `receive(timeoutSeconds, defaultValue)` → `T | typeof defaultValue`
 
-Non-blocking poll (Tier 3 `DirectAwaitable` — not a scope/select/map entry):
+Non-blocking poll (Tier 3 `DirectAwaitable` — not a scope/select/listen entry):
 
 - `receiveNowait()` → `T | undefined`
 - `receiveNowait(defaultValue)` → `T | typeof defaultValue`
@@ -1180,18 +1115,18 @@ Engine-level wait APIs use `{ signal?: AbortSignal }` for runtime cancellation:
 
 | Resource                                       | Operations                                                                                                                                                                                                              |
 | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ctx.steps.*`                                  | `(args)` → `StepCall<T>` (Tier 1) — chain `.compensate()`, `.retry()`, `.failure()`, `.complete()` then resolve via `ctx.join()`                                                                                        |
-| `ctx.channels.*`                               | `.receive()` → `ChannelReceiveCall<T>` (Tier 2, directly awaitable or scope/select/map entry); `.receiveNowait()` → `DirectAwaitable<T \| undefined>` (Tier 3, directly awaitable, NOT a scope entry); `for await...of` |
+| `ctx.steps.*`                                  | `(args)` → `StepCall<T>` (Tier 1) — chain `.compensate()`, `.retry()`, `.failure()`, `.complete()` then resolve via `ctx.execute()`                                                                                     |
+| `ctx.channels.*`                               | `.receive()` → `ChannelReceiveCall<T>` (Tier 2, directly awaitable or select/listen entry); `.receiveNowait()` → `DirectAwaitable<T \| undefined>` (Tier 3, directly awaitable, NOT a scope entry); `for await...of` |
 | `ctx.streams.*`                                | `.write()` → `DirectAwaitable<number>` (Tier 3 — directly awaitable)                                                                                                                                                    |
 | `ctx.events.*`                                 | `.set()` → `DirectAwaitable<void>` (Tier 3 — directly awaitable)                                                                                                                                                        |
-| `ctx.childWorkflows.*`                         | `(options)` → `WorkflowCall<T>` (Tier 1, join-only); `.startDetached(options)` → `DirectAwaitable<ForeignWorkflowHandle>` (Tier 3)                                                                                      |
+| `ctx.childWorkflows.*`                         | `(options)` → `WorkflowCall<T>` (Tier 1, execute-only); `.startDetached(options)` → `DirectAwaitable<ForeignWorkflowHandle>` (Tier 3)                                                                                   |
 | `ctx.foreignWorkflows.*`                       | `.get(key)` → `ForeignWorkflowHandle`; `.channels.*.send()` → `DirectAwaitable<void>` (Tier 3)                                                                                                                          |
 | `ctx.patches.*`                                | `await ctx.patches.name` → `boolean` (Tier 3 — directly awaitable)                                                                                                                                                      |
-| `ctx.scope(name, entries, callback)`           | Structured concurrency boundary → `DeterministicAwaitable<R>` (Tier 1) — resolve via `ctx.join()`                                                                                                                       |
-| `ctx.all(entries)`                             | "Run all + collect results" → `DeterministicAwaitable<...>` (Tier 1) — resolve via `ctx.join()`                                                                                                                         |
-| `ctx.select()`                                 | Channel-only select on base context — accepts `ChannelHandle` (streaming) or `ChannelReceiveCall` (one-shot)                                                                                                            |
-| `ctx.map()`                                    | Not available on base `WorkflowContext`; use inside `ctx.scope("Name", entries, async (ctx, handles) => ctx.join(ctx.map(...)))`                                                                                        |
-| `ctx.join(handle)`                             | Resolves any Tier 1 handle; enforces scope-path lifetime for `BranchHandle` at compile time                                                                                                                             |
+| `ctx.scope(name, entries, callback)`           | Structured concurrency boundary → `DeterministicAwaitable<R>` (Tier 1) — resolve via `ctx.execute()`                                                                                                                    |
+| `ctx.all(entries)`                             | "Run all + collect results" → `DeterministicAwaitable<...>` (Tier 1) — resolve via `ctx.execute()`                                                                                                                      |
+| `ctx.first(entries[, defaultValue])`           | "Run concurrently, return first to complete" → `DeterministicAwaitable<FirstResult<E> [| TDefault]>` (Tier 1) — resolve via `ctx.execute()`                                                                             |
+| `ctx.listen(handles)`                          | Channel-only multiplexing — accepts `ChannelHandle` (streaming) or `ChannelReceiveCall` (one-shot); returns `Listener<M>`, directly iterable                                                                            |
+| `ctx.execute(handle)`                          | Resolves any Tier 1 `DeterministicAwaitable` (steps, child workflows, scope/all/first results)                                                                                                                           |
 | `ctx.addCompensation()`                        | Register LIFO compensation callback                                                                                                                                                                                     |
 | `ctx.schedule(cron, { timezone?, resumeAt? })` | Durable cron-like schedule handle                                                                                                                                                                                       |
 | `ctx.sleep(seconds)`                           | `WorkflowAwaitable<void>` (Tier 2 — directly awaitable, valid scope entry)                                                                                                                                              |
@@ -1200,24 +1135,44 @@ Engine-level wait APIs use `{ signal?: AbortSignal }` for runtime cancellation:
 | `ctx.timestamp` / `ctx.date`                   | Deterministic time                                                                                                                                                                                                      |
 | `ctx.logger`                                   | Replay-aware logger                                                                                                                                                                                                     |
 
+### Inside scope callback (`WorkflowConcurrencyContext`)
+
+Extends `WorkflowContext` with the following additions:
+
+| Resource                | Operations                                                                                                   |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `ctx.join(handle)`      | Resolves a `BranchHandle` — enforces scope-path lifetime at compile time; use `ctx.execute()` for all other Tier 1 handles |
+| `ctx.select(handles)`   | Branch + channel multiplexing; accepts `BranchHandle`, `ChannelHandle`, `ChannelReceiveCall`; returns `Selection<M>` |
+| `ctx.match(sel, ...)`   | Iterate a `Selection<M>`; four overloads (no handlers / onFailure / handlers / handlers + onFailure)         |
+
 ### Inside Compensation (`CompensationContext`)
 
-| Resource                             | Operations                                                                                                                              |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `ctx.steps.*`                        | `(args)` → `CompensationStepCall<T>` (Tier 1) — chain `.retry()` then resolve via `ctx.join()`; resolves to `CompensationStepResult<T>` |
-| `ctx.channels.*`                     | `.receive()` → `ChannelReceiveCall<T>` (Tier 2); `.receiveNowait()` → `DirectAwaitable<T \| undefined>` (Tier 3)                        |
-| `ctx.streams.*`                      | `.write()` → `DirectAwaitable<number>` (Tier 3)                                                                                         |
-| `ctx.events.*`                       | `.set()` → `DirectAwaitable<void>` (Tier 3)                                                                                             |
-| `ctx.childWorkflows.*`               | `(options)` → `CompensationWorkflowCall<T>` (Tier 1) — resolve via `ctx.join()`; resolves to `WorkflowResult<T>`                        |
-| `ctx.foreignWorkflows.*`             | `.get(key)` → `ForeignWorkflowHandle`; `.channels.*.send()` → `DirectAwaitable<void>` (Tier 3)                                          |
-| `ctx.patches.*`                      | `await ctx.patches.name` → `boolean` (Tier 3)                                                                                           |
-| `ctx.scope(name, entries, callback)` | Structured concurrency → `DeterministicAwaitable<R>` (Tier 1) — resolve via `ctx.join()`; all unjoined branches settled on exit         |
-| `ctx.all(entries)`                   | → `DeterministicAwaitable<...>` (Tier 1) — resolve via `ctx.join()`                                                                     |
-| `ctx.select()`                       | Channel-only select — accepts `ChannelHandle` or `ChannelReceiveCall`                                                                   |
-| `ctx.map()`                          | Not available on base `CompensationContext`; use inside `ctx.scope("Name", entries, async (ctx, handles) => ctx.join(ctx.map(...)))`    |
-| `ctx.join(handle)`                   | Resolves any Tier 1 handle; enforces scope-path lifetime for `BranchHandle`                                                             |
-| `ctx.sleep()` / `ctx.rng.*`          | Same as WorkflowContext                                                                                                                 |
-| `ctx.logger`                         | Replay-aware logger                                                                                                                     |
+| Resource                                   | Operations                                                                                                                              |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `ctx.steps.*`                              | `(args)` → `CompensationStepCall<T>` (Tier 1) — chain `.retry()` then resolve via `ctx.execute()`; resolves to `CompensationStepResult<T>` |
+| `ctx.channels.*`                           | `.receive()` → `ChannelReceiveCall<T>` (Tier 2); `.receiveNowait()` → `DirectAwaitable<T \| undefined>` (Tier 3)                        |
+| `ctx.streams.*`                            | `.write()` → `DirectAwaitable<number>` (Tier 3)                                                                                         |
+| `ctx.events.*`                             | `.set()` → `DirectAwaitable<void>` (Tier 3)                                                                                             |
+| `ctx.childWorkflows.*`                     | `(options)` → `CompensationWorkflowCall<T>` (Tier 1) — resolve via `ctx.execute()`; resolves to `WorkflowResult<T>`                     |
+| `ctx.foreignWorkflows.*`                   | `.get(key)` → `ForeignWorkflowHandle`; `.channels.*.send()` → `DirectAwaitable<void>` (Tier 3)                                          |
+| `ctx.patches.*`                            | `await ctx.patches.name` → `boolean` (Tier 3)                                                                                           |
+| `ctx.scope(name, entries, callback)`       | Structured concurrency → `DeterministicAwaitable<R>` (Tier 1) — resolve via `ctx.execute()`; all unjoined branches settled on exit      |
+| `ctx.all(entries)`                         | → `DeterministicAwaitable<...>` (Tier 1) — resolve via `ctx.execute()`                                                                  |
+| `ctx.first(entries, defaultValue)`         | `defaultValue` is required — → `DeterministicAwaitable<FirstResult<E> \| TDefault>` (Tier 1) — resolve via `ctx.execute()`              |
+| `ctx.listen(handles)`                      | Channel-only multiplexing — same as `WorkflowContext`                                                                                   |
+| `ctx.execute(handle)`                      | Resolves any Tier 1 `DeterministicAwaitable`                                                                                            |
+| `ctx.sleep()` / `ctx.rng.*`               | Same as WorkflowContext                                                                                                                 |
+| `ctx.logger`                               | Replay-aware logger                                                                                                                     |
+
+### Inside compensation scope callback (`CompensationConcurrencyContext`)
+
+Extends `CompensationContext` with the following additions:
+
+| Resource                   | Operations                                                                                                        |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `ctx.join(handle)`         | Resolves a `BranchHandle` — enforces scope-path lifetime at compile time                                          |
+| `ctx.select(handles)`      | Branch + channel multiplexing; returns `CompensationSelection<M>`                                                 |
+| `ctx.match(sel, ...)`      | Iterate a `CompensationSelection<M>`; same four overloads as workflow side                                        |
 
 ### `ForeignWorkflowHandle`
 
@@ -1301,8 +1256,8 @@ const helloWorkflow = defineWorkflow({
   retention: 86400 * 7,
 
   async execute(ctx) {
-    // Step call returns a Tier 1 handle — resolve via ctx.join()
-    const result = await ctx.join(ctx.steps.greet("World"));
+    // Step call returns a Tier 1 handle — resolve via ctx.execute()
+    const result = await ctx.execute(ctx.steps.greet("World"));
     return { message: result.greeting };
   },
 });
@@ -1339,8 +1294,8 @@ Examples are split into focused files under `src/examples/`.
 - Workflow-internal API examples: scopes, selection, compensation, channels, patches, child/foreign workflows.
 - Cron-like scheduler example: `src/examples/cron-scheduler.example.ts` demonstrates the manager/worker split for long-running schedulers — a stable idempotency-key manager loop delegates to bounded-history workers, with `beforeSettle` + `foreignWorkflows` guaranteeing worker handoff delivery on complete/failed/terminated outcomes. Detached child starts via `.startDetached()` ensure workers carry no compensation obligation to the manager.
 - Web scraper example: `src/examples/web-scraper.example.ts` demonstrates `defineWorkflowHeader` for self-referential workflows and URL-as-idempotency-key for automatic cycle prevention — no explicit visited-set needed.
-- Concurrency-focused example: `src/examples/concurrency-primitives.example.ts` demonstrates dynamic Map fan-out, cheapest-flight selection across variable providers, concurrent hotel reservation race, `receiveNowait()` for early-cancel polling, and child/foreign workflow orchestration.
-- `ctx.all()` and nested select example: `src/examples/scope-all-and-nested-select.example.ts` demonstrates `ctx.all(entries)` and nested child-scope selection in a parent scope callback.
+- Concurrency-focused example: `src/examples/concurrency-primitives.example.ts` demonstrates dynamic fan-out using `ctx.all()` inside a branch closure, cheapest-flight selection across variable providers, `ctx.select()` + `ctx.match()` racing, `receiveNowait()` for early-cancel polling, and child/foreign workflow orchestration.
+- `ctx.all()` and nested scope example: `src/examples/scope-all-and-nested-select.example.ts` demonstrates `ctx.all(entries)` and racing a nested child scope against an outer branch by placing both in the parent scope's entries.
 - Per-key match example: `src/examples/onboarding-verification.example.ts` demonstrates 5 parallel identity methods, a 1-hour deadline race, 3-of-5 threshold gating, and explicit per-key `{ complete, failure }` handlers.
 - Client API example: `src/examples/engine-level-api.example.ts` demonstrates the shared workflow client API and handle operations.
 
@@ -1365,22 +1320,23 @@ Work in Progress — Public API design complete. Internal implementation pending
 - Type definitions with standard schema support
 - `defineStep()` — flat structure with `execute`, `schema`, `retryPolicy`
 - `defineWorkflow()` with full type safety
-- **Three-tier awaitable hierarchy** — Tier 1 (`DeterministicAwaitable`, join-only via `ctx.join()`), Tier 2 (`WorkflowAwaitable`, directly awaitable + valid scope entry), Tier 3 (`DirectAwaitable`, directly awaitable, not a scope entry). Enforced at compile time with no runtime overhead.
-- **`ctx.join(handle)` as the sole resolution path for Tier 1** — enforces at compile time that `BranchHandle` scope paths are accessible from the current scope, and that execution-root handles cannot be joined from `CompensationContext` and vice versa.
-- **Closure-based structured concurrency** via `ctx.scope(name, ...)` — entries can be `async () => T` closures or `WorkflowAwaitable<T>` handles; collections (Array, Map) supported for dynamic fan-out
-- **Nested scope handles are selectable** inside scope callbacks — child `ctx.scope(...)` calls return `BranchHandle<T>` in scope-local contexts
+- **Three-tier awaitable hierarchy** — Tier 1 (`DeterministicAwaitable`, execute-only via `ctx.execute()`), Tier 2 (`WorkflowAwaitable`, directly awaitable + valid scope entry), Tier 3 (`DirectAwaitable`, directly awaitable, not a scope entry). Enforced at compile time with no runtime overhead.
+- **`ctx.execute(handle)` as the primary resolution path for Tier 1** on base contexts; **`ctx.join(handle)` restricted to `BranchHandle` on concurrency contexts** — enforces scope-path lifetime at compile time and prevents execution-root handles from being resolved in `CompensationContext` and vice versa.
+- **Closure-based structured concurrency** via `ctx.scope(name, entries, callback)` — entries are always `(ctx) => Promise<T>` closures; each branch receives a path-specialized context preventing accidental outer-context closure.
+- **Scope path symbol system** — `scopeDivider` and `branchDivider` unique symbols interleaved in `ScopePath` make scope name transitions and branch key transitions structurally unambiguous at both type and runtime level. Collision detection works for literal keys; dynamic (`string`) keys disable the check from that point downward.
 - **`ctx.all(entries)` sugar** for the common "run all + collect" shape-preserving pattern
+- **`ctx.first(entries[, defaultValue])` primitive** — returns the first branch to complete as `{ key, result }` discriminated union; `defaultValue` optional on execution contexts, required on compensation contexts
 - **One compensation callback per handle** — defined via `.compensate(cb)` builder, full `CompensationContext`; compensation is always unconditional (at-least-once semantics)
 - **Scope exit behavior** — branches with compensated steps → compensated; others → settled
-- **Unified failure model** — `.failure(cb)` / `{ complete, failure }` / `{ failure }` handler entries; `onFailure` default for `match()`; compensation remains engine-managed
-- **`for await...of` as primary select iteration** — yields `SelectDataUnion<M>`; `.match(handlers, onFailure?)` for key-aware granular handling
+- **Unified failure model** — `.failure(cb)` / `{ complete, failure }` / `{ failure }` handler entries; `onFailure` default for `match()`; branch `failure` callbacks take no arguments; compensation remains engine-managed
+- **`ctx.listen()` as the channel-only multiplexing primitive on all contexts** — directly iterable, yields `{ key, message }`
+- **`ctx.select()` + `ctx.match()` as the branch-coordination primitives on concurrency contexts only** — `ctx.match(sel)` yields `{ key, result }`; four overloads supporting handlers and default failure callbacks
 - **`channels.receive()` overloads** — blocking, timeout, timeout-with-default (all Tier 2); **`receiveNowait()` / `receiveNowait(default)`** for non-blocking atomic poll (Tier 3)
 - **Virtual event loop** — engine interleaves concurrent compensation callbacks transparently
 - `BaseContext` / `WorkflowContext` / `CompensationContext` hierarchy
-- **CompensationContext with full structured concurrency** — `scope(name, ...)` plus scope-local `select()/map()` and `CompensationStepCall.retry()`
+- **CompensationContext with full structured concurrency** — `scope(name, ...)` plus scope-local `select()/match()` and `CompensationStepCall.retry()`
 - **`ctx.childWorkflows.*` / `ctx.foreignWorkflows.*`** split — structured vs message-only access
-- **`.startDetached(opts)` for fire-and-forget child starts** — returns `DirectAwaitable<ForeignWorkflowHandle>` (Tier 3); replaces the old `{ detached: true }` call option
-- **Collection support** — Array and Map of closures/handles in scope/select/map; callbacks receive `innerKey` for collections
+- **`.startDetached(opts)` for fire-and-forget child starts** — returns `DirectAwaitable<ForeignWorkflowHandle>` (Tier 3)
 - Error observability — `StepExecutionError`, `StepErrorAccessor`, `WorkflowExecutionError`
 - Engine-level handles retain `sigterm()`, `sigkill()`, `execution.wait()`, and `compensation.wait()` with typed terminal outcomes
 - Lifecycle events with "never" semantics (external API)

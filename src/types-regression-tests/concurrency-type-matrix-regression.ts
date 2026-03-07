@@ -428,7 +428,7 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
         compCtx.first({
           step1: async (branchCtx) =>
             branchCtx.execute(branchCtx.steps.cancelFlight(args.destination, args.customerId)),
-        }),
+        }, null),
       );
       type _FirstCompKey = Assert<
         IsAny<typeof firstComp> extends false ? true : false
@@ -552,13 +552,13 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
                   await compCtx.sleep(1);
                   return "done" as const;
                 },
-              }),
+              }, null),
             );
             type _CompFirstNoAny = Assert<
               IsAny<typeof compFirst> extends false ? true : false
             >;
             type _CompFirstIsDiscriminated = Assert<
-              IsEqual<typeof compFirst, { key: "timer"; result: "done" }>
+              IsEqual<typeof compFirst, { key: "timer"; result: "done" } | null>
             >;
           },
         ),

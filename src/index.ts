@@ -66,9 +66,9 @@
  *     Compensation always runs if any attempt was made — the engine assumes at-least-once
  *     semantics for external side effects. No status checks needed in callbacks.
  *     addCompensation(cb) provides general-purpose cleanup.
- * - BranchFailureInfo: Passed to failure callbacks in match for branch handles.
  * - failure/complete builders: { complete, failure } callbacks on match for explicit
- *     failure recovery on branch handles.
+ *     failure recovery on branch handles. The failure callback receives no arguments —
+ *     branch closures handle their own error logic internally.
  *
  * - ctx.listen(handles): Channel-only multiplexed waiting. Available on ALL contexts.
  *     Returns Listener<M> — directly iterable: `for await (const { key, message } of listener)`.

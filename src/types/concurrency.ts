@@ -138,12 +138,6 @@ export interface WorkflowAwaitable<T> extends DirectAwaitable<T> {
   readonly [workflowAwaitableBrand]: true;
 }
 
-/**
- * Failure information for a scope branch, passed to `failure` callbacks in
- * match handlers.
- */
-export type BranchFailureInfo = Record<string, never>;
-
 // =============================================================================
 // CHANNEL HANDLE, STREAM ACCESSOR, EVENT ACCESSOR (WORKFLOW INTERNAL)
 // =============================================================================
@@ -322,8 +316,15 @@ export type AppendBranchKey<
 
 /**
  * Scope name guard:
- * - literal names cannot reuse any ancestor scope name (string elements only)
- * - widened `string` is allowed but loses compile-time collision guarantees
+ * - Literal names cannot reuse any ancestor scope name (string elements only).
+ * - Widened `string` is allowed but loses compile-time collision guarantees.
+ *
+ * **Limitation**: once a dynamic (non-literal) string is used as a scope entry
+ * key, the ancestor scope path contains a wide `string` type. At that point the
+ * collision check is bypassed for all nested scopes and branch closures created
+ * from that entry — TypeScript cannot distinguish individual runtime keys from
+ * each other at the type level. If you use dynamic keys, you are responsible for
+ * ensuring scope name uniqueness manually.
  */
 export type ScopeNameArg<
   TScopePath extends ScopePath,
@@ -479,7 +480,7 @@ export type HandleSelectEvent<K extends string, H> =
   H extends BranchHandle<infer T>
     ?
         | { key: K; status: "complete"; data: T }
-        | { key: K; status: "failed"; failure: BranchFailureInfo }
+        | { key: K; status: "failed" }
     : H extends ChannelHandle<infer T>
       ? { key: K; data: T }
       : H extends ChannelReceiveCall<infer T>
@@ -592,10 +593,10 @@ export type MatchHandlerEntry<H extends ScopeSelectableHandle> =
         | ((data: HandleMatchData<H>) => any)
         | {
             complete: (data: HandleMatchData<H>) => any;
-            failure: (failure: BranchFailureInfo) => any;
+            failure: () => any;
           }
         | { complete: (data: HandleMatchData<H>) => any }
-        | { failure: (failure: BranchFailureInfo) => any }
+        | { failure: () => any }
     : (data: HandleMatchData<H>) => any;
 
 /**
