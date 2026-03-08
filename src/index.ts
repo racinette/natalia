@@ -52,7 +52,7 @@
  *     with scope path `AppendBranchKey<AppendScopeName<ParentPath, Name>, K>`.
  *     This enables compile-time tracking of which branches created which nested scope handles.
  *     Fan-out: use `ctx.all({...}).resolve(ctx)` inside closures.
- *     scope() ALWAYS returns DeterministicAwaitable<R, Root> on all contexts.
+ *     scope() returns ScopeCall<R, never, TSteps, TChildWorkflows, Root>.
  *     Resolve: `await ctx.scope("Name", entries, callback).resolve(ctx)`
  *
  * - BranchHandle: Opaque handle produced by scope entries — passed to select() or resolved
@@ -68,9 +68,14 @@
  *     Compensation always runs if any attempt was made — the engine assumes at-least-once
  *     semantics for external side effects. No status checks needed in callbacks.
  *     addCompensation(cb) provides general-purpose cleanup.
- * - failure/complete builders: { complete, failure } callbacks on match for explicit
- *     failure recovery on branch handles. The failure callback receives no arguments —
- *     branch closures handle their own error logic internally.
+ * - scope/all/first failure builders:
+ *     - `scope()` / `all()` return `ScopeCall<T>` with `.failure(cb)`.
+ *       Callback receives `ScopeFailureInfo<TSteps, TChildWorkflows>`.
+ *     - `first()` returns `FirstCall<FirstResult<E>, E>` with `.failure(cb)`.
+ *       Callback receives `AllBranchesFailedInfo<E, TSteps, TChildWorkflows>`.
+ * - failure/complete handlers in `ctx.match(...)`:
+ *     `{ complete, failure }`/`{ failure }` callbacks receive failure info
+ *     (`ScopeFailureInfo`) for branch-handle failures.
  *
  * - ctx.listen(handles): Channel-only multiplexed waiting. Available on ALL contexts.
  *     Returns Listener<M> — directly iterable: `for await (const { key, message } of listener)`.
@@ -95,7 +100,7 @@
  *     Resolve: `await ctx.all(entries).resolve(ctx)`.
  *
  * - first: `ctx.first(entries)` for "run all, return the first to complete".
- *     Entries are closure-only. Returns `DeterministicAwaitable<{ key, result }>`.
+ *     Entries are closure-only. Returns `FirstCall<FirstResult<E>, E>`.
  *     Resolve: `await ctx.first(entries).resolve(ctx)` → `{ key: K; result: T }`.
  *
  * - Child workflows: ctx.childWorkflows.* — structured invocation (WorkflowCall<T> opaque handle).

@@ -6,6 +6,7 @@ import type {
   Listener,
   ListenerEvent,
   SelectDataKeyedUnion,
+  ScopeFailureInfo,
   WorkflowContext,
   CompensationContext,
   WorkflowConcurrencyContext,
@@ -23,6 +24,16 @@ type IsEqual<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
     ? true
     : false;
+type FailureArgOfScopeCall<T> = T extends {
+  failure<R>(cb: (failure: infer F) => R): any;
+}
+  ? F
+  : never;
+type FailureArgOfFirstCall<T> = T extends {
+  failure<R>(cb: (failures: infer F) => R): any;
+}
+  ? F
+  : never;
 
 // Extract the inner type T from DeterministicAwaitable<T> via phantom field inference.
 type AwaitedDeterministic<T> =
@@ -233,6 +244,89 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
     >;
 
     // ==========================================================================
+    // ScopeFailureInfo / AllBranchesFailedInfo typing
+    // ==========================================================================
+
+    const scopeFailureHandle = ctx.scope(
+      "FailureInfoTyping",
+      {
+        byStep: async (branchCtx) =>
+          branchCtx.steps.bookFlight(args.destination, args.customerId).resolve(branchCtx),
+        byChildWorkflow: async (branchCtx) =>
+          branchCtx.childWorkflows.campaign({
+            idempotencyKey: "failure-info-campaign",
+            args: { userId: args.customerId },
+          }).resolve(branchCtx),
+      },
+      async (_scopeCtx, _handles) => {
+        throw new Error("force scope failure for typing");
+      },
+    );
+    type _ScopeFailure = FailureArgOfScopeCall<typeof scopeFailureHandle>;
+    type _ScopeFailureKinds = Assert<
+      IsEqual<_ScopeFailure["kind"], "step" | "childWorkflow" | "exception">
+    >;
+    type _ScopeStepFailureNames = Assert<
+      IsEqual<Extract<_ScopeFailure, { kind: "step" }>["name"], "bookFlight" | "cancelFlight">
+    >;
+    type _ScopeChildFailureNames = Assert<
+      IsEqual<Extract<_ScopeFailure, { kind: "childWorkflow" }>["name"], "campaign">
+    >;
+    type _BookFlightFailureArgs = Assert<
+      IsEqual<
+        Extract<_ScopeFailure, { kind: "step"; name: "bookFlight" }>["args"],
+        [destination: string, customerId: string]
+      >
+    >;
+    type _CancelFlightFailureArgs = Assert<
+      IsEqual<
+        Extract<_ScopeFailure, { kind: "step"; name: "cancelFlight" }>["args"],
+        [destination: string, customerId: string]
+      >
+    >;
+    type _ChildFailureStatus = Assert<
+      IsEqual<
+        Extract<_ScopeFailure, { kind: "childWorkflow"; name: "campaign" }>["info"]["status"],
+        "failed" | "terminated"
+      >
+    >;
+    type _ExceptionFailureErrorType = Assert<
+      IsEqual<Extract<_ScopeFailure, { kind: "exception" }>["error"], unknown>
+    >;
+    type _InvalidBookFlightArgsShape = IsEqual<
+      Extract<_ScopeFailure, { kind: "step"; name: "bookFlight" }>["args"],
+      [destination: string, customerId: number]
+    >;
+    // @ts-expect-error wrong tuple shape must fail (number vs string)
+    type _InvalidBookFlightArgsShapeAssert = Assert<_InvalidBookFlightArgsShape>;
+    type _CampaignFailureOnly = Extract<
+      _ScopeFailure,
+      { kind: "childWorkflow"; name: "campaign" }
+    >;
+    // @ts-expect-error child-workflow failures do not expose step args tuples
+    type _InvalidChildWorkflowArgsAccess = _CampaignFailureOnly["args"];
+
+    const firstFailureHandle = ctx.first({
+      fast: async (branchCtx) =>
+        branchCtx.steps.bookFlight(args.destination, args.customerId).resolve(branchCtx),
+      child: async (branchCtx) =>
+        branchCtx.childWorkflows.campaign({
+          idempotencyKey: "failure-info-first-campaign",
+          args: { userId: args.customerId },
+        }).resolve(branchCtx),
+    });
+    type _FirstFailureMap = FailureArgOfFirstCall<typeof firstFailureHandle>;
+    type _FirstFailureKeys = Assert<IsEqual<keyof _FirstFailureMap, "fast" | "child">>;
+    type _FirstFastFailureKinds = Assert<
+      IsEqual<_FirstFailureMap["fast"]["kind"], "step" | "childWorkflow" | "exception">
+    >;
+    type _FirstChildFailureKinds = Assert<
+      IsEqual<_FirstFailureMap["child"]["kind"], "step" | "childWorkflow" | "exception">
+    >;
+    // @ts-expect-error first() failure map keys are exactly the branch keys
+    type _InvalidFirstFailureBranchKey = _FirstFailureMap["slow"];
+
+    // ==========================================================================
     // scope() on base WorkflowContext: branch closure receives path-specialized
     // WorkflowContext with AppendBranchKey path
     // ==========================================================================
@@ -304,7 +398,18 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
           // ctx.match(sel, onFailure) — no handlers, just default failure callback
           for await (const val of ctx.match(
             ctx.select({ timer, booking }),
-            () => "default_failed" as const,
+            (failure) => {
+              type _MatchFailureNoAny = Assert<
+                IsAny<typeof failure> extends false ? true : false
+              >;
+              type _MatchFailureShape = Assert<
+                IsEqual<
+                  typeof failure["kind"],
+                  ScopeFailureInfo<any, any>["kind"]
+                >
+              >;
+              return "default_failed" as const;
+            },
           )) {
             type _ValNoAny = Assert<IsAny<typeof val> extends false ? true : false>;
             break;
@@ -328,7 +433,15 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
             {
               timer: () => "timed_out" as const,
             },
-            () => "default_failed" as const,
+            (failure) => {
+              type _MatchHandlersFailureShape = Assert<
+                IsEqual<
+                  typeof failure["kind"],
+                  ScopeFailureInfo<any, any>["kind"]
+                >
+              >;
+              return "default_failed" as const;
+            },
           )) {
             type _MatchHandlersFailureNoAny = Assert<
               IsAny<typeof val> extends false ? true : false
@@ -404,10 +517,24 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
             branchCtx.steps.cancelFlight(args.destination, args.customerId).resolve(branchCtx),
         }).resolve(compCtx);
 
-      const firstComp = await compCtx.first({
+      const firstComp = await compCtx
+        .first({
           step1: async (branchCtx) =>
             branchCtx.steps.cancelFlight(args.destination, args.customerId).resolve(branchCtx),
-        }, null).resolve(compCtx);
+        })
+        .failure((failures) => {
+          type _FirstCompFailuresNoAny = Assert<
+            IsAny<typeof failures> extends false ? true : false
+          >;
+          type _FirstCompFailuresShape = Assert<
+            IsEqual<
+              typeof failures.step1["kind"],
+              ScopeFailureInfo<any, any>["kind"]
+            >
+          >;
+          return null;
+        })
+        .resolve(compCtx);
       type _FirstCompKey = Assert<
         IsAny<typeof firstComp> extends false ? true : false
       >;
@@ -500,7 +627,15 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
             }
 
             // ctx.match(sel, onFailure) overload
-            for await (const value of ctx.match(compSel, () => "failed" as const)) {
+            for await (const value of ctx.match(compSel, (failure) => {
+              type _CompMatchFailureShape = Assert<
+                IsEqual<
+                  typeof failure["kind"],
+                  ScopeFailureInfo<any, any>["kind"]
+                >
+              >;
+              return "failed" as const;
+            })) {
               type _CompMatchOnFailureNoAny = Assert<
                 IsAny<typeof value> extends false ? true : false
               >;
@@ -515,12 +650,26 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
               IsAny<typeof compAll> extends false ? true : false
             >;
 
-            const compFirst = await ctx.first({
+            const compFirst = await ctx
+              .first({
                 timer: async (_branchCtx) => {
                   await compCtx.sleep(1);
                   return "done" as const;
                 },
-              }, null).resolve(ctx);
+              })
+              .failure((failures) => {
+                type _CompFirstFailuresNoAny = Assert<
+                  IsAny<typeof failures> extends false ? true : false
+                >;
+                type _CompFirstFailuresShape = Assert<
+                  IsEqual<
+                    typeof failures.timer["kind"],
+                    ScopeFailureInfo<any, any>["kind"]
+                  >
+                >;
+                return null;
+              })
+              .resolve(ctx);
             type _CompFirstNoAny = Assert<
               IsAny<typeof compFirst> extends false ? true : false
             >;

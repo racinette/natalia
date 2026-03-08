@@ -140,7 +140,7 @@ Every concurrent branch must exist within a **scope** — a lexical boundary tha
 
 Each closure receives a path-specialized context as its argument — a `WorkflowContext` (or `CompensationContext`) typed with the branch's exact scope path. This prevents accidental closure over the outer context and enables compile-time lifetime tracking.
 
-`ctx.scope(...)` always returns a Tier 1 `DeterministicAwaitable` — resolve it via `.resolve(ctx)`:
+`ctx.scope(...)` returns a Tier 1 `ScopeCall` — resolve it via `.resolve(ctx)` and use `.failure(cb)` for fallback behavior:
 
 ```typescript
 const winner = await ctx.scope(
@@ -242,8 +242,8 @@ const winner = await ctx.first({
   }).resolve(ctx);
 // winner: { key: "fast" | "cheap"; result: Route }
 
-// With a fallback if all branches fail (required on CompensationContext):
-const winner = await ctx.first({ ... }, null).resolve(ctx);
+// With a fallback if all branches fail:
+const winner = await ctx.first({ ... }).failure(() => null).resolve(ctx);
 // winner: { key: ...; result: Route } | null
 ```
 
@@ -739,8 +739,8 @@ Both extend a shared `BaseContext` with channels, streams, events, patches, slee
 
 - Steps: calling a step returns `CompensationStepCall<T>` (Tier 1) — resolves to `CompensationStepResult<T>` via `.resolve(ctx)`
 - Child workflows: `ctx.childWorkflows.*` returns `CompensationWorkflowCall<T>` (Tier 1) — resolves to `WorkflowResult<T>` via `.resolve(ctx)`
-- Has `scope(name, entries, callback)`, `all(entries)`, `first(entries, defaultValue)`, and `listen()`
-- `first()` requires a `defaultValue` — compensation must always produce a meaningful result
+- Has `scope(name, entries, callback)`, `all(entries)`, `first(entries)`, and `listen()`
+- `scope()`/`all()`/`first()` support `.failure(cb)` for explicit fallback handling
 - No `addCompensation()` (prevents nesting)
 - No `.compensate()` builders or `{ complete, failure }` handlers
 
@@ -1074,9 +1074,9 @@ Engine-level wait APIs use `{ signal?: AbortSignal }` for runtime cancellation:
 | `ctx.childWorkflows.*`                         | `(options)` → `WorkflowCall<T>` (Tier 1, execute-only); `.startDetached(options)` → `DirectAwaitable<ForeignWorkflowHandle>` (Tier 3)                                                                                   |
 | `ctx.foreignWorkflows.*`                       | `.get(key)` → `ForeignWorkflowHandle`; `.channels.*.send()` → `DirectAwaitable<void>` (Tier 3)                                                                                                                          |
 | `ctx.patches.*`                                | `await ctx.patches.name` → `boolean` (Tier 3 — directly awaitable)                                                                                                                                                      |
-| `ctx.scope(name, entries, callback)`           | Structured concurrency boundary → `DeterministicAwaitable<R>` (Tier 1) — resolve via `.resolve(ctx)`                                                                                                                    |
-| `ctx.all(entries)`                             | "Run all + collect results" → `DeterministicAwaitable<...>` (Tier 1) — resolve via `.resolve(ctx)`                                                                                                                      |
-| `ctx.first(entries[, defaultValue])`           | "Run concurrently, return first to complete" → `DeterministicAwaitable<FirstResult<E> [| TDefault]>` (Tier 1) — resolve via `.resolve(ctx)`                                                                             |
+| `ctx.scope(name, entries, callback)`           | Structured concurrency boundary → `ScopeCall<R, ...>` (Tier 1) — resolve via `.resolve(ctx)`; `.failure(cb)` receives `ScopeFailureInfo<...>`                                                                          |
+| `ctx.all(entries)`                             | "Run all + collect results" → `ScopeCall<{ ... }, ...>` (Tier 1) — resolve via `.resolve(ctx)`; `.failure(cb)` receives `ScopeFailureInfo<...>`                                                                       |
+| `ctx.first(entries)`                           | "Run concurrently, return first to complete" → `FirstCall<FirstResult<E>, E, ...>` (Tier 1) — resolve via `.resolve(ctx)`; `.failure(cb)` receives `AllBranchesFailedInfo<E, ...>`                                    |
 | `ctx.listen(handles)`                          | Channel-only multiplexing — accepts `ChannelHandle` (streaming) or `ChannelReceiveCall` (one-shot); returns `Listener<M>`, directly iterable                                                                            |
 | `handle.resolve(ctx)`                          | Resolves any Tier 1 `DeterministicAwaitable` (steps, child workflows, scope/all/first results)                                                                                                                           |
 | `ctx.addCompensation()`                        | Register LIFO compensation callback                                                                                                                                                                                     |
@@ -1108,9 +1108,9 @@ Extends `WorkflowContext` with the following additions:
 | `ctx.childWorkflows.*`                     | `(options)` → `CompensationWorkflowCall<T>` (Tier 1) — resolve via `.resolve(ctx)`; resolves to `WorkflowResult<T>`                     |
 | `ctx.foreignWorkflows.*`                   | `.get(key)` → `ForeignWorkflowHandle`; `.channels.*.send()` → `DirectAwaitable<void>` (Tier 3)                                          |
 | `ctx.patches.*`                            | `await ctx.patches.name` → `boolean` (Tier 3)                                                                                           |
-| `ctx.scope(name, entries, callback)`       | Structured concurrency → `DeterministicAwaitable<R>` (Tier 1) — resolve via `.resolve(ctx)`; all unjoined branches settled on exit      |
-| `ctx.all(entries)`                         | → `DeterministicAwaitable<...>` (Tier 1) — resolve via `.resolve(ctx)`                                                                  |
-| `ctx.first(entries, defaultValue)`         | `defaultValue` is required — → `DeterministicAwaitable<FirstResult<E> \| TDefault>` (Tier 1) — resolve via `.resolve(ctx)`              |
+| `ctx.scope(name, entries, callback)`       | Structured concurrency → `ScopeCall<R, ...>` (Tier 1) — resolve via `.resolve(ctx)`; `.failure(cb)` receives `ScopeFailureInfo<...>`     |
+| `ctx.all(entries)`                         | → `ScopeCall<{ ... }, ...>` (Tier 1) — resolve via `.resolve(ctx)`; `.failure(cb)` receives `ScopeFailureInfo<...>`                      |
+| `ctx.first(entries)`                       | → `FirstCall<FirstResult<E>, E, ...>` (Tier 1) — resolve via `.resolve(ctx)`; use `.failure(cb)` for fallback                              |
 | `ctx.listen(handles)`                      | Channel-only multiplexing — same as `WorkflowContext`                                                                                   |
 | `handle.resolve(ctx)`                      | Resolves any Tier 1 `DeterministicAwaitable`                                                                                            |
 | `ctx.sleep()` / `ctx.rng.*`               | Same as WorkflowContext                                                                                                                 |
@@ -1277,10 +1277,10 @@ Work in Progress — Public API design complete. Internal implementation pending
 - **Closure-based structured concurrency** via `ctx.scope(name, entries, callback)` — entries are always `(ctx) => Promise<T>` closures; each branch receives a path-specialized context preventing accidental outer-context closure.
 - **Scope path symbol system** — `scopeDivider` and `branchDivider` unique symbols interleaved in `ScopePath` make scope name transitions and branch key transitions structurally unambiguous at both type and runtime level. Collision detection works for literal keys; dynamic (`string`) keys disable the check from that point downward.
 - **`ctx.all(entries)` sugar** for the common "run all + collect" shape-preserving pattern
-- **`ctx.first(entries[, defaultValue])` primitive** — returns the first branch to complete as `{ key, result }` discriminated union; `defaultValue` optional on execution contexts, required on compensation contexts
+- **`ctx.first(entries)` primitive** — returns the first branch to complete as `{ key, result }` discriminated union; use `.failure(cb)` to recover when all branches fail
 - **One compensation callback per handle** — defined via `.compensate(cb)` builder, full `CompensationContext`; compensation is always unconditional (at-least-once semantics)
 - **Scope exit behavior** — branches with compensated steps → compensated; others → settled
-- **Unified failure model** — `.failure(cb)` / `{ complete, failure }` / `{ failure }` handler entries; `onFailure` default for `match()`; branch `failure` callbacks take no arguments; compensation remains engine-managed
+- **Unified failure model** — `.failure(cb)` / `{ complete, failure }` / `{ failure }` handler entries; `onFailure` default for `match()`; failure callbacks receive `ScopeFailureInfo`; compensation remains engine-managed
 - **`ctx.listen()` as the channel-only multiplexing primitive on all contexts** — directly iterable, yields `{ key, message }`
 - **`ctx.select()` + `ctx.match()` as the branch-coordination primitives on concurrency contexts only** — `ctx.match(sel)` yields `{ key, result }`; four overloads supporting handlers and default failure callbacks
 - **`channels.receive()` overloads** — blocking, timeout, timeout-with-default (all Tier 2); **`receiveNowait()` / `receiveNowait(default)`** for non-blocking atomic poll (Tier 3)

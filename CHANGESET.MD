@@ -2,7 +2,6 @@
 
 3. OTel integration. nuff said, needs exploratory analysis first.
 4. global queue
-5. actually adding `.failure` handles for everything with a reference to the exact thing that failed in case of scopes, all, first.
 
 I guess if I do all of this the public API will be feature complete.
 

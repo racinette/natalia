@@ -93,8 +93,11 @@ export const flightBookingWorkflow = defineWorkflow({
                   id: data.id,
                   dest: args.destination,
                 }),
-                failure: () => {
+                failure: (failure) => {
                   ctx.logger.warn("Primary hotel failed — falling back");
+                  if (failure.kind === "step") {
+                    ctx.logger.warn("Primary failure kind", { step: failure.name });
+                  }
                   return { ok: false as const, id: null, dest: null };
                 },
               },
@@ -104,8 +107,11 @@ export const flightBookingWorkflow = defineWorkflow({
                 dest: args.backupDestination,
               }),
             },
-            async () => {
+            async (failure) => {
               ctx.logger.error("Backup hotel also failed");
+              if (failure.kind === "exception") {
+                ctx.logger.error("Backup scope exception", { error: failure.error });
+              }
               return { ok: false as const, id: null, dest: null };
             },
           )) {

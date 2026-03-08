@@ -56,6 +56,45 @@ export type ChildWorkflowFailureInfo =
       readonly reason: WorkflowTerminationReason;
     };
 
+// Per-step failures keyed on the step name for typed args narrowing.
+export type ScopeStepFailures<TSteps extends StepDefinitions> = {
+  [K in keyof TSteps & string]: {
+    readonly kind: "step";
+    readonly name: K;
+    readonly args: TSteps[K] extends StepDefinition<infer A, any> ? A : never;
+    readonly info: StepFailureInfo;
+  };
+}[keyof TSteps & string];
+
+// Per-child-workflow failures keyed on the workflow name.
+export type ScopeChildWorkflowFailures<
+  TChildWorkflows extends WorkflowDefinitions,
+> = {
+  [K in keyof TChildWorkflows & string]: {
+    readonly kind: "childWorkflow";
+    readonly name: K;
+    readonly info: ChildWorkflowFailureInfo;
+  };
+}[keyof TChildWorkflows & string];
+
+// Failure payload for scope/all builder failure callbacks.
+export type ScopeFailureInfo<
+  TSteps extends StepDefinitions,
+  TChildWorkflows extends WorkflowDefinitions,
+> =
+  | ScopeStepFailures<TSteps>
+  | ScopeChildWorkflowFailures<TChildWorkflows>
+  | { readonly kind: "exception"; readonly error: unknown };
+
+// first() failure payload: one failure value per branch key.
+export type AllBranchesFailedInfo<
+  E extends Record<string, (ctx: any) => Promise<unknown>>,
+  TSteps extends StepDefinitions,
+  TChildWorkflows extends WorkflowDefinitions,
+> = {
+  [K in keyof E & string]: ScopeFailureInfo<TSteps, TChildWorkflows>;
+};
+
 // =============================================================================
 // ROOT SCOPE BRANDING
 // =============================================================================
@@ -679,10 +718,16 @@ export type MatchHandlerEntry<H extends ScopeSelectableHandle> =
         | ((data: HandleMatchData<H>) => any)
         | {
             complete: (data: HandleMatchData<H>) => any;
-            failure: () => any;
+            failure: (
+              info: ScopeFailureInfo<StepDefinitions, WorkflowDefinitions>,
+            ) => any;
           }
         | { complete: (data: HandleMatchData<H>) => any }
-        | { failure: () => any }
+        | {
+            failure: (
+              info: ScopeFailureInfo<StepDefinitions, WorkflowDefinitions>,
+            ) => any;
+          }
     : (data: HandleMatchData<H>) => any;
 
 /**
@@ -1053,6 +1098,37 @@ export interface WorkflowCall<
   complete<R>(
     cb: (data: T) => R,
   ): WorkflowCallResult<Awaited<R>, TFail, HasCompensation, Tctx>;
+}
+
+export interface ScopeCall<
+  T,
+  TFail = never,
+  TSteps extends StepDefinitions = StepDefinitions,
+  TChildWorkflows extends WorkflowDefinitions = WorkflowDefinitions,
+  TRoot extends RootScope = RootScope,
+> extends DeterministicAwaitable<T | TFail, TRoot> {
+  /**
+   * Handle scope/all failure after the scope has fully unwound.
+   */
+  failure<R>(
+    cb: (failure: ScopeFailureInfo<TSteps, TChildWorkflows>) => R,
+  ): ScopeCall<T, Awaited<R>, TSteps, TChildWorkflows, TRoot>;
+}
+
+export interface FirstCall<
+  T,
+  E extends Record<string, (ctx: any) => Promise<unknown>>,
+  TFail = never,
+  TSteps extends StepDefinitions = StepDefinitions,
+  TChildWorkflows extends WorkflowDefinitions = WorkflowDefinitions,
+  TRoot extends RootScope = RootScope,
+> extends DeterministicAwaitable<T | TFail, TRoot> {
+  /**
+   * Handle the "all branches failed" case for first().
+   */
+  failure<R>(
+    cb: (failures: AllBranchesFailedInfo<E, TSteps, TChildWorkflows>) => R,
+  ): FirstCall<T, E, Awaited<R>, TSteps, TChildWorkflows, TRoot>;
 }
 
 // =============================================================================
@@ -1447,9 +1523,7 @@ export interface CompensationContext<
    *
    * Resolve the scope result: `await ctx.scope("Name", entries, callback).resolve(ctx)`.
    *
-   * Providing `defaultValue` makes the scope fail-safe: if the callback throws, all
-   * registered compensations within the scope run (LIFO), then `defaultValue` is
-   * returned instead of propagating the failure.
+   * Use `.failure(cb)` to handle scope failures after unwinding.
    */
   scope<
     Name extends string,
@@ -1493,53 +1567,7 @@ export interface CompensationContext<
         CompensationRoot
       >,
     ) => Promise<R>,
-  ): DeterministicAwaitable<R, CompensationRoot>;
-
-  scope<
-    Name extends string,
-    E extends Record<
-      string,
-      (
-        ctx: CompensationContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
-        >,
-      ) => Promise<unknown>
-    >,
-    R,
-    TDefault,
-  >(
-    name: ScopeNameArg<TScopePath, Name>,
-    entries: E,
-    callback: (
-      ctx: CompensationConcurrencyContext<
-        TState,
-        TChannels,
-        TStreams,
-        TEvents,
-        TSteps,
-        TChildWorkflows,
-        TForeignWorkflows,
-        TPatches,
-        TRng,
-        AppendScopeName<TScopePath, Name>
-      >,
-      handles: ScopeHandles<
-        E,
-        AppendScopeName<TScopePath, Name>,
-        CompensationRoot
-      >,
-    ) => Promise<R>,
-    defaultValue: TDefault,
-  ): DeterministicAwaitable<R | TDefault, CompensationRoot>;
+  ): ScopeCall<R, never, TSteps, TChildWorkflows, CompensationRoot>;
 
   /**
    * Run all entries concurrently and return all resolved values.
@@ -1567,8 +1595,11 @@ export interface CompensationContext<
     >,
   >(
     entries: E,
-  ): DeterministicAwaitable<
+  ): ScopeCall<
     { [K in keyof E]: Awaited<ReturnType<E[K]>> },
+    never,
+    TSteps,
+    TChildWorkflows,
     CompensationRoot
   >;
 
@@ -1579,9 +1610,7 @@ export interface CompensationContext<
    * Resolve: `await ctx.first(entries).resolve(ctx)`.
    * Returns `{ key, result }` discriminated union.
    *
-   * If all branches fail, the workflow is terminated unless `defaultValue` is provided.
-   * On `CompensationContext`, `defaultValue` is required — compensation must always
-   * produce a meaningful result even if all branches fail.
+   * If all branches fail, the scope fails unless `.failure(cb)` is provided.
    */
   first<
     E extends Record<
@@ -1600,12 +1629,17 @@ export interface CompensationContext<
           any
         >,
       ) => Promise<unknown>
-    >,
-    TDefault,
+    >
   >(
     entries: E,
-    defaultValue: TDefault,
-  ): DeterministicAwaitable<FirstResult<E> | TDefault, CompensationRoot>;
+  ): FirstCall<
+    FirstResult<E>,
+    E,
+    never,
+    TSteps,
+    TChildWorkflows,
+    CompensationRoot
+  >;
 
   // ---------------------------------------------------------------------------
   // listen — channel-only multiplexed waiting (all contexts)
@@ -1813,9 +1847,7 @@ export interface WorkflowContext<
    *
    * Resolve the scope result: `await ctx.scope("Name", entries, callback).resolve(ctx)`.
    *
-   * Providing `defaultValue` makes the scope fail-safe: if the callback throws, all
-   * registered compensations within the scope run (LIFO), then `defaultValue` is
-   * returned instead of propagating the failure.
+   * Use `.failure(cb)` to handle scope failures after unwinding.
    */
   scope<
     Name extends string,
@@ -1859,53 +1891,7 @@ export interface WorkflowContext<
         ExecutionRoot
       >,
     ) => Promise<R>,
-  ): DeterministicAwaitable<R, ExecutionRoot>;
-
-  scope<
-    Name extends string,
-    E extends Record<
-      string,
-      (
-        ctx: WorkflowContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
-        >,
-      ) => Promise<unknown>
-    >,
-    R,
-    TDefault,
-  >(
-    name: ScopeNameArg<TScopePath, Name>,
-    entries: E,
-    callback: (
-      ctx: WorkflowConcurrencyContext<
-        TState,
-        TChannels,
-        TStreams,
-        TEvents,
-        TSteps,
-        TChildWorkflows,
-        TForeignWorkflows,
-        TPatches,
-        TRng,
-        AppendScopeName<TScopePath, Name>
-      >,
-      handles: ScopeHandles<
-        E,
-        AppendScopeName<TScopePath, Name>,
-        ExecutionRoot
-      >,
-    ) => Promise<R>,
-    defaultValue: TDefault,
-  ): DeterministicAwaitable<R | TDefault, ExecutionRoot>;
+  ): ScopeCall<R, never, TSteps, TChildWorkflows, ExecutionRoot>;
 
   /**
    * Run all entries concurrently and return all resolved values.
@@ -1933,8 +1919,11 @@ export interface WorkflowContext<
     >,
   >(
     entries: E,
-  ): DeterministicAwaitable<
+  ): ScopeCall<
     { [K in keyof E]: Awaited<ReturnType<E[K]>> },
+    never,
+    TSteps,
+    TChildWorkflows,
     ExecutionRoot
   >;
 
@@ -1945,8 +1934,7 @@ export interface WorkflowContext<
    * Resolve: `await ctx.first(entries).resolve(ctx)`.
    * Returns `{ key, result }` discriminated union.
    *
-   * If all branches fail without a `defaultValue`, the workflow is terminated.
-   * Providing `defaultValue` returns it instead of terminating.
+   * If all branches fail, the scope fails unless `.failure(cb)` is provided.
    */
   first<
     E extends Record<
@@ -1968,31 +1956,14 @@ export interface WorkflowContext<
     >,
   >(
     entries: E,
-  ): DeterministicAwaitable<FirstResult<E>, ExecutionRoot>;
-
-  first<
-    E extends Record<
-      string,
-      (
-        ctx: WorkflowContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          any
-        >,
-      ) => Promise<unknown>
-    >,
-    TDefault,
-  >(
-    entries: E,
-    defaultValue: TDefault,
-  ): DeterministicAwaitable<FirstResult<E> | TDefault, ExecutionRoot>;
+  ): FirstCall<
+    FirstResult<E>,
+    E,
+    never,
+    TSteps,
+    TChildWorkflows,
+    ExecutionRoot
+  >;
 
   // ---------------------------------------------------------------------------
   // listen — channel-only multiplexed waiting (all contexts)
@@ -2134,53 +2105,7 @@ export interface WorkflowConcurrencyContext<
         ExecutionRoot
       >,
     ) => Promise<R>,
-  ): DeterministicAwaitable<R, ExecutionRoot>;
-
-  scope<
-    Name extends string,
-    E extends Record<
-      string,
-      (
-        ctx: WorkflowContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
-        >,
-      ) => Promise<unknown>
-    >,
-    R,
-    TDefault,
-  >(
-    name: ScopeNameArg<TScopePath, Name>,
-    entries: E,
-    callback: (
-      ctx: WorkflowConcurrencyContext<
-        TState,
-        TChannels,
-        TStreams,
-        TEvents,
-        TSteps,
-        TChildWorkflows,
-        TForeignWorkflows,
-        TPatches,
-        TRng,
-        AppendScopeName<TScopePath, Name>
-      >,
-      handles: ScopeHandles<
-        E,
-        AppendScopeName<TScopePath, Name>,
-        ExecutionRoot
-      >,
-    ) => Promise<R>,
-    defaultValue: TDefault,
-  ): DeterministicAwaitable<R | TDefault, ExecutionRoot>;
+  ): ScopeCall<R, never, TSteps, TChildWorkflows, ExecutionRoot>;
 
   /**
    * Run all entries concurrently and return all resolved values.
@@ -2208,8 +2133,11 @@ export interface WorkflowConcurrencyContext<
     >,
   >(
     entries: E,
-  ): DeterministicAwaitable<
+  ): ScopeCall<
     { [K in keyof E]: Awaited<ReturnType<E[K]>> },
+    never,
+    TSteps,
+    TChildWorkflows,
     ExecutionRoot
   >;
 
@@ -2219,8 +2147,7 @@ export interface WorkflowConcurrencyContext<
    * Resolve: `await ctx.first(entries).resolve(ctx)`.
    * Returns `{ key, result }` discriminated union.
    *
-   * If all branches fail without a `defaultValue`, the workflow is terminated.
-   * Providing `defaultValue` returns it instead of terminating.
+   * If all branches fail, the scope fails unless `.failure(cb)` is provided.
    */
   first<
     E extends Record<
@@ -2242,31 +2169,14 @@ export interface WorkflowConcurrencyContext<
     >,
   >(
     entries: E,
-  ): DeterministicAwaitable<FirstResult<E>, ExecutionRoot>;
-
-  first<
-    E extends Record<
-      string,
-      (
-        ctx: WorkflowContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          any
-        >,
-      ) => Promise<unknown>
-    >,
-    TDefault,
-  >(
-    entries: E,
-    defaultValue: TDefault,
-  ): DeterministicAwaitable<FirstResult<E> | TDefault, ExecutionRoot>;
+  ): FirstCall<
+    FirstResult<E>,
+    E,
+    never,
+    TSteps,
+    TChildWorkflows,
+    ExecutionRoot
+  >;
 
   /**
    * Create a listener for concurrent channel waiting.
@@ -2295,7 +2205,7 @@ export interface WorkflowConcurrencyContext<
    */
   match<
     M extends Record<string, ScopeSelectableHandle>,
-    DF extends () => any,
+    DF extends (info: ScopeFailureInfo<TSteps, TChildWorkflows>) => any,
   >(
     sel: Selection<M>,
     onFailure: DF,
@@ -2322,7 +2232,7 @@ export interface WorkflowConcurrencyContext<
   match<
     M extends Record<string, ScopeSelectableHandle>,
     H extends MatchHandlers<M>,
-    DF extends () => any,
+    DF extends (info: ScopeFailureInfo<TSteps, TChildWorkflows>) => any,
   >(
     sel: Selection<M>,
     handlers: H,
@@ -2426,53 +2336,7 @@ export interface CompensationConcurrencyContext<
         CompensationRoot
       >,
     ) => Promise<R>,
-  ): DeterministicAwaitable<R, CompensationRoot>;
-
-  scope<
-    Name extends string,
-    E extends Record<
-      string,
-      (
-        ctx: CompensationContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
-        >,
-      ) => Promise<unknown>
-    >,
-    R,
-    TDefault,
-  >(
-    name: ScopeNameArg<TScopePath, Name>,
-    entries: E,
-    callback: (
-      ctx: CompensationConcurrencyContext<
-        TState,
-        TChannels,
-        TStreams,
-        TEvents,
-        TSteps,
-        TChildWorkflows,
-        TForeignWorkflows,
-        TPatches,
-        TRng,
-        AppendScopeName<TScopePath, Name>
-      >,
-      handles: ScopeHandles<
-        E,
-        AppendScopeName<TScopePath, Name>,
-        CompensationRoot
-      >,
-    ) => Promise<R>,
-    defaultValue: TDefault,
-  ): DeterministicAwaitable<R | TDefault, CompensationRoot>;
+  ): ScopeCall<R, never, TSteps, TChildWorkflows, CompensationRoot>;
 
   /**
    * Run all entries concurrently and return all resolved values.
@@ -2500,8 +2364,11 @@ export interface CompensationConcurrencyContext<
     >,
   >(
     entries: E,
-  ): DeterministicAwaitable<
+  ): ScopeCall<
     { [K in keyof E]: Awaited<ReturnType<E[K]>> },
+    never,
+    TSteps,
+    TChildWorkflows,
     CompensationRoot
   >;
 
@@ -2511,8 +2378,7 @@ export interface CompensationConcurrencyContext<
    * Resolve: `await ctx.first(entries).resolve(ctx)`.
    * Returns `{ key, result }` discriminated union.
    *
-   * On `CompensationConcurrencyContext`, `defaultValue` is required — compensation
-   * must always produce a meaningful result even if all branches fail.
+   * If all branches fail, the scope fails unless `.failure(cb)` is provided.
    */
   first<
     E extends Record<
@@ -2531,12 +2397,17 @@ export interface CompensationConcurrencyContext<
           any
         >,
       ) => Promise<unknown>
-    >,
-    TDefault,
+    >
   >(
     entries: E,
-    defaultValue: TDefault,
-  ): DeterministicAwaitable<FirstResult<E> | TDefault, CompensationRoot>;
+  ): FirstCall<
+    FirstResult<E>,
+    E,
+    never,
+    TSteps,
+    TChildWorkflows,
+    CompensationRoot
+  >;
 
   /**
    * Create a listener for concurrent channel waiting.
@@ -2564,7 +2435,7 @@ export interface CompensationConcurrencyContext<
    */
   match<
     M extends Record<string, ScopeSelectableHandle>,
-    DF extends () => any,
+    DF extends (info: ScopeFailureInfo<TSteps, TChildWorkflows>) => any,
   >(
     sel: CompensationSelection<M>,
     onFailure: DF,
@@ -2589,7 +2460,7 @@ export interface CompensationConcurrencyContext<
   match<
     M extends Record<string, ScopeSelectableHandle>,
     H extends MatchHandlers<M>,
-    DF extends () => any,
+    DF extends (info: ScopeFailureInfo<TSteps, TChildWorkflows>) => any,
   >(
     sel: CompensationSelection<M>,
     handlers: H,
