@@ -1,5 +1,7 @@
 # New Primitives — Implementation Plan
 
+> **This document is not authoritative.** It represents the current best understanding of the design, arrived at through iterative discussion. Several sections contain known open questions and unresolved implementation concerns, collected in the [Open Questions](#open-questions-and-implementation-concerns) section at the end. Before beginning implementation of any part, review the open questions for that section. Assume that unmarked decisions are tentative unless they have been explicitly confirmed through additional discussion or prototype work.
+
 ## Overview
 
 This document describes four new primitives to be added to the public API of the durable workflow engine, along with a correction to the existing compensation trigger model. It is written as a task description for an implementing agent.
@@ -662,3 +664,113 @@ All return a `SubscriptionHandle` with a single `.stop(): Promise<void>` method.
 - `MetadataQueryNode` (type)
 - `MetadataQueryBuilder` (type)
 - `RequestCompensationResult` (type)
+
+---
+
+## Open Questions and Implementation Concerns
+
+### Cross-cutting
+
+**Q1. `WorkflowEngine` vs `WorkflowClient` separation.**
+The document assumes a separate client class for handler/consumer registration, distinct from `WorkflowEngine`. This class has not been designed. Open questions: Does it share the same Postgres pool? Does it require separate instantiation? Are definitions (queues, requests, topics) automatically known to the engine when workflows declare them, or does the engine also need explicit registration? How are the two classes related at the type level?
+
+**Q2. Transactionality of publish operations.**
+When a workflow publishes to a queue or topic inside a step, is the publish part of the same durable transaction as the step's checkpoint record? If not, a crash between the step checkpoint and the publish could result in a missed publish (or a duplicate on replay). This affects at-least-once vs exactly-once delivery semantics and needs an explicit decision before any implementation begins.
+
+**Q3. Definition name collision.**
+If two `defineQueue` / `defineRequest` / `defineTopic` calls use the same `name` in different parts of the codebase (e.g. across microservices sharing a DB), there is no compile-time detection. Should the engine validate uniqueness at startup and throw? Or is name collision the user's responsibility? The current document is silent on this.
+
+**Q4. Visibility of new context fields during replay.**
+All new `WorkflowContext` additions (`ctx.queues`, `ctx.requests`, `ctx.topics`, `ctx.attributes`) must be safe to call during deterministic replay. The engine needs to decide how replayed publish calls (which should be no-ops) are distinguished from new ones. This is an existing engine concern but must be extended to cover the new operations.
+
+---
+
+### Queues
+
+**Q5. Dead-letter access pattern.**
+The document specifies that messages dead-letter after `maxAttempts` exhaustion, but does not describe how the user inspects or replays dead-lettered messages. Is there a client API for this? A separate DB table? This is underspecified and will be needed by any production user of queues.
+
+**Q6. Message TTL / stuck messages.**
+If no handler is registered for a queue (or no handler matches a message's metadata), the message sits in the pending state indefinitely. Is there a configurable TTL after which unprocessed messages are dead-lettered or expired? Without this, a misconfigured or orphaned queue accumulates records forever.
+
+**Q7. Ordering within a single consumer.**
+The document states strict FIFO is not guaranteed. It is worth confirming whether SKIP LOCKED preserves insertion order within a single-consumer scenario (one worker, one handler, no concurrency). Postgres SKIP LOCKED does tend to process rows in PK order when there is no contention, but this is an implementation detail and not a guarantee. The document should not imply ordering even in the single-consumer case unless explicitly tested and confirmed.
+
+---
+
+### Requests
+
+**Q8. Definition of "attempted" for compensation triggering.**
+The document uses `ever_claimed` (lock ever acquired) as the proxy for "an attempt was made." This is a reasonable approximation, but a handler could acquire the lock, immediately fail before doing any meaningful work (e.g. throws on input validation), and release it. From the handler's perspective nothing happened; from the engine's perspective `ever_claimed = TRUE` and compensation will run. There is no way to distinguish "handler touched the external system" from "handler failed before doing anything" without handler cooperation. The current approach is the safe default (always compensate if claimed), but implementors should be aware this may trigger unnecessary compensation in practice.
+
+**Q9. Requests with overlapping handler filters.**
+The document notes that overlapping filters produce non-deterministic handler assignment. For queues this is a routing concern. For requests it is potentially a correctness concern: a "high urgency automated handler" and a "human review handler" with overlapping filters could result in the automated handler resolving a request that was intended for human review. This risk is not explicitly called out in the main body. Consider adding a stronger warning, and possibly a runtime check or logging when multiple handlers for the same definition have potentially overlapping filters.
+
+**Q10. SIGKILL and orphaned requests.**
+SIGKILL causes immediate workflow termination with no compensation and no hooks. If a workflow has a pending (unclaimed) request row at SIGKILL time, the row is never deleted. If the request was claimed and in-flight, `ever_claimed = TRUE` but compensation never runs. The document does not address what the engine does with orphaned request rows after a SIGKILL. Should a background job clean them up? Should they remain claimable by handlers indefinitely?
+
+**Q11. Request response delivery failure.**
+If a handler writes a response to the DB but the notification to the waiting workflow fails before the workflow receives it, what is the recovery path? The workflow may be replaying. Does it re-poll for the response? Is the response idempotently stored such that replay will find it? This is an engine-level durability concern that needs to be resolved as part of the implementation.
+
+**Q12. Untimed requests in `CompensationContext`.**
+A request without a `timeout` in a compensation callback will block indefinitely if no handler responds. The document states this is the developer's responsibility. Consider whether a recommendation or lint-time warning ("requests in compensation should specify a timeout") is worth adding to the documentation, even if not enforced by the type system.
+
+**Q13. Interaction between request timeout and handler in-flight response.**
+The race condition where a handler returns a response at the exact moment the workflow's timeout fires is described but the resolution ("whichever commits first wins") is not specified in terms of concrete transaction semantics. The engine implementation needs to handle this atomically. The specific locking or CAS strategy for this race should be designed explicitly.
+
+---
+
+### Topics
+
+**Q14. `hashtext()` collision for per-topic advisory locks.**
+`hashtext()` returns a 32-bit integer. `pg_advisory_xact_lock` takes a 64-bit key (two 32-bit ints, or one 64-bit int). Two topic names that collide in `hashtext()` would serialize inserts against each other unnecessarily (false contention). The probability is low but non-zero. A stronger hash (e.g. `('x' || md5(topic_name))::bit(64)::bigint`) removes this risk and should be used instead of `hashtext()`.
+
+**Q15. Consumer stuck on a failing record.**
+If a topic consumer handler keeps failing on a specific record (e.g. a malformed payload that always causes the handler to throw), the consumer's offset never advances. The consumer is permanently stuck. The document's `retryPolicy` has no `maxAttempts` for topic consumers. There needs to be either: a `maxAttempts` option with a dead-letter path for the record, or explicit documentation that this is the user's responsibility (write defensive handlers). The current document is silent.
+
+**Q16. Delivery guarantee semantics.**
+The document implies at-least-once delivery for topic consumers (failed handlers retry). It does not explicitly state the delivery guarantee or whether exactly-once processing is achievable or a goal. This should be stated explicitly.
+
+**Q17. Topic retention independent of consumer progress.**
+The cleanup job deletes records only when all registered consumers have advanced past them. If one consumer is permanently offline (its process died and was never restarted), records accumulate indefinitely regardless of retention config. Should there be a max retention window independent of consumer progress? If so, what happens to consumers that are behind the retention window when they reconnect — do they resume from the oldest available record, or is the gap a terminal error?
+
+**Q18. Advisory lock namespace for consumer identity.**
+The document uses `pg_advisory_lock(namespace_hash, consumer_pk)` for exclusive consumer identity. `namespace_hash` is not defined. It needs to be a stable value that (a) does not collide with advisory locks used elsewhere in the engine and (b) is consistent across restarts. A hardcoded constant derived from e.g. a hash of the string `"topic_consumer"` is the simplest approach, but this needs to be decided explicitly.
+
+---
+
+### Attributes
+
+**Q19. Version number at initial state.**
+The SQL schema specifies `version BIGINT NOT NULL DEFAULT 1` but the initial "never set" state conceptually has no version. The `get()` API should treat version 0 as "not yet set" and version >= 1 as "set at least once." This needs to be consistent between the schema, the `get()` return type, and the `afterVersion` semantics. Currently there is a potential inconsistency in the document.
+
+**Q20. Attribute cleanup on workflow termination.**
+The document does not specify whether attribute rows are deleted when the workflow terminates, or retained for the duration of the workflow's retention period (consistent with streams and events). This needs an explicit decision. Retaining them through the retention window is likely the correct choice for consistency.
+
+**Q21. Concurrent `set()` calls from parallel branches.**
+If two concurrent workflow branches both call `ctx.attributes.X.set()` simultaneously, the outcome is last-write-wins based on transaction commit order. This is probably acceptable, but it means the `version` counter may not reflect "number of logical updates" if both increments race. The behavior should be stated explicitly in the documentation so developers know what to expect.
+
+**Q22. `LISTEN/NOTIFY` scalability.**
+The `get(afterVersion)` implementation relies on `LISTEN/NOTIFY` for instant change delivery. Under high concurrency (many external clients watching many attributes simultaneously) this can become a bottleneck at the Postgres side. This is a known limitation of the approach and worth documenting. An alternative (polling with exponential backoff) could be offered as a fallback.
+
+**Q23. `never` detection mechanism.**
+The `get()` call must return `{ status: "never" }` when the workflow terminates without setting the attribute. Implementing this requires the external client to detect workflow termination while blocked on a `LISTEN/NOTIFY` wait. The mechanism for this (e.g. subscribe to a workflow-completed notification alongside the attribute notification, or poll workflow status alongside) is not specified and is non-trivial to implement correctly.
+
+---
+
+### Compensation Model Correction
+
+**Q24. This section is the most uncertain part of the document.**
+The "eager compensation at failure time" model represents a meaningful behavioral change to the engine's execution model. The following sub-questions are all unresolved:
+
+- **Ordering**: When a step fails and is caught with `.failure()`, at what point exactly does the eager compensation execute? Before the `.failure()` callback runs? After? The ordering matters because the compensation callback may itself use `ctx` operations that interact with subsequent workflow code.
+
+- **LIFO stack interaction**: After eager compensation runs for a failed step, is that step's compensation callback removed from the LIFO stack? If yes, it will not run again if the workflow subsequently fails. If no, it runs twice (eagerly and during unwind). Both have implications. Idempotency of compensation callbacks handles the "runs twice" case, but the correct behavior should be an explicit engine decision, not an accident of implementation.
+
+- **Scope exit behavior interaction**: The existing scope exit table says branches with compensated steps are compensated on scope exit. If a step inside a scope fails and is caught (triggering eager compensation), does the scope exit behavior also try to compensate it? This creates potential double-compensation. The interaction needs to be explicitly resolved.
+
+- **Virtual event loop interaction**: The existing virtual event loop interleaves concurrent compensation callbacks. Does eager compensation use the same mechanism, or is it executed inline and synchronously relative to the workflow's execution thread?
+
+- **Steps with zero attempts**: If a step times out before making a single attempt (e.g. `deadlineUntil` already passed), no work was done. Should compensation run? The "attempted" principle suggests no, but the engine needs to track attempt count to know this.
+
+- **This section should be treated as a starting point for a separate focused design discussion, not as a complete specification.**
