@@ -4,7 +4,7 @@
 
 ## Overview
 
-This document describes four new primitives to be added to the public API of the durable workflow engine, along with a correction to the existing compensation trigger model. It is written as a task description for an implementing agent.
+This document describes primitives and corrections to be added to the public API of the durable workflow engine. It is written as a task description for an implementing agent.
 
 The changes are:
 
@@ -13,8 +13,10 @@ The changes are:
 3. **Topics** — global ordered per-topic append logs with named consumers
 4. **Attributes** — workflow-instance-bound observable single current value
 5. **Streams extension** — non-blocking read variant on the external handle
-6. **Search query refactoring** — extract reusable metadata query type system
+6. **Search query refactoring** — generalize `WorkflowSearchQueryBuilder` into a namespace-parameterized `SearchQuery<TNamespaces>` type
 7. **Compensation model correction** — eager compensation trigger on caught failures
+8. **AttemptAccessor refactoring** — rename `StepErrorAccessor` → `AttemptAccessor`, make `count()` async, rename `errors` → `attempts` on `StepCompensationResult`
+9. **Scheduled delivery** — `delay`/`scheduledAt` option on queue message publish and workflow starts
 
 ---
 
@@ -55,35 +57,66 @@ This leaves ghost side effects that are never cleaned up in successful workflows
 
 ### Goal
 
-The existing `src/types/search-query.ts` already implements a rich typed metadata query AST. It has two namespaces: `engine` (workflow-specific DB fields) and `meta` (user-supplied metadata predicates). The `meta` namespace is entirely generic and can be reused for message routing filters on queues, requests, and topics.
+The existing `src/types/search-query.ts` implements a typed query AST parameterized over two hardcoded namespaces: `engine` (workflow-specific DB fields) and `meta` (user-supplied metadata predicates). This hardcoding is the only thing preventing the same machinery from being reused for topic metadata filters, dead-letter payload filters, dead-letter record field filters, and any future query surfaces.
 
 ### Task
 
-Extract the following from `search-query.ts` into a shared location (e.g. `src/types/metadata-query.ts`) without modifying the existing workflow search API:
+Generalize `WorkflowSearchQueryBuilder` and `WorkflowSearchQueryNode` into namespace-parameterized types. The generalized forms take a `TNamespaces` map where each key is a namespace name and each value is the record type of fields in that namespace:
 
-**`MetadataQueryNode<TMetadata extends SearchMetadataRecord>`**
+```typescript
+// Generalized types (new)
+type SearchQueryNode<TNamespaces extends Record<string, SearchMetadataRecord>>
+type SearchQuery<TNamespaces extends Record<string, SearchMetadataRecord>>
 
-A discriminated union AST with no `engine` namespace. Composed of:
-- `{ kind: "and"; nodes: readonly MetadataQueryNode<TMetadata>[] }`
-- `{ kind: "or"; nodes: readonly MetadataQueryNode<TMetadata>[] }`
-- `{ kind: "not"; node: MetadataQueryNode<TMetadata> }`
-- All predicate node kinds from the existing `WorkflowSearchMetaPredicateNode<TMetadata>`: `exists`, `eq`, `ne`, `in`, `notIn`, `gt`, `gte`, `lt`, `lte`, `contains`, `containsAny`, `containsAll`
+// Existing types become instantiations (updated, not removed)
+type WorkflowSearchQueryNode<TMeta extends SearchMetadataRecord> =
+  SearchQueryNode<{ engine: WorkflowSearchEngineFields; meta: TMeta }>
 
-**`MetadataQueryBuilder<TMetadata extends SearchMetadataRecord>`**
+type WorkflowSearchQueryBuilder<TMeta extends SearchMetadataRecord> =
+  SearchQuery<{ engine: WorkflowSearchEngineFields; meta: TMeta }>
+```
 
-Mirrors the `meta` branch of the existing `WorkflowSearchQueryBuilder<TMetadata>`, plus `and`, `or`, `not` combinators. No `engine` branch.
+The `SearchQuery<TNamespaces>` builder exposes one sub-builder per namespace key, each using the existing predicate machinery (`eq`, `ne`, `in`, `notIn`, `gt`, `gte`, `lt`, `lte`, `exists`, `contains`, `containsAny`, `containsAll`) typed to that namespace's field record. The `and`, `or`, `not` combinators are top-level on the builder as before.
 
-The existing `WorkflowSearchQueryNode` and `WorkflowSearchQueryBuilder` should be updated to compose on top of `MetadataQueryNode` and `MetadataQueryBuilder` rather than duplicating the meta predicate logic.
+The existing `WorkflowSearchQueryNode` and `WorkflowSearchQueryBuilder` are kept as aliases so no existing call sites break.
 
 ### Usage
 
-All three new global primitives (queues, requests, topics) use `MetadataQueryBuilder<TMetadata>` as the type of the `q` parameter in filter callbacks at handler/consumer registration:
+**Topics** — filter is over the topic's `metadata` schema:
 
 ```typescript
-{ filter: (q: MetadataQueryBuilder<TMetadata>) => MetadataQueryNode<TMetadata> }
+// registerTopicConsumer filter type:
+SearchQuery<{ metadata: TMetadata }>
+
+// example:
+filter: (q) => q.metadata.type.eq("booking.confirmed")
 ```
 
-When a definition has no `metadata` schema, `TMetadata` resolves to `Record<string, never>` and TypeScript omits the `filter` property from the options type entirely.
+When a topic definition has no `metadata` schema, `TMetadata` resolves to `Record<string, never>` and TypeScript omits the `filter` property from the consumer options type entirely.
+
+**Dead-letter API** — filter spans both the message payload and dead-letter record fields:
+
+```typescript
+// DeadLetterHandle filter type:
+SearchQuery<{ payload: TMessage; record: DeadLetterRecordFields }>
+
+// DeadLetterRecordFields:
+interface DeadLetterRecordFields {
+  createdAt: Date;
+  deadLetteredAt: Date;
+  reason: "max_attempts" | "ttl_expired";
+  attemptCount: number;
+}
+
+// example:
+filter: (q) => q.and(
+  q.record.reason.eq("max_attempts"),
+  q.record.createdAt.gte(new Date("2026-01-01")),
+  q.payload.userId.eq("u1"),
+)
+```
+
+This allows dead-letter queries to span both the message content and the record-level fields in a single typed expression.
 
 ---
 
@@ -91,7 +124,7 @@ When a definition has no `metadata` schema, `TMetadata` resolves to `Record<stri
 
 ### Purpose
 
-A global competing-consumer work queue. Any workflow can publish a typed message to a named queue. Any registered worker (in any process) can consume from it. Messages are processed exactly once via `SELECT FOR UPDATE SKIP LOCKED`. Strict FIFO is not guaranteed and this is acceptable — the name "queue" communicates "messages wait for a consumer," not "messages are processed in strict insertion order."
+A global competing-consumer work queue. Any workflow can publish a typed message to a named queue. Any registered worker (in any process) can consume from it. Messages are processed exactly once via `SELECT FOR UPDATE SKIP LOCKED`. `ORDER BY id ASC` with `SKIP LOCKED` produces insertion-order processing under no contention, but this is not guaranteed under concurrent workers and should not be relied upon. The name "queue" communicates "messages wait for a consumer," not "messages are processed in strict insertion order."
 
 ### Definition
 
@@ -101,28 +134,73 @@ Add `defineQueue` to the public exports:
 const notificationsQueue = defineQueue({
   name: "notifications",                              // globally unique, stable string
   message: z.object({ userId: z.string(), body: z.string() }),
-  metadata: z.object({ channel: z.enum(["email", "sms", "push"]) }), // optional
+  defaultTTL: 3600,                                   // optional; seconds before unclaimed message expires
+  retention: {
+    processed: 86400,                                 // seconds; null = never delete
+    deadLettered: 86400 * 30,                         // seconds; null = never delete
+  },
 });
 ```
 
 - `name` — the queue's DB namespace. Must be globally unique across all `defineQueue` calls registered with an engine instance.
 - `message` — Zod schema for the payload. Input type used for publishing (encoded to JSONB); output type delivered to handler (decoded).
-- `metadata` — optional Zod schema for routing metadata. If absent, the `filter` parameter is not available at handler registration (enforced by TypeScript).
+- `defaultTTL` — optional. Seconds after publish time before an unclaimed message is swept to `status = 'dead_lettered'` with `dead_letter_reason = 'ttl_expired'`. If absent, TypeScript **requires** an explicit `ttl` on every `publish` call (see TTL semantics below).
+- `retention.processed` — how long rows with `status = 'processed'` are retained before the sweeper deletes them. `null` means never delete.
+- `retention.deadLettered` — how long rows with `status = 'dead_lettered'` are retained before the sweeper deletes them. `null` means never delete.
+
+### TTL semantics
+
+`ttl` controls how long a message may remain unclaimed before it is swept to `status = 'dead_lettered'` with `dead_letter_reason = 'ttl_expired'`.
+
+- `ttl: number` — the message expires N seconds from publish time.
+- `ttl: null` — the message never expires, regardless of `defaultTTL`.
+
+**TypeScript enforcement:** When `defaultTTL` is not specified on the definition, `ttl` is a required field on every `publish` call (`ttl: number | null`). When `defaultTTL` is specified, `ttl` is an optional override (`ttl?: number | null`).
+
+### Scheduling semantics
+
+`delay` and `scheduledAt` control when a message becomes eligible for consumption. Before that point, the message exists in the table with `status = 'pending'` but is invisible to consumer claim queries.
+
+- `delay: number` — the message becomes eligible N **seconds** from publish time. Stored as `scheduled_at = NOW() + interval 'N seconds'`.
+- `scheduledAt: Date` — the message becomes eligible at the given absolute timestamp.
+
+Both are optional. If neither is provided, the message is eligible immediately (`scheduled_at = NULL`).
+
+**Interaction with `ttl`:** `expires_at` is always computed from publish time, not from `scheduled_at`. If `delay >= ttl` (or `scheduledAt >= expires_at`), the message would expire before it ever becomes eligible. The engine validates this at publish time and raises an error.
+
+**Ordering:** Once eligible (`scheduled_at <= NOW()`), a message joins the normal pending pool. The claim query orders by `COALESCE(scheduled_at, created_at) ASC, id ASC` — a scheduled message that fires late takes its natural position relative to other eligible messages based on its intended eligible time, not its creation time.
 
 ### Workflow-internal API
 
 Add `queues` to `WorkflowContext`, `CompensationContext`, and their concurrency variants.
 
 ```typescript
-// Tier 3 — DirectAwaitable<void>
-await ctx.queues.notifications.publish(
-  { userId: "u1", body: "Hello" },
-  { metadata: { channel: "email" } },  // second argument omitted if no metadata schema
-);
+// When defaultTTL is set on the definition — ttl is an optional override
+await ctx.queues.notifications.publish({ userId: "u1", body: "Hello" });
+await ctx.queues.notifications.publish({ userId: "u1", body: "Urgent" }, { ttl: 300 });
+await ctx.queues.notifications.publish({ userId: "u1", body: "Permanent" }, { ttl: null });
+
+// When defaultTTL is NOT set on the definition — ttl is required
+await ctx.queues.ephemeralQueue.publish({ ... }, { ttl: 60 });
+await ctx.queues.ephemeralQueue.publish({ ... }, { ttl: null }); // never expires; satisfies the requirement
+
+// Scheduled delivery — eligible after a delay
+await ctx.queues.notifications.publish({ userId: "u1", body: "Reminder" }, { delay: 3600 });       // 1 hour from now
+await ctx.queues.notifications.publish({ userId: "u1", body: "Scheduled" }, {
+  scheduledAt: new Date("2027-01-01T09:00:00Z"),                                                   // specific time
+});
+
+// Combined — schedule + explicit TTL
+await ctx.queues.notifications.publish({ userId: "u1", body: "Time-sensitive" }, {
+  delay: 300,    // eligible in 5 minutes
+  ttl: 600,      // expires 10 minutes from now (must be > delay)
+});
 ```
 
+- Tier 3 — `DirectAwaitable<void>`
 - Workflow can only publish to queues, never read from them.
 - Available in both `WorkflowContext` and `CompensationContext` — publishing during compensation is a valid pattern (e.g. audit notification on rollback).
+- Publish is durable: the message insert is colocated in the same transaction as the workflow's checkpoint record. On replay, the engine detects the existing checkpoint and skips the re-insert, giving exactly-once publish semantics.
 
 Add `queues` to `defineWorkflow` definition:
 
@@ -137,43 +215,253 @@ The queue definitions in the workflow declare which queues the workflow interact
 
 ### Client registration API
 
-Add `registerQueueHandler` to the client class (separate from `WorkflowEngine`):
+Add `registerQueueHandler` to the client class:
 
 ```typescript
-const handle = await client.registerQueueHandler(
+const unregister = client.registerQueueHandler(
   notificationsQueue,
   async (message) => {
     // message is z.output<typeof notificationsQueue.message>
     await sendEmail(message.userId, message.body);
   },
   {
-    filter: (q) => q.channel.eq("email"),     // optional; only available if metadata schema exists
     timeout: 30,                               // seconds, per-attempt handler timeout
     retryPolicy: {
       maxAttempts: 5,                          // dead-letter after N failures
-      intervalSeconds: 2,
+      intervalMs: 2000,
       backoffRate: 2,
-      maxIntervalSeconds: 60,
+      maxIntervalMs: 60_000,
     },
   },
 );
 
-await handle.stop(); // deregisters and stops consuming
+unregister(); // deregisters and stops consuming
 ```
 
-- Multiple handlers for the same queue definition are permitted. Each has an independent filter. Workers only see and compete for messages matching their filter.
-- When filters overlap between handlers, assignment is non-deterministic (SKIP LOCKED determines which eligible worker gets the row). This is documented behavior and the user's design responsibility.
-- `maxAttempts` is meaningful for queues: after exhaustion, the message is moved to a dead-letter path.
-- If no handler matches a message, it remains in the queue until a matching handler is registered or a retention policy expires it.
+- Each worker process registers one handler per queue definition. Multiple worker processes each registering a handler for the same queue compete for pending messages — this is the standard horizontal scaling model, the same as RabbitMQ competing consumers or HTTP servers behind a load balancer.
+- `maxAttempts` is meaningful for queues: after exhaustion, the message is moved to `status = 'dead_lettered'` with `dead_letter_reason = 'max_attempts'`.
+- If no handler is registered for a queue, messages remain pending until a handler is registered or their TTL expires.
+
+### Dead-letter client API
+
+Dead-lettered messages are rows with `status = 'dead_lettered'` in `queue_messages`. They are accessible via `client.deadLetters(def)` which returns a `DeadLetterHandle<TMessage>`.
+
+**`DeadLetteredMessage<T>`:**
+
+```typescript
+type DeadLetteredMessage<T> = {
+  id: string;
+  payload: T;                           // z.output<typeof queue.message>
+  reason: "max_attempts" | "ttl_expired";
+  deadLetteredAt: Date;
+  createdAt: Date;
+  originalExpiresAt: Date | null;       // the expires_at value set at publish time, if any
+  attempts: AttemptAccessor;            // lazy proxy; no DB query until a method is called
+};
+```
+
+`attempts` is an `AttemptAccessor` (see Part 8). It provides access to per-attempt error records stored in `queue_message_attempt`. The accessor is a pure lazy proxy — constructing `DeadLetteredMessage` issues no DB queries for attempt history. All queries are deferred until a method on the accessor is called.
+
+**`DeadLetterSort<TMessage>`:**
+
+A sort descriptor consistent with the filter namespace structure. Sorted pages are required for the cursor to be meaningful:
+
+```typescript
+type DeadLetterSort<TMessage> =
+  | { namespace: "record"; path: keyof DeadLetterRecordFields; direction: "asc" | "desc" }
+  | { namespace: "payload"; path: string; direction: "asc" | "desc" };
+```
+
+**`DeadLetterCursor<TMessage>`:**
+
+A branded string that encodes the current page position. Branded to the queue's message type so that a cursor from one queue definition cannot accidentally be used with another:
+
+```typescript
+declare const deadLetterCursorBrand: unique symbol;
+type DeadLetterCursor<TMessage> = string & { readonly [deadLetterCursorBrand]: TMessage };
+```
+
+**`DeadLetterHandle<TMessage>`:**
+
+```typescript
+type Unsubscribe = () => void;
+
+interface DeadLetterHandle<TMessage extends SearchMetadataRecord> {
+  list(opts?: {
+    limit?: number;
+    cursor?: DeadLetterCursor<TMessage>;
+    sort?: ReadonlyArray<DeadLetterSort<TMessage>>;
+    filter?: (q: SearchQuery<{ payload: TMessage; record: DeadLetterRecordFields }>) => SearchQueryNode;
+  }): Promise<{ messages: DeadLetteredMessage<TMessage>[]; nextCursor?: DeadLetterCursor<TMessage> }>;
+
+  count(opts?: {
+    filter?: (q: SearchQuery<{ payload: TMessage; record: DeadLetterRecordFields }>) => SearchQueryNode;
+  }): Promise<number>;
+
+  redrive(opts: {
+    ids: string[];
+    ttl?: number | null;
+  }): Promise<void>;
+
+  redriveAll(opts?: {
+    filter?: (q: SearchQuery<{ payload: TMessage; record: DeadLetterRecordFields }>) => SearchQueryNode;
+    ttl?: number | null;
+  }): Promise<void>;
+
+  discard(opts: { ids: string[] }): Promise<void>;
+
+  discardAll(opts?: {
+    filter?: (q: SearchQuery<{ payload: TMessage; record: DeadLetterRecordFields }>) => SearchQueryNode;
+  }): Promise<void>;
+
+  listen(
+    handler: (message: DeadLetteredMessage<TMessage>) => void | Promise<void>,
+    opts?: {
+      filter?: (q: SearchQuery<{ payload: TMessage; record: DeadLetterRecordFields }>) => SearchQueryNode;
+    },
+  ): Unsubscribe;
+}
+```
+
+**`redrive` / `redriveAll` TTL behavior:** On redrive, `status` resets to `'pending'` and `attempt_count` resets to zero. For `expires_at`: if `ttl` is provided, `expires_at = NOW() + ttl`; if `ttl: null`, `expires_at = NULL` (never expires); if `ttl` is omitted, the queue's `defaultTTL` is re-applied from now. This ensures a previously `ttl_expired` message is not immediately re-expired on redrive.
+
+**`filter` on dead-letter operations:** The `filter` callback receives a `SearchQuery` builder with two namespaces: `payload` (typed to the queue's message schema) and `record` (the dead-letter record fields: `createdAt`, `deadLetteredAt`, `reason`, `attemptCount`). Predicates in a single filter expression can span both namespaces freely.
+
+**`list` pagination:** `sort` must be provided for cursor-based pagination to be meaningful — the cursor encodes position within the chosen sort order. When `sort` is omitted, results are ordered by `record.id` ascending by default.
+
+**`listen`:** Backed by `LISTEN/NOTIFY`. When a message row transitions to `status = 'dead_lettered'`, the engine performs a `SELECT` for new records since the last seen position, applies the `filter` at the DB level, and delivers matching messages to the handler callback one at a time. The callback may be async. Cancellation is via the returned `Unsubscribe` function — calling it stops delivery and tears down the underlying connection. `listen` itself is synchronous and registers intent immediately; the underlying `LISTEN` command is established asynchronously in the background.
+
+**Usage:**
+
+```typescript
+const dl = client.deadLetters(notificationsQueue);
+
+// Inspect — filter spans payload fields and record fields
+const { messages, nextCursor } = await dl.list({
+  sort: [{ namespace: "record", path: "deadLetteredAt", direction: "desc" }],
+  filter: (q) => q.and(
+    q.record.reason.eq("max_attempts"),
+    q.record.createdAt.gte(new Date("2026-01-01")),
+    q.payload.userId.eq("u1"),
+  ),
+});
+
+// Per-message attempt history — all lazy, no query until called
+const accessor = messages[0].attempts;
+const all = await accessor.all();
+const last = await accessor.last();
+const n = await accessor.count();
+for await (const err of accessor) { ... }          // oldest first
+for await (const err of accessor.reverse()) { ... } // newest first
+
+// React to new dead-letters in real time
+const unsubscribe = dl.listen(
+  async (msg) => {
+    await dl.redrive({ ids: [msg.id], ttl: 3600 });
+  },
+  {
+    filter: (q) => q.record.reason.eq("max_attempts"),
+  },
+);
+// later:
+unsubscribe();
+
+// Bulk redrive / discard
+await dl.redriveAll({ filter: (q) => q.record.reason.eq("max_attempts"), ttl: 3600 });
+await dl.redrive({ ids: ["123"], ttl: null });      // never-expire on redrive
+await dl.discardAll({ filter: (q) => q.record.reason.eq("ttl_expired") });
+```
 
 ### Postgres implementation
 
-- Table: `queue_messages(id SERIAL, queue_name TEXT, payload JSONB, metadata JSONB, status TEXT, attempt_count INT, created_at TIMESTAMPTZ, claimed_at TIMESTAMPTZ, dead_lettered_at TIMESTAMPTZ)`
-- Consumers use `SELECT FOR UPDATE SKIP LOCKED WHERE queue_name = $1 AND status = 'pending' AND (metadata @> $filter OR $filter IS NULL)`.
-- On handler success: delete row (or mark `status = 'processed'` for audit).
-- On handler failure: increment `attempt_count`, release lock (rollback or explicit unlock), re-eligible after backoff delay.
-- On `attempt_count >= maxAttempts`: mark `status = 'dead_lettered'`.
-- Cleanup background coroutine: delete processed rows past retention window.
+**`queue_messages` table:**
+
+```sql
+CREATE TABLE queue_messages (
+  id                                BIGSERIAL PRIMARY KEY,
+  queue_name                        TEXT NOT NULL,
+  payload                           JSONB NOT NULL,
+  status                            TEXT NOT NULL DEFAULT 'pending',
+  attempt_count                     INT NOT NULL DEFAULT 0,
+  dead_letter_reason                TEXT,
+  scheduled_at                      TIMESTAMPTZ,
+  expires_at                        TIMESTAMPTZ,
+  claimed_at                        TIMESTAMPTZ,
+  dead_lettered_at                  TIMESTAMPTZ,
+  created_at                        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  processed_retention_deadline_at   TIMESTAMPTZ,
+  dead_letter_retention_deadline_at TIMESTAMPTZ,
+
+  CONSTRAINT chk_status CHECK (
+    status IN ('pending', 'claimed', 'processed', 'dead_lettered')
+  ),
+  CONSTRAINT chk_dead_letter_reason CHECK (
+    dead_letter_reason IS NULL OR dead_letter_reason IN ('max_attempts', 'ttl_expired')
+  ),
+  CONSTRAINT chk_schedule_before_expiry CHECK (
+    scheduled_at IS NULL OR expires_at IS NULL OR scheduled_at < expires_at
+  )
+);
+```
+
+**`queue_message_attempt` table:**
+
+```sql
+CREATE TABLE queue_message_attempt (
+  id          BIGSERIAL PRIMARY KEY,
+  message_id  BIGINT NOT NULL REFERENCES queue_messages(id) ON DELETE CASCADE,
+  attempt     INT NOT NULL,
+  error       TEXT NOT NULL,
+  error_type  TEXT,
+  details     JSONB,
+  started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  failed_at   TIMESTAMPTZ NOT NULL
+);
+```
+
+`ON DELETE CASCADE` ensures attempt rows are automatically removed when the message row is deleted by the sweeper. No separate cleanup step is required.
+
+**Consumer claim query:**
+
+```sql
+SELECT * FROM queue_messages
+WHERE queue_name = $1
+  AND status = 'pending'
+  AND (expires_at IS NULL OR expires_at > NOW())
+  AND (scheduled_at IS NULL OR scheduled_at <= NOW())
+ORDER BY COALESCE(scheduled_at, created_at) ASC, id ASC
+LIMIT 1
+FOR UPDATE SKIP LOCKED;
+```
+
+**On handler success:** set `status = 'processed'`, set `processed_retention_deadline_at = NOW() + processed_retention_duration`.
+
+**On handler failure:** insert a row into `queue_message_attempt`, increment `attempt_count`, release lock. If `attempt_count >= maxAttempts`: set `status = 'dead_lettered'`, `dead_letter_reason = 'max_attempts'`, `dead_lettered_at = NOW()`, `dead_letter_retention_deadline_at = NOW() + dead_letter_retention_duration`.
+
+**Sweeper:** Runs on a configurable interval following the same pattern as workflow GC (`gcIntervalSeconds`). Performs three sweeps:
+
+```sql
+-- TTL expiry — only fires on messages that have become eligible (scheduled_at passed or unset)
+UPDATE queue_messages
+SET status = 'dead_lettered',
+    dead_letter_reason = 'ttl_expired',
+    dead_lettered_at = NOW(),
+    dead_letter_retention_deadline_at = NOW() + $dead_letter_retention_duration
+WHERE status = 'pending'
+  AND expires_at IS NOT NULL
+  AND expires_at < NOW()
+  AND (scheduled_at IS NULL OR scheduled_at <= NOW());
+
+-- Processed retention cleanup
+DELETE FROM queue_messages
+WHERE status = 'processed'
+  AND processed_retention_deadline_at < NOW();
+
+-- Dead-letter retention cleanup
+DELETE FROM queue_messages
+WHERE status = 'dead_lettered'
+  AND dead_letter_retention_deadline_at < NOW();
+```
 
 ---
 
@@ -195,19 +483,46 @@ const humanReview = defineRequest({
   name: "humanReview",
   request: z.object({ context: z.string(), data: z.unknown() }),
   response: z.object({ decision: z.enum(["approve", "reject"]), note: z.string() }),
-  metadata: z.object({ category: z.string(), urgency: z.enum(["high", "low"]) }), // optional
 });
 ```
 
 ### Workflow-internal API
 
-Requests are **Tier 1** (`DeterministicAwaitable`) — they must be resolved via `.resolve(ctx)`. This allows `.compensate()` and the conditional `.timeout()` builder to be chained.
+Requests are **Tier 1** — they must be resolved via `.resolve(ctx)`. However, they are **not** `StepCall` instances. `StepCall` exposes `.failure()`, `.retry()`, and `.complete()` — none of which apply to requests. Requests have their own parallel call types that extend `DeterministicAwaitable` directly with a request-specific builder chain.
 
-The return type of the call depends on whether `timeout` is specified in the options. This is enforced at the TypeScript level via overloads:
+The concrete call type depends on whether `timeout` is specified in the options:
+
+```typescript
+// Parallel to StepCall — new types, not StepCall variants
+interface UntimedRequestCall<TResponse, TFinal = TResponse, HasCompensation extends boolean = false, Tctx = unknown>
+  extends DeterministicAwaitable<TFinal, ExecutionRoot> {
+  compensate(
+    cb: (ctx: Tctx, result: RequestCompensationResult<TResponse>) => Promise<void>
+  ): UntimedRequestCall<TResponse, TFinal, true, Tctx>;
+  complete<R>(
+    cb: (data: TResponse) => R
+  ): UntimedRequestCall<TResponse, Awaited<R>, HasCompensation, Tctx>;
+}
+
+interface TimedRequestCall<TResponse, TTimeout = never, TFinal = TResponse, HasCompensation extends boolean = false, Tctx = unknown>
+  extends DeterministicAwaitable<TFinal | TTimeout, ExecutionRoot> {
+  compensate(
+    cb: (ctx: Tctx, result: RequestCompensationResult<TResponse>) => Promise<void>
+  ): TimedRequestCall<TResponse, TTimeout, TFinal, true, Tctx>;
+  timeout<R>(cb: () => R): TimedRequestCall<TResponse, Awaited<R>, TFinal, HasCompensation, Tctx>;
+  complete<R>(
+    cb: (data: TResponse) => R
+  ): TimedRequestCall<TResponse, TTimeout, Awaited<R>, HasCompensation, Tctx>;
+}
+```
+
+Both types are proper Tier 1: they carry the `ExecutionRoot` brand and require `.resolve(ctx)`. Neither has `.failure()` or `.retry()`. `.complete()` transforms the response before it propagates into the calling workflow — analogous to `.complete()` on `StepCall`, but applied only on the success path (not the timeout path).
+
+The return type of `ctx.requests.X(payload)` is `UntimedRequestCall`; `ctx.requests.X(payload, { timeout: N })` returns `TimedRequestCall`.
 
 **Without timeout — `UntimedRequestCall<TResponse>`**
 
-Available builders: `.compensate()` only. The request waits indefinitely. There is no `.timeout()` on the type.
+Available builders: `.compensate()` and `.complete()`. The request waits indefinitely. There is no `.timeout()` on the type.
 
 ```typescript
 const result = await ctx.requests
@@ -227,23 +542,25 @@ const result = await ctx.requests
 
 **With timeout — `TimedRequestCall<TResponse>`**
 
-Available builders: `.compensate()` and `.timeout()`. `.timeout()` builder is present ONLY when `timeout` is specified in the options. If `.timeout()` is not chained despite a timeout being specified, and the timeout fires, the workflow auto-terminates (consistent with unchained `.failure()` on steps).
+Available builders: `.compensate()`, `.timeout()`, and `.complete()`. `.timeout()` builder is present ONLY when `timeout` is specified in the options. If `.timeout()` is not chained despite a timeout being specified, and the timeout fires, the workflow auto-terminates (consistent with unchained `.failure()` on steps).
 
 ```typescript
 const result = await ctx.requests
   .humanReview(
     { context: "...", data: signals },
-    { metadata: { category: "fraud", urgency: "high" }, timeout: 300 },
+    { timeout: 300 },
   )
   .compensate(async (ctx, result) => { /* same as above */ })
-  .timeout(() => null)  // fires if 300s pass with no response
+  .timeout(() => null)               // fires if 300s pass with no response
+  .complete((r) => r.decision)       // transform the success result
   .resolve(ctx);
-// result: TResponse | null
+// result: "approve" | "reject" | null
 ```
 
-- The `metadata` second argument is required if `metadata` schema exists on the definition, omitted otherwise.
 - The `timeout` option specifies how long the workflow waits for any response. It is the ONLY execution parameter the caller controls. Retry behavior is entirely the handler's concern.
 - `.timeout(cb)` receives no arguments — there is no "failure reason" to communicate. Timeout is the only non-success outcome.
+- `.complete(cb)` transforms only the response value; the timeout path value is unaffected.
+- Each worker process registers one handler per request definition. Multiple worker processes each registering a handler for the same definition compete — any process can fulfill the request. If different fulfillment paths are needed (e.g. automated vs. human), use separate request definitions.
 
 **Available in `CompensationContext`** — requests during compensation are valid (e.g. post a "cancel this review" task). A request posted in `CompensationContext` cannot itself register a compensation (no `.compensate()` builder on `CompensationContext`) — the nesting stops.
 
@@ -289,14 +606,14 @@ Note: a request can be resolved without any handler attempts — an admin can di
 
 ### Retry policy at handler registration
 
-The workflow caller does NOT control retry behavior. The caller controls only: payload, metadata (routing), and timeout (overall deadline). Retry policy is entirely the handler's concern.
+The workflow caller does NOT control retry behavior. The caller controls only: payload and timeout (overall deadline). Retry policy is entirely the handler's concern.
 
 For requests, `maxAttempts` is intentionally absent from the handler retry policy. A handler failure releases the lock and makes the request row eligible for any other matching worker to pick up. The request does not "die" after N handler failures — it waits for the next eligible worker within the caller's timeout window. Capping attempts at the handler level would be semantically incorrect for requests (unlike queues, where messages should eventually dead-letter).
 
 ### Client registration API
 
 ```typescript
-const handle = await client.registerRequestHandler(
+const unregister = client.registerRequestHandler(
   humanReview,
   async (request) => {
     // request is z.output<typeof humanReview.request>
@@ -305,27 +622,26 @@ const handle = await client.registerRequestHandler(
     // return value must match z.input<typeof humanReview.response>
   },
   {
-    filter: (q) => q.urgency.eq("high"),  // optional
     timeout: 60,                           // seconds, per-attempt handler execution timeout
     retryPolicy: {
       // No maxAttempts — failed attempts re-queue the request row
-      intervalSeconds: 5,
+      intervalMs: 5000,
       backoffRate: 2,
-      maxIntervalSeconds: 120,
+      maxIntervalMs: 120_000,
     },
   },
 );
 
-await handle.stop();
+unregister();
 ```
 
 ### Postgres implementation
 
-- Table: `requests(id SERIAL, request_name TEXT, payload JSONB, metadata JSONB, response JSONB, status TEXT, ever_claimed BOOLEAN DEFAULT FALSE, claimed_at TIMESTAMPTZ, resolved_at TIMESTAMPTZ, created_at TIMESTAMPTZ)`
+- Table: `requests(id SERIAL, request_name TEXT, payload JSONB, response JSONB, status TEXT, ever_claimed BOOLEAN DEFAULT FALSE, claimed_at TIMESTAMPTZ, resolved_at TIMESTAMPTZ, created_at TIMESTAMPTZ)`
 - `ever_claimed` is set to `TRUE` the first time any worker acquires the row lock. This is the flag the engine checks for compensation triggering.
-- Workers use `SELECT FOR UPDATE SKIP LOCKED WHERE request_name = $1 AND status = 'pending' AND (metadata @> $filter OR $filter IS NULL)`.
+- Workers use `SELECT FOR UPDATE SKIP LOCKED WHERE request_name = $1 AND status = 'pending'`.
 - On handler success: set `response`, set `status = 'resolved'`, notify the waiting workflow.
-- On handler failure: release lock, increment attempt count if tracked, re-eligible after backoff.
+- On handler failure: release lock, re-eligible after backoff.
 - On workflow timeout: engine checks `ever_claimed`. If `FALSE`, delete row, skip compensation. If `TRUE`, trigger eager compensation.
 - Admin direct-set: update `response`, set `status = 'resolved'`, notify the waiting workflow (same path as handler success).
 
@@ -376,7 +692,37 @@ defineWorkflow({
 Named consumers track independent offsets. Consumer identity is enforced via a session-level Postgres advisory lock (described below).
 
 ```typescript
-const handle = await client.registerTopicConsumer(
+// Error types for topic consumer registration
+type TopicConsumerAlreadyActiveError = {
+  type: "consumer_already_active";
+  consumerName: string;
+  topicName: string;
+};
+
+type RegisterTopicConsumerError = TopicConsumerAlreadyActiveError;  // union — extendable
+
+// Registration options
+interface RegisterTopicConsumerOpts {
+  filter?: (q: SearchQuery<{ metadata: TopicMetadata }>) => SearchQueryNode;
+  timeout?: number;
+  retryPolicy?: {
+    intervalMs: number;
+    backoffRate?: number;
+    maxIntervalMs?: number;
+  };
+  // Controls how the engine retries advisory lock acquisition if another process already holds it.
+  // Each failed attempt fires onError. When maxAttempts is exhausted the subscription goes
+  // permanently inactive — call unregister() to clean up.
+  registrationRetry?: {
+    intervalMs: number;
+    backoffRate?: number;
+    maxIntervalMs?: number;
+    maxAttempts?: number;       // omit for indefinite retrying
+  };
+  onError?: (error: RegisterTopicConsumerError) => void;
+}
+
+const unregister = client.registerTopicConsumer(
   auditTopic,
   "analyticsConsumer",   // stable consumer name — globally unique per topic
   async (record) => {
@@ -384,21 +730,32 @@ const handle = await client.registerTopicConsumer(
     await ingestToWarehouse(record);
   },
   {
-    filter: (q) => q.type.eq("booking.confirmed"),  // optional; DB-level pushdown
+    filter: (q) => q.metadata.type.eq("booking.confirmed"),
     timeout: 10,
     retryPolicy: {
-      intervalSeconds: 1,
+      intervalMs: 1000,
       backoffRate: 2,
-      maxIntervalSeconds: 30,
+      maxIntervalMs: 30_000,
+    },
+    registrationRetry: {
+      intervalMs: 5000,
+      backoffRate: 1.5,
+      maxIntervalMs: 60_000,
+      // maxAttempts omitted — retries indefinitely until the lock is acquired
+    },
+    onError: (error) => {
+      // error is RegisterTopicConsumerError — currently only TopicConsumerAlreadyActiveError
+      logger.warn("Topic consumer lock conflict", error);
+      // fires on every failed lock attempt; call unregister() to stop retrying
     },
   },
 );
 
-await handle.stop();
+unregister(); // stops consuming and cancels any pending registration retries
 ```
 
 - Multiple `registerTopicConsumer` calls for the same topic with different consumer names are fully independent. Each has its own offset. Overlapping filters between named consumers are intentional — each consumer processes matching records independently.
-- Multiple `registerTopicConsumer` calls for the same topic with the SAME consumer name, from different processes, are prevented by the advisory lock. Only one active instance per named consumer is permitted at a time.
+- Multiple `registerTopicConsumer` calls for the same topic with the SAME consumer name, from different processes, are prevented by the advisory lock. Only one active instance per named consumer is permitted at a time. Lock acquisition failures are surfaced to the `onError` callback and retried according to `registrationRetry`.
 
 ### Consumer identity and exclusive locking
 
@@ -415,32 +772,32 @@ CREATE TABLE topic_consumers (
 
 On `registerTopicConsumer`:
 1. Upsert a row for `(topic_name, consumer_name)` to get the consumer's `id`.
-2. Acquire `pg_advisory_lock(namespace_hash, consumer_id)` — a **session-level** lock. This lock is held for the lifetime of the connection. If the process dies, the connection closes, the lock releases, and another process can take over.
-3. If the lock cannot be acquired immediately (another process holds it), throw an error: "Consumer '{name}' for topic '{topic}' is already active."
+2. Attempt to acquire a **session-level** advisory lock unique to this (topic, consumer) pair. This lock is held for the lifetime of the connection. If the process dies, the connection closes, the lock releases, and another process can take over.
+3. If the lock cannot be acquired (another process holds it), a `TopicConsumerAlreadyActiveError` is emitted to the `onError` callback and the acquisition is retried according to `registrationRetry`. The call itself returns the `Unsubscribe` function immediately — lock acquisition proceeds asynchronously in the background.
 
 Consumer offsets are stored in a `topic_consumer_offsets` table:
 
 ```sql
 CREATE TABLE topic_consumer_offsets (
   consumer_id BIGINT REFERENCES topic_consumers(id),
-  last_offset BIGINT NOT NULL DEFAULT 0,
+  last_id     BIGINT NOT NULL DEFAULT 0,
   PRIMARY KEY (consumer_id)
 );
 ```
 
-### Sequential offset guarantee
+### Insert ordering guarantee
 
-Topic records require gapless sequential offsets per topic to ensure correct consumer progress tracking ("I have processed everything up to offset N" must be a safe statement).
+Topic records must be visible to consumers in insertion order. Plain `BIGSERIAL` allocation under concurrent inserts creates a visibility hazard: a transaction can allocate an ID early but commit late, causing a consumer to advance its cursor past a not-yet-committed record and miss it permanently when it later commits.
 
-Plain auto-increment sequences under concurrent inserts have gaps (sequence values allocated before commit, transactions committed out of order). Use `pg_advisory_xact_lock` to serialize inserts per topic:
+A per-topic transaction-scoped advisory lock eliminates this hazard by serializing commits for the same topic. Because transaction B for topic X cannot commit until transaction A for topic X has committed, a consumer querying `WHERE id > $last_id` will always see A before B.
 
 For every topic insert:
 1. `BEGIN`
-2. `SELECT pg_advisory_xact_lock(hashtext(topic_name))` — blocks any concurrent insert for the same topic; held until commit
-3. `INSERT INTO topic_records (topic_name, offset, payload, metadata) VALUES ($1, (SELECT COALESCE(MAX(offset), 0) + 1 FROM topic_records WHERE topic_name = $1), $2, $3)`
+2. Acquire a transaction-scoped advisory lock keyed to the topic name — blocks any concurrent insert for the same topic until this transaction commits
+3. `INSERT INTO topic_records (topic_name, payload, metadata) VALUES ($1, $2, $3)`
 4. `COMMIT` — lock released automatically
 
-This guarantees offset N+1 is never committed before offset N for the same topic. Inserts across different topics are fully concurrent.
+Inserts across different topics are fully concurrent. The lock is for visibility ordering only — the `BIGSERIAL id` values may have gaps (from other topics or rolled-back transactions) and that is expected and correct.
 
 ### Postgres implementation
 
@@ -448,30 +805,30 @@ This guarantees offset N+1 is never committed before offset N for the same topic
 CREATE TABLE topic_records (
   id          BIGSERIAL PRIMARY KEY,
   topic_name  TEXT NOT NULL,
-  offset      BIGINT NOT NULL,
   payload     JSONB NOT NULL,
   metadata    JSONB,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (topic_name, offset)
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX ON topic_records (topic_name, id);
 ```
 
 Consumer polling:
 ```sql
 SELECT * FROM topic_records
 WHERE topic_name = $1
-  AND offset > $last_offset
+  AND id > $last_id
   AND ($filter IS NULL OR metadata @> $filter)
-ORDER BY offset ASC
+ORDER BY id ASC
 LIMIT $batch_size;
 ```
 
-Update offset after processing:
+Update position after processing:
 ```sql
-UPDATE topic_consumer_offsets SET last_offset = $new_offset WHERE consumer_id = $id;
+UPDATE topic_consumer_offsets SET last_id = $new_id WHERE consumer_id = $id;
 ```
 
-Cleanup: a background coroutine (configurable interval, default hourly) deletes records where all registered consumers for the topic have advanced past the record's offset, and the record is older than the configured retention window.
+Cleanup: a background coroutine (configurable interval, default hourly) deletes records where all registered consumers for the topic have advanced past the record's `id`, and the record is older than the configured retention window.
 
 ---
 
@@ -553,11 +910,11 @@ while (true) {
 
 ```sql
 CREATE TABLE workflow_attributes (
-  workflow_id   TEXT NOT NULL,
+  workflow_id    TEXT NOT NULL,
   attribute_name TEXT NOT NULL,
-  value         JSONB NOT NULL,
-  version       BIGINT NOT NULL DEFAULT 1,
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  value          JSONB NOT NULL,
+  version        BIGINT NOT NULL DEFAULT 1,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (workflow_id, attribute_name)
 );
 ```
@@ -616,14 +973,162 @@ None. The `.compensate(cb)` builder is unchanged. The callback shape is unchange
 
 ---
 
+## Part 8: AttemptAccessor Refactoring
+
+### Summary
+
+This is a breaking rename of an existing type and field. No new runtime behavior is introduced.
+
+### Changes
+
+**Rename `StepErrorAccessor` → `AttemptAccessor`**
+
+`AttemptAccessor` is now the shared interface for lazy access to per-attempt error records, used by both step executions and queue dead-lettered messages. The name `StepErrorAccessor` was over-specific — the `status: "complete"` variant of `StepCompensationResult` also carries the accessor to surface errors from prior failed attempts before the eventual success, making "error accessor" a misleading name in that context.
+
+**`count` property → `count()` async method**
+
+The previous `readonly count: number` implied the count was pre-fetched at accessor construction time, which contradicted the otherwise fully lazy interface. Making it `count(): Promise<number>` is consistent with all other methods on the accessor. Implementations may optimize internally using a cached value from the parent row, but this is invisible to the caller.
+
+**Rename `errors` → `attempts` on `StepCompensationResult`**
+
+`attempts` is accurate in all variants. `errors` was accurate only for the failure cases.
+
+### Updated interface
+
+```typescript
+interface AttemptAccessor {
+  last(): Promise<StepExecutionError>;
+  all(): Promise<StepExecutionError[]>;
+  count(): Promise<number>;
+  [Symbol.asyncIterator](): AsyncIterableIterator<StepExecutionError>;
+  reverse(): AsyncIterable<StepExecutionError>;
+}
+```
+
+### Updated `StepCompensationResult`
+
+```typescript
+type StepCompensationResult<T> =
+  | { status: "complete"; data: T; attempts: AttemptAccessor }
+  | { status: "failed"; reason: "attempts_exhausted" | "timeout"; attempts: AttemptAccessor }
+  | { status: "terminated" }
+```
+
+### Implementation notes
+
+- All existing usages of `.errors` on compensation callbacks must be updated to `.attempts`.
+- All existing usages of `.errors.count` (sync property access) must be updated to `await .attempts.count()`.
+- The `StepErrorAccessor` export is removed. No deprecation alias is required given the absence of a backwards compatibility constraint.
+
+---
+
+## Part 9: Scheduled Delivery
+
+### Purpose
+
+Both queue messages and workflow starts can be deferred to a future point in time. Until the scheduled time is reached, the entity (message or workflow) is created in the database with `status = 'pending'` and is invisible to consumers and the engine's execution dispatcher.
+
+### `ScheduleOptions` type
+
+A type parallel to `DeadlineOptions`, using the same seconds-based convention for the relative form:
+
+```typescript
+export type ScheduleOptions =
+  | { delaySeconds: number; scheduledAt?: never }
+  | { scheduledAt: Date; delaySeconds?: never }
+  | { delaySeconds?: undefined; scheduledAt?: undefined };
+```
+
+Both collapse to an absolute `scheduled_at TIMESTAMPTZ` stored in the DB. The engine computes `scheduled_at = NOW() + interval 'N seconds'` for `delaySeconds`, or stores `scheduledAt` directly.
+
+### Queue messages
+
+Described in Part 2 (Scheduling semantics). The `publish` opts accept `delay: number` (seconds) or `scheduledAt: Date` as mutually exclusive options. Note the naming difference from `ScheduleOptions`: queue publish uses `delay` (not `delaySeconds`) to match `ttl` — the queue-level opts do not use the `Seconds` suffix convention. Both are stored as seconds in the DB.
+
+### Workflow starts
+
+`ScheduleOptions` is intersected into `StartWorkflowOptions` (client-level `start`/`execute`) and `ChildWorkflowStartOptions` (which covers both `AttachedChildWorkflowStartOptions` and `DetachedStartOptions`):
+
+```typescript
+// Updated type definitions (not new types — extend existing ones)
+type ChildWorkflowStartOptions<W> = WorkflowInvocationBaseOptions<...> & DeadlineOptions & ScheduleOptions;
+type StartWorkflowOptions<...>    = WorkflowInvocationBaseOptions<...> & { retention? } & DeadlineOptions & ScheduleOptions;
+```
+
+`CompensationChildWorkflowStartOptions` intentionally does NOT receive `ScheduleOptions` — compensation must proceed promptly and deterministically.
+
+**Client-level:**
+
+```typescript
+// Schedule an absolute start time
+const handle = await client.workflows.order.start({
+  idempotencyKey: "order-jan-2027",
+  scheduledAt: new Date("2027-01-10T08:00:00Z"),
+  args: { destination: "Paris", customerId: "cust-123" },
+});
+// handle is immediately valid — execution.wait() will block until the workflow completes
+
+// Relative delay
+await client.workflows.reminder.execute({
+  idempotencyKey: "reminder-7d",
+  delaySeconds: 604800,  // 7 days
+  args: { userId: "u1" },
+});
+```
+
+**Workflow-internal (`startDetached`):**
+
+```typescript
+// Fire-and-forget, starts tomorrow
+const childHandle = await ctx.childWorkflows.followUp.startDetached({
+  idempotencyKey: "follow-up-next-day",
+  delaySeconds: 86400,
+  args: { parentId: ctx.instanceId },
+});
+// childHandle is a ForeignWorkflowHandle — channels are usable immediately;
+// the child won't begin executing until its scheduled_at is reached
+```
+
+**Attached child workflows** support scheduling too. The parent blocks until the child completes; the wait simply starts later:
+
+```typescript
+const result = await ctx.childWorkflows.audit
+  .call({ idempotencyKey: "audit-eod", delaySeconds: 3600, args: { ... } })
+  .resolve(ctx);
+```
+
+### Interaction with `deadlineSeconds` / `deadlineUntil`
+
+The deadline clock starts from **creation time**, not from the scheduled start. If `delaySeconds >= deadlineSeconds` (or `scheduledAt >= deadlineAt`), the workflow would time out before it ever starts. The engine validates this at call time and raises an error.
+
+### Postgres implementation
+
+Add `scheduled_at TIMESTAMPTZ` to the `workflows` table. The engine's workflow pickup query gains:
+
+```sql
+AND (scheduled_at IS NULL OR scheduled_at <= NOW())
+```
+
+No new status is required. The workflow row uses the existing `'pending'` status and simply waits until it becomes eligible.
+
+A DB-level constraint mirrors the queue approach:
+
+```sql
+CONSTRAINT chk_schedule_before_deadline CHECK (
+  scheduled_at IS NULL OR deadline_at IS NULL OR scheduled_at < deadline_at
+)
+```
+
+---
+
 ## Summary of Public API additions
 
 ### `defineWorkflow` additions
 
 ```typescript
 defineWorkflow({
-  queues:     { [name: string]: QueueDefinition<M, Meta> },
-  requests:   { [name: string]: RequestDefinition<Req, Res, Meta> },
+  queues:     { [name: string]: QueueDefinition<M> },
+  requests:   { [name: string]: RequestDefinition<Req, Res> },
   topics:     { [name: string]: TopicDefinition<R, Meta> },
   attributes: { [name: string]: ZodSchema },
 });
@@ -633,7 +1138,7 @@ defineWorkflow({
 
 | Addition | Tier | Notes |
 |---|---|---|
-| `ctx.queues.X.publish(payload, opts?)` | Tier 3 | Both contexts |
+| `ctx.queues.X.publish(payload, opts?)` | Tier 3 | Both contexts. `opts.ttl` required when queue has no `defaultTTL`. `opts.delay` / `opts.scheduledAt` for deferred delivery. |
 | `ctx.requests.X(payload, opts?)` | Tier 1 | `WorkflowContext` and `CompensationContext`; no `.compensate()` in `CompensationContext` |
 | `ctx.topics.X.publish(payload, opts?)` | Tier 3 | Both contexts |
 | `ctx.attributes.X.set(value)` | Tier 3 | Both contexts |
@@ -648,119 +1153,144 @@ defineWorkflow({
 
 ### New client registration methods
 
+All subscription methods are **synchronous**. They register intent in the current process and return an `Unsubscribe` callback immediately. The underlying engine work (polling, lock acquisition, `LISTEN/NOTIFY` setup) proceeds asynchronously in the background.
+
 | Method | Returns |
 |---|---|
-| `client.registerQueueHandler(def, handler, opts?)` | `Promise<SubscriptionHandle>` |
-| `client.registerRequestHandler(def, handler, opts?)` | `Promise<SubscriptionHandle>` |
-| `client.registerTopicConsumer(def, consumerName, handler, opts?)` | `Promise<SubscriptionHandle>` |
+| `client.registerQueueHandler(def, handler, opts?)` | `Unsubscribe` |
+| `client.registerRequestHandler(def, handler, opts?)` | `Unsubscribe` |
+| `client.registerTopicConsumer(def, consumerName, handler, opts?)` | `Unsubscribe` |
 
-All return a `SubscriptionHandle` with a single `.stop(): Promise<void>` method.
+`Unsubscribe = () => void`. Calling it stops delivery, cancels pending registration retries, and tears down any underlying subscriptions.
+
+### New client management methods
+
+| Method | Returns | Notes |
+|---|---|---|
+| `client.deadLetters(def)` | `DeadLetterHandle<TMessage>` | Queue dead-letter inspection and management |
 
 ### New top-level exports
 
 - `defineQueue`
 - `defineRequest`
 - `defineTopic`
-- `MetadataQueryNode` (type)
-- `MetadataQueryBuilder` (type)
+- `SearchQueryNode` (type) — replaces `MetadataQueryNode`
+- `SearchQuery` (type) — replaces `MetadataQueryBuilder`
+- `DeadLetterRecordFields` (type)
+- `DeadLetterSort` (type)
+- `DeadLetterCursor` (branded type)
+- `DeadLetteredMessage` (type)
+- `DeadLetterHandle` (type)
 - `RequestCompensationResult` (type)
+- `AttemptAccessor` (type) — replaces `StepErrorAccessor`
+- `Unsubscribe` (type) — `() => void`; returned by all subscription methods
+- `RegisterTopicConsumerError` (type) — union of logical consumer registration errors
+- `TopicConsumerAlreadyActiveError` (type)
+- `ScheduleOptions` (type) — `delaySeconds` / `scheduledAt` for deferred workflow starts
+- `IWorkflowConnection` (type) — opaque checked-out DB connection for caller reuse
+- `IWorkflowTransaction` (type) — opaque active transaction handle for caller enlistment
+
+### Breaking changes
+
+- `StepErrorAccessor` renamed to `AttemptAccessor`. Export removed.
+- `StepCompensationResult.errors` renamed to `StepCompensationResult.attempts`.
+- `StepErrorAccessor.count` (sync property) replaced by `AttemptAccessor.count()` (async method).
+- `MetadataQueryNode` and `MetadataQueryBuilder` are not introduced. The generalized `SearchQuery` / `SearchQueryNode` replace them.
+- `SubscriptionHandle` removed. Registration methods return synchronous `Unsubscribe` callbacks.
+- `retryPolicy` interval fields renamed from `intervalSeconds` / `maxIntervalSeconds` to `intervalMs` / `maxIntervalMs` (milliseconds, consistent with TypeScript's convention).
+
+### Connection and transaction model
+
+**Implementation goal — not a blocking question.**
+
+Introduce two opaque types:
+
+```typescript
+type IWorkflowConnection;    // a checked-out DB connection (may or may not be in a transaction)
+type IWorkflowTransaction;   // a connection that is inside an active transaction block
+```
+
+Client and engine-level APIs that perform simple CRUD — `startWorkflow`, `start`, `execute`, queue/topic/request publish, dead-letter `redrive`/`redriveAll`/`discard`/`discardAll`, and read queries — accept an optional `txOrConn?: IWorkflowTransaction | IWorkflowConnection` parameter. This allows callers to:
+
+- Enlist engine operations into an **existing transaction** (`IWorkflowTransaction`) for all-or-nothing semantics alongside their own DB writes.
+- Reuse an **already-checked-out connection** (`IWorkflowConnection`) from their own pool to avoid holding two connections simultaneously (which can cause pool exhaustion deadlocks under concurrent load).
+
+**Strict boundary: workflow logic is entirely exempt.**
+
+`WorkflowContext` and `CompensationContext` APIs (`ctx.queues.X.publish`, `ctx.requests.X`, `ctx.topics.X.publish`, `ctx.attributes.X.set`, etc.) do NOT accept `txOrConn`. Workflow logic runs inside the engine's own durable execution transaction — the caller has no visibility into, and must not interfere with, that internal transaction. This is an absolute boundary, not a soft recommendation.
+
+**Blocking operations are also exempt.**
+
+Operations that wait for external state — `attribute.get(afterVersion)`, `channel.receive()`, request response polling — must NOT accept `txOrConn`. Holding a transaction or connection open across an unbounded wait is a deadlock risk against the pool. These operations always use their own internally managed connection.
+
+**Subscription connections are a separate concern.**
+
+`registerQueueHandler`, `registerTopicConsumer`, `DeadLetterHandle.listen`, etc. are long-lived polling/listening processes. They manage their own dedicated connection internally and have no relationship to `IWorkflowTransaction` or `IWorkflowConnection`. There is no API surface for the caller to inject a connection into a subscription.
 
 ---
 
 ## Open Questions and Implementation Concerns
 
-### Cross-cutting
-
-**Q1. `WorkflowEngine` vs `WorkflowClient` separation.**
-The document assumes a separate client class for handler/consumer registration, distinct from `WorkflowEngine`. This class has not been designed. Open questions: Does it share the same Postgres pool? Does it require separate instantiation? Are definitions (queues, requests, topics) automatically known to the engine when workflows declare them, or does the engine also need explicit registration? How are the two classes related at the type level?
-
-**Q2. Transactionality of publish operations.**
-When a workflow publishes to a queue or topic inside a step, is the publish part of the same durable transaction as the step's checkpoint record? If not, a crash between the step checkpoint and the publish could result in a missed publish (or a duplicate on replay). This affects at-least-once vs exactly-once delivery semantics and needs an explicit decision before any implementation begins.
-
-**Q3. Definition name collision.**
-If two `defineQueue` / `defineRequest` / `defineTopic` calls use the same `name` in different parts of the codebase (e.g. across microservices sharing a DB), there is no compile-time detection. Should the engine validate uniqueness at startup and throw? Or is name collision the user's responsibility? The current document is silent on this.
-
-**Q4. Visibility of new context fields during replay.**
-All new `WorkflowContext` additions (`ctx.queues`, `ctx.requests`, `ctx.topics`, `ctx.attributes`) must be safe to call during deterministic replay. The engine needs to decide how replayed publish calls (which should be no-ops) are distinguished from new ones. This is an existing engine concern but must be extended to cover the new operations.
-
----
-
-### Queues
-
-**Q5. Dead-letter access pattern.**
-The document specifies that messages dead-letter after `maxAttempts` exhaustion, but does not describe how the user inspects or replays dead-lettered messages. Is there a client API for this? A separate DB table? This is underspecified and will be needed by any production user of queues.
-
-**Q6. Message TTL / stuck messages.**
-If no handler is registered for a queue (or no handler matches a message's metadata), the message sits in the pending state indefinitely. Is there a configurable TTL after which unprocessed messages are dead-lettered or expired? Without this, a misconfigured or orphaned queue accumulates records forever.
-
-**Q7. Ordering within a single consumer.**
-The document states strict FIFO is not guaranteed. It is worth confirming whether SKIP LOCKED preserves insertion order within a single-consumer scenario (one worker, one handler, no concurrency). Postgres SKIP LOCKED does tend to process rows in PK order when there is no contention, but this is an implementation detail and not a guarantee. The document should not imply ordering even in the single-consumer case unless explicitly tested and confirmed.
-
----
-
 ### Requests
 
-**Q8. Definition of "attempted" for compensation triggering.**
-The document uses `ever_claimed` (lock ever acquired) as the proxy for "an attempt was made." This is a reasonable approximation, but a handler could acquire the lock, immediately fail before doing any meaningful work (e.g. throws on input validation), and release it. From the handler's perspective nothing happened; from the engine's perspective `ever_claimed = TRUE` and compensation will run. There is no way to distinguish "handler touched the external system" from "handler failed before doing anything" without handler cooperation. The current approach is the safe default (always compensate if claimed), but implementors should be aware this may trigger unnecessary compensation in practice.
+**Q2. Definition of "attempted" for compensation triggering.**
+The document uses `ever_claimed` (lock ever acquired) as the proxy for "an attempt was made." A handler could acquire the lock, immediately fail before doing any meaningful work (e.g. throws on input validation), and release it. From the handler's perspective nothing happened; from the engine's perspective `ever_claimed = TRUE` and compensation will run. There is no way to distinguish "handler touched the external system" from "handler failed before doing anything" without handler cooperation. The current approach is the safe default (always compensate if claimed), but implementors should be aware this may trigger unnecessary compensation in practice.
 
-**Q9. Requests with overlapping handler filters.**
-The document notes that overlapping filters produce non-deterministic handler assignment. For queues this is a routing concern. For requests it is potentially a correctness concern: a "high urgency automated handler" and a "human review handler" with overlapping filters could result in the automated handler resolving a request that was intended for human review. This risk is not explicitly called out in the main body. Consider adding a stronger warning, and possibly a runtime check or logging when multiple handlers for the same definition have potentially overlapping filters.
+**Q3. SIGKILL and orphaned requests.**
+SIGKILL causes immediate workflow termination with no compensation and no hooks. If a workflow has a pending (unclaimed) request row at SIGKILL time, the row is never deleted. If the request was claimed and in-flight, `ever_claimed = TRUE` but compensation never runs. What does the engine do with orphaned request rows after a SIGKILL? Should a background job clean them up? Should they remain claimable by handlers indefinitely?
 
-**Q10. SIGKILL and orphaned requests.**
-SIGKILL causes immediate workflow termination with no compensation and no hooks. If a workflow has a pending (unclaimed) request row at SIGKILL time, the row is never deleted. If the request was claimed and in-flight, `ever_claimed = TRUE` but compensation never runs. The document does not address what the engine does with orphaned request rows after a SIGKILL. Should a background job clean them up? Should they remain claimable by handlers indefinitely?
-
-**Q11. Request response delivery failure.**
+**Q4. Request response delivery failure.**
 If a handler writes a response to the DB but the notification to the waiting workflow fails before the workflow receives it, what is the recovery path? The workflow may be replaying. Does it re-poll for the response? Is the response idempotently stored such that replay will find it? This is an engine-level durability concern that needs to be resolved as part of the implementation.
 
-**Q12. Untimed requests in `CompensationContext`.**
-A request without a `timeout` in a compensation callback will block indefinitely if no handler responds. The document states this is the developer's responsibility. Consider whether a recommendation or lint-time warning ("requests in compensation should specify a timeout") is worth adding to the documentation, even if not enforced by the type system.
+**Q5. Untimed requests in `CompensationContext`.**
+A request without a `timeout` in a compensation callback will block indefinitely if no handler responds. Consider whether a recommendation or lint-time warning ("requests in compensation should specify a timeout") is worth adding to the documentation, even if not enforced by the type system.
 
-**Q13. Interaction between request timeout and handler in-flight response.**
-The race condition where a handler returns a response at the exact moment the workflow's timeout fires is described but the resolution ("whichever commits first wins") is not specified in terms of concrete transaction semantics. The engine implementation needs to handle this atomically. The specific locking or CAS strategy for this race should be designed explicitly.
+**Q6. Interaction between request timeout and handler in-flight response.**
+The race condition where a handler returns a response at the exact moment the workflow's timeout fires needs an explicit resolution in terms of concrete transaction semantics. "Whichever commits first wins" is the intent, but the specific locking or CAS strategy for this race must be designed explicitly as part of the implementation.
 
 ---
 
 ### Topics
 
-**Q14. `hashtext()` collision for per-topic advisory locks.**
-`hashtext()` returns a 32-bit integer. `pg_advisory_xact_lock` takes a 64-bit key (two 32-bit ints, or one 64-bit int). Two topic names that collide in `hashtext()` would serialize inserts against each other unnecessarily (false contention). The probability is low but non-zero. A stronger hash (e.g. `('x' || md5(topic_name))::bit(64)::bigint`) removes this risk and should be used instead of `hashtext()`.
+**Q7. Consumer stuck on a failing record.**
+If a topic consumer handler keeps failing on a specific record (e.g. a malformed payload that always causes the handler to throw), the consumer's offset never advances. The consumer is permanently stuck. The `retryPolicy` has no `maxAttempts` for topic consumers. There needs to be either: a `maxAttempts` option with a dead-letter path for the record, or explicit documentation that this is the user's responsibility (write defensive handlers). The current document is silent.
 
-**Q15. Consumer stuck on a failing record.**
-If a topic consumer handler keeps failing on a specific record (e.g. a malformed payload that always causes the handler to throw), the consumer's offset never advances. The consumer is permanently stuck. The document's `retryPolicy` has no `maxAttempts` for topic consumers. There needs to be either: a `maxAttempts` option with a dead-letter path for the record, or explicit documentation that this is the user's responsibility (write defensive handlers). The current document is silent.
-
-**Q16. Delivery guarantee semantics.**
+**Q8. Delivery guarantee semantics.**
 The document implies at-least-once delivery for topic consumers (failed handlers retry). It does not explicitly state the delivery guarantee or whether exactly-once processing is achievable or a goal. This should be stated explicitly.
 
-**Q17. Topic retention independent of consumer progress.**
-The cleanup job deletes records only when all registered consumers have advanced past them. If one consumer is permanently offline (its process died and was never restarted), records accumulate indefinitely regardless of retention config. Should there be a max retention window independent of consumer progress? If so, what happens to consumers that are behind the retention window when they reconnect — do they resume from the oldest available record, or is the gap a terminal error?
+**Q9. Topic retention independent of consumer progress.**
+The cleanup job deletes records only when all registered consumers for the topic have advanced past them. If one consumer is permanently offline, records accumulate indefinitely regardless of retention config. Should there be a max retention window independent of consumer progress? If so, what happens to consumers that are behind the retention window when they reconnect — do they resume from the oldest available record, or is the gap a terminal error?
 
-**Q18. Advisory lock namespace for consumer identity.**
-The document uses `pg_advisory_lock(namespace_hash, consumer_pk)` for exclusive consumer identity. `namespace_hash` is not defined. It needs to be a stable value that (a) does not collide with advisory locks used elsewhere in the engine and (b) is consistent across restarts. A hardcoded constant derived from e.g. a hash of the string `"topic_consumer"` is the simplest approach, but this needs to be decided explicitly.
+**Q10. Advisory lock key stability for consumer identity.**
+The session-level advisory lock used for exclusive consumer identity must use a key that (a) does not collide with advisory locks used elsewhere in the engine and (b) is stable across restarts. The specific key construction strategy is an implementation concern left to the implementor.
+
+**Q11 (new). Behavior when `registrationRetry.maxAttempts` is exhausted.**
+When `maxAttempts` is set on `registrationRetry` and all attempts fail (all fire `onError`), the subscription becomes permanently inactive without being explicitly unregistered. Is there a final terminal notification to the caller? Currently `onError` fires on each attempt including the last — the user must track attempt count themselves if they want to know they've hit the ceiling. Consider whether a distinct `onMaxAttemptsExhausted` callback or a final `onError` call with an `isTerminal: true` flag would improve ergonomics, or whether documenting that the user should call `unregister()` in `onError` when they want to stop is sufficient.
 
 ---
 
 ### Attributes
 
-**Q19. Version number at initial state.**
+**Q12. Version number at initial state.**
 The SQL schema specifies `version BIGINT NOT NULL DEFAULT 1` but the initial "never set" state conceptually has no version. The `get()` API should treat version 0 as "not yet set" and version >= 1 as "set at least once." This needs to be consistent between the schema, the `get()` return type, and the `afterVersion` semantics. Currently there is a potential inconsistency in the document.
 
-**Q20. Attribute cleanup on workflow termination.**
+**Q13. Attribute cleanup on workflow termination.**
 The document does not specify whether attribute rows are deleted when the workflow terminates, or retained for the duration of the workflow's retention period (consistent with streams and events). This needs an explicit decision. Retaining them through the retention window is likely the correct choice for consistency.
 
-**Q21. Concurrent `set()` calls from parallel branches.**
+**Q14. Concurrent `set()` calls from parallel branches.**
 If two concurrent workflow branches both call `ctx.attributes.X.set()` simultaneously, the outcome is last-write-wins based on transaction commit order. This is probably acceptable, but it means the `version` counter may not reflect "number of logical updates" if both increments race. The behavior should be stated explicitly in the documentation so developers know what to expect.
 
-**Q22. `LISTEN/NOTIFY` scalability.**
+**Q15. `LISTEN/NOTIFY` scalability.**
 The `get(afterVersion)` implementation relies on `LISTEN/NOTIFY` for instant change delivery. Under high concurrency (many external clients watching many attributes simultaneously) this can become a bottleneck at the Postgres side. This is a known limitation of the approach and worth documenting. An alternative (polling with exponential backoff) could be offered as a fallback.
 
-**Q23. `never` detection mechanism.**
+**Q16. `never` detection mechanism.**
 The `get()` call must return `{ status: "never" }` when the workflow terminates without setting the attribute. Implementing this requires the external client to detect workflow termination while blocked on a `LISTEN/NOTIFY` wait. The mechanism for this (e.g. subscribe to a workflow-completed notification alongside the attribute notification, or poll workflow status alongside) is not specified and is non-trivial to implement correctly.
 
 ---
 
 ### Compensation Model Correction
 
-**Q24. This section is the most uncertain part of the document.**
+**Q17. This section is the most uncertain part of the document.**
 The "eager compensation at failure time" model represents a meaningful behavioral change to the engine's execution model. The following sub-questions are all unresolved:
 
 - **Ordering**: When a step fails and is caught with `.failure()`, at what point exactly does the eager compensation execute? Before the `.failure()` callback runs? After? The ordering matters because the compensation callback may itself use `ctx` operations that interact with subsequent workflow code.
