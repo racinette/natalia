@@ -713,7 +713,9 @@ Attempt rows cascade-delete automatically.
 
 ### Purpose
 
-A global ordered append log per topic, with named independent consumers and optional metadata filtering. Multiple workflows can publish to the same topic. Multiple named consumers independently track their own read position (offset). This is the primitive for cross-workflow audit trails, event sourcing, and triggering downstream systems.
+A global ordered append log per topic, with named independent consumers. Multiple workflows can publish to the same topic. Multiple named consumers independently track their own read position. This is the primitive for cross-workflow audit trails, event sourcing, and triggering downstream systems.
+
+Topic consumers have **at-least-once** delivery semantics: a failed handler is retried, and the offset only advances after successful processing. Exactly-once processing is achievable if the handler is idempotent, but the engine does not enforce it.
 
 This is distinct from workflow-instance `streams`: streams are per-instance output logs. Topics are global, multi-producer, and have persistent consumer offset tracking.
 
@@ -723,7 +725,8 @@ This is distinct from workflow-instance `streams`: streams are per-instance outp
 const auditTopic = defineTopic({
   name: "auditEvents",
   record: z.object({ type: z.string(), payload: z.unknown() }),
-  metadata: z.object({ tenantId: z.string(), type: z.string() }), // optional but typical
+  metadata: z.object({ tenantId: z.string(), type: z.string() }), // optional; stored per-record, readable in handler
+  retentionSeconds: 86400 * 7,  // records are kept at least this long regardless of consumer progress
 });
 ```
 
@@ -751,53 +754,84 @@ defineWorkflow({
 
 ### Client registration API
 
-Named consumers track independent offsets. Consumer identity is enforced via a session-level Postgres advisory lock (described below).
+Named consumers track independent offsets. Consumer identity is enforced via a session-level Postgres advisory lock (described below). There is no server-side record filtering at the consumer level — all filtering is the handler's responsibility.
 
 ```typescript
-// Error types for topic consumer registration
+// --- Registration error types ---
+
 type TopicConsumerAlreadyActiveError = {
   type: "consumer_already_active";
   consumerName: string;
   topicName: string;
 };
 
-type RegisterTopicConsumerError = TopicConsumerAlreadyActiveError;  // union — extendable
+type RegisterTopicConsumerError = TopicConsumerAlreadyActiveError; // union — extendable
 
-// Registration options
-interface RegisterTopicConsumerOpts {
-  filter?: (q: SearchQuery<{ metadata: TopicMetadata }>) => SearchQueryNode;
+type RegisterTopicConsumerErrorEvent = {
+  error: RegisterTopicConsumerError;
+  attempt: number;      // 1-indexed
+  isTerminal: boolean;  // true when registrationRetry.maxAttempts is set and this is the last attempt
+};
+
+// --- Consume-phase error types ---
+
+type TopicConsumerConsumeErrorEvent<TRecord> =
+  | {
+      type: "attemptsExhausted";
+      record: TRecord;
+      attempts: AttemptAccessor;
+    }
+  | {
+      type: "offsetExpired";
+      consumerLastId: bigint;  // the offset the consumer held when records were deleted
+      lastDeletedId: bigint;   // highest id that was swept away
+      deletedCount: number;    // number of records swept since last check
+    };
+
+// --- Registration options ---
+
+interface RegisterTopicConsumerOpts<TRecord> {
   timeout?: number;
   retryPolicy?: {
     intervalMs: number;
     backoffRate?: number;
     maxIntervalMs?: number;
+    maxAttempts?: number;   // when exhausted, onConsumeError fires with type: "attemptsExhausted"
   };
   // Controls how the engine retries advisory lock acquisition if another process already holds it.
-  // Each failed attempt fires onError. When maxAttempts is exhausted the subscription goes
-  // permanently inactive — call unregister() to clean up.
+  // Each failed attempt fires onRegisterError. When maxAttempts is exhausted the subscription
+  // goes permanently inactive — call the returned Unsubscribe to clean up.
   registrationRetry?: {
     intervalMs: number;
     backoffRate?: number;
     maxIntervalMs?: number;
-    maxAttempts?: number;       // omit for indefinite retrying
+    maxAttempts?: number;   // omit for indefinite retrying
   };
-  onError?: (error: RegisterTopicConsumerError) => void;
+  // Observational. Fires on every failed lock acquisition attempt.
+  onRegisterError?: (event: RegisterTopicConsumerErrorEvent) => void;
+  // Decisional. Fires when handler exhausts its retries OR when the consumer comes back online
+  // to discover its offset has expired. Must return "skip" or "halt" (defaults to "halt" on throw).
+  // "skip" → advance past the problem and continue; "halt" → stop the consumer permanently.
+  onConsumeError?: (
+    event: TopicConsumerConsumeErrorEvent<TRecord>
+  ) => "skip" | "halt" | Promise<"skip" | "halt">;
 }
 
 const unregister = client.registerTopicConsumer(
   auditTopic,
   "analyticsConsumer",   // stable consumer name — globally unique per topic
   async (record) => {
-    // record is z.output<typeof auditTopic.record>
+    // record is z.output<typeof auditTopic.record> — filter here if needed
+    if (record.metadata?.tenantId !== "acme") return;
     await ingestToWarehouse(record);
   },
   {
-    filter: (q) => q.metadata.type.eq("booking.confirmed"),
     timeout: 10,
     retryPolicy: {
       intervalMs: 1000,
       backoffRate: 2,
       maxIntervalMs: 30_000,
+      maxAttempts: 5,
     },
     registrationRetry: {
       intervalMs: 5000,
@@ -805,10 +839,27 @@ const unregister = client.registerTopicConsumer(
       maxIntervalMs: 60_000,
       // maxAttempts omitted — retries indefinitely until the lock is acquired
     },
-    onError: (error) => {
-      // error is RegisterTopicConsumerError — currently only TopicConsumerAlreadyActiveError
-      logger.warn("Topic consumer lock conflict", error);
-      // fires on every failed lock attempt; call unregister() to stop retrying
+    onRegisterError: (event) => {
+      logger.warn("Topic consumer lock conflict", event.error);
+      if (event.isTerminal) {
+        logger.error("Consumer registration permanently failed — giving up");
+      }
+    },
+    onConsumeError: async (event) => {
+      if (event.type === "attemptsExhausted") {
+        logger.error("Handler failed repeatedly for record", event.record);
+        return "skip"; // advance offset past this record; equivalent to dead-lettering it
+      }
+      if (event.type === "offsetExpired") {
+        logger.error(
+          `Consumer offset expired: ${event.deletedCount} records were swept away`,
+          event,
+        );
+        // "skip" → advance to the oldest surviving record and continue
+        // "halt" → stop; operator must call client.resetTopicConsumerOffset() to resume
+        return "skip";
+      }
+      return "halt";
     },
   },
 );
@@ -816,28 +867,27 @@ const unregister = client.registerTopicConsumer(
 unregister(); // stops consuming and cancels any pending registration retries
 ```
 
-- Multiple `registerTopicConsumer` calls for the same topic with different consumer names are fully independent. Each has its own offset. Overlapping filters between named consumers are intentional — each consumer processes matching records independently.
-- Multiple `registerTopicConsumer` calls for the same topic with the SAME consumer name, from different processes, are prevented by the advisory lock. Only one active instance per named consumer is permitted at a time. Lock acquisition failures are surfaced to the `onError` callback and retried according to `registrationRetry`.
+- Multiple `registerTopicConsumer` calls for the same topic with different consumer names are fully independent. Each has its own offset. Different consumers may apply different in-handler filters to the same stream of records.
+- Multiple `registerTopicConsumer` calls for the same topic with the SAME consumer name, from different processes, are prevented by the advisory lock. Only one active instance per named consumer is permitted at a time. Lock acquisition failures are surfaced via `onRegisterError` and retried according to `registrationRetry`.
+- When `onConsumeError` returns `"halt"`, the consumer stops permanently for this process lifetime. If `type` was `"offsetExpired"`, the `offset_expired` flag on the consumer row is NOT cleared. On next restart the consumer checks the flag again and fires `onConsumeError` again until `"skip"` is returned or `client.resetTopicConsumerOffset()` is used to manually reposition the offset.
+- `client.resetTopicConsumerOffset(topic, consumerName, newId)` repositions the consumer's `last_id` and clears the `offset_expired` flag. Used for operator recovery after a halt.
 
 ### Consumer identity and exclusive locking
 
-Implement a `topic_consumers` table:
+`topic_consumers` schema:
 
 ```sql
 CREATE TABLE topic_consumers (
-  id   SERIAL PRIMARY KEY,
-  name TEXT NOT NULL,
-  topic_name TEXT NOT NULL,
+  id             SERIAL PRIMARY KEY,
+  name           TEXT NOT NULL,
+  topic_name     TEXT NOT NULL,
+  offset_expired BOOLEAN NOT NULL DEFAULT FALSE,
+  last_seen_at   TIMESTAMPTZ,
   UNIQUE (topic_name, name)
 );
 ```
 
-On `registerTopicConsumer`:
-1. Upsert a row for `(topic_name, consumer_name)` to get the consumer's `id`.
-2. Attempt to acquire a **session-level** advisory lock unique to this (topic, consumer) pair. This lock is held for the lifetime of the connection. If the process dies, the connection closes, the lock releases, and another process can take over.
-3. If the lock cannot be acquired (another process holds it), a `TopicConsumerAlreadyActiveError` is emitted to the `onError` callback and the acquisition is retried according to `registrationRetry`. The call itself returns the `Unsubscribe` function immediately — lock acquisition proceeds asynchronously in the background.
-
-Consumer offsets are stored in a `topic_consumer_offsets` table:
+Consumer offsets are stored in a separate table:
 
 ```sql
 CREATE TABLE topic_consumer_offsets (
@@ -846,6 +896,22 @@ CREATE TABLE topic_consumer_offsets (
   PRIMARY KEY (consumer_id)
 );
 ```
+
+**On `registerTopicConsumer`:**
+
+1. Upsert to ensure the row exists, then read back the assigned `id` and the current `offset_expired` flag:
+   ```sql
+   INSERT INTO topic_consumers (topic_name, name) VALUES ($1, $2) ON CONFLICT DO NOTHING;
+   SELECT id, offset_expired FROM topic_consumers WHERE topic_name = $1 AND name = $2;
+   ```
+2. Attempt `pg_try_advisory_lock($namespace_id, $consumer_id)` (session-level). The advisory lock is namespaced by the engine's internal namespace ID to avoid collisions with other engine locks.
+   - If the lock cannot be acquired (another process holds it): emit `RegisterTopicConsumerErrorEvent` to `onRegisterError` and schedule a retry per `registrationRetry`. The `Unsubscribe` function is returned immediately — lock acquisition proceeds asynchronously.
+3. Once the lock is acquired, check the `offset_expired` flag:
+   - If `offset_expired = TRUE`: assemble the `offsetExpired` event (fetch `last_id` from `topic_consumer_offsets` and the sweep metadata stored on the consumer row — see sweeper section) and call `onConsumeError`.
+     - `"skip"` → clear `offset_expired`, advance offset to `lastDeletedId + 1`, begin polling normally.
+     - `"halt"` (or handler throws) → log the halt; the consumer does NOT begin polling. `offset_expired` remains `TRUE`. On next reconnect the same check fires again.
+4. Begin polling `topic_records` and processing records.
+5. Heartbeat: periodically `UPDATE topic_consumers SET last_seen_at = NOW() WHERE id = $consumer_id`. This is used by the sweeper to distinguish live consumers from stale ones.
 
 ### Insert ordering guarantee
 
@@ -875,12 +941,11 @@ CREATE TABLE topic_records (
 CREATE INDEX ON topic_records (topic_name, id);
 ```
 
-Consumer polling:
+Consumer polling (no server-side filter; handlers filter in code):
 ```sql
 SELECT * FROM topic_records
 WHERE topic_name = $1
   AND id > $last_id
-  AND ($filter IS NULL OR metadata @> $filter)
 ORDER BY id ASC
 LIMIT $batch_size;
 ```
@@ -890,7 +955,71 @@ Update position after processing:
 UPDATE topic_consumer_offsets SET last_id = $new_id WHERE consumer_id = $id;
 ```
 
-Cleanup: a background coroutine (configurable interval, default hourly) deletes records where all registered consumers for the topic have advanced past the record's `id`, and the record is older than the configured retention window.
+**Liveness-based retention sweeper** (runs on a configurable interval, default hourly, per topic):
+
+The sweeper classifies each registered consumer for the topic as either **live** or **dead**:
+- A consumer is considered **dead** if `pg_try_advisory_lock($namespace_id, consumer.id)` succeeds (i.e. no live process holds its lock) **AND** `last_seen_at` is older than a configurable grace period (`consumerGraceSeconds`, default 5 minutes). The grace period guards against brief network drops or slow-starting processes.
+- A consumer is considered **live** otherwise (lock not acquired, or `last_seen_at` is recent).
+
+For dead consumers the sweeper releases the acquired advisory lock immediately after classification (`pg_advisory_unlock`).
+
+After classifying all consumers the sweeper determines the deletion boundary:
+
+```sql
+-- $min_live_offset = MIN(last_id) across all LIVE consumers for this topic
+--                    NULL if there are no live consumers at all
+-- $min_created_at  = NOW() - INTERVAL '$retentionSeconds seconds'
+
+DELETE FROM topic_records
+WHERE topic_name = $1
+  AND ($min_live_offset IS NULL OR id < $min_live_offset)
+  AND created_at < $min_created_at
+RETURNING id;
+```
+
+Both conditions must hold simultaneously:
+- The live-consumer guard ensures records still needed by any live consumer are never deleted.
+- The `retentionSeconds` guard ensures records are kept for at least the configured minimum time, even if all consumers are temporarily offline.
+
+After deletion, the sweeper marks dead consumers whose offset is behind the highest deleted ID:
+
+```sql
+-- $max_deleted_id  = MAX(id) from the RETURNING clause above
+-- $dead_consumer_ids = ids of consumers classified as dead
+
+UPDATE topic_consumers tc
+SET
+  offset_expired = TRUE,
+  last_deleted_id = $max_deleted_id,  -- stored for the onConsumeError event
+  deleted_count = (
+    SELECT COUNT(*) FROM topic_records_deleted_this_run
+    WHERE id > (SELECT last_id FROM topic_consumer_offsets WHERE consumer_id = tc.id)
+  )
+WHERE tc.id = ANY($dead_consumer_ids)
+  AND EXISTS (
+    SELECT 1 FROM topic_consumer_offsets
+    WHERE consumer_id = tc.id AND last_id < $max_deleted_id
+  );
+```
+
+A dead consumer whose offset was already ahead of `$max_deleted_id` is unaffected — the sweeper does not set `offset_expired` for it.
+
+**`client.resetTopicConsumerOffset(topic, consumerName, newId)`:**
+
+Used by operators to recover a halted consumer. Repositions the offset and clears the flag atomically:
+
+```sql
+UPDATE topic_consumer_offsets tco
+SET last_id = $new_id
+FROM topic_consumers tc
+WHERE tco.consumer_id = tc.id
+  AND tc.topic_name = $topic_name
+  AND tc.name = $consumer_name;
+
+UPDATE topic_consumers
+SET offset_expired = FALSE, last_deleted_id = NULL, deleted_count = NULL
+WHERE topic_name = $topic_name AND name = $consumer_name;
+```
 
 ---
 
@@ -1230,6 +1359,7 @@ All subscription methods are **synchronous**. They register intent in the curren
 | Method | Returns | Notes |
 |---|---|---|
 | `client.deadLetters(def)` | `DeadLetterHandle<TMessage>` | Queue dead-letter inspection and management |
+| `client.resetTopicConsumerOffset(def, consumerName, newId)` | `Promise<void>` | Reposition a consumer's offset and clear `offset_expired`; used for operator recovery after a halt |
 
 ### New top-level exports
 
@@ -1247,7 +1377,9 @@ All subscription methods are **synchronous**. They register intent in the curren
 - `AttemptAccessor` (type) — replaces `StepErrorAccessor`
 - `Unsubscribe` (type) — `() => void`; returned by all subscription methods
 - `RegisterTopicConsumerError` (type) — union of logical consumer registration errors
+- `RegisterTopicConsumerErrorEvent` (type) — wraps `RegisterTopicConsumerError` with `attempt` and `isTerminal` fields
 - `TopicConsumerAlreadyActiveError` (type)
+- `TopicConsumerConsumeErrorEvent` (type) — union of `attemptsExhausted` and `offsetExpired` events
 - `ScheduleOptions` (type) — `delaySeconds` / `scheduledAt` for deferred workflow starts
 - `IWorkflowConnection` (type) — opaque checked-out DB connection for caller reuse
 - `IWorkflowTransaction` (type) — opaque active transaction handle for caller enlistment
@@ -1263,6 +1395,8 @@ All subscription methods are **synchronous**. They register intent in the curren
 - `retryPolicy` interval fields renamed from `intervalSeconds` / `maxIntervalSeconds` to `intervalMs` / `maxIntervalMs` (milliseconds, consistent with TypeScript's convention).
 - `RetentionSettings` renamed to `RetentionSetter<TStatus extends string>`. All existing usages become `RetentionSetter<"complete" | "failed" | "terminated">`. The `setRetention` method on `WorkflowHandleExternal` is updated accordingly.
 - `ctx.requests.X(payload)` (no options) is no longer valid. `timeout: number | null` is now required.
+- `registerTopicConsumer` `filter` option removed. All record filtering must be performed in the handler function.
+- `registerTopicConsumer` `onError` callback renamed to `onRegisterError`; its argument type changed from `RegisterTopicConsumerError` to `RegisterTopicConsumerErrorEvent` (wraps the error with `attempt` and `isTerminal` fields). A separate `onConsumeError` callback was added for handler-phase and offset-expiry errors.
 
 ### Connection and transaction model
 
@@ -1296,47 +1430,28 @@ Operations that wait for external state — `attribute.get(afterVersion)`, `chan
 
 ## Open Questions and Implementation Concerns
 
-### Topics
-
-**Q1. Consumer stuck on a failing record.**
-If a topic consumer handler keeps failing on a specific record (e.g. a malformed payload that always causes the handler to throw), the consumer's offset never advances. The consumer is permanently stuck. The `retryPolicy` has no `maxAttempts` for topic consumers. There needs to be either: a `maxAttempts` option with a dead-letter path for the record, or explicit documentation that this is the user's responsibility (write defensive handlers). The current document is silent.
-
-**Q2. Delivery guarantee semantics.**
-The document implies at-least-once delivery for topic consumers (failed handlers retry). It does not explicitly state the delivery guarantee or whether exactly-once processing is achievable or a goal. This should be stated explicitly.
-
-**Q3. Topic retention independent of consumer progress.**
-The cleanup job deletes records only when all registered consumers for the topic have advanced past them. If one consumer is permanently offline, records accumulate indefinitely regardless of retention config. Should there be a max retention window independent of consumer progress? If so, what happens to consumers that are behind the retention window when they reconnect — do they resume from the oldest available record, or is the gap a terminal error?
-
-**Q4. Advisory lock key stability for consumer identity.**
-The session-level advisory lock used for exclusive consumer identity must use a key that (a) does not collide with advisory locks used elsewhere in the engine and (b) is stable across restarts. The specific key construction strategy is an implementation concern left to the implementor.
-
-**Q5. Behavior when `registrationRetry.maxAttempts` is exhausted.**
-When `maxAttempts` is set on `registrationRetry` and all attempts fail (all fire `onError`), the subscription becomes permanently inactive without being explicitly unregistered. Is there a final terminal notification to the caller? Currently `onError` fires on each attempt including the last — the user must track attempt count themselves if they want to know they've hit the ceiling. Consider whether a distinct `onMaxAttemptsExhausted` callback or a final `onError` call with an `isTerminal: true` flag would improve ergonomics, or whether documenting that the user should call `unregister()` in `onError` when they want to stop is sufficient.
-
----
-
 ### Attributes
 
-**Q6. Version number at initial state.**
+**Q1. Version number at initial state.**
 The SQL schema specifies `version BIGINT NOT NULL DEFAULT 1` but the initial "never set" state conceptually has no version. The `get()` API should treat version 0 as "not yet set" and version >= 1 as "set at least once." This needs to be consistent between the schema, the `get()` return type, and the `afterVersion` semantics. Currently there is a potential inconsistency in the document.
 
-**Q7. Attribute cleanup on workflow termination.**
+**Q2. Attribute cleanup on workflow termination.**
 The document does not specify whether attribute rows are deleted when the workflow terminates, or retained for the duration of the workflow's retention period (consistent with streams and events). This needs an explicit decision. Retaining them through the retention window is likely the correct choice for consistency.
 
-**Q8. Concurrent `set()` calls from parallel branches.**
+**Q3. Concurrent `set()` calls from parallel branches.**
 If two concurrent workflow branches both call `ctx.attributes.X.set()` simultaneously, the outcome is last-write-wins based on transaction commit order. This is probably acceptable, but it means the `version` counter may not reflect "number of logical updates" if both increments race. The behavior should be stated explicitly in the documentation so developers know what to expect.
 
-**Q9. `LISTEN/NOTIFY` scalability.**
+**Q4. `LISTEN/NOTIFY` scalability.**
 The `get(afterVersion)` implementation relies on `LISTEN/NOTIFY` for instant change delivery. Under high concurrency (many external clients watching many attributes simultaneously) this can become a bottleneck at the Postgres side. This is a known limitation of the approach and worth documenting. An alternative (polling with exponential backoff) could be offered as a fallback.
 
-**Q10. `never` detection mechanism.**
+**Q5. `never` detection mechanism.**
 The `get()` call must return `{ status: "never" }` when the workflow terminates without setting the attribute. Implementing this requires the external client to detect workflow termination while blocked on a `LISTEN/NOTIFY` wait. The mechanism for this (e.g. subscribe to a workflow-completed notification alongside the attribute notification, or poll workflow status alongside) is not specified and is non-trivial to implement correctly.
 
 ---
 
 ### Compensation Model Correction
 
-**Q11. This section is the most uncertain part of the document.**
+**Q6. This section is the most uncertain part of the document.**
 The "eager compensation at failure time" model represents a meaningful behavioral change to the engine's execution model. The following sub-questions are all unresolved:
 
 - **Ordering**: When a step fails and is caught with `.failure()`, at what point exactly does the eager compensation execute? Before the `.failure()` callback runs? After? The ordering matters because the compensation callback may itself use `ctx` operations that interact with subsequent workflow code.
@@ -1355,5 +1470,5 @@ The "eager compensation at failure time" model represents a meaningful behaviora
 
 ### Steps
 
-**Q12. Infinite retries and the `.failure()` builder.**
+**Q7. Infinite retries and the `.failure()` builder.**
 A step configured with no `maxAttempts` (infinite retries) and no `deadlineSeconds` can never reach an exhausted state. The `.failure()` builder is always present on `StepCall` but is unreachable in this configuration — a silent dead code path. The type system does not currently model this distinction. Options: (a) make `.failure()` only available when `maxAttempts` is finite or `deadlineSeconds` is set, requiring the retry policy to be part of the `StepCall` type; (b) require that a step definition or call-site policy must specify either `maxAttempts` or a deadline before `.failure()` is chainable; (c) document the limitation and provide a lint/runtime warning. Option (a) would be the most type-safe but adds significant complexity to the call type machinery.
