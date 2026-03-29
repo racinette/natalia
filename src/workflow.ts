@@ -600,7 +600,7 @@ export function defineWorkflow<
         );
       }
     } else {
-      throw new Error("retention must be a number or RetentionSettings object");
+      throw new Error("retention must be a number or RetentionSetter object");
     }
   }
 

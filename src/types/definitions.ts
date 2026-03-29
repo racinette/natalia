@@ -383,18 +383,13 @@ export type WorkflowInvocationBaseOptions<TArgsInput, TMetadataInput> = {
 // =============================================================================
 
 /**
- * Retention settings for workflow garbage collection.
- * Specifies how long workflows should be kept in the database after reaching
- * terminal states. All durations are in seconds. null means never delete.
+ * Per-status retention policy. Maps each terminal status to how long rows at
+ * that status should be kept in the database (seconds). null means never delete.
+ * Omitting a status means no retention override for that status.
  */
-export interface RetentionSettings {
-  /** Retention period for completed workflows (seconds) */
-  readonly complete: number | null;
-  /** Retention period for failed workflows (seconds) */
-  readonly failed: number | null;
-  /** Retention period for terminated workflows (seconds) */
-  readonly terminated: number | null;
-}
+export type RetentionSetter<TStatus extends string> = {
+  readonly [K in TStatus]?: number | null;
+};
 
 // =============================================================================
 // STATE FACTORY
@@ -516,10 +511,10 @@ export interface WorkflowDefinition<
    * Workflow retention policy for garbage collection.
    *
    * - If a number: Same retention for all terminal states (seconds).
-   * - If RetentionSettings: Different retention per terminal state (seconds).
+   * - If RetentionSetter: Different retention per terminal state (seconds).
    * - If undefined: Workflows are never garbage collected.
    */
-  readonly retention?: number | RetentionSettings;
+  readonly retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
 
   /**
    * Passivation threshold for this workflow definition.

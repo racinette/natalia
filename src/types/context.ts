@@ -13,7 +13,7 @@ import type {
   RngAccessors,
   RetryPolicyOptions,
   DeadlineOptions,
-  RetentionSettings,
+  RetentionSetter,
   WorkflowInvocationBaseOptions,
 } from "./definitions";
 import type {
@@ -1174,7 +1174,7 @@ export type AttachedChildWorkflowStartOptions<W extends AnyWorkflowHeader> =
  */
 export type DetachedStartOptions<W extends AnyWorkflowHeader> =
   ChildWorkflowStartOptions<W> & {
-    retention?: number | RetentionSettings;
+    retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
   };
 
 /**

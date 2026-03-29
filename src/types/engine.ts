@@ -3,7 +3,7 @@ import type {
   ChannelDefinitions,
   StreamDefinitions,
   EventDefinitions,
-  RetentionSettings,
+  RetentionSetter,
   WorkflowInvocationBaseOptions,
   DeadlineOptions,
   AnyPublicWorkflowHeader,
@@ -243,7 +243,7 @@ export interface WorkflowHandleExternal<
   /**
    * Update the retention policy for this workflow instance.
    */
-  setRetention(retention: number | Partial<RetentionSettings>): Promise<void>;
+  setRetention(retention: number | RetentionSetter<"complete" | "failed" | "terminated">): Promise<void>;
 }
 
 // =============================================================================
@@ -260,7 +260,7 @@ export type StartWorkflowOptions<
   /**
    * Override retention policy for this workflow instance.
    */
-  retention?: number | RetentionSettings;
+  retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
 } & DeadlineOptions;
 
 // =============================================================================

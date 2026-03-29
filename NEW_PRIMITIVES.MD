@@ -135,7 +135,7 @@ const notificationsQueue = defineQueue({
   name: "notifications",                              // globally unique, stable string
   message: z.object({ userId: z.string(), body: z.string() }),
   defaultTTL: 3600,                                   // optional; seconds before unclaimed message expires
-  retention: {
+  retention: {                                        // RetentionSetter<"processed" | "deadLettered">
     processed: 86400,                                 // seconds; null = never delete
     deadLettered: 86400 * 30,                         // seconds; null = never delete
   },
@@ -145,7 +145,7 @@ const notificationsQueue = defineQueue({
 - `name` — the queue's DB namespace. Must be globally unique across all `defineQueue` calls registered with an engine instance.
 - `message` — Zod schema for the payload. Input type used for publishing (encoded to JSONB); output type delivered to handler (decoded).
 - `defaultTTL` — optional. Seconds after publish time before an unclaimed message is swept to `status = 'dead_lettered'` with `dead_letter_reason = 'ttl_expired'`. If absent, TypeScript **requires** an explicit `ttl` on every `publish` call (see TTL semantics below).
-- `retention.processed` — how long rows with `status = 'processed'` are retained before the sweeper deletes them. `null` means never delete.
+- `retention.processed` — how long rows with `status = 'processed'` are retained before the sweeper deletes them. `null` means never delete. Uses `RetentionSetter<"processed" | "deadLettered">`.
 - `retention.deadLettered` — how long rows with `status = 'dead_lettered'` are retained before the sweeper deletes them. `null` means never delete.
 
 ### TTL semantics
@@ -483,6 +483,11 @@ const humanReview = defineRequest({
   name: "humanReview",
   request: z.object({ context: z.string(), data: z.unknown() }),
   response: z.object({ decision: z.enum(["approve", "reject"]), note: z.string() }),
+  retention: {                                        // RetentionSetter<"resolved" | "timedOut" | "cancelled">
+    resolved:   86400,                                // seconds; null = never delete
+    timedOut:   86400 * 7,
+    cancelled:  3600,
+  },
 });
 ```
 
@@ -518,7 +523,9 @@ interface TimedRequestCall<TResponse, TTimeout = never, TFinal = TResponse, HasC
 
 Both types are proper Tier 1: they carry the `ExecutionRoot` brand and require `.resolve(ctx)`. Neither has `.failure()` or `.retry()`. `.complete()` transforms the response before it propagates into the calling workflow — analogous to `.complete()` on `StepCall`, but applied only on the success path (not the timeout path).
 
-The return type of `ctx.requests.X(payload)` is `UntimedRequestCall`; `ctx.requests.X(payload, { timeout: N })` returns `TimedRequestCall`.
+`timeout` is a **required** option. Passing `null` means the request waits indefinitely and returns `UntimedRequestCall`; passing a number returns `TimedRequestCall`.
+
+The return type of `ctx.requests.X(payload, { timeout: null })` is `UntimedRequestCall`; `ctx.requests.X(payload, { timeout: N })` returns `TimedRequestCall`.
 
 **Without timeout — `UntimedRequestCall<TResponse>`**
 
@@ -526,14 +533,14 @@ Available builders: `.compensate()` and `.complete()`. The request waits indefin
 
 ```typescript
 const result = await ctx.requests
-  .humanReview({ context: "...", data: signals })
+  .humanReview({ context: "...", data: signals }, { timeout: null })
   .compensate(async (ctx, result) => {
     // result: RequestCompensationResult<TResponse>
     if (result.status === "complete") {
-      await ctx.requests.revokeDecision({ context: "..." }).resolve(ctx);
+      await ctx.requests.revokeDecision({ context: "..." }, { timeout: null }).resolve(ctx);
     } else {
       // result.status === "attempted"
-      await ctx.requests.cancelPendingReview({ context: "..." }).resolve(ctx);
+      await ctx.requests.cancelPendingReview({ context: "..." }, { timeout: null }).resolve(ctx);
     }
   })
   .resolve(ctx);
@@ -557,7 +564,7 @@ const result = await ctx.requests
 // result: "approve" | "reject" | null
 ```
 
-- The `timeout` option specifies how long the workflow waits for any response. It is the ONLY execution parameter the caller controls. Retry behavior is entirely the handler's concern.
+- The `timeout` option is **required** (`number | null`). `null` means wait indefinitely; a number sets the deadline in seconds. This is the ONLY execution parameter the caller controls. Retry behavior is entirely the handler's concern.
 - `.timeout(cb)` receives no arguments — there is no "failure reason" to communicate. Timeout is the only non-success outcome.
 - `.complete(cb)` transforms only the response value; the timeout path value is unaffected.
 - Each worker process registers one handler per request definition. Multiple worker processes each registering a handler for the same definition compete — any process can fulfill the request. If different fulfillment paths are needed (e.g. automated vs. human), use separate request definitions.
@@ -637,13 +644,68 @@ unregister();
 
 ### Postgres implementation
 
-- Table: `requests(id SERIAL, request_name TEXT, payload JSONB, response JSONB, status TEXT, ever_claimed BOOLEAN DEFAULT FALSE, claimed_at TIMESTAMPTZ, resolved_at TIMESTAMPTZ, created_at TIMESTAMPTZ)`
-- `ever_claimed` is set to `TRUE` the first time any worker acquires the row lock. This is the flag the engine checks for compensation triggering.
-- Workers use `SELECT FOR UPDATE SKIP LOCKED WHERE request_name = $1 AND status = 'pending'`.
-- On handler success: set `response`, set `status = 'resolved'`, notify the waiting workflow.
-- On handler failure: release lock, re-eligible after backoff.
-- On workflow timeout: engine checks `ever_claimed`. If `FALSE`, delete row, skip compensation. If `TRUE`, trigger eager compensation.
-- Admin direct-set: update `response`, set `status = 'resolved'`, notify the waiting workflow (same path as handler success).
+**`requests` table:**
+
+```sql
+CREATE TABLE requests (
+  id                      BIGSERIAL PRIMARY KEY,
+  request_name            TEXT NOT NULL,
+  payload                 JSONB NOT NULL,
+  response                JSONB,
+  status                  TEXT NOT NULL DEFAULT 'pending',
+  claimed_at              TIMESTAMPTZ,
+  resolved_at             TIMESTAMPTZ,
+  timed_out_at            TIMESTAMPTZ,
+  cancelled_at            TIMESTAMPTZ,
+  created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  retention_deadline_at   TIMESTAMPTZ,
+
+  CONSTRAINT chk_status CHECK (
+    status IN ('pending', 'claimed', 'resolved', 'timedOut', 'cancelled')
+  )
+);
+```
+
+**`request_attempt` table:**
+
+```sql
+CREATE TABLE request_attempt (
+  id          BIGSERIAL PRIMARY KEY,
+  request_id  BIGINT NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+  attempt     INT NOT NULL,
+  error       TEXT NOT NULL,
+  error_type  TEXT,
+  details     JSONB,
+  started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  failed_at   TIMESTAMPTZ NOT NULL
+);
+```
+
+`ON DELETE CASCADE` ensures attempt rows are removed when the request row is swept.
+
+**Compensation trigger:** `EXISTS (SELECT 1 FROM request_attempt WHERE request_id = $id)`. If no attempt rows exist, the request was never claimed or only failed input validation — no side effect can have occurred, so compensation is skipped.
+
+**Args-validation failure behaviour:** If a worker determines the request payload fails input validation before entering user code, it does NOT write a `request_attempt` row. It releases the lock and records the request ID in local process memory as non-retryable for this process. Other workers may still claim and succeed. On worker restart (e.g. after a code update that fixes the schema), the in-memory record is gone and the worker will attempt again.
+
+**On handler success:** set `response`, `status = 'resolved'`, `resolved_at = NOW()`, `retention_deadline_at = NOW() + retention.resolved`, notify the waiting workflow via the resolved `workflow_promise`.
+
+**On handler failure:** insert a `request_attempt` row, release lock. The row returns to `status = 'pending'` and is re-eligible after backoff.
+
+**On workflow timeout:** set `status = 'timedOut'`, `timed_out_at = NOW()`, `retention_deadline_at = NOW() + retention.timedOut`. Check `EXISTS (SELECT 1 FROM request_attempt ...)` to decide whether to trigger compensation.
+
+**On SIGKILL / cancellation:** set `status = 'cancelled'`, `cancelled_at = NOW()`, `retention_deadline_at = NOW() + retention.cancelled`. Same compensation check.
+
+**Admin direct-set:** update `response`, set `status = 'resolved'`, `resolved_at = NOW()`, notify workflow — same path as handler success.
+
+**Sweeper:**
+
+```sql
+DELETE FROM requests
+WHERE retention_deadline_at IS NOT NULL
+  AND retention_deadline_at < NOW();
+```
+
+Attempt rows cascade-delete automatically.
 
 ---
 
@@ -1189,6 +1251,7 @@ All subscription methods are **synchronous**. They register intent in the curren
 - `ScheduleOptions` (type) — `delaySeconds` / `scheduledAt` for deferred workflow starts
 - `IWorkflowConnection` (type) — opaque checked-out DB connection for caller reuse
 - `IWorkflowTransaction` (type) — opaque active transaction handle for caller enlistment
+- `RetentionSetter` (generic type) — replaces `RetentionSettings`; parameterized over status union
 
 ### Breaking changes
 
@@ -1198,6 +1261,8 @@ All subscription methods are **synchronous**. They register intent in the curren
 - `MetadataQueryNode` and `MetadataQueryBuilder` are not introduced. The generalized `SearchQuery` / `SearchQueryNode` replace them.
 - `SubscriptionHandle` removed. Registration methods return synchronous `Unsubscribe` callbacks.
 - `retryPolicy` interval fields renamed from `intervalSeconds` / `maxIntervalSeconds` to `intervalMs` / `maxIntervalMs` (milliseconds, consistent with TypeScript's convention).
+- `RetentionSettings` renamed to `RetentionSetter<TStatus extends string>`. All existing usages become `RetentionSetter<"complete" | "failed" | "terminated">`. The `setRetention` method on `WorkflowHandleExternal` is updated accordingly.
+- `ctx.requests.X(payload)` (no options) is no longer valid. `timeout: number | null` is now required.
 
 ### Connection and transaction model
 
@@ -1231,66 +1296,47 @@ Operations that wait for external state — `attribute.get(afterVersion)`, `chan
 
 ## Open Questions and Implementation Concerns
 
-### Requests
-
-**Q2. Definition of "attempted" for compensation triggering.**
-The document uses `ever_claimed` (lock ever acquired) as the proxy for "an attempt was made." A handler could acquire the lock, immediately fail before doing any meaningful work (e.g. throws on input validation), and release it. From the handler's perspective nothing happened; from the engine's perspective `ever_claimed = TRUE` and compensation will run. There is no way to distinguish "handler touched the external system" from "handler failed before doing anything" without handler cooperation. The current approach is the safe default (always compensate if claimed), but implementors should be aware this may trigger unnecessary compensation in practice.
-
-**Q3. SIGKILL and orphaned requests.**
-SIGKILL causes immediate workflow termination with no compensation and no hooks. If a workflow has a pending (unclaimed) request row at SIGKILL time, the row is never deleted. If the request was claimed and in-flight, `ever_claimed = TRUE` but compensation never runs. What does the engine do with orphaned request rows after a SIGKILL? Should a background job clean them up? Should they remain claimable by handlers indefinitely?
-
-**Q4. Request response delivery failure.**
-If a handler writes a response to the DB but the notification to the waiting workflow fails before the workflow receives it, what is the recovery path? The workflow may be replaying. Does it re-poll for the response? Is the response idempotently stored such that replay will find it? This is an engine-level durability concern that needs to be resolved as part of the implementation.
-
-**Q5. Untimed requests in `CompensationContext`.**
-A request without a `timeout` in a compensation callback will block indefinitely if no handler responds. Consider whether a recommendation or lint-time warning ("requests in compensation should specify a timeout") is worth adding to the documentation, even if not enforced by the type system.
-
-**Q6. Interaction between request timeout and handler in-flight response.**
-The race condition where a handler returns a response at the exact moment the workflow's timeout fires needs an explicit resolution in terms of concrete transaction semantics. "Whichever commits first wins" is the intent, but the specific locking or CAS strategy for this race must be designed explicitly as part of the implementation.
-
----
-
 ### Topics
 
-**Q7. Consumer stuck on a failing record.**
+**Q1. Consumer stuck on a failing record.**
 If a topic consumer handler keeps failing on a specific record (e.g. a malformed payload that always causes the handler to throw), the consumer's offset never advances. The consumer is permanently stuck. The `retryPolicy` has no `maxAttempts` for topic consumers. There needs to be either: a `maxAttempts` option with a dead-letter path for the record, or explicit documentation that this is the user's responsibility (write defensive handlers). The current document is silent.
 
-**Q8. Delivery guarantee semantics.**
+**Q2. Delivery guarantee semantics.**
 The document implies at-least-once delivery for topic consumers (failed handlers retry). It does not explicitly state the delivery guarantee or whether exactly-once processing is achievable or a goal. This should be stated explicitly.
 
-**Q9. Topic retention independent of consumer progress.**
+**Q3. Topic retention independent of consumer progress.**
 The cleanup job deletes records only when all registered consumers for the topic have advanced past them. If one consumer is permanently offline, records accumulate indefinitely regardless of retention config. Should there be a max retention window independent of consumer progress? If so, what happens to consumers that are behind the retention window when they reconnect — do they resume from the oldest available record, or is the gap a terminal error?
 
-**Q10. Advisory lock key stability for consumer identity.**
+**Q4. Advisory lock key stability for consumer identity.**
 The session-level advisory lock used for exclusive consumer identity must use a key that (a) does not collide with advisory locks used elsewhere in the engine and (b) is stable across restarts. The specific key construction strategy is an implementation concern left to the implementor.
 
-**Q11 (new). Behavior when `registrationRetry.maxAttempts` is exhausted.**
+**Q5. Behavior when `registrationRetry.maxAttempts` is exhausted.**
 When `maxAttempts` is set on `registrationRetry` and all attempts fail (all fire `onError`), the subscription becomes permanently inactive without being explicitly unregistered. Is there a final terminal notification to the caller? Currently `onError` fires on each attempt including the last — the user must track attempt count themselves if they want to know they've hit the ceiling. Consider whether a distinct `onMaxAttemptsExhausted` callback or a final `onError` call with an `isTerminal: true` flag would improve ergonomics, or whether documenting that the user should call `unregister()` in `onError` when they want to stop is sufficient.
 
 ---
 
 ### Attributes
 
-**Q12. Version number at initial state.**
+**Q6. Version number at initial state.**
 The SQL schema specifies `version BIGINT NOT NULL DEFAULT 1` but the initial "never set" state conceptually has no version. The `get()` API should treat version 0 as "not yet set" and version >= 1 as "set at least once." This needs to be consistent between the schema, the `get()` return type, and the `afterVersion` semantics. Currently there is a potential inconsistency in the document.
 
-**Q13. Attribute cleanup on workflow termination.**
+**Q7. Attribute cleanup on workflow termination.**
 The document does not specify whether attribute rows are deleted when the workflow terminates, or retained for the duration of the workflow's retention period (consistent with streams and events). This needs an explicit decision. Retaining them through the retention window is likely the correct choice for consistency.
 
-**Q14. Concurrent `set()` calls from parallel branches.**
+**Q8. Concurrent `set()` calls from parallel branches.**
 If two concurrent workflow branches both call `ctx.attributes.X.set()` simultaneously, the outcome is last-write-wins based on transaction commit order. This is probably acceptable, but it means the `version` counter may not reflect "number of logical updates" if both increments race. The behavior should be stated explicitly in the documentation so developers know what to expect.
 
-**Q15. `LISTEN/NOTIFY` scalability.**
+**Q9. `LISTEN/NOTIFY` scalability.**
 The `get(afterVersion)` implementation relies on `LISTEN/NOTIFY` for instant change delivery. Under high concurrency (many external clients watching many attributes simultaneously) this can become a bottleneck at the Postgres side. This is a known limitation of the approach and worth documenting. An alternative (polling with exponential backoff) could be offered as a fallback.
 
-**Q16. `never` detection mechanism.**
+**Q10. `never` detection mechanism.**
 The `get()` call must return `{ status: "never" }` when the workflow terminates without setting the attribute. Implementing this requires the external client to detect workflow termination while blocked on a `LISTEN/NOTIFY` wait. The mechanism for this (e.g. subscribe to a workflow-completed notification alongside the attribute notification, or poll workflow status alongside) is not specified and is non-trivial to implement correctly.
 
 ---
 
 ### Compensation Model Correction
 
-**Q17. This section is the most uncertain part of the document.**
+**Q11. This section is the most uncertain part of the document.**
 The "eager compensation at failure time" model represents a meaningful behavioral change to the engine's execution model. The following sub-questions are all unresolved:
 
 - **Ordering**: When a step fails and is caught with `.failure()`, at what point exactly does the eager compensation execute? Before the `.failure()` callback runs? After? The ordering matters because the compensation callback may itself use `ctx` operations that interact with subsequent workflow code.
@@ -1304,3 +1350,10 @@ The "eager compensation at failure time" model represents a meaningful behaviora
 - **Steps with zero attempts**: If a step times out before making a single attempt (e.g. `deadlineUntil` already passed), no work was done. Should compensation run? The "attempted" principle suggests no, but the engine needs to track attempt count to know this.
 
 - **This section should be treated as a starting point for a separate focused design discussion, not as a complete specification.**
+
+---
+
+### Steps
+
+**Q12. Infinite retries and the `.failure()` builder.**
+A step configured with no `maxAttempts` (infinite retries) and no `deadlineSeconds` can never reach an exhausted state. The `.failure()` builder is always present on `StepCall` but is unreachable in this configuration — a silent dead code path. The type system does not currently model this distinction. Options: (a) make `.failure()` only available when `maxAttempts` is finite or `deadlineSeconds` is set, requiring the retry policy to be part of the `StepCall` type; (b) require that a step definition or call-site policy must specify either `maxAttempts` or a deadline before `.failure()` is chainable; (c) document the limitation and provide a lint/runtime warning. Option (a) would be the most type-safe but adds significant complexity to the call type machinery.
