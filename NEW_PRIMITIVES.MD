@@ -838,10 +838,6 @@ CREATE TABLE halt (
 
 Multiple pending halts per workflow are allowed. Each represents a replay attempt that encountered an exception. When execution proceeds past `after_step_id` (due to a code patch), halts at or before that point are automatically resolved.
 
-### No `compensation_entry` table
-
-Compensation registrations are not tracked in a separate table. The compensation LIFO stack and FIFO queue are in-memory structures, reconstructed during replay from the execution tree's `register_compensation` and `eager_compensation` steps. The compensation VEL's own tree (scope/branch/step records under the compensation root branch) is the durable record of what compensation work was executed.
-
 ---
 
 ## Part 9: Search Query Refactoring
@@ -922,6 +918,10 @@ await ctx.queues.notifications.publish(
 await ctx.queues.notifications.publish(
   { userId: "u1", body: "Reminder" },
   { delay: 3600 },
+);
+await ctx.queues.notifications.publish(
+  { userId: "u1", body: "Renew your subscription" },
+  { scheduledAt: addDays(ctx.date, 30) },
 );
 ```
 
