@@ -16,14 +16,14 @@ The changes are organized into two categories:
 4. **Attributes** — workflow-instance-bound observable single current value
 5. **Streams extension** — non-blocking read variant on the external handle
 6. **Search query refactoring** — generalize `WorkflowSearchQueryBuilder` into `SearchQuery<TNamespaces>`
-7. **Scheduled delivery** — `delay`/`scheduledAt` option on queue message publish and workflow starts
+7. **Scheduled delivery** — `delay`/`scheduledAt` option on queue message enqueue and workflow starts
 
 **Architectural changes** — corrections and redesigns to existing engine behavior:
 
 8. **Virtual Event Loop (VEL)** — deterministic concurrent execution model
 9. **Compensation model redesign** — parallel compensation VEL, eager/deferred separation, structured compensation lifecycle
 10. **Halt model** — unified soft failure mechanism for unexpected exceptions
-11. **`WorkflowError` class** — explicit vs accidental failure distinction
+11. **Error model** — schema-only error definitions, `ctx.errors` factories, explicit vs accidental failure distinction
 12. **Step timeout unification** — `maxAttempts` moves from retry policy to `.timeout()` builder
 13. **AttemptAccessor refactoring** — rename `StepErrorAccessor` → `AttemptAccessor`, make `count()` async
 14. **Context splitting** — separate primitive instances for execution and compensation VELs
@@ -88,14 +88,16 @@ A scope has branches. A branch has sequential steps. A step may have a promise. 
 
 1. **Non-concurrent code** executes as-is. Sequential operations within a single branch need no scheduling.
 
-2. **Entering a scope** transitions to structured concurrency. The scope body is treated as a branch with a synthetic key (`Symbol("MAIN")`), placed first in the deterministic branch ordering.
+2. **Entering a scope** transitions to structured concurrency. The scope body is treated as a branch with a synthetic key (`MAIN_BRANCH`), placed first in the deterministic branch ordering.
 
-3. **Branch ordering** is alphanumeric by key path. The key path is a `readonly (string | ScopeDivider | BranchDivider)[]` array that encodes the full nested scope lineage. For a scope `"A"` with branches `"foo"` and `"bar"`:
+3. **Branch ordering** is alphanumeric by key path. The key path is a `readonly BranchPathItem[]` array that encodes the full nested scope lineage. Each item is `{ scope: string; branch: string | typeof MAIN_BRANCH }`, where `MAIN_BRANCH` is a module-level `unique symbol` export. For a scope `"A"` with branches `"foo"` and `"bar"`:
 
-   ```
-   ["A", Symbol("MAIN")]     ← scope body, always first
-   ["A", "bar"]               ← alphanumeric order
-   ["A", "foo"]
+   ```typescript
+   declare const MAIN_BRANCH: unique symbol;
+
+   [{ scope: "A", branch: MAIN_BRANCH }]   // ← scope body, always first
+   [{ scope: "A", branch: "bar" }]          // ← alphanumeric order
+   [{ scope: "A", branch: "foo" }]
    ```
 
 4. **Execute the first branch** in the sorted list until a genuine context switch point is reached.
@@ -134,26 +136,26 @@ await ctx
 
 Initial ordering:
 
-```
-["A", Symbol("MAIN")]
-["A", "bar"]
-["A", "foo"]
+```typescript
+[{ scope: "A", branch: MAIN_BRANCH }]
+[{ scope: "A", branch: "bar" }]
+[{ scope: "A", branch: "foo" }]
 ```
 
 After the scope body enters scope `"B"`:
 
-```
-["A", Symbol("MAIN")]
-["A", Symbol("MAIN"), "B", Symbol("MAIN")]
-["A", Symbol("MAIN"), "B", "baz"]
-["A", Symbol("MAIN"), "B", "fuz"]
-["A", "bar"]
-["A", "foo"]
+```typescript
+[{ scope: "A", branch: MAIN_BRANCH }]
+[{ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: MAIN_BRANCH }]
+[{ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: "baz" }]
+[{ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: "fuz" }]
+[{ scope: "A", branch: "bar" }]
+[{ scope: "A", branch: "foo" }]
 ```
 
 ### Scope body priority
 
-The scope body is always the first element in the branch ordering (via `Symbol("MAIN")` sorting before any string key). This gives it natural priority: it starts executing before any branches, and after any batch of resolved promises is processed, it gets first pick of resolutions. This allows the scope body to short-circuit before executing unnecessary branch logic, minimizing wasted work.
+The scope body is always the first element in the branch ordering (via `MAIN_BRANCH` sorting before any string key). This gives it natural priority: it starts executing before any branches, and after any batch of resolved promises is processed, it gets first pick of resolutions. This allows the scope body to short-circuit before executing unnecessary branch logic, minimizing wasted work.
 
 ### Two VELs per workflow
 
@@ -183,7 +185,7 @@ Both VELs are created at workflow start time. The compensation VEL may remain em
 | `register_compensation`  | 3         | no              | no               |
 | `eager_compensation`     | 3         | no              | no               |
 | `patch_check`            | 3         | no              | no               |
-| `queue_publish`          | 3         | no              | no               |
+| `queue_enqueue`          | 3         | no              | no               |
 | `topic_publish`          | 3         | no              | no               |
 | `start_detached`         | 3         | no              | no               |
 
@@ -211,7 +213,7 @@ Compensation runs on a separate, independent VEL. This allows:
 
 ### Two compensation paths
 
-**Deferred compensation (LIFO stack):** registered via `.compensate()` on step/workflow calls, or standalone via `ctx.registerCompensation(name, cb)`. Pushed onto a LIFO stack. Executed in reverse order when the workflow fails (throws `WorkflowError`). The LIFO order ensures that the most recently registered compensation runs first, preserving the natural "undo in reverse" semantics.
+**Deferred compensation (LIFO stack):** registered via `.compensate()` on step/workflow calls, or standalone via `ctx.registerCompensation(name, cb)`. Pushed onto a LIFO stack. Executed in reverse order when the workflow fails (throws a declared error via `ctx.errors`). The LIFO order ensures that the most recently registered compensation runs first, preserving the natural "undo in reverse" semantics.
 
 **Eager compensation (FIFO queue):** dispatched when a step times out and the timeout is caught, or when a scope exits with unconsumed branches, or standalone via `ctx.compensateEagerly(name, cb)`. Pushed to the compensation VEL's FIFO queue and executed immediately in the background while the main workflow continues.
 
@@ -330,7 +332,7 @@ This cleanly separates eager compensation (operational, happens as side effects 
 
 ### Problem
 
-Any unexpected exception (non-`WorkflowError`) in workflow or compensation code puts the engine in an undefined state. The code between the last durable step and the exception is non-deterministic on replay. Retrying the code block is not safe — it may have already modified in-memory state.
+Any unexpected exception (anything that is not a declared `ctx.errors` throw) in workflow or compensation code puts the engine in an undefined state. The code between the last durable step and the exception is non-deterministic on replay. Retrying the code block is not safe — it may have already modified in-memory state.
 
 ### Solution: unified halts
 
@@ -361,28 +363,159 @@ There is no "skip" mechanism. Skipping a halted block would leave state inconsis
 
 ---
 
-## Part 4: `WorkflowError` and Explicit Failure Distinction
+## Part 4: Error Model
 
 ### Problem
 
-Currently, any thrown exception fails the entire workflow. There is no way to distinguish between an intentional business failure ("this order is invalid") and an accidental programming error ("cannot read property of undefined").
+Currently, any thrown exception fails the entire workflow. There is no way to distinguish between an intentional business failure ("this order is invalid") and an accidental programming error ("cannot read property of undefined"). Additionally, external callers have no typed access to failure details — all errors are opaque.
 
-### Solution
+### Solution: schema-only error definitions
 
-Introduce a `WorkflowError` class:
+Errors are defined as named entries at `defineWorkflow` level, following the same pattern as channels, streams, events, and other primitives. Each error has a name (the object key) and an optional standard-schema for its details. The value `true` means the error carries no details.
 
 ```typescript
-class WorkflowError extends Error {
-  constructor(message: string, details?: Record<string, unknown>);
+defineWorkflow({
+  errors: {
+    OrderInvalid: z.object({ orderId: z.string() }),
+    InsufficientFunds: z.object({ amount: z.number(), balance: z.number() }),
+    Cancelled: true,
+  },
+  // ...
+});
+```
+
+There are no `WorkflowError` subclasses. Error classes are not user-defined. Instead, the workflow context exposes factory functions keyed by error name:
+
+```typescript
+execute: async (ctx) => {
+  if (!valid) {
+    throw ctx.errors.OrderInvalid("Order is invalid", { orderId: "123" });
+  }
+  if (balance < amount) {
+    throw ctx.errors.InsufficientFunds("Not enough balance", { amount, balance });
+  }
+  throw ctx.errors.Cancelled("User cancelled the order");
 }
 ```
 
-The distinction:
+Each factory function returns a `WorkflowError` instance. The engine catches it, verifies that its `errorCode` matches one of the declared keys, and serializes to JSONB.
 
-- **`throw new WorkflowError("Order invalid")`** → the workflow **fails**. This is an intentional business decision. The LIFO compensation unwind is triggered. The workflow settles as `failed`.
-- **`throw new Error("Cannot read property of undefined")`** → the workflow **halts**. This is an accidental exception. The engine records a halt and pauses execution. An admin must deploy a patch or SIGKILL the workflow.
+**For errors with details** (schema provided), the factory signature is `(message: string, details: InferInput<TSchema>) => WorkflowError`.
 
-This ensures that no accidental exception can silently fail a workflow and trigger the full LIFO compensation chain. Only explicit `WorkflowError` instances trigger failure semantics.
+**For errors without details** (`true`), the factory signature is `(message: string) => WorkflowError`.
+
+### `WorkflowError` base class
+
+`WorkflowError` is the internal throwable. It is not subclassed by users. It carries an `errorCode` and optional `details`, both assigned by the `ctx.errors.X(...)` factory.
+
+```typescript
+class WorkflowError extends Error {
+  readonly errorCode: string;
+  readonly details: unknown;
+}
+```
+
+Constructing `WorkflowError` directly is not supported — the `ctx.errors` factories are the only sanctioned way to create instances. If any `WorkflowError` is caught by the engine whose `errorCode` does not match a declared error name, the engine treats it as an unexpected exception and **halts** the workflow, not fails it. This enforces the contract: only explicitly declared errors can fail a workflow.
+
+### The distinction
+
+- **`throw ctx.errors.OrderInvalid("...")`** → the workflow **fails**. The `errorCode` matches a declared error. The LIFO compensation unwind is triggered. The workflow settles as `failed`.
+- **`throw new Error("Cannot read property of undefined")`** → the workflow **halts**. This is an accidental exception. The engine records a halt and pauses execution.
+- **`throw new WorkflowError(...)`** (constructed directly, not via `ctx.errors`) → the workflow **halts**. The `errorCode` does not match a declared error — treated as undeclared/accidental.
+
+### External error types
+
+At the external caller level, errors are plain JSON values — no class instances, no prototype chains, no `instanceof` checks. The error is discriminated by `errorCode`:
+
+```typescript
+type WorkflowErrorValue<TErrors> = {
+  [K in keyof TErrors]: {
+    errorCode: K;
+    message: string;
+    details: TErrors[K] extends true ? never : StandardSchemaV1.InferOutput<TErrors[K]>;
+    scopePath: string[];
+  };
+}[keyof TErrors];
+```
+
+The full workflow failure result type includes declared errors, step/request timeout errors, and propagated child workflow errors:
+
+```typescript
+type WorkflowFailureInfo<TErrors, TSteps, TRequests> =
+  | WorkflowErrorValue<TErrors>
+  | StepTimeoutError<keyof TSteps & string>
+  | RequestTimeoutError<keyof TRequests & string>
+  | PropagatedError;
+```
+
+- **`WorkflowErrorValue<TErrors>`** — fully typed, discriminated by `errorCode`. The external caller gets compile-time access to details.
+- **`StepTimeoutError<TStepName>`** — a step exhausted its `.timeout()` boundary without a handler. Contains the step name and scope path.
+- **`RequestTimeoutError<TRequestName>`** — a request exhausted its `.timeout()` boundary without a handler. Contains the request name, scope path, and the request arguments.
+- **`PropagatedError`** — an unhandled child workflow failure that propagated upward. Carries the original `errorCode`, `message`, `details` (as `unknown`), and the full propagation path. Not compile-time typed — the external caller can pattern-match on `errorCode` at runtime.
+
+```typescript
+interface StepTimeoutError<TName extends string> {
+  kind: "step_timeout";
+  stepName: TName;
+  scopePath: string[];
+  reason: "attempts_exhausted" | "deadline";
+}
+
+interface RequestTimeoutError<TName extends string> {
+  kind: "request_timeout";
+  requestName: TName;
+  scopePath: string[];
+  reason: "attempts_exhausted" | "deadline";
+  args: unknown;
+}
+
+interface PropagatedError {
+  kind: "propagated";
+  errorCode: string;
+  message: string;
+  details: unknown;
+  origin: ErrorOrigin;
+  propagationPath: ErrorOrigin[];
+}
+
+interface ErrorOrigin {
+  workflowDefinition: string;
+  workflowId: string;
+  scopePath: string[];
+}
+```
+
+### External caller usage
+
+```typescript
+const result = await client.workflows.order.execute({ ... });
+if (!result.ok && result.status === "failed") {
+  switch (result.error.errorCode) {
+    case "OrderInvalid":
+      // result.error.details: { orderId: string } — fully typed
+      break;
+    case "InsufficientFunds":
+      // result.error.details: { amount: number, balance: number }
+      break;
+    case "Cancelled":
+      // result.error.details: never — no details
+      break;
+    default:
+      // StepTimeoutError | RequestTimeoutError | PropagatedError
+      if (result.error.kind === "propagated") {
+        // result.error.errorCode: string (runtime only)
+      }
+  }
+}
+```
+
+### Child workflow error propagation
+
+When a child workflow fails and `.failure()` is NOT chained on the `WorkflowCall`, the child's error propagates to the parent as an unhandled failure — the parent workflow fails. At the parent's external result level, this appears as a `PropagatedError` with the full origin chain.
+
+When `.failure()` IS chained, the handler receives a `ChildWorkflowFailureInfo` containing the child's serialized error value. The handler returns a recovery value and the parent continues. The child's error does not propagate.
+
+This avoids recursive type expansion: child workflow errors are always `PropagatedError` (loosely typed) at the parent's external boundary, regardless of nesting depth. Only the workflow's own declared errors are fully typed.
 
 ---
 
@@ -411,23 +544,32 @@ interface RetryPolicyOptions {
 
 ```typescript
 type StepBoundary =
-  | { maxAttempts: number; seconds?: number }
-  | { seconds: number; maxAttempts?: number };
+  | { maxAttempts: number; seconds?: number; deadline?: never }
+  | { seconds: number; maxAttempts?: number; deadline?: never }
+  | { deadline: Date; maxAttempts?: number; seconds?: never }
+  | { maxAttempts: number; deadline?: Date; seconds?: never };
 ```
 
-The `number` shorthand means seconds:
+`seconds` and `deadline` are mutually exclusive — `seconds` is a relative wall-clock timeout, `deadline` is an absolute timestamp. `maxAttempts` can coexist with either.
+
+The shorthand accepts `number` (seconds) or `Date` (deadline):
 
 ```typescript
 .timeout(60)                                    // 60 seconds overall
 .timeout(60, () => null)                        // 60 seconds, return null on timeout
+.timeout(new Date("2027-01-10"))                // absolute deadline
+.timeout(new Date("2027-01-10"), () => null)    // deadline, return null on timeout
 .timeout({ maxAttempts: 5 })                    // 5 attempts max
 .timeout({ maxAttempts: 5, seconds: 60 })       // whichever fires first
+.timeout({ maxAttempts: 5, deadline: d })       // whichever fires first
 .timeout({ maxAttempts: 5, seconds: 60 }, () => null)
 ```
 
-`maxAttempts` and `seconds` complement each other — both can coexist in the same boundary. `maxAttempts` limits how many times the step is tried. `seconds` limits total wall-clock time. Whichever boundary is reached first terminates the step.
+`maxAttempts` and `seconds`/`deadline` complement each other — both can coexist in the same boundary. `maxAttempts` limits how many times the step is tried. `seconds`/`deadline` limits total wall-clock time. Whichever boundary is reached first terminates the step.
 
 **Updated `StepCall`:**
+
+Builder methods use the `Called` type parameter to make invalid states unrepresentable — each builder method returns `never` if it has already been called in the chain, preventing duplicate calls at compile time.
 
 ```typescript
 interface StepCall<
@@ -435,34 +577,34 @@ interface StepCall<
   TTimeout = never,
   HasCompensation extends boolean = false,
   Tctx = unknown,
+  Called extends string = never,
 > extends DeterministicAwaitable<T | TTimeout, ExecutionRoot> {
-  compensate(
-    cb: (ctx: Tctx, result: StepCompensationResult<T>) => Promise<void>,
-  ): StepCall<T, TTimeout, true, Tctx>;
+  compensate: "compensate" extends Called ? never :
+    & ((
+        cb: (ctx: Tctx, result: StepCompensationResult<T>) => Promise<void>,
+      ) => StepCall<T, TTimeout, true, Tctx, Called | "compensate">)
+    & ((
+        name: string,
+        cb: (ctx: Tctx, result: StepCompensationResult<T>) => Promise<void>,
+      ) => StepCall<T, TTimeout, true, Tctx, Called | "compensate">);
 
-  compensate(
-    name: string,
-    cb: (ctx: Tctx, result: StepCompensationResult<T>) => Promise<void>,
-  ): StepCall<T, TTimeout, true, Tctx>;
+  retry: "retry" extends Called ? never :
+    (policy: RetryPolicyOptions) =>
+      StepCall<T, TTimeout, HasCompensation, Tctx, Called | "retry">;
 
-  retry(
-    policy: RetryPolicyOptions,
-  ): StepCall<T, TTimeout, HasCompensation, Tctx>;
+  timeout: "timeout" extends Called ? never :
+    & ((secondsOrDeadline: number | Date) =>
+        StepCall<T, never, HasCompensation, Tctx, Called | "timeout">)
+    & (<R>(secondsOrDeadline: number | Date, cb: () => R) =>
+        StepCall<T, Awaited<R>, HasCompensation, Tctx, Called | "timeout">)
+    & ((opts: StepBoundary) =>
+        StepCall<T, never, HasCompensation, Tctx, Called | "timeout">)
+    & (<R>(opts: StepBoundary, cb: () => R) =>
+        StepCall<T, Awaited<R>, HasCompensation, Tctx, Called | "timeout">);
 
-  timeout(seconds: number): StepCall<T, never, HasCompensation, Tctx>;
-  timeout<R>(
-    seconds: number,
-    cb: () => R,
-  ): StepCall<T, Awaited<R>, HasCompensation, Tctx>;
-  timeout(opts: StepBoundary): StepCall<T, never, HasCompensation, Tctx>;
-  timeout<R>(
-    opts: StepBoundary,
-    cb: () => R,
-  ): StepCall<T, Awaited<R>, HasCompensation, Tctx>;
-
-  complete<R>(
-    cb: (data: T) => R,
-  ): StepCall<Awaited<R>, TTimeout, HasCompensation, Tctx>;
+  complete: "complete" extends Called ? never :
+    <R>(cb: (data: T) => R) =>
+      StepCall<Awaited<R>, TTimeout, HasCompensation, Tctx, Called | "complete">;
 }
 ```
 
@@ -470,7 +612,7 @@ Key changes:
 
 - **`TFail` is gone.** Replaced by `TTimeout`. Steps cannot "fail" — they succeed or time out.
 - **`.failure()` is removed.** Steps retry forever unless bounded by `.timeout()`.
-- **`.timeout()` replaces `.failure()` as the explicit error handling surface.** Without `.timeout()` chained and a timeout boundary reached, the workflow fails (throws `WorkflowError` internally).
+- **`.timeout()` replaces `.failure()` as the explicit error handling surface.** Without `.timeout()` chained and a timeout boundary reached, the workflow fails with a `StepTimeoutError`.
 
 The old pattern:
 
@@ -505,7 +647,7 @@ type StepCompensationResult<T> =
 
 ### Child workflow timeout
 
-Child workflows keep `.failure()` (child workflows genuinely fail via `WorkflowError`). A new `.timeout()` is added separately:
+Child workflows keep `.failure()` (child workflows genuinely fail via their declared `ctx.errors`). A new `.timeout()` is added separately:
 
 ```typescript
 interface WorkflowCall<
@@ -514,34 +656,43 @@ interface WorkflowCall<
   TTimeout = never,
   HasCompensation extends boolean = false,
   Tctx = unknown,
+  Called extends string = never,
 > extends DeterministicAwaitable<T | TFail | TTimeout, ExecutionRoot> {
-  compensate(
-    cb: (
-      ctx: Tctx,
-      result: ChildWorkflowCompensationResult<T>,
-    ) => Promise<void>,
-  ): WorkflowCall<T, TFail, TTimeout, true, Tctx>;
+  compensate: "compensate" extends Called ? never :
+    & ((
+        cb: (ctx: Tctx, result: ChildWorkflowCompensationResult<T>) => Promise<void>,
+      ) => WorkflowCall<T, TFail, TTimeout, true, Tctx, Called | "compensate">)
+    & ((
+        name: string,
+        cb: (ctx: Tctx, result: ChildWorkflowCompensationResult<T>) => Promise<void>,
+      ) => WorkflowCall<T, TFail, TTimeout, true, Tctx, Called | "compensate">);
 
-  failure<R>(
-    cb: (failure: ChildWorkflowFailureInfo) => R,
-  ): WorkflowCall<T, Awaited<R>, TTimeout, HasCompensation, Tctx>;
+  failure: "failure" extends Called ? never :
+    <R>(cb: (failure: ChildWorkflowFailureInfo) => R) =>
+      WorkflowCall<T, Awaited<R>, TTimeout, HasCompensation, Tctx, Called | "failure">;
 
-  timeout<R>(
-    seconds: number,
-    cb: () => R,
-  ): WorkflowCall<T, TFail, Awaited<R>, HasCompensation, Tctx>;
+  timeout: "timeout" extends Called ? never :
+    & ((secondsOrDeadline: number | Date) =>
+        WorkflowCall<T, TFail, never, HasCompensation, Tctx, Called | "timeout">)
+    & (<R>(secondsOrDeadline: number | Date, cb: () => R) =>
+        WorkflowCall<T, TFail, Awaited<R>, HasCompensation, Tctx, Called | "timeout">)
+    & ((opts: StepBoundary) =>
+        WorkflowCall<T, TFail, never, HasCompensation, Tctx, Called | "timeout">)
+    & (<R>(opts: StepBoundary, cb: () => R) =>
+        WorkflowCall<T, TFail, Awaited<R>, HasCompensation, Tctx, Called | "timeout">);
 
-  complete<R>(
-    cb: (data: T) => R,
-  ): WorkflowCall<Awaited<R>, TFail, TTimeout, HasCompensation, Tctx>;
+  complete: "complete" extends Called ? never :
+    <R>(cb: (data: T) => R) =>
+      WorkflowCall<Awaited<R>, TFail, TTimeout, HasCompensation, Tctx, Called | "complete">;
 }
 ```
 
 The distinction:
 
-- `.failure()` handles child workflow failure (child threw `WorkflowError`) and termination.
-- `.timeout()` handles parent-side patience (the parent gives up waiting). This is separate from child-side failure.
+- `.failure()` handles child workflow failure (child threw a declared error via `ctx.errors`) and termination.
+- `.timeout()` handles parent-side patience (the parent gives up waiting). This is separate from child-side failure. Accepts `number` (seconds), `Date` (deadline), or `StepBoundary` (structured options with `maxAttempts`/`seconds`/`deadline`).
 - Without `.failure()` chained, a child workflow failure auto-fails the parent. Without `.timeout()` chained, a timeout auto-fails the parent.
+- Each builder method can only be called once per chain — the `Called` type parameter tracks which methods have been used and makes duplicates resolve to `never`.
 
 ---
 
@@ -574,21 +725,16 @@ The state factory function is called twice — once for each VEL — producing i
 
 All scopes must be named. The convenience methods follow the same pattern.
 
-### `ctx.joinSafe(handle)`
+### `ctx.joinSafe(handle, onError)`
 
-Joins a branch handle and returns a result union instead of throwing on failure:
+Joins a branch handle, catching failure via a handler callback instead of throwing. The error handler receives the failure info and returns a recovery value. The return type is `T | Awaited<R>` — either the branch succeeded normally, or the handler produced a fallback. This follows the same pattern as `.timeout()` and `.failure()` elsewhere in the API.
 
 ```typescript
-type JoinSafeResult<T> =
-  | { ok: true; data: T }
-  | { ok: false; error: ScopeFailureInfo<TSteps, TChildWorkflows> };
-
-const result = await ctx.joinSafe(flightHandle);
-if (result.ok) {
-  // result.data: FlightResult
-} else {
-  // result.error: ScopeFailureInfo
-}
+const result = await ctx.joinSafe(
+  flightHandle,
+  (error) => null,   // error: ScopeFailureInfo<TSteps, TChildWorkflows>
+);
+// result: FlightResult | null
 ```
 
 ### `ctx.best(name, entries)`
@@ -869,7 +1015,7 @@ Existing aliases are kept so no call sites break.
 
 ### Purpose
 
-A global competing-consumer work queue. Any workflow can publish a typed message to a named queue. Any registered worker can consume from it. Messages are processed exactly once via `SELECT FOR UPDATE SKIP LOCKED`.
+A global competing-consumer work queue. Any workflow can enqueue a typed message to a named queue. Any registered worker can consume from it. Messages are processed exactly once via `SELECT FOR UPDATE SKIP LOCKED`.
 
 ### Definition
 
@@ -886,65 +1032,65 @@ const notificationsQueue = defineQueue({
 ```
 
 - `name` — globally unique DB namespace.
-- `message` — Zod schema. Input type for publishing, output type for handler.
-- `defaultTTL` — optional. Seconds before unclaimed message is dead-lettered with `ttl_expired`. If absent, `ttl` is required on every `publish`.
+- `message` — standard-schema. Input type for enqueuing, output type for handler.
+- `defaultTTL` — optional. Seconds before unclaimed message is dead-lettered with `ttl_expired`. If absent, `ttl` is required on every `enqueue`.
 - `retention.processed` — row retention seconds after processing. `null` = never delete.
 - `retention.deadLettered` — row retention seconds after dead-lettering. `null` = never delete.
 
 ### TTL semantics
 
-- `ttl: number` — expires N seconds from publish time.
+- `ttl: number` — expires N seconds from enqueue time.
 - `ttl: null` — never expires, regardless of `defaultTTL`.
 
-When `defaultTTL` is not specified, `ttl` is required on every `publish` call. When `defaultTTL` is specified, `ttl` is an optional override.
+When `defaultTTL` is not specified, `ttl` is required on every `enqueue` call. When `defaultTTL` is specified, `ttl` is an optional override.
 
 ### Scheduling semantics
 
-- `delay: number` — eligible N seconds from publish time.
+- `delay: number` — eligible N seconds from enqueue time.
 - `scheduledAt: Date` — eligible at absolute timestamp.
 
-Both optional. If neither is provided, eligible immediately. If `delay >= ttl` (or `scheduledAt >= expires_at`), the engine raises an error at publish time.
+Both optional. If neither is provided, eligible immediately. If `delay >= ttl` (or `scheduledAt >= expires_at`), the engine raises an error at enqueue time.
 
 Ordering once eligible: `COALESCE(scheduled_at, created_at) ASC, id ASC`.
 
 ### Workflow-internal API
 
 ```typescript
-await ctx.queues.notifications.publish({ userId: "u1", body: "Hello" });
-await ctx.queues.notifications.publish(
+await ctx.queues.notifications.enqueue({ userId: "u1", body: "Hello" });
+await ctx.queues.notifications.enqueue(
   { userId: "u1", body: "Urgent" },
   { ttl: 300 },
 );
-await ctx.queues.notifications.publish(
+await ctx.queues.notifications.enqueue(
   { userId: "u1", body: "Reminder" },
   { delay: 3600 },
 );
-await ctx.queues.notifications.publish(
+await ctx.queues.notifications.enqueue(
   { userId: "u1", body: "Renew your subscription" },
   { scheduledAt: addDays(ctx.date, 30) },
 );
 ```
 
 - Tier 3 — `DirectAwaitable<void>`.
-- Workflow can only publish, never read.
+- Workflow can only enqueue, never read.
 - Available in both `WorkflowContext` and `CompensationContext`.
-- Exactly-once publish: insert is colocated in the workflow's checkpoint transaction. On replay, the existing record is detected and the re-insert is skipped.
+- Exactly-once enqueue: insert is colocated in the workflow's checkpoint transaction. On replay, the existing record is detected and the re-insert is skipped.
 
 ### Client registration API
 
 ```typescript
 const unregister = client.registerQueueHandler(
   notificationsQueue,
-  async (message) => {
-    await sendEmail(message.userId, message.body);
+  async ({ signal }, message) => {
+    await sendEmail(message.userId, message.body, { signal });
   },
   {
-    timeout: 30,
+    timeoutSeconds: 30,
     retryPolicy: {
       maxAttempts: 5,
-      intervalMs: 2000,
+      intervalSeconds: 2,
       backoffRate: 2,
-      maxIntervalMs: 60_000,
+      maxIntervalSeconds: 60,
     },
   },
 );
@@ -952,7 +1098,7 @@ const unregister = client.registerQueueHandler(
 unregister();
 ```
 
-`maxAttempts` is meaningful for queues: after exhaustion, the message is dead-lettered with `max_attempts`.
+The handler receives `{ signal: AbortSignal }` as its first argument. The signal fires after `timeoutSeconds` per attempt. `maxAttempts` is meaningful for queues: after exhaustion, the message is dead-lettered with `max_attempts`. Failed attempts are written to `queue_message_attempt` — only failures are recorded, successful processing writes the result directly. Retry intervals are in seconds (durable, persisted to DB).
 
 ### Dead-letter client API
 
@@ -1065,14 +1211,12 @@ const humanReview = defineRequest({
 
 ### Workflow-internal API
 
-Requests are Tier 1 but NOT `StepCall` instances. They have their own call type extending `DeterministicAwaitable` directly.
-
-`timeout` is a required option. `null` means wait indefinitely (`UntimedRequestCall`); a number sets the deadline in seconds (`TimedRequestCall`).
+Requests are Tier 1 but NOT `StepCall` instances. They have their own call type extending `DeterministicAwaitable` directly. Timeout is controlled via the `.timeout()` builder, following the same pattern as `StepCall` — not as a constructor option.
 
 ```typescript
-// Wait indefinitely
+// Wait indefinitely (no .timeout() chained)
 const result = await ctx.requests
-  .humanReview({ context: "...", data: signals }, { timeout: null })
+  .humanReview({ context: "...", data: signals })
   .compensate(async (ctx, result) => {
     /* ... */
   })
@@ -1080,14 +1224,55 @@ const result = await ctx.requests
 
 // With timeout + fallback
 const result = await ctx.requests
-  .humanReview({ context: "...", data: signals }, { timeout: 300 })
+  .humanReview({ context: "...", data: signals })
   .compensate(async (ctx, result) => {
     /* ... */
   })
-  .timeout(() => null)
+  .timeout(300, () => null)
   .complete((r) => r.decision)
   .resolve(ctx);
 // result: "approve" | "reject" | null
+
+// With deadline
+const result = await ctx.requests
+  .humanReview({ context: "...", data: signals })
+  .timeout(new Date("2027-01-10T08:00:00Z"), () => null)
+  .resolve(ctx);
+```
+
+### `RequestCall` type
+
+```typescript
+interface RequestCall<
+  T,
+  TTimeout = never,
+  HasCompensation extends boolean = false,
+  Tctx = unknown,
+  Called extends string = never,
+> extends DeterministicAwaitable<T | TTimeout, ExecutionRoot> {
+  compensate: "compensate" extends Called ? never :
+    & ((
+        cb: (ctx: Tctx, result: RequestCompensationResult<T>) => Promise<void>,
+      ) => RequestCall<T, TTimeout, true, Tctx, Called | "compensate">)
+    & ((
+        name: string,
+        cb: (ctx: Tctx, result: RequestCompensationResult<T>) => Promise<void>,
+      ) => RequestCall<T, TTimeout, true, Tctx, Called | "compensate">);
+
+  timeout: "timeout" extends Called ? never :
+    & ((secondsOrDeadline: number | Date) =>
+        RequestCall<T, never, HasCompensation, Tctx, Called | "timeout">)
+    & (<R>(secondsOrDeadline: number | Date, cb: () => R) =>
+        RequestCall<T, Awaited<R>, HasCompensation, Tctx, Called | "timeout">)
+    & ((opts: StepBoundary) =>
+        RequestCall<T, never, HasCompensation, Tctx, Called | "timeout">)
+    & (<R>(opts: StepBoundary, cb: () => R) =>
+        RequestCall<T, Awaited<R>, HasCompensation, Tctx, Called | "timeout">);
+
+  complete: "complete" extends Called ? never :
+    <R>(cb: (data: T) => R) =>
+      RequestCall<Awaited<R>, TTimeout, HasCompensation, Tctx, Called | "complete">;
+}
 ```
 
 ### Compensation semantics
@@ -1105,29 +1290,60 @@ type RequestCompensationResult<TResponse> =
 | Timeout + ever claimed       | Yes (eager)   | `"attempted"` |
 | Timeout + never claimed      | No            | Row deleted   |
 
-### Retry policy
+### Retry policy and manual fallback
 
-The workflow caller does NOT control retry behavior. The caller controls only payload and timeout. Retry policy is the handler's concern. `maxAttempts` is absent from the handler retry policy — a handler failure releases the lock and makes the request eligible for any other worker.
+The workflow caller does NOT control retry behavior. The caller controls only payload and timeout (via `.timeout()` builder). Retry policy is the handler's concern.
+
+The handler registration supports an **eager attempt → manual fallback** pattern. The handler tries to resolve the request programmatically. If all attempts are exhausted or the overall timeout is reached, the request transitions to `is_manual = TRUE` and becomes eligible for external resolution (e.g., a human operator or third-party system resolving it via the client API).
+
+An optional `onManual` callback serves as a notification mechanism — it fires when the request transitions to manual, allowing the system to alert a human or external service. `onManual` retries infinitely (it must eventually notify), has its own per-attempt timeout and retry policy, and receives an abort signal that fires if the request is resolved externally before notification succeeds.
+
+Failed handler attempts are written to the `request_attempt` table. Only failures are recorded — successful resolution writes the response directly. This enables inspection of attempt history and reliable scheduling of the next retry.
 
 ### Client registration API
 
 ```typescript
 const unregister = client.registerRequestHandler(
   humanReview,
-  async (request) => {
-    const decision = await routeToHumanUI(request);
+  async ({ signal }, request) => {
+    const decision = await routeToHumanUI(request, { signal });
     return { decision, note: "reviewed" };
   },
   {
-    timeout: 60,
+    timeoutSeconds: 60,           // per-attempt timeout (signal aborted)
+    maxAttempts: 3,               // max handler attempts before going manual
+    totalTimeoutSeconds: 300,     // overall timeout for all attempts
     retryPolicy: {
-      intervalMs: 5000,
+      intervalSeconds: 5,
       backoffRate: 2,
-      maxIntervalMs: 120_000,
+      maxIntervalSeconds: 120,
+    },
+    onManual: {
+      callback: async ({ signal }, request) => {
+        await notifyOpsTeam(request, { signal });
+      },
+      timeoutSeconds: 30,         // per-attempt timeout for notification
+      retryPolicy: {
+        intervalSeconds: 5,
+        backoffRate: 2,
+        maxIntervalSeconds: 300,
+      },
     },
   },
 );
 ```
+
+**Handler options:**
+
+- `timeoutSeconds` — per-attempt execution timeout. The handler receives `{ signal: AbortSignal }` as first argument; the signal fires after this duration.
+- `maxAttempts` — max handler attempts. After exhaustion, the request transitions to manual. Optional — if omitted, only `totalTimeoutSeconds` controls the transition.
+- `totalTimeoutSeconds` — overall wall-clock timeout for all attempts combined. After this, the request transitions to manual. Optional — if omitted, only `maxAttempts` controls the transition.
+- `retryPolicy` — retry spacing: `intervalSeconds`, `backoffRate`, `maxIntervalSeconds`. All in seconds (durable, persisted to DB).
+- `onManual.callback` — notification function. Receives `{ signal: AbortSignal }` (aborted if request is resolved externally before notification succeeds) and the request payload.
+- `onManual.timeoutSeconds` — per-attempt timeout for the notification callback.
+- `onManual.retryPolicy` — retry spacing for the notification. Retries indefinitely until notification succeeds or the request is resolved externally.
+
+At least one of `maxAttempts` or `totalTimeoutSeconds` must be provided. Without either, the handler would retry forever and never transition to manual — if that is the desired behavior, `onManual` should be omitted entirely and the handler is responsible for eventual resolution.
 
 ### Postgres implementation
 
@@ -1138,6 +1354,7 @@ CREATE TABLE requests (
   payload                 JSONB NOT NULL,
   response                JSONB,
   status                  TEXT NOT NULL DEFAULT 'pending',
+  is_manual               BOOLEAN NOT NULL DEFAULT FALSE,
   claimed_at              TIMESTAMPTZ,
   resolved_at             TIMESTAMPTZ,
   timed_out_at            TIMESTAMPTZ,
@@ -1148,17 +1365,6 @@ CREATE TABLE requests (
   CONSTRAINT chk_status CHECK (
     status IN ('pending', 'claimed', 'resolved', 'timedOut', 'cancelled')
   )
-);
-
-CREATE TABLE request_attempt (
-  id          BIGSERIAL PRIMARY KEY,
-  request_id  BIGINT NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
-  attempt     INT NOT NULL,
-  error       TEXT NOT NULL,
-  error_type  TEXT,
-  details     JSONB,
-  started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  failed_at   TIMESTAMPTZ NOT NULL
 );
 ```
 
@@ -1200,16 +1406,16 @@ Tier 3 — `DirectAwaitable<void>`. Publish only, never consume. Available in bo
 const unregister = client.registerTopicConsumer(
   auditTopic,
   "analyticsConsumer",
-  async (record) => {
+  async ({ signal }, record) => {
     if (record.metadata?.tenantId !== "acme") return;
-    await ingestToWarehouse(record);
+    await ingestToWarehouse(record, { signal });
   },
   {
-    timeout: 10,
+    timeoutSeconds: 10,
     retryPolicy: {
-      intervalMs: 1000,
+      intervalSeconds: 1,
       backoffRate: 2,
-      maxIntervalMs: 30_000,
+      maxIntervalSeconds: 30,
       maxAttempts: 5,
     },
     registrationRetry: {
@@ -1221,13 +1427,20 @@ const unregister = client.registerTopicConsumer(
       logger.warn("Topic consumer lock conflict", event.error);
     },
     onConsumeError: async (event) => {
-      if (event.type === "attemptsExhausted") return "skip";
+      if (event.type === "attemptsExhausted") {
+        // event.attempts: AttemptAccessor — inspect error history
+        return "skip";
+      }
       if (event.type === "offsetExpired") return "skip";
       return "halt";
     },
   },
 );
 ```
+
+The consumer callback receives `{ signal: AbortSignal }` as its first argument. The signal fires after `timeoutSeconds` per attempt. Failed attempts are written to a `topic_consumer_attempt` table (FK on consumer + record) — only failures are recorded, successful processing advances the offset. Retry intervals are in seconds (durable, persisted to DB). `registrationRetry` uses milliseconds — it is purely a runtime concern, never persisted.
+
+The `onConsumeError` callback receives an event with an `attempts: AttemptAccessor` field when `type === "attemptsExhausted"`, allowing inspection of the error history to make informed skip/halt decisions.
 
 Consumer identity is enforced via session-level Postgres advisory locks. One active instance per named consumer per topic at a time.
 
@@ -1252,15 +1465,22 @@ CREATE TABLE topic_consumers (
   id             SERIAL PRIMARY KEY,
   name           TEXT NOT NULL,
   topic_name     TEXT NOT NULL,
+  last_id        BIGINT NOT NULL DEFAULT 0,
   offset_expired BOOLEAN NOT NULL DEFAULT FALSE,
   last_seen_at   TIMESTAMPTZ,
   UNIQUE (topic_name, name)
 );
 
-CREATE TABLE topic_consumer_offsets (
-  consumer_id BIGINT REFERENCES topic_consumers(id),
-  last_id     BIGINT NOT NULL DEFAULT 0,
-  PRIMARY KEY (consumer_id)
+CREATE TABLE topic_consumer_attempt (
+  id          BIGSERIAL PRIMARY KEY,
+  consumer_id BIGINT NOT NULL REFERENCES topic_consumers(id) ON DELETE CASCADE,
+  record_id   BIGINT NOT NULL REFERENCES topic_records(id) ON DELETE CASCADE,
+  attempt     INT NOT NULL,
+  error       TEXT NOT NULL,
+  error_type  TEXT,
+  details     JSONB,
+  started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  failed_at   TIMESTAMPTZ NOT NULL
 );
 ```
 
@@ -1325,6 +1545,20 @@ readNowait(offset: number, defaultValue: D): Promise<StreamReadResult<T> | { sta
 
 Non-blocking read at a specific offset. Mirrors `receiveNowait()` on channels and `getNowait()` on attributes.
 
+### Channel `receive` deadline support
+
+`channel.receive()` now accepts `Date` as a deadline in addition to `number` (seconds timeout):
+
+```typescript
+receive(timeoutOrDeadline: number | Date): ChannelReceiveCall<T | undefined>;
+receive<TDefault>(
+  timeoutOrDeadline: number | Date,
+  defaultValue: TDefault,
+): ChannelReceiveCall<T | TDefault>;
+```
+
+When a `Date` is provided, the receive blocks until a message arrives or the absolute deadline is reached. When a `number` is provided, it behaves as before — relative timeout in seconds.
+
 ---
 
 ## Part 15: AttemptAccessor Refactoring
@@ -1364,7 +1598,7 @@ export type ScheduleOptions =
 
 ### Queue messages
 
-Described in Part 10. `publish` opts accept `delay: number` (seconds) or `scheduledAt: Date`.
+Described in Part 10. `enqueue` opts accept `delay: number` (seconds) or `scheduledAt: Date`.
 
 ### Workflow starts
 
@@ -1397,51 +1631,63 @@ defineWorkflow({
   queues:     { [name: string]: QueueDefinition<M> },
   requests:   { [name: string]: RequestDefinition<Req, Res> },
   topics:     { [name: string]: TopicDefinition<R, Meta> },
-  attributes: { [name: string]: ZodSchema },
+  attributes: { [name: string]: JsonSchemaConstraint },
+  errors:     { [name: string]: JsonSchemaConstraint | true },
 });
 ```
 
 ### `WorkflowContext` changes
 
-| Change                                 | Details                                                                      |
-| -------------------------------------- | ---------------------------------------------------------------------------- |
-| `ctx.queues.X.publish(payload, opts?)` | Tier 3, both contexts                                                        |
-| `ctx.requests.X(payload, opts)`        | Tier 1, both contexts (no `.compensate()` in `CompensationContext`)          |
-| `ctx.topics.X.publish(payload, opts?)` | Tier 3, both contexts                                                        |
-| `ctx.attributes.X.set(value)`          | Tier 3, both contexts                                                        |
-| `ctx.registerCompensation(name, cb)`   | Tier 3, `WorkflowContext` only. Registers deferred LIFO compensation.        |
-| `ctx.compensateEagerly(name, cb)`      | Tier 3, `WorkflowContext` only. Dispatches eager FIFO compensation.          |
-| `ctx.joinSafe(handle)`                 | Available on concurrency contexts. Returns result union instead of throwing. |
-| `ctx.best(name, entries)`              | Tier 1, collects all successful results.                                     |
-| `ctx.atMost(name, n, entries)`         | Tier 1, collects at most N results.                                          |
-| `ctx.atLeast(name, n, entries)`        | Tier 1, collects at least N results (fails if fewer).                        |
-| `ctx.first(name, entries)`             | Now requires a name argument.                                                |
-| `ctx.all(name, entries)`               | Now requires a name argument.                                                |
-| `ctx.scope(name, entries, callback)`   | Unchanged (already named).                                                   |
+| Change                                  | Details                                                                                  |
+| --------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `ctx.queues.X.enqueue(payload, opts?)`  | Tier 3, both contexts                                                                    |
+| `ctx.requests.X(payload)`               | Tier 1, both contexts (no `.compensate()` in `CompensationContext`). Timeout via builder. |
+| `ctx.topics.X.publish(payload, opts?)`  | Tier 3, both contexts                                                                    |
+| `ctx.attributes.X.set(value)`           | Tier 3, both contexts                                                                    |
+| `ctx.errors.X(message, details?)`       | Factory functions for declared error classes. Keyed by error name.                       |
+| `ctx.registerCompensation(name, cb)`    | Tier 3, `WorkflowContext` only. Registers deferred LIFO compensation.                    |
+| `ctx.compensateEagerly(name, cb)`       | Tier 3, `WorkflowContext` only. Dispatches eager FIFO compensation.                      |
+| `ctx.joinSafe(handle, onError)`         | Available on concurrency contexts. Error handler returns recovery value.                 |
+| `ctx.best(name, entries)`               | Tier 1, collects all successful results.                                                 |
+| `ctx.atMost(name, n, entries)`          | Tier 1, collects at most N results.                                                      |
+| `ctx.atLeast(name, n, entries)`         | Tier 1, collects at least N results (fails if fewer).                                    |
+| `ctx.first(name, entries)`              | Now requires a name argument.                                                            |
+| `ctx.all(name, entries)`                | Now requires a name argument.                                                            |
+| `ctx.scope(name, entries, callback)`    | Unchanged (already named).                                                               |
 
 ### `StepCall` changes
 
-| Change                                | Details                                                   |
-| ------------------------------------- | --------------------------------------------------------- |
-| `.failure()` removed                  | Steps cannot fail — they succeed or time out.             |
-| `.timeout(boundary, cb?)` added       | Replaces `.failure()`. Stop condition for step execution. |
-| `TFail` type parameter removed        | Replaced by `TTimeout`.                                   |
-| `.compensate()` accepts optional name | `.compensate("name", cb)` for explicit identity.          |
+| Change                                            | Details                                                                           |
+| ------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `.failure()` removed                              | Steps cannot fail — they succeed or time out.                                     |
+| `.timeout(boundary, cb?)` added                   | Replaces `.failure()`. Accepts `number`, `Date`, or `StepBoundary`.               |
+| `TFail` type parameter removed                    | Replaced by `TTimeout`.                                                           |
+| `.compensate()` accepts optional name              | `.compensate("name", cb)` for explicit identity.                                  |
+| `Called` type parameter added                      | Builder methods resolve to `never` after first call — prevents duplicate chaining. |
 
 ### `WorkflowCall` changes
 
-| Change                                | Details                                                      |
-| ------------------------------------- | ------------------------------------------------------------ |
-| `.timeout(seconds, cb)` added         | Parent-side patience, separate from child-side `.failure()`. |
-| `.compensate()` accepts optional name | `.compensate("name", cb)` for explicit identity.             |
+| Change                                | Details                                                                           |
+| ------------------------------------- | --------------------------------------------------------------------------------- |
+| `.timeout(boundary, cb?)` added       | Parent-side patience. Accepts `number`, `Date`, or `StepBoundary`.                |
+| `.compensate()` accepts optional name | `.compensate("name", cb)` for explicit identity.                                  |
+| `Called` type parameter added          | Builder methods resolve to `never` after first call — prevents duplicate chaining. |
 
-### `RetryPolicyOptions` changes
+### `RetryPolicyOptions` changes (step-level)
 
-| Change                                 | Details                                              |
-| -------------------------------------- | ---------------------------------------------------- |
-| `maxAttempts` removed                  | Moved to `.timeout()` builder on `StepCall`.         |
-| `intervalSeconds` → `intervalMs`       | Milliseconds, consistent with TypeScript convention. |
-| `maxIntervalSeconds` → `maxIntervalMs` | Milliseconds.                                        |
+| Change                | Details                                     |
+| --------------------- | ------------------------------------------- |
+| `maxAttempts` removed | Moved to `.timeout()` builder on `StepCall`. |
+
+### Handler registration retry policy
+
+Queue and request handler retry policies use seconds (`intervalSeconds`, `maxIntervalSeconds`) — these are durable execution concerns with attempts persisted to the database. Topic consumer retry policies also use seconds for the same reason. `registrationRetry` on topic consumers uses milliseconds (`intervalMs`, `maxIntervalMs`) — purely a runtime concern, never persisted.
+
+### Channel `receive` changes
+
+| Change                          | Details                                                         |
+| ------------------------------- | --------------------------------------------------------------- |
+| `receive(Date)` overload added  | Absolute deadline support alongside `receive(seconds)` timeout. |
 
 ### New exports
 
@@ -1449,8 +1695,9 @@ defineWorkflow({
 - `SearchQueryNode`, `SearchQuery`
 - `DeadLetterRecordFields`, `DeadLetterSort`, `DeadLetterCursor`, `DeadLetteredMessage`, `DeadLetterHandle`
 - `RequestCompensationResult`, `AttemptAccessor`
-- `WorkflowError`
-- `StepBoundary`
+- `WorkflowError`, `WorkflowErrorValue`, `WorkflowFailureInfo`
+- `StepTimeoutError`, `RequestTimeoutError`, `PropagatedError`, `ErrorOrigin`
+- `StepBoundary`, `MAIN_BRANCH`, `BranchPathItem`
 - `Unsubscribe`
 - `RegisterTopicConsumerError`, `RegisterTopicConsumerErrorEvent`, `TopicConsumerAlreadyActiveError`, `TopicConsumerConsumeErrorEvent`
 - `ScheduleOptions`
@@ -1465,12 +1712,23 @@ defineWorkflow({
 - `StepCall.failure()` removed. Use `.timeout()`.
 - `StepFailureInfo` removed.
 - `maxAttempts` removed from `RetryPolicyOptions`.
-- `retryPolicy` interval fields: `intervalSeconds` → `intervalMs`, `maxIntervalSeconds` → `maxIntervalMs`.
 - `addCompensation()` renamed to `registerCompensation(name, cb)` (now named, now Tier 3 awaitable).
 - `ctx.first(entries)` → `ctx.first(name, entries)` (name required).
 - `ctx.all(entries)` → `ctx.all(name, entries)` (name required).
 - `RetentionSettings` → `RetentionSetter<TStatus extends string>`.
-- Unhandled exceptions now halt the workflow instead of failing it (only `WorkflowError` causes failure).
+- Unhandled exceptions now halt the workflow instead of failing it (only declared `ctx.errors` cause failure).
+- `WorkflowError` is no longer subclassed. Errors are defined as `{ name: schema | true }` on `defineWorkflow`. `ctx.errors.X(...)` factory functions replace direct `throw new WorkflowError(...)`.
+- Throwing a `WorkflowError` with an undeclared `errorCode` halts the workflow instead of failing it.
+- Queue `publish` renamed to `enqueue` (`ctx.queues.X.enqueue(...)`).
+- `ctx.joinSafe(handle)` → `ctx.joinSafe(handle, onError)` (error handler callback, not discriminated union).
+- Branch key path representation changed from `(string | Symbol)[]` to `BranchPathItem[]` (`{ scope, branch }` objects with `MAIN_BRANCH` unique symbol).
+- `topic_consumer_offsets` table removed — `last_id` merged into `topic_consumers`.
+- Request workflow API: `timeout` removed from call options — use `.timeout()` builder instead.
+- Builder methods on `StepCall`, `WorkflowCall`, `RequestCall` resolve to `never` after first call (prevents duplicate chaining via `Called` type parameter).
+- All handler registration callbacks (`queue`, `request`, `topic`) now receive `{ signal: AbortSignal }` as first argument.
+- Handler retry policies use seconds (`intervalSeconds`, `maxIntervalSeconds`) instead of milliseconds. `registrationRetry` on topic consumers remains in milliseconds.
+- `.timeout()` on `StepCall` and `WorkflowCall` now accepts `Date` (deadline) in addition to `number` (seconds).
+- `channel.receive()` now accepts `Date` (deadline) in addition to `number` (seconds timeout).
 
 ### Connection and transaction model
 
