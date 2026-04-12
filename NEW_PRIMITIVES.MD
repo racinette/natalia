@@ -88,43 +88,45 @@ A scope has branches. A branch has sequential steps. A step may have a promise. 
 
 ### Execution algorithm
 
-The VEL uses a split execution strategy: **depth-first** for main branches (scope bodies), **round-robin** for concurrent branches. All step records are **batched** and committed in a single transaction when every branch is blocked, before any side-effecting work begins.
+The VEL executes all branches within a scope until every branch is blocked, then **batches** all accumulated step records into a single transaction before dispatching any side-effecting work. The order in which concurrent branches are interleaved within a batch round is an implementation detail — workflow logic must never rely on it.
 
 1. **Non-concurrent code** executes as-is. Sequential operations within a single branch need no scheduling.
 
-2. **Entering a scope** transitions to structured concurrency. The scope body is treated as a branch with a synthetic key (`MAIN_BRANCH`), placed first in the deterministic branch ordering.
+2. **Entering a scope** transitions to structured concurrency. The scope body is treated as a branch with a synthetic key (`MAIN_BRANCH`). Concurrent branches are the named entries in the scope definition.
 
-3. **Branch ordering** is alphanumeric by key path. The key path is a `readonly BranchPathItem[]` array that encodes the full nested scope lineage. Each item is `{ scope: string; branch: string | typeof MAIN_BRANCH }`, where `MAIN_BRANCH` is a module-level `unique symbol` export. For a scope `"A"` with branches `"foo"` and `"bar"`:
+3. **Branch identity** is encoded as a `readonly BranchPathItem[]` key path representing the full nested scope lineage. Each item is `{ scope: string; branch: string | typeof MAIN_BRANCH }`, where `MAIN_BRANCH` is a module-level `unique symbol` export. For a scope `"A"` with branches `"foo"` and `"bar"`:
 
    ```typescript
    declare const MAIN_BRANCH: unique symbol;
 
-   [{ scope: "A", branch: MAIN_BRANCH }]   // ← scope body, always first
-   [{ scope: "A", branch: "bar" }]          // ← alphanumeric order
+   [{ scope: "A", branch: MAIN_BRANCH }]   // ← scope body
+   [{ scope: "A", branch: "bar" }]
    [{ scope: "A", branch: "foo" }]
    ```
 
-4. **Main branch execution (depth-first).** The main branch (`MAIN_BRANCH`) of each scope executes depth-first until it reaches a context switch point. This allows the scope body to set up work, make decisions, and short-circuit before concurrent branches run.
+4. **Branch execution.** Each branch executes until it reaches a blocking point (Tier 1 start, Tier 1 await, or Tier 2 await). The order in which the engine interleaves concurrent branches is an **implementation detail** and must not be relied upon. The only guarantee is that the interleaving is deterministic across replays — the same code produces the same step ordinals within each branch.
 
-5. **Concurrent branch execution (round-robin).** After the main branch blocks, concurrent branches execute in round-robin order: `branch1 → branch2 → branch3 → branch1 → ...`, with each branch executing until the next context switch point before yielding to the next. This ensures all branches make progress together and produces deterministic interleaving.
+5. **Buffered operations** are synchronous calls that do not trigger context switches. They buffer step records in memory without writing to the database. Stream writes, event sets, attribute sets, queue enqueues, topic publishes, foreign channel sends, compensation registrations, detached workflow starts — all execute inline within the current branch and do not yield.
 
-6. **Buffered operations** are synchronous calls that do not trigger context switches. They buffer step records in memory without writing to the database. Stream writes, event sets, attribute sets, queue enqueues, topic publishes, foreign channel sends, compensation registrations, detached workflow starts — all execute inline within the current branch and do not yield.
+6. **Tier 2 operations** (`channel.receive`, `sleep`) block on external resolution. The engine buffers a step and promise record, then context-switches to the next branch.
 
-7. **Tier 2 operations** (`channel.receive`, `sleep`) block on external resolution. The engine buffers a step and promise record, then context-switches.
-
-8. **Tier 1 operations** (steps, child workflows, requests) require two-phase execution:
+7. **Tier 1 operations** (steps, child workflows, requests) require two-phase execution:
    - **Start phase**: buffer a `start_step` / `start_child_workflow` / `send_request` step record and a promise. Context-switch. The actual work is NOT started yet.
    - **Await phase**: buffer an `await_promise` step referencing the created promise. Context-switch.
 
-9. **Awaitable reads** (`channel.receiveNowait`, `patch`) require database state to make a decision. These trigger a **flush**: the accumulated buffer is committed in a batch transaction, then the read is executed against the committed state. The branch continues with the result.
+8. **Awaitable reads** (`channel.receiveNowait`, `patch`) require database state to make a decision. These trigger a **flush**: the accumulated buffer is committed in a batch transaction, then the read is executed against the committed state. The branch continues with the result.
 
-10. **Batch commit.** When all branches are blocked (every branch has hit a Tier 1 start, Tier 1 await, or Tier 2 await), the engine commits the entire accumulated buffer of step records in a **single transaction**. Only after the commit does the engine start the actual side-effecting work: step coroutines, child workflow dispatches, request dispatches.
+9. **Batch commit.** When all branches are blocked, the engine commits the entire accumulated buffer of step records in a **single transaction**. Only after the commit does the engine start the actual side-effecting work: step coroutines, child workflow dispatches, request dispatches. This batching ensures atomicity (the batch fully commits or doesn't) and efficiency (fewer DB round-trips).
 
-11. **Promise resolution fetch.** All branches are blocked and all work has been dispatched. Fetch resolved promises from the database. Each promise records a `sequence_no` on resolution, assigned from a Postgres sequence protected by a per-VEL advisory lock. This ensures deterministic ordering.
+10. **Promise resolution fetch.** All branches are blocked and all work has been dispatched. Fetch resolved promises from the database. Each promise records a `sequence_no` on resolution, assigned from a Postgres sequence protected by a per-VEL advisory lock. This ensures deterministic ordering: no two promises from the same VEL can resolve with the same or out-of-order sequence numbers.
 
-12. **Resume.** Take the first resolved promise by sequence number. If the promise belongs to a main branch, execute depth-first until the next context switch. If it belongs to a concurrent branch, resume round-robin from that branch.
+11. **Resume.** Take the first resolved promise by sequence number. Resume the branch that was blocked on it. Execute until the next blocking point. Continue with the next resolved promise if available.
 
-13. **Continue.** If more resolved promises exist, resume the next. If none remain, fetch again. The cycle continues until the scope body returns or all branches complete.
+12. **Continue.** If no more resolved promises are available, fetch again. The cycle continues until the scope body returns or all branches complete.
+
+### Important: no reliance on branch execution order
+
+**Workflow logic must never depend on the order in which concurrent branches execute within a scope.** Branches in a scope are logically concurrent — they share no mutable state, and the order in which they reach their blocking points does not affect the outcome. Any workflow that behaves differently depending on branch interleaving order is incorrectly designed. The engine guarantees deterministic replay, but the specific interleaving is an implementation detail subject to change.
 
 ### Buffered vs awaitable operations
 
@@ -136,9 +138,9 @@ The VEL uses a split execution strategy: **depth-first** for main branches (scop
 | **Tier 1 await** | `.resolve(ctx)` on a Tier 1 handle                                                                                           | Buffers `await_promise`. Context-switches. Blocks until resolution.   |
 | **Awaitable read** | `channel.receiveNowait`, `patch`                                                                                           | Triggers buffer flush. Reads from committed state. No context switch. |
 
-### Nested scope ordering and execution
+### Nested scopes
 
-Nested scopes exist on the same VEL — they do not create separate VELs. When a nested scope is entered, its branches are inserted into the global ordering by their full key path. The depth-first / round-robin split applies recursively: each scope's main branch runs depth-first, and its concurrent branches run round-robin.
+Nested scopes exist on the same VEL — they do not create separate VELs. When a nested scope is entered, its branches are added to the set of active branches. Each branch is identified by its full key path:
 
 ```typescript
 await ctx
@@ -152,34 +154,36 @@ await ctx
   .resolve(ctx);
 ```
 
-Initial ordering:
+When scope `"A"` is entered, three branches exist:
 
 ```typescript
-[{ scope: "A", branch: MAIN_BRANCH }]       // main — depth-first
-[{ scope: "A", branch: "bar" }]              // concurrent — round-robin
-[{ scope: "A", branch: "foo" }]              // concurrent — round-robin
+[{ scope: "A", branch: MAIN_BRANCH }]
+[{ scope: "A", branch: "bar" }]
+[{ scope: "A", branch: "foo" }]
 ```
 
-**Step 1:** Scope `"A"`'s main branch runs depth-first. It enters scope `"B"`, which adds new branches:
+When scope `"A"`'s main branch enters scope `"B"`, the branch set expands:
 
 ```typescript
 [{ scope: "A", branch: MAIN_BRANCH }]                                          // blocked (entered scope B)
-[{ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: MAIN_BRANCH }]     // main — depth-first
-[{ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: "baz" }]           // concurrent — round-robin
-[{ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: "fuz" }]           // concurrent — round-robin
-[{ scope: "A", branch: "bar" }]                                                 // concurrent — round-robin
-[{ scope: "A", branch: "foo" }]                                                 // concurrent — round-robin
+[{ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: MAIN_BRANCH }]
+[{ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: "baz" }]
+[{ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: "fuz" }]
+[{ scope: "A", branch: "bar" }]
+[{ scope: "A", branch: "foo" }]
 ```
 
-**Step 2:** Scope `"B"`'s main branch runs depth-first until it blocks.
+All six branches are part of the same VEL. The engine executes them in an implementation-defined order until all are blocked, then commits the batch.
 
-**Step 3:** All concurrent branches across both scopes (`"baz"`, `"fuz"`, `"bar"`, `"foo"`) execute round-robin. The ordering is deterministic — alphanumeric by full key path. Each branch runs until a context switch point, then yields to the next.
+### Implementation note: possible interleaving strategies
 
-**Step 4:** When all branches are blocked, the batch is committed and work dispatched. Promise resolutions resume branches: main branches depth-first, concurrent branches back to round-robin.
+The specific order in which the engine interleaves concurrent branches is an implementation detail. Some possible strategies:
 
-### Scope body priority
+- **Round-robin**: cycle through branches one blocking point at a time (`1→2→3→1→2→3`). Ensures uniform progress.
+- **Depth-first**: run each branch to completion or blocking before moving to the next. Simpler to implement.
+- **Main-branch-first**: always execute the scope body before concurrent branches. Allows the scope body to short-circuit early.
 
-The scope body (main branch) is always the first element in the branch ordering (via `MAIN_BRANCH` sorting before any string key) and executes depth-first. This gives it natural priority: it runs as far as it can before any concurrent branches start, and after promise resolutions are processed, it gets first pick. This allows the scope body to set up work, make decisions, and short-circuit before concurrent branches execute, minimizing wasted work.
+All strategies produce the same batch of step records (same ordinals within each branch, same set of promises). The choice affects debugging traces and performance characteristics, not correctness. Workflow logic must never rely on any specific strategy.
 
 ### Two VELs per workflow
 
@@ -1580,29 +1584,67 @@ const unregister = client.registerTopicConsumer(
       backoffRate: 2,
       maxIntervalSeconds: 30,
     },
-    registrationRetry: {
-      intervalMs: 5000,
-      backoffRate: 1.5,
-      maxIntervalMs: 60_000,
+    registration: {
+      retryPolicy: {
+        intervalMs: 5000,
+        backoffRate: 1.5,
+        maxIntervalMs: 60_000,
+      },
+      onRegistered: () => {
+        logger.info("Consumer registered, consuming records");
+      },
+      onError: (event) => {
+        logger.warn("Topic consumer lock conflict", event.error);
+      },
     },
-    onRegisterError: (event) => {
-      logger.warn("Topic consumer lock conflict", event.error);
-    },
-    onConsumeError: async (event) => {
-      if (event.type === "attemptsExhausted") {
-        // event.attempts: AttemptAccessor — inspect error history
-        return "skip";
-      }
-      if (event.type === "offsetExpired") return "skip";
-      return "halt";
+    onConsumeError: {
+      callback: async ({ signal }, event) => {
+        if (event.type === "attemptsExhausted") {
+          // event.attempts: AttemptAccessor — inspect error history
+          return "skip";
+        }
+        if (event.type === "offsetExpired") return "skip";
+        return "halt";
+      },
+      retryPolicy: {
+        intervalMs: 1000,
+        backoffRate: 2,
+        maxIntervalMs: 30_000,
+      },
     },
   },
 );
 ```
 
-The consumer callback receives `{ signal: AbortSignal }` as its first argument. The signal fires after `retryPolicy.timeoutSeconds` per attempt. Failed attempts are written to a `topic_consumer_attempt` table (FK on consumer + record) — only failures are recorded, successful processing advances the offset. All retry policy fields are in seconds (durable, persisted to DB). `registrationRetry` uses milliseconds — it is purely a runtime concern, never persisted.
+**Consumer handler:**
 
-The `onConsumeError` callback receives an event with an `attempts: AttemptAccessor` field when `type === "attemptsExhausted"`, allowing inspection of the error history to make informed skip/halt decisions.
+The consumer callback receives `{ signal: AbortSignal }` as its first argument. The signal fires after `retryPolicy.timeoutSeconds` per attempt. Failed attempts are written to a `topic_consumer_attempt` table (FK on consumer + record) — only failures are recorded, successful processing advances the offset. All retry policy fields are in seconds (durable, persisted to DB).
+
+**Registration options (`registration`):**
+
+- `registration.retryPolicy` — runtime-level retry policy (milliseconds, infinite) for re-acquiring the advisory lock after a failed registration attempt. Purely runtime — never persisted.
+- `registration.onRegistered` — called when the consumer successfully acquires the advisory lock and becomes active. Useful for logging, metrics, readiness probes. Purely runtime notification.
+- `registration.onError` — called when a registration attempt fails (e.g., advisory lock conflict). Purely runtime notification.
+
+**Consume error handling (`onConsumeError`):**
+
+When record processing exhausts its `retryPolicy.maxAttempts` or the consumer's offset has expired, the engine needs a decision: `"skip"` (advance past the record) or `"halt"` (stop consuming). The `onConsumeError` callback makes this decision.
+
+- `onConsumeError.callback` — receives `{ signal: AbortSignal }` (fires on consumer shutdown) and an event. Returns `"skip"` or `"halt"`.
+  - `event.type === "attemptsExhausted"`: record processing failed after all retry attempts. `event.attempts: AttemptAccessor` provides the error history for informed decisions.
+  - `event.type === "offsetExpired"`: the consumer's offset points to records that have been purged by retention. The consumer must skip ahead.
+- `onConsumeError.retryPolicy` — runtime-level retry policy (milliseconds, infinite) for when the callback throws. `intervalMs`, `backoffRate`, `maxIntervalMs`. If the callback keeps failing, the consumer halts (safe default — don't silently skip messages).
+
+**Defaults when `onConsumeError` is omitted:**
+
+| Event type         | Default behavior |
+| ------------------ | ---------------- |
+| `attemptsExhausted` | `"halt"`         |
+| `offsetExpired`     | `"skip"`         |
+
+`"halt"` for exhausted attempts is the safe default — it prevents silently dropping messages that may need attention. `"skip"` for expired offsets is the only viable option — the records are gone.
+
+**If `onConsumeError.callback` exhausts its own retries** (keeps throwing), the consumer halts. This prevents an infinite loop where the decision callback itself is broken.
 
 Consumer identity is enforced via session-level Postgres advisory locks. One active instance per named consumer per topic at a time.
 
@@ -1887,6 +1929,16 @@ The call site changes from positional args to a single object:
 
 The `args` field is a `JsonSchemaConstraint` — the same constraint as everything else that goes into JSONB. Arguments are serialized into the step record alongside the result, enabling full observability: the database records what was attempted, failed attempts carry the input, and timeout errors at the external boundary include typed args.
 
+### Input/Output convention
+
+The codebase follows a strict encode-on-write, decode-on-read discipline using `StandardSchemaV1`'s two type parameters. Standard Schema does not support bidirectional transforms (there is no `encode(Output) → Input`), so the write side must always accept `InferInput` (the JSON-serializable form):
+
+- **Call sites** (write side) accept `InferInput`: `ctx.steps.X(args)`, `ctx.childWorkflows.X.start({ args })`, `ctx.errors.X(message, details)`, `channel.send(data)`, `stream.write(data)`. The developer provides the serializable form.
+- **Callbacks** (read side) receive `InferOutput`: `execute({ signal }, args)`, `beforeSettle`, compensation callbacks, `idempotencyKeyFactory(args)`. The engine deserializes from the database and validates through the schema, producing the decoded form.
+- **External results** (read side) are typed as `InferOutput`: step results, workflow results, error details, timeout error args. The external caller receives the decoded form.
+
+For most schemas (no transforms), `InferInput` and `InferOutput` are identical and the distinction is invisible. The distinction only matters for schemas with transforms (e.g., `z.string().datetime()` where input is `string` and output is `Date`).
+
 ---
 
 ## Summary of Public API Changes
@@ -1962,7 +2014,7 @@ defineStep({
 
 ### Handler registration retry policy
 
-All handler registrations (queue, request, topic) consolidate retry configuration into a single `retryPolicy` object containing both stop conditions (`timeoutSeconds`, `maxAttempts`, `totalTimeoutSeconds`) and spacing (`intervalSeconds`, `backoffRate`, `maxIntervalSeconds`). All fields are in seconds — these are durable execution concerns with attempts persisted to the database. `registrationRetry` on topic consumers and `onExhausted.retryPolicy` on request handlers use milliseconds (`intervalMs`, `maxIntervalMs`) — purely runtime concerns, never persisted.
+All handler registrations (queue, request, topic) consolidate retry configuration into a single `retryPolicy` object containing both stop conditions (`timeoutSeconds`, `maxAttempts`, `totalTimeoutSeconds`) and spacing (`intervalSeconds`, `backoffRate`, `maxIntervalSeconds`). All fields are in seconds — these are durable execution concerns with attempts persisted to the database. Runtime-level retry policies (`registration.retryPolicy` on topic consumers, `onExhausted.retryPolicy` on request handlers, `onConsumeError.retryPolicy` on topic consumers) use milliseconds (`intervalMs`, `maxIntervalMs`) — purely runtime concerns, never persisted.
 
 ### Channel `receive` changes
 
@@ -2011,7 +2063,8 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - Request workflow API: `timeout` removed from call options — use `.timeout()` builder instead.
 - Builder methods on `StepCall`, `WorkflowCall`, `RequestCall` resolve to `never` after first call (prevents duplicate chaining via `Called` type parameter).
 - All handler registration callbacks (`queue`, `request`, `topic`) now receive `{ signal: AbortSignal }` as first argument.
-- Handler retry policies use seconds (`intervalSeconds`, `maxIntervalSeconds`) instead of milliseconds. `registrationRetry` on topic consumers remains in milliseconds.
+- Handler retry policies use seconds (`intervalSeconds`, `maxIntervalSeconds`) instead of milliseconds. Runtime-level retry policies remain in milliseconds.
+- Topic consumer: `registrationRetry` and `onRegisterError` restructured into `registration: { retryPolicy, onRegistered, onError }`. `onConsumeError` restructured into `onConsumeError: { callback, retryPolicy }` with defined throw/retry behavior.
 - `.timeout()` on `StepCall` and `WorkflowCall` now accepts `Date` (deadline) in addition to `number` (seconds).
 - `channel.receive()` now accepts `Date` (deadline) in addition to `number` (seconds timeout).
 - `StepDefinition.schema` renamed to `result`. New `args` field added (required `JsonSchemaConstraint`).
@@ -2019,7 +2072,7 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - Step `execute` callback: `({ signal }, ...args: TArgs)` → `({ signal }, args: InferOutput<TArgsSchema>)`.
 - `idempotencyKey` is now required on all workflow start calls (client, child workflow, detached). Optional if `idempotencyKeyFactory` is defined on the workflow.
 - `idempotencyKeyFactory` receives post-validation args (same as `execute`).
-- VEL execution strategy changed: main branches run depth-first, concurrent branches run round-robin.
+- VEL execution strategy: branch interleaving order within a scope is an implementation detail. Workflow logic must not rely on it.
 - Buffered operations (`stream.write`, `event.set`, `attribute.set`, `queue.enqueue`, `topic.publish`, `channel.send` (foreign), `registerCompensation`, `compensateEagerly`, `startDetached`) are now synchronous — they return `void` and are not `await`ed. `DirectAwaitable<void>` is removed for these operations.
 - Step records are batched and committed in a single transaction when all branches are blocked. Side-effecting work (step execution, child workflow dispatch, request dispatch) starts only after the batch commit.
 - `receiveNowait` and `patch` are awaitable reads — they trigger a buffer flush before reading from committed state.
