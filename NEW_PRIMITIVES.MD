@@ -29,6 +29,8 @@ The changes are organized into two categories:
 14. **Context splitting** — separate primitive instances for execution and compensation VELs
 15. **Convenience scope methods** — `ctx.best()`, `ctx.atMost()`, `ctx.atLeast()`, `ctx.joinSafe()`
 16. **Database schema** — unified tree model for execution and compensation
+17. **`idempotencyKeyFactory`** — derive idempotency keys from workflow args, make `idempotencyKey` required
+18. **Serializable step arguments** — `args` schema on `defineStep`, single object arg pattern, full observability
 
 ---
 
@@ -223,11 +225,11 @@ Both standalone compensation methods are Tier 3 Direct Awaitables that write a s
 
 ```typescript
 await ctx.registerCompensation("cancel-hotel", async (ctx) => {
-  await ctx.steps.cancelHotel(hotel.id).resolve(ctx);
+  await ctx.steps.cancelHotel({ hotelId: hotel.id }).resolve(ctx);
 });
 
 await ctx.compensateEagerly("refund-booking", async (ctx) => {
-  await ctx.steps.refundBooking(booking.id).resolve(ctx);
+  await ctx.steps.refundBooking({ bookingId: booking.id }).resolve(ctx);
 });
 ```
 
@@ -245,12 +247,12 @@ ordinal 7: { type: "eager_compensation",    definition_name: "refund-booking" }
 The `.compensate()` builder on `StepCall` and `WorkflowCall` desugars to `ctx.registerCompensation` with an auto-generated name:
 
 ```typescript
-await ctx.steps.bookFlight(dest)
+await ctx.steps.bookFlight({ destination: dest })
   .compensate(async (ctx) => { ... })
   .resolve(ctx);
 
 // Desugars to (conceptually):
-const result = await ctx.steps.bookFlight(dest).resolve(ctx);
+const result = await ctx.steps.bookFlight({ destination: dest }).resolve(ctx);
 await ctx.registerCompensation("compensate:bookFlight", cb);
 ```
 
@@ -425,11 +427,23 @@ Constructing `WorkflowError` directly is not supported — the `ctx.errors` fact
 
 ### External error types
 
-At the external caller level, errors are plain JSON values — no class instances, no prototype chains, no `instanceof` checks. The error is discriminated by `errorCode`:
+At the external caller level, errors are plain JSON values — no class instances, no prototype chains, no `instanceof` checks. All error variants share a common `type` discriminant field and a `scopePath` field:
+
+```typescript
+type WorkflowFailureInfo<TErrors, TSteps, TRequests, TChildWorkflows> =
+  | WorkflowErrorValue<TErrors>
+  | StepTimeoutError<TSteps>
+  | RequestTimeoutError<TRequests>
+  | ChildWorkflowError<TChildWorkflows>
+  | ChildWorkflowTimeoutError<TChildWorkflows>;
+```
+
+**`WorkflowErrorValue`** — the workflow's own declared errors. Fully typed, discriminated by `errorCode`:
 
 ```typescript
 type WorkflowErrorValue<TErrors> = {
   [K in keyof TErrors]: {
+    type: "WorkflowError";
     errorCode: K;
     message: string;
     details: TErrors[K] extends true ? never : StandardSchemaV1.InferOutput<TErrors[K]>;
@@ -438,51 +452,72 @@ type WorkflowErrorValue<TErrors> = {
 }[keyof TErrors];
 ```
 
-The full workflow failure result type includes declared errors, step/request timeout errors, and propagated child workflow errors:
+**`StepTimeoutError`** — a step exhausted its `.timeout()` boundary without a handler. Fully typed per step — switch on `stepName` to get typed args:
 
 ```typescript
-type WorkflowFailureInfo<TErrors, TSteps, TRequests> =
-  | WorkflowErrorValue<TErrors>
-  | StepTimeoutError<keyof TSteps & string>
-  | RequestTimeoutError<keyof TRequests & string>
-  | PropagatedError;
+type StepTimeoutError<TSteps> = {
+  [K in keyof TSteps & string]: {
+    type: "StepTimeoutError";
+    stepName: K;
+    args: StandardSchemaV1.InferOutput<TSteps[K]["args"]>;
+    reason: "attempts_exhausted" | "deadline";
+    scopePath: string[];
+  };
+}[keyof TSteps & string];
 ```
 
-- **`WorkflowErrorValue<TErrors>`** — fully typed, discriminated by `errorCode`. The external caller gets compile-time access to details.
-- **`StepTimeoutError<TStepName>`** — a step exhausted its `.timeout()` boundary without a handler. Contains the step name and scope path.
-- **`RequestTimeoutError<TRequestName>`** — a request exhausted its `.timeout()` boundary without a handler. Contains the request name, scope path, and the request arguments.
-- **`PropagatedError`** — an unhandled child workflow failure that propagated upward. Carries the original `errorCode`, `message`, `details` (as `unknown`), and the full propagation path. Not compile-time typed — the external caller can pattern-match on `errorCode` at runtime.
+**`RequestTimeoutError`** — a request exhausted its `.timeout()` boundary without a handler. Fully typed per request — switch on `requestName` to get typed args:
 
 ```typescript
-interface StepTimeoutError<TName extends string> {
-  kind: "step_timeout";
-  stepName: TName;
-  scopePath: string[];
-  reason: "attempts_exhausted" | "deadline";
-}
+type RequestTimeoutError<TRequests> = {
+  [K in keyof TRequests & string]: {
+    type: "RequestTimeoutError";
+    requestName: K;
+    args: StandardSchemaV1.InferOutput<TRequests[K]["request"]>;
+    reason: "attempts_exhausted" | "deadline";
+    scopePath: string[];
+  };
+}[keyof TRequests & string];
+```
 
-interface RequestTimeoutError<TName extends string> {
-  kind: "request_timeout";
-  requestName: TName;
-  scopePath: string[];
-  reason: "attempts_exhausted" | "deadline";
-  args: unknown;
-}
+**`ChildWorkflowError`** — a child workflow failed (threw a declared error, step timed out, etc.) and the parent didn't handle it with `.failure()`. Typed per child workflow definition — switch on `childWorkflowName` to get typed args. The actual error from the child is packaged under the `error` field as a `LooseWorkflowError` (loosely typed, recursively nested):
 
-interface PropagatedError {
-  kind: "propagated";
-  errorCode: string;
-  message: string;
-  details: unknown;
-  origin: ErrorOrigin;
-  propagationPath: ErrorOrigin[];
-}
+```typescript
+type ChildWorkflowError<TChildWorkflows> = {
+  [K in keyof TChildWorkflows & string]: {
+    type: "ChildWorkflowError";
+    childWorkflowName: K;
+    idempotencyKey: string;
+    args: StandardSchemaV1.InferOutput<TChildWorkflows[K]["args"]>;
+    scopePath: string[];
+    error: LooseWorkflowError;
+  };
+}[keyof TChildWorkflows & string];
+```
 
-interface ErrorOrigin {
-  workflowDefinition: string;
-  workflowId: string;
-  scopePath: string[];
-}
+**`ChildWorkflowTimeoutError`** — the parent timed out waiting for the child (parent-side `.timeout()` on `WorkflowCall` without a handler). The child is terminated. Distinct from `ChildWorkflowError` — the child didn't fail on its own, the parent gave up:
+
+```typescript
+type ChildWorkflowTimeoutError<TChildWorkflows> = {
+  [K in keyof TChildWorkflows & string]: {
+    type: "ChildWorkflowTimeoutError";
+    childWorkflowName: K;
+    idempotencyKey: string;
+    args: StandardSchemaV1.InferOutput<TChildWorkflows[K]["args"]>;
+    scopePath: string[];
+  };
+}[keyof TChildWorkflows & string];
+```
+
+**`LooseWorkflowError`** — the recursively nested error structure inside `ChildWorkflowError.error`. Uses the same `type` discriminant but all fields are loosely typed (`string`, `unknown`). The recursive nesting IS the propagation path — each `ChildWorkflowError` layer carries the identity and args of the child that failed:
+
+```typescript
+type LooseWorkflowError =
+  | { type: "WorkflowError"; errorCode: string; message: string; details: unknown }
+  | { type: "StepTimeoutError"; stepName: string; args: unknown; reason: "attempts_exhausted" | "deadline" }
+  | { type: "RequestTimeoutError"; requestName: string; args: unknown; reason: "attempts_exhausted" | "deadline" }
+  | { type: "ChildWorkflowError"; childWorkflowName: string; idempotencyKey: string; args: unknown; error: LooseWorkflowError }
+  | { type: "ChildWorkflowTimeoutError"; childWorkflowName: string; idempotencyKey: string; args: unknown };
 ```
 
 ### External caller usage
@@ -490,32 +525,52 @@ interface ErrorOrigin {
 ```typescript
 const result = await client.workflows.order.execute({ ... });
 if (!result.ok && result.status === "failed") {
-  switch (result.error.errorCode) {
-    case "OrderInvalid":
-      // result.error.details: { orderId: string } — fully typed
-      break;
-    case "InsufficientFunds":
-      // result.error.details: { amount: number, balance: number }
-      break;
-    case "Cancelled":
-      // result.error.details: never — no details
-      break;
-    default:
-      // StepTimeoutError | RequestTimeoutError | PropagatedError
-      if (result.error.kind === "propagated") {
-        // result.error.errorCode: string (runtime only)
+  switch (result.error.type) {
+    case "WorkflowError":
+      switch (result.error.errorCode) {
+        case "OrderInvalid":
+          // result.error.details: { orderId: string } — fully typed
+          break;
+        case "InsufficientFunds":
+          // result.error.details: { amount: number, balance: number }
+          break;
+        case "Cancelled":
+          // result.error.details: never — no details
+          break;
       }
+      break;
+    case "StepTimeoutError":
+      // result.error.stepName: "bookFlight" | "validateOrder" | ...
+      // result.error.args: typed per step
+      break;
+    case "RequestTimeoutError":
+      // result.error.requestName: "humanReview" | ...
+      // result.error.args: typed per request
+      break;
+    case "ChildWorkflowError":
+      // result.error.childWorkflowName: "payment" | ...
+      // result.error.idempotencyKey: string
+      // result.error.args: typed per child workflow
+      // result.error.error: LooseWorkflowError — drill into the actual cause
+      break;
+    case "ChildWorkflowTimeoutError":
+      // result.error.childWorkflowName: "payment" | ...
+      // result.error.idempotencyKey: string
+      // result.error.args: typed per child workflow
+      break;
   }
 }
 ```
 
 ### Child workflow error propagation
 
-When a child workflow fails and `.failure()` is NOT chained on the `WorkflowCall`, the child's error propagates to the parent as an unhandled failure — the parent workflow fails. At the parent's external result level, this appears as a `PropagatedError` with the full origin chain.
+When a child workflow fails and `.failure()` is NOT chained on the `WorkflowCall`, the child's error propagates to the parent as an unhandled failure — the parent workflow fails. At the parent's external result level, this appears as a `ChildWorkflowError` with the child's identity, args, and the actual error recursively nested under `.error`.
+
+When the parent's `.timeout()` fires on a child without a handler, the child is terminated and the parent fails with a `ChildWorkflowTimeoutError`.
 
 When `.failure()` IS chained, the handler receives a `ChildWorkflowFailureInfo` containing the child's serialized error value. The handler returns a recovery value and the parent continues. The child's error does not propagate.
 
-This avoids recursive type expansion: child workflow errors are always `PropagatedError` (loosely typed) at the parent's external boundary, regardless of nesting depth. Only the workflow's own declared errors are fully typed.
+This avoids recursive type expansion: child workflow errors are `ChildWorkflowError` at the parent's external boundary with the nested error loosely typed as `LooseWorkflowError`. Only the workflow's own declared errors are fully typed. The recursive nesting of `LooseWorkflowError` provides the full propagation path without a separate `propagationPath` field.
 
 ---
 
@@ -573,6 +628,7 @@ Builder methods use the `Called` type parameter to make invalid states unreprese
 
 ```typescript
 interface StepCall<
+  TArgs,
   T,
   TTimeout = never,
   HasCompensation extends boolean = false,
@@ -581,30 +637,30 @@ interface StepCall<
 > extends DeterministicAwaitable<T | TTimeout, ExecutionRoot> {
   compensate: "compensate" extends Called ? never :
     & ((
-        cb: (ctx: Tctx, result: StepCompensationResult<T>) => Promise<void>,
-      ) => StepCall<T, TTimeout, true, Tctx, Called | "compensate">)
+        cb: (ctx: Tctx, result: StepCompensationResult<TArgs, T>) => Promise<void>,
+      ) => StepCall<TArgs, T, TTimeout, true, Tctx, Called | "compensate">)
     & ((
         name: string,
-        cb: (ctx: Tctx, result: StepCompensationResult<T>) => Promise<void>,
-      ) => StepCall<T, TTimeout, true, Tctx, Called | "compensate">);
+        cb: (ctx: Tctx, result: StepCompensationResult<TArgs, T>) => Promise<void>,
+      ) => StepCall<TArgs, T, TTimeout, true, Tctx, Called | "compensate">);
 
   retry: "retry" extends Called ? never :
     (policy: RetryPolicyOptions) =>
-      StepCall<T, TTimeout, HasCompensation, Tctx, Called | "retry">;
+      StepCall<TArgs, T, TTimeout, HasCompensation, Tctx, Called | "retry">;
 
   timeout: "timeout" extends Called ? never :
     & ((secondsOrDeadline: number | Date) =>
-        StepCall<T, never, HasCompensation, Tctx, Called | "timeout">)
+        StepCall<TArgs, T, never, HasCompensation, Tctx, Called | "timeout">)
     & (<R>(secondsOrDeadline: number | Date, cb: () => R) =>
-        StepCall<T, Awaited<R>, HasCompensation, Tctx, Called | "timeout">)
+        StepCall<TArgs, T, Awaited<R>, HasCompensation, Tctx, Called | "timeout">)
     & ((opts: StepBoundary) =>
-        StepCall<T, never, HasCompensation, Tctx, Called | "timeout">)
+        StepCall<TArgs, T, never, HasCompensation, Tctx, Called | "timeout">)
     & (<R>(opts: StepBoundary, cb: () => R) =>
-        StepCall<T, Awaited<R>, HasCompensation, Tctx, Called | "timeout">);
+        StepCall<TArgs, T, Awaited<R>, HasCompensation, Tctx, Called | "timeout">);
 
   complete: "complete" extends Called ? never :
     <R>(cb: (data: T) => R) =>
-      StepCall<Awaited<R>, TTimeout, HasCompensation, Tctx, Called | "complete">;
+      StepCall<TArgs, Awaited<R>, TTimeout, HasCompensation, Tctx, Called | "complete">;
 }
 ```
 
@@ -627,7 +683,7 @@ Becomes:
 
 ```typescript
 const result = await ctx.steps
-  .bookFlight(dest, id)
+  .bookFlight({ destination: dest, passengerId: id })
   .timeout({ maxAttempts: 3 }, () => null)
   .resolve(ctx);
 ```
@@ -635,15 +691,18 @@ const result = await ctx.steps
 ### Updated `StepCompensationResult`
 
 ```typescript
-type StepCompensationResult<T> =
-  | { status: "complete"; data: T; attempts: AttemptAccessor }
+type StepCompensationResult<TArgs, T> =
+  | { status: "complete"; args: TArgs; data: T; attempts: AttemptAccessor }
   | {
       status: "timed_out";
+      args: TArgs;
       reason: "attempts_exhausted" | "deadline";
       attempts: AttemptAccessor;
     }
   | { status: "terminated" };
 ```
+
+`args` is the deserialized step arguments, typed by the step's `args` schema. Available on all variants except `"terminated"` (where the step was never attempted).
 
 ### Child workflow timeout
 
@@ -744,9 +803,9 @@ Collect as many results as possible. Branches that fail are compensated eagerly;
 ```typescript
 const results = await ctx
   .best("GetAllQuotes", {
-    providerA: async (ctx) => ctx.steps.getQuote("A").resolve(ctx),
-    providerB: async (ctx) => ctx.steps.getQuote("B").resolve(ctx),
-    providerC: async (ctx) => ctx.steps.getQuote("C").resolve(ctx),
+    providerA: async (ctx) => ctx.steps.getQuote({ provider: "A" }).resolve(ctx),
+    providerB: async (ctx) => ctx.steps.getQuote({ provider: "B" }).resolve(ctx),
+    providerC: async (ctx) => ctx.steps.getQuote({ provider: "C" }).resolve(ctx),
   })
   .resolve(ctx);
 // results: Array<{ key: "providerA" | "providerB" | "providerC", data: Quote }>
@@ -759,9 +818,9 @@ Collect at most `n` results. Short-circuits after `n` successes; remaining branc
 ```typescript
 const results = await ctx
   .atMost("PickTwo", 2, {
-    providerA: async (ctx) => ctx.steps.getQuote("A").resolve(ctx),
-    providerB: async (ctx) => ctx.steps.getQuote("B").resolve(ctx),
-    providerC: async (ctx) => ctx.steps.getQuote("C").resolve(ctx),
+    providerA: async (ctx) => ctx.steps.getQuote({ provider: "A" }).resolve(ctx),
+    providerB: async (ctx) => ctx.steps.getQuote({ provider: "B" }).resolve(ctx),
+    providerC: async (ctx) => ctx.steps.getQuote({ provider: "C" }).resolve(ctx),
   })
   .resolve(ctx);
 // results: Array<{ key: "providerA" | "providerB" | "providerC", data: Quote }>
@@ -775,11 +834,11 @@ Collect at least `n` results before returning. Fails if fewer than `n` branches 
 ```typescript
 const results = await ctx
   .atLeast("EnsureQuorum", 3, {
-    nodeA: async (ctx) => ctx.steps.healthCheck("A").resolve(ctx),
-    nodeB: async (ctx) => ctx.steps.healthCheck("B").resolve(ctx),
-    nodeC: async (ctx) => ctx.steps.healthCheck("C").resolve(ctx),
-    nodeD: async (ctx) => ctx.steps.healthCheck("D").resolve(ctx),
-    nodeE: async (ctx) => ctx.steps.healthCheck("E").resolve(ctx),
+    nodeA: async (ctx) => ctx.steps.healthCheck({ node: "A" }).resolve(ctx),
+    nodeB: async (ctx) => ctx.steps.healthCheck({ node: "B" }).resolve(ctx),
+    nodeC: async (ctx) => ctx.steps.healthCheck({ node: "C" }).resolve(ctx),
+    nodeD: async (ctx) => ctx.steps.healthCheck({ node: "D" }).resolve(ctx),
+    nodeE: async (ctx) => ctx.steps.healthCheck({ node: "E" }).resolve(ctx),
   })
   .resolve(ctx);
 // results: Array<{ key: ..., data: HealthCheckResult }>
@@ -1622,17 +1681,135 @@ The deadline clock starts from creation time, not scheduled start. If `delaySeco
 
 ---
 
+## Part 17: `idempotencyKeyFactory`
+
+### Problem
+
+`idempotencyKey` is currently optional on workflow start calls. This means some workflow instances may lack a meaningful external identifier, making error tracing, deduplication, and child workflow identity incomplete.
+
+### Solution
+
+Make `idempotencyKey` required on all workflow start calls. To avoid boilerplate when the key can be deterministically derived from the workflow arguments, introduce `idempotencyKeyFactory` on `defineWorkflow`:
+
+```typescript
+defineWorkflow({
+  name: "orderWorkflow",
+  args: z.object({ orderId: z.string(), customerId: z.string() }),
+  idempotencyKeyFactory: (args) => `order-${args.orderId}`,
+  // ...
+});
+```
+
+The factory receives the post-validation args (same as the `execute` callback) and returns a `string`. When a factory is defined, `idempotencyKey` becomes optional on start calls — the factory generates it from the args. An explicit `idempotencyKey` overrides the factory.
+
+```typescript
+// With factory: key auto-generated from args → "order-o-123"
+await client.workflows.order.start({
+  args: { orderId: "o-123", customerId: "cust-456" },
+});
+
+// With factory: explicit key overrides → "custom-key"
+await client.workflows.order.start({
+  idempotencyKey: "custom-key",
+  args: { orderId: "o-123", customerId: "cust-456" },
+});
+
+// Without factory: key is required
+await client.workflows.other.start({
+  idempotencyKey: "explicit-key",
+  args: { ... },
+});
+```
+
+### Type
+
+```typescript
+type StartWorkflowOptions<TArgs, HasFactory extends boolean> =
+  HasFactory extends true
+    ? { args: TArgs; idempotencyKey?: string } & ScheduleOptions
+    : { args: TArgs; idempotencyKey: string } & ScheduleOptions;
+```
+
+The same conditionality applies to `ctx.childWorkflows.X.start(...)` and `ctx.childWorkflows.X.startDetached(...)`.
+
+---
+
+## Part 18: Serializable Step Arguments
+
+### Problem
+
+Step arguments are currently regular TypeScript function parameters — positional, untyped at the persistence level, and invisible in the database. Every other input in the system (workflow args, request payloads, queue messages, channel messages, error details) is schema-constrained and serialized to JSONB. Step args are the sole outlier. This means:
+
+- Step timeout errors cannot carry typed args to the external caller.
+- Step compensation callbacks don't know what args were passed.
+- Failed step attempts in the database have no record of the input.
+- Observability tooling cannot inspect step invocations.
+
+### Solution
+
+Add an `args` schema to `defineStep`. Rename the existing `schema` field to `result`. Step arguments become a single schema-validated object (not positional), consistent with workflows, requests, and queues.
+
+**Before:**
+
+```typescript
+const bookFlight = defineStep({
+  name: "bookFlight",
+  schema: z.object({ confirmationId: z.string() }),
+  execute: async ({ signal }, destination: string, passengerId: string) => {
+    const booking = await flightAPI.book(destination, passengerId, { signal });
+    return { confirmationId: booking.id };
+  },
+});
+```
+
+**After:**
+
+```typescript
+const bookFlight = defineStep({
+  name: "bookFlight",
+  args: z.object({ destination: z.string(), passengerId: z.string() }),
+  result: z.object({ confirmationId: z.string() }),
+  execute: async ({ signal }, args) => {
+    const booking = await flightAPI.book(args.destination, args.passengerId, { signal });
+    return { confirmationId: booking.id };
+  },
+});
+```
+
+The call site changes from positional args to a single object:
+
+**Before:** `ctx.steps.bookFlight("Paris", "p-123")`
+
+**After:** `ctx.steps.bookFlight({ destination: "Paris", passengerId: "p-123" })`
+
+The `args` field is a `JsonSchemaConstraint` — the same constraint as everything else that goes into JSONB. Arguments are serialized into the step record alongside the result, enabling full observability: the database records what was attempted, failed attempts carry the input, and timeout errors at the external boundary include typed args.
+
+---
+
 ## Summary of Public API Changes
 
 ### New `defineWorkflow` options
 
 ```typescript
 defineWorkflow({
-  queues:     { [name: string]: QueueDefinition<M> },
-  requests:   { [name: string]: RequestDefinition<Req, Res> },
-  topics:     { [name: string]: TopicDefinition<R, Meta> },
-  attributes: { [name: string]: JsonSchemaConstraint },
-  errors:     { [name: string]: JsonSchemaConstraint | true },
+  queues:                { [name: string]: QueueDefinition<M> },
+  requests:              { [name: string]: RequestDefinition<Req, Res> },
+  topics:                { [name: string]: TopicDefinition<R, Meta> },
+  attributes:            { [name: string]: JsonSchemaConstraint },
+  errors:                { [name: string]: JsonSchemaConstraint | true },
+  idempotencyKeyFactory: (args: InferOutput<TArgs>) => string,  // optional
+});
+```
+
+### `defineStep` changes
+
+```typescript
+defineStep({
+  name: string,
+  args: JsonSchemaConstraint,      // NEW — serializable args schema
+  result: JsonSchemaConstraint,    // renamed from `schema`
+  execute: ({ signal }, args) => Promise<Result>,  // single object arg, not positional
+  retryPolicy?: RetryPolicyOptions,
 });
 ```
 
@@ -1662,6 +1839,7 @@ defineWorkflow({
 | `.failure()` removed                              | Steps cannot fail — they succeed or time out.                                     |
 | `.timeout(boundary, cb?)` added                   | Replaces `.failure()`. Accepts `number`, `Date`, or `StepBoundary`.               |
 | `TFail` type parameter removed                    | Replaced by `TTimeout`.                                                           |
+| `TArgs` type parameter added                      | Threads serializable args type through to compensation callbacks.                 |
 | `.compensate()` accepts optional name              | `.compensate("name", cb)` for explicit identity.                                  |
 | `Called` type parameter added                      | Builder methods resolve to `never` after first call — prevents duplicate chaining. |
 
@@ -1696,7 +1874,7 @@ Queue and request handler retry policies use seconds (`intervalSeconds`, `maxInt
 - `DeadLetterRecordFields`, `DeadLetterSort`, `DeadLetterCursor`, `DeadLetteredMessage`, `DeadLetterHandle`
 - `RequestCompensationResult`, `AttemptAccessor`
 - `WorkflowError`, `WorkflowErrorValue`, `WorkflowFailureInfo`
-- `StepTimeoutError`, `RequestTimeoutError`, `PropagatedError`, `ErrorOrigin`
+- `StepTimeoutError`, `RequestTimeoutError`, `ChildWorkflowError`, `ChildWorkflowTimeoutError`, `LooseWorkflowError`
 - `StepBoundary`, `MAIN_BRANCH`, `BranchPathItem`
 - `Unsubscribe`
 - `RegisterTopicConsumerError`, `RegisterTopicConsumerErrorEvent`, `TopicConsumerAlreadyActiveError`, `TopicConsumerConsumeErrorEvent`
@@ -1708,8 +1886,10 @@ Queue and request handler retry policies use seconds (`intervalSeconds`, `maxInt
 
 - `StepErrorAccessor` renamed to `AttemptAccessor`.
 - `StepCompensationResult.errors` renamed to `.attempts`. `status: "failed"` renamed to `status: "timed_out"` with `reason: "attempts_exhausted" | "deadline"`.
+- `StepCompensationResult` gains `args` field (typed by step's `args` schema). Now generic over `<TArgs, T>`.
 - `StepErrorAccessor.count` (sync) → `AttemptAccessor.count()` (async).
 - `StepCall.failure()` removed. Use `.timeout()`.
+- `StepCall` gains `TArgs` type parameter for serializable step arguments.
 - `StepFailureInfo` removed.
 - `maxAttempts` removed from `RetryPolicyOptions`.
 - `addCompensation()` renamed to `registerCompensation(name, cb)` (now named, now Tier 3 awaitable).
@@ -1719,6 +1899,8 @@ Queue and request handler retry policies use seconds (`intervalSeconds`, `maxInt
 - Unhandled exceptions now halt the workflow instead of failing it (only declared `ctx.errors` cause failure).
 - `WorkflowError` is no longer subclassed. Errors are defined as `{ name: schema | true }` on `defineWorkflow`. `ctx.errors.X(...)` factory functions replace direct `throw new WorkflowError(...)`.
 - Throwing a `WorkflowError` with an undeclared `errorCode` halts the workflow instead of failing it.
+- External error types use `type` as the unified discriminant field: `"WorkflowError"`, `"StepTimeoutError"`, `"RequestTimeoutError"`, `"ChildWorkflowError"`, `"ChildWorkflowTimeoutError"`.
+- Created `ChildWorkflowError` (with recursively nested `LooseWorkflowError`) and `ChildWorkflowTimeoutError`.
 - Queue `publish` renamed to `enqueue` (`ctx.queues.X.enqueue(...)`).
 - `ctx.joinSafe(handle)` → `ctx.joinSafe(handle, onError)` (error handler callback, not discriminated union).
 - Branch key path representation changed from `(string | Symbol)[]` to `BranchPathItem[]` (`{ scope, branch }` objects with `MAIN_BRANCH` unique symbol).
@@ -1729,6 +1911,11 @@ Queue and request handler retry policies use seconds (`intervalSeconds`, `maxInt
 - Handler retry policies use seconds (`intervalSeconds`, `maxIntervalSeconds`) instead of milliseconds. `registrationRetry` on topic consumers remains in milliseconds.
 - `.timeout()` on `StepCall` and `WorkflowCall` now accepts `Date` (deadline) in addition to `number` (seconds).
 - `channel.receive()` now accepts `Date` (deadline) in addition to `number` (seconds timeout).
+- `StepDefinition.schema` renamed to `result`. New `args` field added (required `JsonSchemaConstraint`).
+- Step call sites: positional arguments replaced by single schema-validated object (`ctx.steps.X({ ... })`).
+- Step `execute` callback: `({ signal }, ...args: TArgs)` → `({ signal }, args: InferOutput<TArgsSchema>)`.
+- `idempotencyKey` is now required on all workflow start calls (client, child workflow, detached). Optional if `idempotencyKeyFactory` is defined on the workflow.
+- `idempotencyKeyFactory` receives post-validation args (same as `execute`).
 
 ### Connection and transaction model
 
