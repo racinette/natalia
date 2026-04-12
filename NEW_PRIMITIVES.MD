@@ -88,6 +88,8 @@ A scope has branches. A branch has sequential steps. A step may have a promise. 
 
 ### Execution algorithm
 
+The VEL uses a split execution strategy: **depth-first** for main branches (scope bodies), **round-robin** for concurrent branches. All step records are **batched** and committed in a single transaction when every branch is blocked, before any side-effecting work begins.
+
 1. **Non-concurrent code** executes as-is. Sequential operations within a single branch need no scheduling.
 
 2. **Entering a scope** transitions to structured concurrency. The scope body is treated as a branch with a synthetic key (`MAIN_BRANCH`), placed first in the deterministic branch ordering.
@@ -102,27 +104,41 @@ A scope has branches. A branch has sequential steps. A step may have a promise. 
    [{ scope: "A", branch: "foo" }]
    ```
 
-4. **Execute the first branch** in the sorted list until a genuine context switch point is reached.
+4. **Main branch execution (depth-first).** The main branch (`MAIN_BRANCH`) of each scope executes depth-first until it reaches a context switch point. This allows the scope body to set up work, make decisions, and short-circuit before concurrent branches run.
 
-5. **Tier 3 awaitables** (`DirectAwaitable`) are treated as sequential operations — no context switch. Stream writes, event sets, attribute sets, `receiveNowait()`, patches, compensation registrations — all complete atomically within the current branch.
+5. **Concurrent branch execution (round-robin).** After the main branch blocks, concurrent branches execute in round-robin order: `branch1 → branch2 → branch3 → branch1 → ...`, with each branch executing until the next context switch point before yielding to the next. This ensures all branches make progress together and produces deterministic interleaving.
 
-6. **Tier 2 awaitables** (`WorkflowAwaitable`) block on external resolution: `sleep`, `channel.receive`. The engine records a step and promise, then context-switches to the next branch.
+6. **Buffered operations** are synchronous calls that do not trigger context switches. They buffer step records in memory without writing to the database. Stream writes, event sets, attribute sets, queue enqueues, topic publishes, foreign channel sends, compensation registrations, detached workflow starts — all execute inline within the current branch and do not yield.
 
-7. **Tier 1 awaitables** (`DeterministicAwaitable`) require two-phase execution:
-   - **Start phase**: record a `start_step` / `start_child_workflow` / `send_request` step. Create a promise. Spin up the work (coroutine for steps, enqueue for workflows/requests).
-   - **Await phase**: record an `await_promise` step referencing the created promise. Context-switch.
+7. **Tier 2 operations** (`channel.receive`, `sleep`) block on external resolution. The engine buffers a step and promise record, then context-switches.
 
-8. **Context switch**: move to the next branch in the sorted list. Execute it until it also reaches a context switch point. Continue until all branches are blocked.
+8. **Tier 1 operations** (steps, child workflows, requests) require two-phase execution:
+   - **Start phase**: buffer a `start_step` / `start_child_workflow` / `send_request` step record and a promise. Context-switch. The actual work is NOT started yet.
+   - **Await phase**: buffer an `await_promise` step referencing the created promise. Context-switch.
 
-9. **Promise resolution fetch**: all branches are blocked. Fetch resolved promises from the database. Each promise records a `sequence_no` on resolution, assigned from a Postgres sequence protected by a per-VEL advisory lock. This ensures deterministic ordering: no two promises from the same VEL can resolve with the same or out-of-order sequence numbers.
+9. **Awaitable reads** (`channel.receiveNowait`, `patch`) require database state to make a decision. These trigger a **flush**: the accumulated buffer is committed in a batch transaction, then the read is executed against the committed state. The branch continues with the result.
 
-10. **Resume**: take the first resolved promise by sequence number. Resume the branch that was blocked on it. Execute until the next context switch.
+10. **Batch commit.** When all branches are blocked (every branch has hit a Tier 1 start, Tier 1 await, or Tier 2 await), the engine commits the entire accumulated buffer of step records in a **single transaction**. Only after the commit does the engine start the actual side-effecting work: step coroutines, child workflow dispatches, request dispatches.
 
-11. **Continue**: if more resolved promises exist, resume the next. If none remain, fetch again. The cycle continues until the scope body returns or all branches complete.
+11. **Promise resolution fetch.** All branches are blocked and all work has been dispatched. Fetch resolved promises from the database. Each promise records a `sequence_no` on resolution, assigned from a Postgres sequence protected by a per-VEL advisory lock. This ensures deterministic ordering.
 
-### Nested scope ordering
+12. **Resume.** Take the first resolved promise by sequence number. If the promise belongs to a main branch, execute depth-first until the next context switch. If it belongs to a concurrent branch, resume round-robin from that branch.
 
-Nested scopes exist on the same VEL — they do not create separate VELs. When a nested scope is entered, its branches are inserted into the global ordering by their full key path:
+13. **Continue.** If more resolved promises exist, resume the next. If none remain, fetch again. The cycle continues until the scope body returns or all branches complete.
+
+### Buffered vs awaitable operations
+
+| Category         | Operations                                                                                                                   | Behavior                                                              |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| **Buffered**     | `stream.write`, `event.set`, `attribute.set`, `queue.enqueue`, `topic.publish`, `channel.send` (foreign), `registerCompensation`, `compensateEagerly`, `startDetached` | Synchronous. Buffers step record in memory. No context switch.        |
+| **Tier 2 await** | `channel.receive`, `sleep`, `sleepUntil`                                                                                     | Buffers step + promise. Context-switches. Blocks until resolution.    |
+| **Tier 1 start** | `steps.X(...)`, `childWorkflows.X.start(...)`, `requests.X(...)`                                                             | Buffers step + promise. Context-switches. Work starts after batch commit. |
+| **Tier 1 await** | `.resolve(ctx)` on a Tier 1 handle                                                                                           | Buffers `await_promise`. Context-switches. Blocks until resolution.   |
+| **Awaitable read** | `channel.receiveNowait`, `patch`                                                                                           | Triggers buffer flush. Reads from committed state. No context switch. |
+
+### Nested scope ordering and execution
+
+Nested scopes exist on the same VEL — they do not create separate VELs. When a nested scope is entered, its branches are inserted into the global ordering by their full key path. The depth-first / round-robin split applies recursively: each scope's main branch runs depth-first, and its concurrent branches run round-robin.
 
 ```typescript
 await ctx
@@ -139,25 +155,31 @@ await ctx
 Initial ordering:
 
 ```typescript
-[{ scope: "A", branch: MAIN_BRANCH }]
-[{ scope: "A", branch: "bar" }]
-[{ scope: "A", branch: "foo" }]
+[{ scope: "A", branch: MAIN_BRANCH }]       // main — depth-first
+[{ scope: "A", branch: "bar" }]              // concurrent — round-robin
+[{ scope: "A", branch: "foo" }]              // concurrent — round-robin
 ```
 
-After the scope body enters scope `"B"`:
+**Step 1:** Scope `"A"`'s main branch runs depth-first. It enters scope `"B"`, which adds new branches:
 
 ```typescript
-[{ scope: "A", branch: MAIN_BRANCH }]
-[{ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: MAIN_BRANCH }]
-[{ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: "baz" }]
-[{ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: "fuz" }]
-[{ scope: "A", branch: "bar" }]
-[{ scope: "A", branch: "foo" }]
+[{ scope: "A", branch: MAIN_BRANCH }]                                          // blocked (entered scope B)
+[{ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: MAIN_BRANCH }]     // main — depth-first
+[{ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: "baz" }]           // concurrent — round-robin
+[{ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: "fuz" }]           // concurrent — round-robin
+[{ scope: "A", branch: "bar" }]                                                 // concurrent — round-robin
+[{ scope: "A", branch: "foo" }]                                                 // concurrent — round-robin
 ```
+
+**Step 2:** Scope `"B"`'s main branch runs depth-first until it blocks.
+
+**Step 3:** All concurrent branches across both scopes (`"baz"`, `"fuz"`, `"bar"`, `"foo"`) execute round-robin. The ordering is deterministic — alphanumeric by full key path. Each branch runs until a context switch point, then yields to the next.
+
+**Step 4:** When all branches are blocked, the batch is committed and work dispatched. Promise resolutions resume branches: main branches depth-first, concurrent branches back to round-robin.
 
 ### Scope body priority
 
-The scope body is always the first element in the branch ordering (via `MAIN_BRANCH` sorting before any string key). This gives it natural priority: it starts executing before any branches, and after any batch of resolved promises is processed, it gets first pick of resolutions. This allows the scope body to short-circuit before executing unnecessary branch logic, minimizing wasted work.
+The scope body (main branch) is always the first element in the branch ordering (via `MAIN_BRANCH` sorting before any string key) and executes depth-first. This gives it natural priority: it runs as far as it can before any concurrent branches start, and after promise resolutions are processed, it gets first pick. This allows the scope body to set up work, make decisions, and short-circuit before concurrent branches execute, minimizing wasted work.
 
 ### Two VELs per workflow
 
@@ -170,28 +192,30 @@ Both VELs are created at workflow start time. The compensation VEL may remain em
 
 ### Step types
 
-| Type                     | Tier      | Creates promise | Has `promise_id` |
-| ------------------------ | --------- | --------------- | ---------------- |
-| `start_step`             | 1 (start) | yes             | no               |
-| `start_child_workflow`   | 1 (start) | yes             | no               |
-| `send_request`           | 1 (start) | yes             | no               |
-| `await_promise`          | 1 (await) | no              | **yes**          |
-| `execute_scope`          | —         | no              | no               |
-| `sleep`                  | 2         | yes             | yes              |
-| `sleep_until`            | 2         | yes             | yes              |
-| `channel_receive`        | 2         | yes             | yes              |
-| `channel_receive_nowait` | 3         | no              | no               |
-| `stream_write`           | 3         | no              | no               |
-| `event_set`              | 3         | no              | no               |
-| `attribute_set`          | 3         | no              | no               |
-| `register_compensation`  | 3         | no              | no               |
-| `eager_compensation`     | 3         | no              | no               |
-| `patch_check`            | 3         | no              | no               |
-| `queue_enqueue`          | 3         | no              | no               |
-| `topic_publish`          | 3         | no              | no               |
-| `start_detached`         | 3         | no              | no               |
+| Type                     | Category       | Creates promise | Has `promise_id` | Context switch |
+| ------------------------ | -------------- | --------------- | ---------------- | -------------- |
+| `start_step`             | Tier 1 (start) | yes             | no               | yes            |
+| `start_child_workflow`   | Tier 1 (start) | yes             | no               | yes            |
+| `send_request`           | Tier 1 (start) | yes             | no               | yes            |
+| `await_promise`          | Tier 1 (await) | no              | **yes**          | yes            |
+| `execute_scope`          | structural     | no              | no               | no             |
+| `sleep`                  | Tier 2         | yes             | yes              | yes            |
+| `sleep_until`            | Tier 2         | yes             | yes              | yes            |
+| `channel_receive`        | Tier 2         | yes             | yes              | yes            |
+| `channel_receive_nowait` | awaitable read | no              | no               | no (flush)     |
+| `patch_check`            | awaitable read | no              | no               | no (flush)     |
+| `stream_write`           | buffered       | no              | no               | no             |
+| `event_set`              | buffered       | no              | no               | no             |
+| `attribute_set`          | buffered       | no              | no               | no             |
+| `register_compensation`  | buffered       | no              | no               | no             |
+| `eager_compensation`     | buffered       | no              | no               | no             |
+| `queue_enqueue`          | buffered       | no              | no               | no             |
+| `topic_publish`          | buffered       | no              | no               | no             |
+| `start_detached`         | buffered       | no              | no               | no             |
 
 Every real await point produces a promise, and the `await_promise` step references it via `promise_id`. The promise already knows its origin (via `promise.step_id` → the `start_*` step). The await step just says "I'm parked here until this promise resolves." This correctly models multi-branch sharing: two branches awaiting the same step's result both record `await_promise` pointing to the same `promise_id`.
+
+Buffered operations are synchronous calls in the public API — they do not return promises and are not `await`ed. They buffer step records in memory, which are committed in the next batch transaction. Awaitable reads (`receiveNowait`, `patch`) trigger a flush of the buffer before reading from committed state.
 
 ---
 
@@ -221,14 +245,14 @@ Compensation runs on a separate, independent VEL. This allows:
 
 ### Registration as durable steps
 
-Both standalone compensation methods are Tier 3 Direct Awaitables that write a step record to the execution tree:
+Both standalone compensation methods are synchronous buffered operations that write a step record to the execution tree:
 
 ```typescript
-await ctx.registerCompensation("cancel-hotel", async (ctx) => {
+ctx.registerCompensation("cancel-hotel", async (ctx) => {
   await ctx.steps.cancelHotel({ hotelId: hotel.id }).resolve(ctx);
 });
 
-await ctx.compensateEagerly("refund-booking", async (ctx) => {
+ctx.compensateEagerly("refund-booking", async (ctx) => {
   await ctx.steps.refundBooking({ bookingId: booking.id }).resolve(ctx);
 });
 ```
@@ -253,7 +277,7 @@ await ctx.steps.bookFlight({ destination: dest })
 
 // Desugars to (conceptually):
 const result = await ctx.steps.bookFlight({ destination: dest }).resolve(ctx);
-await ctx.registerCompensation("compensate:bookFlight", cb);
+ctx.registerCompensation("compensate:bookFlight", cb);
 ```
 
 Step table records:
@@ -1122,29 +1146,29 @@ Ordering once eligible: `priority ASC, COALESCE(scheduled_at, created_at) ASC, i
 ### Workflow-internal API
 
 ```typescript
-await ctx.queues.notifications.enqueue({ userId: "u1", body: "Hello" });
-await ctx.queues.notifications.enqueue(
+ctx.queues.notifications.enqueue({ userId: "u1", body: "Hello" });
+ctx.queues.notifications.enqueue(
   { userId: "u1", body: "Urgent" },
   { ttl: 300 },
 );
-await ctx.queues.notifications.enqueue(
+ctx.queues.notifications.enqueue(
   { userId: "u1", body: "Reminder" },
   { delay: 3600 },
 );
-await ctx.queues.notifications.enqueue(
+ctx.queues.notifications.enqueue(
   { userId: "u1", body: "Renew your subscription" },
   { scheduledAt: addDays(ctx.date, 30) },
 );
-await ctx.queues.notifications.enqueue(
+ctx.queues.notifications.enqueue(
   { userId: "u1", body: "Weekly digest" },
   { priority: 10 },  // lower urgency than default (0)
 );
 ```
 
-- Tier 3 — `DirectAwaitable<void>`.
+- Synchronous buffered operation — returns `void`, not awaited.
 - Workflow can only enqueue, never read.
 - Available in both `WorkflowContext` and `CompensationContext`.
-- Exactly-once enqueue: insert is colocated in the workflow's checkpoint transaction. On replay, the existing record is detected and the re-insert is skipped.
+- Exactly-once enqueue: insert is colocated in the workflow's batch commit transaction. On replay, the existing record is detected and the re-insert is skipped.
 
 ### Client registration API
 
@@ -1530,13 +1554,13 @@ const auditTopic = defineTopic({
 ### Workflow-internal API
 
 ```typescript
-await ctx.topics.auditEvents.publish(
+ctx.topics.auditEvents.publish(
   { type: "booking.confirmed", payload: { orderId: "o1" } },
   { metadata: { tenantId: "acme", type: "booking.confirmed" } },
 );
 ```
 
-Tier 3 — `DirectAwaitable<void>`. Publish only, never consume. Available in both contexts.
+Synchronous buffered operation — returns `void`, not awaited. Publish only, never consume. Available in both contexts.
 
 ### Client registration API
 
@@ -1635,10 +1659,10 @@ An observable single current value on a workflow instance. Externally readable, 
 ### Workflow-internal API
 
 ```typescript
-await ctx.attributes.progress.set({ percent: 0.75, phase: "finalizing" });
+ctx.attributes.progress.set({ percent: 0.75, phase: "finalizing" });
 ```
 
-Tier 3 — `DirectAwaitable<void>`. Set only, never read. Available in both contexts.
+Synchronous buffered operation — returns `void`, not awaited. Set only, never read. Available in both contexts.
 
 ### External handle API
 
@@ -1896,13 +1920,13 @@ defineStep({
 
 | Change                                  | Details                                                                                  |
 | --------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `ctx.queues.X.enqueue(payload, opts?)`  | Tier 3, both contexts                                                                    |
+| `ctx.queues.X.enqueue(payload, opts?)`  | Sync buffered, both contexts                                                             |
 | `ctx.requests.X(payload)`               | Tier 1, both contexts (no `.compensate()` in `CompensationContext`). Timeout via builder. |
-| `ctx.topics.X.publish(payload, opts?)`  | Tier 3, both contexts                                                                    |
-| `ctx.attributes.X.set(value)`           | Tier 3, both contexts                                                                    |
+| `ctx.topics.X.publish(payload, opts?)`  | Sync buffered, both contexts                                                             |
+| `ctx.attributes.X.set(value)`           | Sync buffered, both contexts                                                             |
 | `ctx.errors.X(message, details?)`       | Factory functions for declared error classes. Keyed by error name.                       |
-| `ctx.registerCompensation(name, cb)`    | Tier 3, `WorkflowContext` only. Registers deferred LIFO compensation.                    |
-| `ctx.compensateEagerly(name, cb)`       | Tier 3, `WorkflowContext` only. Dispatches eager FIFO compensation.                      |
+| `ctx.registerCompensation(name, cb)`    | Sync buffered, `WorkflowContext` only. Registers deferred LIFO compensation.             |
+| `ctx.compensateEagerly(name, cb)`       | Sync buffered, `WorkflowContext` only. Dispatches eager FIFO compensation.               |
 | `ctx.joinSafe(handle, onError)`         | Available on concurrency contexts. Error handler returns recovery value.                 |
 | `ctx.best(name, entries)`               | Tier 1, collects all successful results.                                                 |
 | `ctx.atMost(name, n, entries)`          | Tier 1, collects at most N results.                                                      |
@@ -1971,7 +1995,7 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - `StepCall` gains `TArgs` type parameter for serializable step arguments.
 - `StepFailureInfo` removed.
 - `maxAttempts` removed from `RetryPolicyOptions`.
-- `addCompensation()` renamed to `registerCompensation(name, cb)` (now named, now Tier 3 awaitable).
+- `addCompensation()` renamed to `registerCompensation(name, cb)` (now named, now sync buffered).
 - `ctx.first(entries)` → `ctx.first(name, entries)` (name required).
 - `ctx.all(entries)` → `ctx.all(name, entries)` (name required).
 - `RetentionSettings` → `RetentionSetter<TStatus extends string>`.
@@ -1995,6 +2019,10 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - Step `execute` callback: `({ signal }, ...args: TArgs)` → `({ signal }, args: InferOutput<TArgsSchema>)`.
 - `idempotencyKey` is now required on all workflow start calls (client, child workflow, detached). Optional if `idempotencyKeyFactory` is defined on the workflow.
 - `idempotencyKeyFactory` receives post-validation args (same as `execute`).
+- VEL execution strategy changed: main branches run depth-first, concurrent branches run round-robin.
+- Buffered operations (`stream.write`, `event.set`, `attribute.set`, `queue.enqueue`, `topic.publish`, `channel.send` (foreign), `registerCompensation`, `compensateEagerly`, `startDetached`) are now synchronous — they return `void` and are not `await`ed. `DirectAwaitable<void>` is removed for these operations.
+- Step records are batched and committed in a single transaction when all branches are blocked. Side-effecting work (step execution, child workflow dispatch, request dispatch) starts only after the batch commit.
+- `receiveNowait` and `patch` are awaitable reads — they trigger a buffer flush before reading from committed state.
 
 ### Connection and transaction model
 
