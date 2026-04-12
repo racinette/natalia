@@ -1349,17 +1349,32 @@ type RequestCompensationResult<TResponse> =
 | Timeout + ever claimed       | Yes (eager)   | `"attempted"` |
 | Timeout + never claimed      | No            | Row deleted   |
 
-### Retry policy and manual fallback
+### Retry policy and exhaustion
 
 The workflow caller does NOT control retry behavior. The caller controls only payload and timeout (via `.timeout()` builder). Retry policy is the handler's concern.
 
-The handler registration supports an **eager attempt → manual fallback** pattern. The handler tries to resolve the request programmatically. If all attempts are exhausted or the overall timeout is reached, the request transitions to `is_manual = TRUE` and becomes eligible for external resolution (e.g., a human operator or third-party system resolving it via the client API).
+The handler registration supports an **eager attempt → exhaustion fallback** pattern. The handler tries to resolve the request programmatically. If all attempts are exhausted or the overall timeout is reached, the `onExhausted` callback is invoked. The callback can either:
 
-An optional `onManual` callback serves as a notification mechanism — it fires when the request transitions to manual, allowing the system to alert a human or external service. `onManual` retries infinitely (it must eventually notify), has its own per-attempt timeout and retry policy, and receives an abort signal that fires if the request is resolved externally before notification succeeds.
+1. **Return a result** — the request is resolved with this fallback value. The workflow unblocks with the fallback. Status: `"resolved"`.
+2. **Return `MANUAL`** (sentinel) — the request transitions to `status = 'manual'` and waits for external resolution (e.g., a human operator or third-party system resolving it via the client API). The workflow stays blocked.
+
+When `onExhausted` is omitted, the default behavior is `MANUAL` — the request silently transitions to manual mode. This is the safest default: no data is lost, nothing is auto-resolved with potentially incorrect fallback data.
+
+If `onExhausted` throws, it is retried according to `onExhausted.retryPolicy` — a runtime-level retry policy with milliseconds precision, retrying infinitely until the callback succeeds or the request is resolved externally. The callback receives `{ signal: AbortSignal }` that fires if the request is resolved externally (e.g., an admin resolves it by hand) while the callback is retrying, interrupting the retry loop.
 
 Failed handler attempts are written to the `request_attempt` table. Only failures are recorded — successful resolution writes the response directly. This enables inspection of attempt history and reliable scheduling of the next retry.
 
+### `MANUAL` sentinel
+
+```typescript
+declare const MANUAL: unique symbol;
+```
+
+A module-level export. Returned from `onExhausted` to signal that the request should transition to manual mode.
+
 ### Client registration API
+
+**Example: retry with notification and manual fallback**
 
 ```typescript
 const unregister = client.registerRequestHandler(
@@ -1370,22 +1385,75 @@ const unregister = client.registerRequestHandler(
   },
   {
     retryPolicy: {
-      timeoutSeconds: 60,           // per-attempt timeout (signal aborted)
-      maxAttempts: 3,               // max handler attempts before going manual
-      totalTimeoutSeconds: 300,     // overall timeout for all attempts
+      timeoutSeconds: 60,
+      maxAttempts: 3,
+      totalTimeoutSeconds: 300,
       intervalSeconds: 5,
       backoffRate: 2,
       maxIntervalSeconds: 120,
     },
-    onManual: {
+    onExhausted: {
       callback: async ({ signal }, request) => {
         await notifyOpsTeam(request, { signal });
+        return MANUAL;
       },
       retryPolicy: {
-        timeoutSeconds: 30,         // per-attempt timeout for notification
-        intervalSeconds: 5,
+        intervalMs: 5000,
+        backoffRate: 1.5,
+        maxIntervalMs: 60_000,
+      },
+    },
+  },
+);
+```
+
+**Example: try once, default to manual (event-driven resolution)**
+
+```typescript
+const unregister = client.registerRequestHandler(
+  reserveHotel,
+  async ({ signal }, request) => {
+    const hotel = await db.findAvailableHotel(request, { signal });
+    if (hotel) return { hotelId: hotel.id, confirmation: hotel.confirmation };
+    throw new Error("No matching hotel available");
+  },
+  {
+    retryPolicy: {
+      timeoutSeconds: 10,
+      maxAttempts: 1,
+    },
+    // onExhausted omitted → default is MANUAL
+    // Request sits in DB with status='manual' until an external event resolves it
+  },
+);
+```
+
+**Example: exhaustion with fallback value**
+
+```typescript
+const unregister = client.registerRequestHandler(
+  humanReview,
+  async ({ signal }, request) => {
+    const decision = await routeToHumanUI(request, { signal });
+    return { decision, note: "reviewed" };
+  },
+  {
+    retryPolicy: {
+      timeoutSeconds: 60,
+      maxAttempts: 3,
+      intervalSeconds: 5,
+      backoffRate: 2,
+      maxIntervalSeconds: 120,
+    },
+    onExhausted: {
+      callback: async ({ signal }, request) => {
+        // Return a fallback result — request is resolved, workflow unblocks
+        return { decision: "reject", note: "auto-rejected after timeout" };
+      },
+      retryPolicy: {
+        intervalMs: 1000,
         backoffRate: 2,
-        maxIntervalSeconds: 300,
+        maxIntervalMs: 30_000,
       },
     },
   },
@@ -1394,14 +1462,15 @@ const unregister = client.registerRequestHandler(
 
 **Handler options:**
 
-- `retryPolicy.timeoutSeconds` — per-attempt execution timeout. The handler receives `{ signal: AbortSignal }` as first argument; the signal fires after this duration.
-- `retryPolicy.maxAttempts` — max handler attempts. After exhaustion, the request transitions to manual. Optional — if omitted, only `totalTimeoutSeconds` controls the transition.
-- `retryPolicy.totalTimeoutSeconds` — overall wall-clock timeout for all attempts combined. After this, the request transitions to manual. Optional — if omitted, only `maxAttempts` controls the transition.
-- `retryPolicy.intervalSeconds`, `retryPolicy.backoffRate`, `retryPolicy.maxIntervalSeconds` — retry spacing. All in seconds (durable, persisted to DB).
-- `onManual.callback` — notification function. Receives `{ signal: AbortSignal }` (aborted if request is resolved externally before notification succeeds) and the request payload.
-- `onManual.retryPolicy` — retry policy for the notification, including `timeoutSeconds` (per-attempt) and spacing fields. Retries indefinitely until notification succeeds or the request is resolved externally.
+- `retryPolicy` — handler retry policy (durable, seconds, persisted to DB):
+  - `timeoutSeconds` — per-attempt execution timeout. The handler receives `{ signal: AbortSignal }` as first argument; the signal fires after this duration.
+  - `maxAttempts` — max handler attempts before exhaustion. Optional — if omitted, only `totalTimeoutSeconds` controls exhaustion.
+  - `totalTimeoutSeconds` — overall wall-clock timeout for all attempts. Optional — if omitted, only `maxAttempts` controls exhaustion.
+  - `intervalSeconds`, `backoffRate`, `maxIntervalSeconds` — retry spacing.
+- `onExhausted.callback` — called when handler attempts are exhausted. Receives `{ signal: AbortSignal }` (fires if request is resolved externally) and the request payload. Returns either a typed result (fallback) or `MANUAL` (sentinel). If omitted, defaults to `MANUAL`.
+- `onExhausted.retryPolicy` — runtime-level retry policy (milliseconds, infinite) for when `onExhausted.callback` throws. `intervalMs`, `backoffRate`, `maxIntervalMs`.
 
-At least one of `retryPolicy.maxAttempts` or `retryPolicy.totalTimeoutSeconds` must be provided. Without either, the handler would retry forever and never transition to manual — if that is the desired behavior, `onManual` should be omitted entirely and the handler is responsible for eventual resolution.
+At least one of `retryPolicy.maxAttempts` or `retryPolicy.totalTimeoutSeconds` must be provided. Without either, the handler retries forever and never reaches exhaustion — if that is the desired behavior, `onExhausted` should be omitted entirely and the handler is responsible for eventual resolution.
 
 ### Postgres implementation
 
@@ -1412,7 +1481,6 @@ CREATE TABLE requests (
   payload                 JSONB NOT NULL,
   response                JSONB,
   status                  TEXT NOT NULL DEFAULT 'pending',
-  is_manual               BOOLEAN NOT NULL DEFAULT FALSE,
   claimed_at              TIMESTAMPTZ,
   resolved_at             TIMESTAMPTZ,
   timed_out_at            TIMESTAMPTZ,
@@ -1421,7 +1489,7 @@ CREATE TABLE requests (
   retention_deadline_at   TIMESTAMPTZ,
 
   CONSTRAINT chk_status CHECK (
-    status IN ('pending', 'claimed', 'resolved', 'timedOut', 'cancelled')
+    status IN ('pending', 'claimed', 'resolved', 'manual', 'timedOut', 'cancelled')
   )
 );
 ```
@@ -1858,7 +1926,7 @@ defineStep({
 
 ### Handler registration retry policy
 
-All handler registrations (queue, request, topic) consolidate retry configuration into a single `retryPolicy` object containing both stop conditions (`timeoutSeconds`, `maxAttempts`, `totalTimeoutSeconds`) and spacing (`intervalSeconds`, `backoffRate`, `maxIntervalSeconds`). All fields are in seconds — these are durable execution concerns with attempts persisted to the database. `registrationRetry` on topic consumers uses milliseconds (`intervalMs`, `maxIntervalMs`) — purely a runtime concern, never persisted.
+All handler registrations (queue, request, topic) consolidate retry configuration into a single `retryPolicy` object containing both stop conditions (`timeoutSeconds`, `maxAttempts`, `totalTimeoutSeconds`) and spacing (`intervalSeconds`, `backoffRate`, `maxIntervalSeconds`). All fields are in seconds — these are durable execution concerns with attempts persisted to the database. `registrationRetry` on topic consumers and `onExhausted.retryPolicy` on request handlers use milliseconds (`intervalMs`, `maxIntervalMs`) — purely runtime concerns, never persisted.
 
 ### Channel `receive` changes
 
@@ -1874,7 +1942,7 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - `RequestCompensationResult`, `AttemptAccessor`
 - `WorkflowError`, `WorkflowErrorValue`, `WorkflowFailureInfo`
 - `StepTimeoutError`, `RequestTimeoutError`, `ChildWorkflowError`, `ChildWorkflowTimeoutError`, `LooseWorkflowError`
-- `StepBoundary`, `MAIN_BRANCH`, `BranchPathItem`
+- `StepBoundary`, `MAIN_BRANCH`, `BranchPathItem`, `MANUAL`
 - `Unsubscribe`
 - `RegisterTopicConsumerError`, `RegisterTopicConsumerErrorEvent`, `TopicConsumerAlreadyActiveError`, `TopicConsumerConsumeErrorEvent`
 - `ScheduleOptions`
