@@ -1110,7 +1110,14 @@ When `defaultTTL` is not specified, `ttl` is required on every `enqueue` call. W
 
 Both optional. If neither is provided, eligible immediately. If `delay >= ttl` (or `scheduledAt >= expires_at`), the engine raises an error at enqueue time.
 
-Ordering once eligible: `COALESCE(scheduled_at, created_at) ASC, id ASC`.
+Ordering once eligible: `priority ASC, COALESCE(scheduled_at, created_at) ASC, id ASC`. Lower priority number = higher urgency (0 is highest).
+
+### Priority
+
+- `priority: number` — optional. Lower number = higher urgency. Default: `0`.
+- Messages with lower priority numbers are claimed before messages with higher numbers.
+- Among messages with the same priority, FIFO ordering applies (by scheduled/created time, then id).
+- Priority is preserved on redrive.
 
 ### Workflow-internal API
 
@@ -1127,6 +1134,10 @@ await ctx.queues.notifications.enqueue(
 await ctx.queues.notifications.enqueue(
   { userId: "u1", body: "Renew your subscription" },
   { scheduledAt: addDays(ctx.date, 30) },
+);
+await ctx.queues.notifications.enqueue(
+  { userId: "u1", body: "Weekly digest" },
+  { priority: 10 },  // lower urgency than default (0)
 );
 ```
 
@@ -1186,7 +1197,7 @@ const unsubscribe = dl.listen(
 
 **`DeadLetterHandle<TMessage>` methods:** `list`, `count`, `redrive`, `redriveAll`, `discard`, `discardAll`, `listen`.
 
-**Redrive TTL behavior:** On redrive, `status` resets to `pending`, `attempt_count` resets to zero. If `ttl` provided, `expires_at = NOW() + ttl`; if `ttl: null`, never expires; if omitted, `defaultTTL` re-applied.
+**Redrive TTL behavior:** On redrive, `status` resets to `pending`, `attempt_count` resets to zero, `priority` is preserved. If `ttl` provided, `expires_at = NOW() + ttl`; if `ttl: null`, never expires; if omitted, `defaultTTL` re-applied.
 
 ### Postgres implementation
 
@@ -1196,6 +1207,7 @@ CREATE TABLE queue_messages (
   queue_name                        TEXT NOT NULL,
   payload                           JSONB NOT NULL,
   status                            TEXT NOT NULL DEFAULT 'pending',
+  priority                          INT NOT NULL DEFAULT 0,
   attempt_count                     INT NOT NULL DEFAULT 0,
   dead_letter_reason                TEXT,
   scheduled_at                      TIMESTAMPTZ,
@@ -1237,7 +1249,7 @@ WHERE queue_name = $1
   AND status = 'pending'
   AND (expires_at IS NULL OR expires_at > NOW())
   AND (scheduled_at IS NULL OR scheduled_at <= NOW())
-ORDER BY COALESCE(scheduled_at, created_at) ASC, id ASC
+ORDER BY priority ASC, COALESCE(scheduled_at, created_at) ASC, id ASC
 LIMIT 1
 FOR UPDATE SKIP LOCKED;
 ```
