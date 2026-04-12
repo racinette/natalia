@@ -1144,8 +1144,8 @@ const unregister = client.registerQueueHandler(
     await sendEmail(message.userId, message.body, { signal });
   },
   {
-    timeoutSeconds: 30,
     retryPolicy: {
+      timeoutSeconds: 30,
       maxAttempts: 5,
       intervalSeconds: 2,
       backoffRate: 2,
@@ -1157,7 +1157,7 @@ const unregister = client.registerQueueHandler(
 unregister();
 ```
 
-The handler receives `{ signal: AbortSignal }` as its first argument. The signal fires after `timeoutSeconds` per attempt. `maxAttempts` is meaningful for queues: after exhaustion, the message is dead-lettered with `max_attempts`. Failed attempts are written to `queue_message_attempt` — only failures are recorded, successful processing writes the result directly. Retry intervals are in seconds (durable, persisted to DB).
+The handler receives `{ signal: AbortSignal }` as its first argument. The signal fires after `retryPolicy.timeoutSeconds` per attempt. `maxAttempts` is meaningful for queues: after exhaustion, the message is dead-lettered with `max_attempts`. Failed attempts are written to `queue_message_attempt` — only failures are recorded, successful processing writes the result directly. All retry policy fields are in seconds (durable, persisted to DB).
 
 ### Dead-letter client API
 
@@ -1369,10 +1369,10 @@ const unregister = client.registerRequestHandler(
     return { decision, note: "reviewed" };
   },
   {
-    timeoutSeconds: 60,           // per-attempt timeout (signal aborted)
-    maxAttempts: 3,               // max handler attempts before going manual
-    totalTimeoutSeconds: 300,     // overall timeout for all attempts
     retryPolicy: {
+      timeoutSeconds: 60,           // per-attempt timeout (signal aborted)
+      maxAttempts: 3,               // max handler attempts before going manual
+      totalTimeoutSeconds: 300,     // overall timeout for all attempts
       intervalSeconds: 5,
       backoffRate: 2,
       maxIntervalSeconds: 120,
@@ -1381,8 +1381,8 @@ const unregister = client.registerRequestHandler(
       callback: async ({ signal }, request) => {
         await notifyOpsTeam(request, { signal });
       },
-      timeoutSeconds: 30,         // per-attempt timeout for notification
       retryPolicy: {
+        timeoutSeconds: 30,         // per-attempt timeout for notification
         intervalSeconds: 5,
         backoffRate: 2,
         maxIntervalSeconds: 300,
@@ -1394,15 +1394,14 @@ const unregister = client.registerRequestHandler(
 
 **Handler options:**
 
-- `timeoutSeconds` — per-attempt execution timeout. The handler receives `{ signal: AbortSignal }` as first argument; the signal fires after this duration.
-- `maxAttempts` — max handler attempts. After exhaustion, the request transitions to manual. Optional — if omitted, only `totalTimeoutSeconds` controls the transition.
-- `totalTimeoutSeconds` — overall wall-clock timeout for all attempts combined. After this, the request transitions to manual. Optional — if omitted, only `maxAttempts` controls the transition.
-- `retryPolicy` — retry spacing: `intervalSeconds`, `backoffRate`, `maxIntervalSeconds`. All in seconds (durable, persisted to DB).
+- `retryPolicy.timeoutSeconds` — per-attempt execution timeout. The handler receives `{ signal: AbortSignal }` as first argument; the signal fires after this duration.
+- `retryPolicy.maxAttempts` — max handler attempts. After exhaustion, the request transitions to manual. Optional — if omitted, only `totalTimeoutSeconds` controls the transition.
+- `retryPolicy.totalTimeoutSeconds` — overall wall-clock timeout for all attempts combined. After this, the request transitions to manual. Optional — if omitted, only `maxAttempts` controls the transition.
+- `retryPolicy.intervalSeconds`, `retryPolicy.backoffRate`, `retryPolicy.maxIntervalSeconds` — retry spacing. All in seconds (durable, persisted to DB).
 - `onManual.callback` — notification function. Receives `{ signal: AbortSignal }` (aborted if request is resolved externally before notification succeeds) and the request payload.
-- `onManual.timeoutSeconds` — per-attempt timeout for the notification callback.
-- `onManual.retryPolicy` — retry spacing for the notification. Retries indefinitely until notification succeeds or the request is resolved externally.
+- `onManual.retryPolicy` — retry policy for the notification, including `timeoutSeconds` (per-attempt) and spacing fields. Retries indefinitely until notification succeeds or the request is resolved externally.
 
-At least one of `maxAttempts` or `totalTimeoutSeconds` must be provided. Without either, the handler would retry forever and never transition to manual — if that is the desired behavior, `onManual` should be omitted entirely and the handler is responsible for eventual resolution.
+At least one of `retryPolicy.maxAttempts` or `retryPolicy.totalTimeoutSeconds` must be provided. Without either, the handler would retry forever and never transition to manual — if that is the desired behavior, `onManual` should be omitted entirely and the handler is responsible for eventual resolution.
 
 ### Postgres implementation
 
@@ -1470,12 +1469,12 @@ const unregister = client.registerTopicConsumer(
     await ingestToWarehouse(record, { signal });
   },
   {
-    timeoutSeconds: 10,
     retryPolicy: {
+      timeoutSeconds: 10,
+      maxAttempts: 5,
       intervalSeconds: 1,
       backoffRate: 2,
       maxIntervalSeconds: 30,
-      maxAttempts: 5,
     },
     registrationRetry: {
       intervalMs: 5000,
@@ -1497,7 +1496,7 @@ const unregister = client.registerTopicConsumer(
 );
 ```
 
-The consumer callback receives `{ signal: AbortSignal }` as its first argument. The signal fires after `timeoutSeconds` per attempt. Failed attempts are written to a `topic_consumer_attempt` table (FK on consumer + record) — only failures are recorded, successful processing advances the offset. Retry intervals are in seconds (durable, persisted to DB). `registrationRetry` uses milliseconds — it is purely a runtime concern, never persisted.
+The consumer callback receives `{ signal: AbortSignal }` as its first argument. The signal fires after `retryPolicy.timeoutSeconds` per attempt. Failed attempts are written to a `topic_consumer_attempt` table (FK on consumer + record) — only failures are recorded, successful processing advances the offset. All retry policy fields are in seconds (durable, persisted to DB). `registrationRetry` uses milliseconds — it is purely a runtime concern, never persisted.
 
 The `onConsumeError` callback receives an event with an `attempts: AttemptAccessor` field when `type === "attemptsExhausted"`, allowing inspection of the error history to make informed skip/halt decisions.
 
@@ -1859,7 +1858,7 @@ defineStep({
 
 ### Handler registration retry policy
 
-Queue and request handler retry policies use seconds (`intervalSeconds`, `maxIntervalSeconds`) — these are durable execution concerns with attempts persisted to the database. Topic consumer retry policies also use seconds for the same reason. `registrationRetry` on topic consumers uses milliseconds (`intervalMs`, `maxIntervalMs`) — purely a runtime concern, never persisted.
+All handler registrations (queue, request, topic) consolidate retry configuration into a single `retryPolicy` object containing both stop conditions (`timeoutSeconds`, `maxAttempts`, `totalTimeoutSeconds`) and spacing (`intervalSeconds`, `backoffRate`, `maxIntervalSeconds`). All fields are in seconds — these are durable execution concerns with attempts persisted to the database. `registrationRetry` on topic consumers uses milliseconds (`intervalMs`, `maxIntervalMs`) — purely a runtime concern, never persisted.
 
 ### Channel `receive` changes
 
