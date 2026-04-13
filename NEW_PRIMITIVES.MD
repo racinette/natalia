@@ -1183,6 +1183,7 @@ const unregister = client.registerQueueHandler(
     await sendEmail(message.userId, message.body, { signal });
   },
   {
+    maxConcurrent: 10, // max concurrent handler invocations; undefined = unlimited
     retryPolicy: {
       timeoutSeconds: 30,
       maxAttempts: 5,
@@ -1197,6 +1198,8 @@ unregister();
 ```
 
 The handler receives `{ signal: AbortSignal }` as its first argument. The signal fires after `retryPolicy.timeoutSeconds` per attempt. `maxAttempts` is meaningful for queues: after exhaustion, the message is dead-lettered with `max_attempts`. Failed attempts are written to `queue_message_attempt` — only failures are recorded, successful processing writes the result directly. All retry policy fields are in seconds (durable, persisted to DB).
+
+`maxConcurrent` controls the maximum number of messages this consumer instance handles concurrently. When omitted (`undefined`), there is no limit — the consumer claims messages as fast as they arrive. When set, the consumer claims at most `maxConcurrent` messages at a time and waits for a slot to open before claiming the next. This prevents overwhelming downstream services and controls resource usage per consumer instance.
 
 ### Dead-letter client API
 
@@ -1368,6 +1371,10 @@ interface RequestCall<
     & (<R>(opts: StepBoundary, cb: () => R) =>
         RequestCall<T, Awaited<R>, HasCompensation, Tctx, Called | "timeout">);
 
+  priority: "priority" extends Called ? never :
+    (value: number) =>
+      RequestCall<T, TTimeout, HasCompensation, Tctx, Called | "priority">;
+
   complete: "complete" extends Called ? never :
     <R>(cb: (data: T) => R) =>
       RequestCall<Awaited<R>, TTimeout, HasCompensation, Tctx, Called | "complete">;
@@ -1502,6 +1509,7 @@ const unregister = client.registerRequestHandler(
 
 **Handler options:**
 
+- `maxConcurrent` — max concurrent handler invocations for this consumer instance. `undefined` = unlimited. Controls how many requests this handler processes in parallel.
 - `retryPolicy` — handler retry policy (durable, seconds, persisted to DB):
   - `timeoutSeconds` — per-attempt execution timeout. The handler receives `{ signal: AbortSignal }` as first argument; the signal fires after this duration.
   - `maxAttempts` — max handler attempts before exhaustion. Optional — if omitted, only `totalTimeoutSeconds` controls exhaustion.
@@ -1521,6 +1529,7 @@ CREATE TABLE requests (
   payload                 JSONB NOT NULL,
   response                JSONB,
   status                  TEXT NOT NULL DEFAULT 'pending',
+  priority                INT NOT NULL DEFAULT 0,
   claimed_at              TIMESTAMPTZ,
   resolved_at             TIMESTAMPTZ,
   timed_out_at            TIMESTAMPTZ,
@@ -1535,6 +1544,90 @@ CREATE TABLE requests (
 ```
 
 Compensation trigger: `EXISTS (SELECT 1 FROM request_attempt WHERE request_id = $id)`. If no attempt rows exist, no work was done — compensation is skipped.
+
+### Priority
+
+Requests support optional priority, mirroring queue message priority.
+
+- `priority: number` — optional on the workflow call site. Lower number = higher urgency. Default: `0`.
+- Handlers claim requests ordered by `priority ASC, created_at ASC, id ASC` — highest-urgency first, FIFO within the same priority.
+- Priority is set by the workflow that creates the request, not by the handler.
+
+```typescript
+// Workflow call site — priority on the builder
+const decision = await ctx.requests.humanReview({ context: "order-123", data: orderData })
+  .priority(1)        // urgent — processed before default-priority requests
+  .timeout(3600)
+  .resolve(ctx);
+```
+
+The `requests` table gains a `priority` column:
+
+```sql
+ALTER TABLE requests ADD COLUMN priority INT NOT NULL DEFAULT 0;
+```
+
+Claim query becomes: `SELECT ... FROM requests WHERE request_name = $1 AND status = 'pending' ORDER BY priority ASC, created_at ASC, id ASC FOR UPDATE SKIP LOCKED LIMIT 1`.
+
+### Manual resolution client API
+
+Requests in `status = 'manual'` (or `'pending'`, for direct external resolution) need a client-level API for external actors (admin dashboards, human operators, third-party integrations) to resolve them.
+
+```typescript
+// Resolve a manual request
+const result = await client.requests.humanReview.resolve(requestId, {
+  decision: "approve",
+  note: "Approved by admin",
+});
+// result: { ok: true, status: "resolved" } | { ok: false, status: "already_resolved" | "not_found" | "cancelled" }
+
+// List pending manual requests
+const pending = await client.requests.humanReview.list({
+  status: "manual",
+  limit: 50,
+  cursor: prevCursor,
+});
+// pending: { items: Array<{ id, payload, status, createdAt, attempts: AttemptAccessor }>, cursor }
+
+// Cancel a request (workflow sees RequestTimeoutError)
+const cancelResult = await client.requests.humanReview.cancel(requestId);
+```
+
+**Type:**
+
+```typescript
+type RequestResolveResult =
+  | { ok: true; status: "resolved" }
+  | { ok: false; status: "already_resolved" | "not_found" | "cancelled" };
+
+type RequestCancelResult =
+  | { ok: true; status: "cancelled" }
+  | { ok: false; status: "already_resolved" | "not_found" | "already_cancelled" };
+
+interface RequestListItem<TPayload> {
+  readonly id: string;
+  readonly payload: TPayload;
+  readonly status: "pending" | "claimed" | "manual";
+  readonly priority: number;
+  readonly createdAt: Date;
+  readonly claimedAt: Date | null;
+  readonly attempts: AttemptAccessor;
+}
+
+interface RequestListResult<TPayload> {
+  readonly items: readonly RequestListItem<TPayload>[];
+  readonly cursor: string | null;
+}
+```
+
+**Semantics:**
+
+- `resolve()` validates the response against the request's response schema. Type-safe: the second argument is `InferInput<TResponseSchema>`.
+- `resolve()` on a `'claimed'` request interrupts the handler via its `AbortSignal` (the handler's signal fires, the resolve wins).
+- `resolve()` on a `'pending'` request resolves it before any handler claims it — useful for requests that don't need a handler at all (pure human-in-the-loop).
+- `cancel()` transitions the request to `'cancelled'` and the workflow sees `RequestTimeoutError`.
+- `list()` supports filtering by status and cursor-based pagination.
+- `attempts` on each list item provides the error history for requests that have been attempted.
 
 ---
 
@@ -2082,7 +2175,7 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - `defineQueue`, `defineRequest`, `defineTopic`
 - `SearchQueryNode`, `SearchQuery`
 - `DeadLetterRecordFields`, `DeadLetterSort`, `DeadLetterCursor`, `DeadLetteredMessage`, `DeadLetterHandle`
-- `RequestCompensationResult`, `AttemptAccessor`, `Attempt`, `AttemptError`
+- `RequestCompensationResult`, `RequestResolveResult`, `RequestCancelResult`, `RequestListItem`, `RequestListResult`, `AttemptAccessor`, `Attempt`, `AttemptError`
 - `WorkflowError`, `WorkflowErrorValue`, `WorkflowFailureInfo`
 - `StepTimeoutError`, `RequestTimeoutError`, `ChildWorkflowError`, `ChildWorkflowTimeoutError`, `LooseWorkflowError`
 - `StepBoundary`, `MAIN_BRANCH`, `BranchPathItem`, `MANUAL`
@@ -2133,6 +2226,9 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - Buffered operations (`stream.write`, `event.set`, `attribute.set`, `queue.enqueue`, `topic.publish`, `channel.send` (foreign), `registerCompensation`, `compensateEagerly`, `startDetached`) are now synchronous — they return `void` and are not `await`ed. `AtomicResult<void>` is removed for these operations.
 - Step records are batched and committed in a single transaction when all branches are blocked. Side-effecting work (step execution, child workflow dispatch, request dispatch) starts only after the batch commit.
 - `receiveNowait` and `patch` are awaitable reads — they trigger a buffer flush before reading from committed state.
+- `RequestCall` gains `.priority(value)` builder method. `requests` table gains `priority INT NOT NULL DEFAULT 0` column.
+- `client.requests.<name>.resolve()`, `.cancel()`, `.list()` — manual resolution client API for requests.
+- `registerQueueHandler` and `registerRequestHandler` gain `maxConcurrent` option for consumer concurrency control.
 
 ### Connection and transaction model
 
