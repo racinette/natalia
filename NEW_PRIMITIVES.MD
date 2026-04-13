@@ -25,7 +25,7 @@ The changes are organized into two categories:
 10. **Halt model** — unified soft failure mechanism for unexpected exceptions
 11. **Error model** — schema-only error definitions, `ctx.errors` factories, explicit vs accidental failure distinction
 12. **Step timeout unification** — `maxAttempts` moves from retry policy to `.timeout()` builder
-13. **AttemptAccessor refactoring** — rename `StepErrorAccessor` → `AttemptAccessor`, make `count()` async
+13. **AttemptAccessor refactoring** — rename `StepErrorAccessor` → `AttemptAccessor`, rename `StepExecutionError` → `Attempt`, introduce `AttemptError` throwable class, unify attempt record shape, make `count()` async
 14. **Context splitting** — separate primitive instances for execution and compensation VELs
 15. **Convenience scope methods** — `ctx.best()`, `ctx.atMost()`, `ctx.atLeast()`, `ctx.joinSafe()`
 16. **Database schema** — unified tree model for execution and compensation
@@ -1258,14 +1258,14 @@ CREATE TABLE queue_messages (
 );
 
 CREATE TABLE queue_message_attempt (
-  id          BIGSERIAL PRIMARY KEY,
-  message_id  BIGINT NOT NULL REFERENCES queue_messages(id) ON DELETE CASCADE,
-  attempt     INT NOT NULL,
-  error       TEXT NOT NULL,
-  error_type  TEXT,
-  details     JSONB,
-  started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  failed_at   TIMESTAMPTZ NOT NULL
+  id              BIGSERIAL PRIMARY KEY,
+  message_id      BIGINT NOT NULL REFERENCES queue_messages(id) ON DELETE CASCADE,
+  attempt         INT NOT NULL,
+  error_message   TEXT,
+  error_type      TEXT,
+  error_details   JSONB,
+  started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  failed_at       TIMESTAMPTZ NOT NULL
 );
 ```
 
@@ -1676,15 +1676,15 @@ CREATE TABLE topic_consumers (
 );
 
 CREATE TABLE topic_consumer_attempt (
-  id          BIGSERIAL PRIMARY KEY,
-  consumer_id BIGINT NOT NULL REFERENCES topic_consumers(id) ON DELETE CASCADE,
-  record_id   BIGINT NOT NULL REFERENCES topic_records(id) ON DELETE CASCADE,
-  attempt     INT NOT NULL,
-  error       TEXT NOT NULL,
-  error_type  TEXT,
-  details     JSONB,
-  started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  failed_at   TIMESTAMPTZ NOT NULL
+  id              BIGSERIAL PRIMARY KEY,
+  consumer_id     BIGINT NOT NULL REFERENCES topic_consumers(id) ON DELETE CASCADE,
+  record_id       BIGINT NOT NULL REFERENCES topic_records(id) ON DELETE CASCADE,
+  attempt         INT NOT NULL,
+  error_message   TEXT,
+  error_type      TEXT,
+  error_details   JSONB,
+  started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  failed_at       TIMESTAMPTZ NOT NULL
 );
 ```
 
@@ -1769,21 +1769,76 @@ When a `Date` is provided, the receive blocks until a message arrives or the abs
 
 ### Changes
 
-**Rename `StepErrorAccessor` → `AttemptAccessor`:** shared interface for lazy access to per-attempt error records across steps and queue dead-lettered messages.
+**Rename `StepErrorAccessor` → `AttemptAccessor`:** shared interface for lazy access to per-attempt records across steps, queue dead-lettered messages, topic consumer failures, and request handler failures.
+
+**Rename `StepExecutionError` → `Attempt`:** the previous name leaked the step origin into a type shared across all attempt-bearing contexts. A queue handler's dead-letter inspection should not surface a "StepExecutionError." The new name is context-neutral and reflects that an attempt is not always erroneous — it may have ended abruptly (process crash, signal abort) with no error information captured.
+
+**Introduce `AttemptError` class:** a throwable `Error` subclass that handlers can use to attach structured, JSON-serializable details to failures. When the engine catches an `AttemptError`, it persists `type`, `message`, and `details` directly. When it catches a plain `Error`, it extracts `message` and `constructor.name`. When it catches any other thrown value, it best-efforts `String(thrown)` for the message. This means all error fields on the `Attempt` record are nullable — JavaScript's `throw` can throw anything, including values with no message, no type, and no details.
+
+**Unify attempt record shape:** all attempt-bearing subsystems (steps, queue handlers, topic consumers, request handlers) share the same DB column pattern: `attempt`, `error_message`, `error_type`, `error_details`, `started_at`, `failed_at`. Error columns are nullable (a thrown `undefined` or an abruptly terminated attempt has no error info). The public type reflects this with `startedAt` and `failedAt` (both `Date`), replacing the old single `timestamp` field. This captures attempt duration — useful for diagnosing slow failures vs immediate crashes.
 
 **`count` property → `count()` async method:** consistent with the fully lazy interface.
 
 **Rename `errors` → `attempts` on `StepCompensationResult`:** accurate in all variants.
 
-### Updated interface
+### `AttemptError` (throwable class)
+
+A structured error class for handler code (step execute, queue handlers, topic consumers, request handlers). Extends `Error`. Not generic — `details` is typed as `JsonInput` (any JSON-serializable value) at the throw site.
+
+```typescript
+class AttemptError extends Error {
+  /** Stable error classifier (e.g. "ValidationError", "NetworkError"). */
+  readonly type: string | undefined;
+  /** JSON-serializable structured details. */
+  readonly details: JsonInput | undefined;
+
+  constructor(options?: {
+    type?: string;
+    message?: string;
+    details?: JsonInput;
+  });
+}
+```
+
+**Engine extraction rules** when catching a thrown value:
+
+| Thrown value | `error_type` | `error_message` | `error_details` |
+| --- | --- | --- | --- |
+| `AttemptError` instance | `.type` | `.message` | `.details` |
+| `Error` instance | `.constructor.name` | `.message` | `null` |
+| `string` | `null` | the string | `null` |
+| anything else | `null` | `String(thrown)` | `null` |
+
+### `Attempt` (read-side record)
+
+A plain data record representing a single persisted attempt. All error fields are nullable — the attempt may have been abrupt (no clean failure captured), or the thrown value may not have carried the relevant information.
+
+```typescript
+interface Attempt {
+  /** 1-indexed attempt number */
+  readonly attempt: number;
+  /** When the attempt started */
+  readonly startedAt: Date;
+  /** When the attempt was recorded as failed */
+  readonly failedAt: Date;
+  /** Error message (null if unknown) */
+  readonly message: string | null;
+  /** Error classifier / class name (null if unknown) */
+  readonly type: string | null;
+  /** Structured details (undefined if not provided) */
+  readonly details: JsonInput | undefined;
+}
+```
+
+### `AttemptAccessor`
 
 ```typescript
 interface AttemptAccessor {
-  last(): Promise<StepExecutionError>;
-  all(): Promise<StepExecutionError[]>;
+  last(): Promise<Attempt>;
+  all(): Promise<Attempt[]>;
   count(): Promise<number>;
-  [Symbol.asyncIterator](): AsyncIterableIterator<StepExecutionError>;
-  reverse(): AsyncIterable<StepExecutionError>;
+  [Symbol.asyncIterator](): AsyncIterableIterator<Attempt>;
+  reverse(): AsyncIterable<Attempt>;
 }
 ```
 
@@ -2027,7 +2082,7 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - `defineQueue`, `defineRequest`, `defineTopic`
 - `SearchQueryNode`, `SearchQuery`
 - `DeadLetterRecordFields`, `DeadLetterSort`, `DeadLetterCursor`, `DeadLetteredMessage`, `DeadLetterHandle`
-- `RequestCompensationResult`, `AttemptAccessor`
+- `RequestCompensationResult`, `AttemptAccessor`, `Attempt`, `AttemptError`
 - `WorkflowError`, `WorkflowErrorValue`, `WorkflowFailureInfo`
 - `StepTimeoutError`, `RequestTimeoutError`, `ChildWorkflowError`, `ChildWorkflowTimeoutError`, `LooseWorkflowError`
 - `StepBoundary`, `MAIN_BRANCH`, `BranchPathItem`, `MANUAL`
@@ -2040,6 +2095,8 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 ### Breaking changes
 
 - `StepErrorAccessor` renamed to `AttemptAccessor`.
+- `StepExecutionError` renamed to `Attempt`. Fields changed: `timestamp: number` (epoch ms) replaced by `startedAt: Date` and `failedAt: Date`. Error fields (`message`, `type`, `details`) are now nullable — reflects that JavaScript can throw non-Error values and attempts can end abruptly.
+- New `AttemptError` throwable class introduced for structured error reporting from handler code.
 - `StepCompensationResult.errors` renamed to `.attempts`. `status: "failed"` renamed to `status: "timed_out"` with `reason: "attempts_exhausted" | "deadline"`.
 - `StepCompensationResult` gains `args` field (typed by step's `args` schema). Now generic over `<TArgs, T>`.
 - `StepErrorAccessor.count` (sync) → `AttemptAccessor.count()` (async).
