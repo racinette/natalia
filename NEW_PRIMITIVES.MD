@@ -662,7 +662,7 @@ interface StepCall<
   HasCompensation extends boolean = false,
   Tctx = unknown,
   Called extends string = never,
-> extends DeterministicAwaitable<T | TTimeout, ExecutionRoot> {
+> extends DurableHandle<T | TTimeout, ExecutionRoot> {
   compensate: "compensate" extends Called ? never :
     & ((
         cb: (ctx: Tctx, result: StepCompensationResult<TArgs, T>) => Promise<void>,
@@ -744,7 +744,7 @@ interface WorkflowCall<
   HasCompensation extends boolean = false,
   Tctx = unknown,
   Called extends string = never,
-> extends DeterministicAwaitable<T | TFail | TTimeout, ExecutionRoot> {
+> extends DurableHandle<T | TFail | TTimeout, ExecutionRoot> {
   compensate: "compensate" extends Called ? never :
     & ((
         cb: (ctx: Tctx, result: ChildWorkflowCompensationResult<T>) => Promise<void>,
@@ -1310,7 +1310,7 @@ const humanReview = defineRequest({
 
 ### Workflow-internal API
 
-Requests are Tier 1 but NOT `StepCall` instances. They have their own call type extending `DeterministicAwaitable` directly. Timeout is controlled via the `.timeout()` builder, following the same pattern as `StepCall` — not as a constructor option.
+Requests are Tier 1 but NOT `StepCall` instances. They have their own call type extending `DurableHandle` directly. Timeout is controlled via the `.timeout()` builder, following the same pattern as `StepCall` — not as a constructor option.
 
 ```typescript
 // Wait indefinitely (no .timeout() chained)
@@ -1348,7 +1348,7 @@ interface RequestCall<
   HasCompensation extends boolean = false,
   Tctx = unknown,
   Called extends string = never,
-> extends DeterministicAwaitable<T | TTimeout, ExecutionRoot> {
+> extends DurableHandle<T | TTimeout, ExecutionRoot> {
   compensate: "compensate" extends Called ? never :
     & ((
         cb: (ctx: Tctx, result: RequestCompensationResult<T>) => Promise<void>,
@@ -1846,10 +1846,10 @@ interface AttemptAccessor {
 
 ## Part 16: Scheduled Delivery
 
-### `ScheduleOptions` type
+### `ScheduledDeliveryOptions` type
 
 ```typescript
-export type ScheduleOptions =
+export type ScheduledDeliveryOptions =
   | { delaySeconds: number; scheduledAt?: never }
   | { scheduledAt: Date; delaySeconds?: never }
   | { delaySeconds?: undefined; scheduledAt?: undefined };
@@ -1861,7 +1861,7 @@ Described in Part 10. `enqueue` opts accept `delay: number` (seconds) or `schedu
 
 ### Workflow starts
 
-`ScheduleOptions` is intersected into `StartWorkflowOptions` and `ChildWorkflowStartOptions`. `CompensationChildWorkflowStartOptions` intentionally does NOT receive `ScheduleOptions`.
+`ScheduledDeliveryOptions` is intersected into `StartWorkflowOptions` and `ChildWorkflowStartOptions`. `CompensationChildWorkflowStartOptions` intentionally does NOT receive `ScheduledDeliveryOptions`.
 
 ```typescript
 const handle = await client.workflows.order.start({
@@ -1926,8 +1926,8 @@ await client.workflows.other.start({
 ```typescript
 type StartWorkflowOptions<TArgs, HasFactory extends boolean> =
   HasFactory extends true
-    ? { args: TArgs; idempotencyKey?: string } & ScheduleOptions
-    : { args: TArgs; idempotencyKey: string } & ScheduleOptions;
+    ? { args: TArgs; idempotencyKey?: string } & ScheduledDeliveryOptions
+    : { args: TArgs; idempotencyKey: string } & ScheduledDeliveryOptions;
 ```
 
 The same conditionality applies to `ctx.childWorkflows.X.start(...)` and `ctx.childWorkflows.X.startDetached(...)`.
@@ -2088,7 +2088,7 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - `StepBoundary`, `MAIN_BRANCH`, `BranchPathItem`, `MANUAL`
 - `Unsubscribe`
 - `RegisterTopicConsumerError`, `RegisterTopicConsumerErrorEvent`, `TopicConsumerAlreadyActiveError`, `TopicConsumerConsumeErrorEvent`
-- `ScheduleOptions`
+- `ScheduledDeliveryOptions`
 - `IWorkflowConnection`, `IWorkflowTransaction`
 - `RetentionSetter`
 
@@ -2130,7 +2130,7 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - `idempotencyKey` is now required on all workflow start calls (client, child workflow, detached). Optional if `idempotencyKeyFactory` is defined on the workflow.
 - `idempotencyKeyFactory` receives post-validation args (same as `execute`).
 - VEL execution strategy: branch interleaving order within a scope is an implementation detail. Workflow logic must not rely on it.
-- Buffered operations (`stream.write`, `event.set`, `attribute.set`, `queue.enqueue`, `topic.publish`, `channel.send` (foreign), `registerCompensation`, `compensateEagerly`, `startDetached`) are now synchronous — they return `void` and are not `await`ed. `DirectAwaitable<void>` is removed for these operations.
+- Buffered operations (`stream.write`, `event.set`, `attribute.set`, `queue.enqueue`, `topic.publish`, `channel.send` (foreign), `registerCompensation`, `compensateEagerly`, `startDetached`) are now synchronous — they return `void` and are not `await`ed. `AtomicResult<void>` is removed for these operations.
 - Step records are batched and committed in a single transaction when all branches are blocked. Side-effecting work (step execution, child workflow dispatch, request dispatch) starts only after the batch commit.
 - `receiveNowait` and `patch` are awaitable reads — they trigger a buffer flush before reading from committed state.
 

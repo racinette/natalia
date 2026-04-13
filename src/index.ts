@@ -7,18 +7,18 @@
  *
  * Primitives are split into three tiers based on whether and how they can be awaited:
  *
- * **Tier 1 — Resolve-only (`DeterministicAwaitable<T, TRoot>`):**
+ * **Tier 1 — Resolve-only (`DurableHandle<T, TRoot>`):**
  * Steps, child workflows, scope/all/first results, and BranchHandles.
  * NOT directly awaitable — must be resolved via `handle.resolve(ctx)` or `ctx.join(handle)`.
  * Enforces at compile time that BranchHandle scope paths are accessible from the current
  * scope, and that execution-root handles cannot be resolved from CompensationContext.
  *
- * **Tier 2 — Directly awaitable + valid scope entry (`WorkflowAwaitable<T>`):**
+ * **Tier 2 — Directly awaitable + valid scope entry (`BlockingResult<T>`):**
  * Blocking async operations: `ctx.sleep()`, `ctx.sleepUntil()`, `ctx.channels.X.receive()`,
  * `scheduleHandle.sleep()`, `lifecycleEvent.wait()`.
  * Can be `await`-ed directly OR passed as a scope entry to `ctx.scope()` / `ctx.all()`.
  *
- * **Tier 3 — Directly awaitable, NOT a scope entry (`DirectAwaitable<T>`):**
+ * **Tier 3 — Directly awaitable, NOT a scope entry (`AtomicResult<T>`):**
  * Atomic operations synchronous at the engine level:
  * `ctx.streams.X.write()`, `ctx.events.X.set()`, `ctx.patches.X`,
  * `foreignHandle.channels.X.send()`, `ctx.channels.X.receiveNowait()`,
@@ -31,7 +31,7 @@
  *     Chain builders before executing: .compensate(cb), .retry(policy), .failure(cb), .complete(cb)
  *     Resolve via: `await ctx.steps.myStep(args).resolve(ctx)`
  *
- * - handle.resolve(ctx): Resolves a lazy Tier-1 DeterministicAwaitable.
+ * - handle.resolve(ctx): Resolves a lazy Tier-1 DurableHandle.
  *     Available on ALL contexts (WorkflowContext, CompensationContext,
  *     WorkflowConcurrencyContext, CompensationConcurrencyContext).
  *     Use for steps, child workflows, scope(), all(), first() results.
@@ -106,7 +106,7 @@
  * - Child workflows: ctx.childWorkflows.* — structured invocation (WorkflowCall<T> opaque handle).
  *     Supports .compensate(), .failure(), .complete() in result mode.
  *     Resolve via: `await ctx.childWorkflows.myWorkflow(opts).complete(cb).resolve(ctx)`.
- *     Use `.startDetached(opts)` for fire-and-forget start — returns `DirectAwaitable<ForeignWorkflowHandle>`,
+ *     Use `.startDetached(opts)` for fire-and-forget start — returns `AtomicResult<ForeignWorkflowHandle>`,
  *     directly awaitable: `const handle = await ctx.childWorkflows.myWorkflow.startDetached(opts)`.
  * - Foreign workflows: ctx.foreignWorkflows.* — message-only handles to existing instances.
  *     Only channels.send() is available — no lifecycle coupling.

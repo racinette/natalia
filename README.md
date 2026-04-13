@@ -27,21 +27,21 @@ A type-safe, Postgres-backed durable execution engine for TypeScript.
 Primitives are split into three tiers based on how they can be awaited. This is enforced at compile time — no runtime checks needed.
 
 ```
-DeterministicAwaitable<T, TRoot>   — execute-only; no then(); requires .resolve(ctx) or ctx.join()
+DurableHandle<T, TRoot>   — execute-only; no then(); requires .resolve(ctx) or ctx.join()
   └── BranchHandle<T, TScopePath, TRoot>
 
-DirectAwaitable<T>                 — has then(); directly awaitable; NOT a scope entry
-  └── WorkflowAwaitable<T>         — has then(); directly awaitable; CAN be a scope entry
+AtomicResult<T>                 — has then(); directly awaitable; NOT a scope entry
+  └── BlockingResult<T>         — has then(); directly awaitable; CAN be a scope entry
         └── ChannelReceiveCall<T>  — accepted by select/listen
 ```
 
-**Tier 1 — Execute-only (`DeterministicAwaitable`, `BranchHandle`):**
+**Tier 1 — Execute-only (`DurableHandle`, `BranchHandle`):**
 Steps, child workflows (result mode), scope/all/first results. Must be resolved via `await handle.resolve(ctx)` on base contexts, or `await ctx.join(branchHandle)` on concurrency contexts. The scope-path brand on `BranchHandle` gives compile-time lifetime guarantees.
 
-**Tier 2 — Blocking, directly awaitable and valid scope entry (`WorkflowAwaitable`):**
+**Tier 2 — Blocking, directly awaitable and valid scope entry (`BlockingResult`):**
 `ctx.sleep()`, `ctx.sleepUntil()`, `ctx.channels.X.receive()` (all overloads), `scheduleHandle.sleep()`, `lifecycleEvent.wait()`. Directly `await`-able or passable as a scope entry.
 
-**Tier 3 — Atomic, directly awaitable but NOT a scope entry (`DirectAwaitable`):**
+**Tier 3 — Atomic, directly awaitable but NOT a scope entry (`AtomicResult`):**
 `ctx.streams.X.write()`, `ctx.events.X.set()`, `ctx.patches.X`, `foreignHandle.channels.X.send()`, `ctx.channels.X.receiveNowait()`, `ctx.childWorkflows.X.startDetached()`, `lifecycleEvent.get()`. These complete atomically at the engine level and cannot block as concurrent scope branches.
 
 ## Core Concepts
@@ -414,7 +414,7 @@ for await (const { key, message } of ctx.listen({
 
 #### Time-bounded step/child patterns (`scope + sleep`)
 
-Sleep (`ctx.sleep()`, `ctx.sleepUntil()`) is a Tier 2 `WorkflowAwaitable` — directly awaitable or usable as a scope entry. Model time bounds by racing work against a durable sleep closure:
+Sleep (`ctx.sleep()`, `ctx.sleepUntil()`) is a Tier 2 `BlockingResult` — directly awaitable or usable as a scope entry. Model time bounds by racing work against a durable sleep closure:
 
 ```typescript
 // Step race: step result vs timer
@@ -478,7 +478,7 @@ Sleep is also directly awaitable at any level (no scope required):
 let nextRunAt = ctx.timestamp;
 while (true) {
   nextRunAt += 10 * 60 * 1000;
-  await ctx.sleepUntil(nextRunAt); // WorkflowAwaitable — directly awaitable
+  await ctx.sleepUntil(nextRunAt); // BlockingResult — directly awaitable
   await ctx.steps.runTick().resolve(ctx);
 }
 ```
@@ -730,7 +730,7 @@ Both extend a shared `BaseContext` with channels, streams, events, patches, slee
 **`WorkflowContext`** (happy-path):
 
 - Steps: calling a step returns `StepCall<T>` (Tier 1) — chain `.compensate()`, `.retry()`, `.failure()`, `.complete()` then resolve via `.resolve(ctx)`
-- Child workflows: `ctx.childWorkflows.*` returns `WorkflowCall<T>` (Tier 1) by default; `.startDetached()` returns `DirectAwaitable<ForeignWorkflowHandle>` (Tier 3)
+- Child workflows: `ctx.childWorkflows.*` returns `WorkflowCall<T>` (Tier 1) by default; `.startDetached()` returns `AtomicResult<ForeignWorkflowHandle>` (Tier 3)
 - Foreign workflows: `ctx.foreignWorkflows.*` returns `ForeignWorkflowHandle` (`channels.send()` is Tier 3 — directly awaitable)
 - Has `scope(name, entries, callback)`, `all(entries)`, `first(entries)`, `listen()`, and `addCompensation()`
 - Full branch-aware `select()` and `match()` are available only on scope callback context (`WorkflowConcurrencyContext`)
@@ -746,7 +746,7 @@ Both extend a shared `BaseContext` with channels, streams, events, patches, slee
 
 ### Channels (Message Passing)
 
-Async communication between workflows. `channels.receive()` returns a Tier 2 `WorkflowAwaitable` (`ChannelReceiveCall`) — directly awaitable or passable to `select`/`listen`.
+Async communication between workflows. `channels.receive()` returns a Tier 2 `BlockingResult` (`ChannelReceiveCall`) — directly awaitable or passable to `select`/`listen`.
 
 ```typescript
 // Blocking receive — directly awaitable (Tier 2)
@@ -770,7 +770,7 @@ const paymentOrDefault = await ctx.channels.payment.receive(300, {
   txnId: "timeout",
 });
 
-// Non-blocking poll — receiveNowait() is Tier 3 (DirectAwaitable)
+// Non-blocking poll — receiveNowait() is Tier 3 (AtomicResult)
 // Directly awaitable; NOT valid as a scope/select/listen entry
 const nowait = await ctx.channels.payment.receiveNowait();
 const nowaitWithDefault = await ctx.channels.payment.receiveNowait({
@@ -789,7 +789,7 @@ if (sendResult.ok) console.log("Sent");
 
 ### Streams (Append-Only Logs)
 
-Output data for external consumers. `ctx.streams.X.write()` is Tier 3 (`DirectAwaitable`) — directly awaitable.
+Output data for external consumers. `ctx.streams.X.write()` is Tier 3 (`AtomicResult`) — directly awaitable.
 
 ```typescript
 // Inside workflow — write (Tier 3 — directly awaitable)
@@ -811,7 +811,7 @@ while (true) {
 
 ### Events (Write-Once Flags)
 
-Coordination signals with "never" semantics. `ctx.events.X.set()` is Tier 3 (`DirectAwaitable`) — directly awaitable.
+Coordination signals with "never" semantics. `ctx.events.X.set()` is Tier 3 (`AtomicResult`) — directly awaitable.
 
 ```typescript
 // Inside workflow — set (Tier 3 — directly awaitable)
@@ -863,7 +863,7 @@ const workflow = defineWorkflow({
 
 ### Patches (Safe Workflow Evolution)
 
-`ctx.patches.X` is Tier 3 (`DirectAwaitable<boolean>`) — directly awaitable. Evaluates to `true` when the patch is active.
+`ctx.patches.X` is Tier 3 (`AtomicResult<boolean>`) — directly awaitable. Evaluates to `true` when the patch is active.
 
 ```typescript
 const workflow = defineWorkflow({
@@ -980,7 +980,7 @@ Every schema has **input** (encoded for DB) and **output** (decoded for runtime)
 
 ### Workflow-Internal (happy-path model)
 
-Step and child workflow calls in `WorkflowContext` return Tier 1 `DeterministicAwaitable` handles. Resolve via `.resolve(ctx)` — failure auto-terminates the workflow when no `.failure()` builder is chained.
+Step and child workflow calls in `WorkflowContext` return Tier 1 `DurableHandle` handles. Resolve via `.resolve(ctx)` — failure auto-terminates the workflow when no `.failure()` builder is chained.
 
 ### Workflow-Internal (builder-based error handling)
 
@@ -1024,7 +1024,7 @@ Workflow-internal `ChannelHandle` receive overloads (all return Tier 2 `ChannelR
 - `receive(timeoutSeconds)` → `T | undefined`
 - `receive(timeoutSeconds, defaultValue)` → `T | typeof defaultValue`
 
-Non-blocking poll (Tier 3 `DirectAwaitable` — not a scope/select/listen entry):
+Non-blocking poll (Tier 3 `AtomicResult` — not a scope/select/listen entry):
 
 - `receiveNowait()` → `T | undefined`
 - `receiveNowait(defaultValue)` → `T | typeof defaultValue`
@@ -1068,21 +1068,21 @@ Engine-level wait APIs use `{ signal?: AbortSignal }` for runtime cancellation:
 | Resource                                       | Operations                                                                                                                                                                                                              |
 | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ctx.steps.*`                                  | `(args)` → `StepCall<T>` (Tier 1) — chain `.compensate()`, `.retry()`, `.failure()`, `.complete()` then resolve via `.resolve(ctx)`                                                                                     |
-| `ctx.channels.*`                               | `.receive()` → `ChannelReceiveCall<T>` (Tier 2, directly awaitable or select/listen entry); `.receiveNowait()` → `DirectAwaitable<T \| undefined>` (Tier 3, directly awaitable, NOT a scope entry); `for await...of` |
-| `ctx.streams.*`                                | `.write()` → `DirectAwaitable<number>` (Tier 3 — directly awaitable)                                                                                                                                                    |
-| `ctx.events.*`                                 | `.set()` → `DirectAwaitable<void>` (Tier 3 — directly awaitable)                                                                                                                                                        |
-| `ctx.childWorkflows.*`                         | `(options)` → `WorkflowCall<T>` (Tier 1, execute-only); `.startDetached(options)` → `DirectAwaitable<ForeignWorkflowHandle>` (Tier 3)                                                                                   |
-| `ctx.foreignWorkflows.*`                       | `.get(key)` → `ForeignWorkflowHandle`; `.channels.*.send()` → `DirectAwaitable<void>` (Tier 3)                                                                                                                          |
+| `ctx.channels.*`                               | `.receive()` → `ChannelReceiveCall<T>` (Tier 2, directly awaitable or select/listen entry); `.receiveNowait()` → `AtomicResult<T \| undefined>` (Tier 3, directly awaitable, NOT a scope entry); `for await...of` |
+| `ctx.streams.*`                                | `.write()` → `AtomicResult<number>` (Tier 3 — directly awaitable)                                                                                                                                                    |
+| `ctx.events.*`                                 | `.set()` → `AtomicResult<void>` (Tier 3 — directly awaitable)                                                                                                                                                        |
+| `ctx.childWorkflows.*`                         | `(options)` → `WorkflowCall<T>` (Tier 1, execute-only); `.startDetached(options)` → `AtomicResult<ForeignWorkflowHandle>` (Tier 3)                                                                                   |
+| `ctx.foreignWorkflows.*`                       | `.get(key)` → `ForeignWorkflowHandle`; `.channels.*.send()` → `AtomicResult<void>` (Tier 3)                                                                                                                          |
 | `ctx.patches.*`                                | `await ctx.patches.name` → `boolean` (Tier 3 — directly awaitable)                                                                                                                                                      |
 | `ctx.scope(name, entries, callback)`           | Structured concurrency boundary → `ScopeCall<R, ...>` (Tier 1) — resolve via `.resolve(ctx)`; `.failure(cb)` receives `ScopeFailureInfo<...>`                                                                          |
 | `ctx.all(entries)`                             | "Run all + collect results" → `ScopeCall<{ ... }, ...>` (Tier 1) — resolve via `.resolve(ctx)`; `.failure(cb)` receives `ScopeFailureInfo<...>`                                                                       |
 | `ctx.first(entries)`                           | "Run concurrently, return first to complete" → `FirstCall<FirstResult<E>, E, ...>` (Tier 1) — resolve via `.resolve(ctx)`; `.failure(cb)` receives `AllBranchesFailedInfo<E, ...>`                                    |
 | `ctx.listen(handles)`                          | Channel-only multiplexing — accepts `ChannelHandle` (streaming) or `ChannelReceiveCall` (one-shot); returns `Listener<M>`, directly iterable                                                                            |
-| `handle.resolve(ctx)`                          | Resolves any Tier 1 `DeterministicAwaitable` (steps, child workflows, scope/all/first results)                                                                                                                           |
+| `handle.resolve(ctx)`                          | Resolves any Tier 1 `DurableHandle` (steps, child workflows, scope/all/first results)                                                                                                                           |
 | `ctx.addCompensation()`                        | Register LIFO compensation callback                                                                                                                                                                                     |
 | `ctx.schedule(cron, { timezone?, resumeAt? })` | Durable cron-like schedule handle                                                                                                                                                                                       |
-| `ctx.sleep(seconds)`                           | `WorkflowAwaitable<void>` (Tier 2 — directly awaitable, valid scope entry)                                                                                                                                              |
-| `ctx.sleepUntil(target)`                       | `WorkflowAwaitable<void>` (Tier 2 — directly awaitable, valid scope entry)                                                                                                                                              |
+| `ctx.sleep(seconds)`                           | `BlockingResult<void>` (Tier 2 — directly awaitable, valid scope entry)                                                                                                                                              |
+| `ctx.sleepUntil(target)`                       | `BlockingResult<void>` (Tier 2 — directly awaitable, valid scope entry)                                                                                                                                              |
 | `ctx.rng.*`                                    | Typed deterministic RNG streams                                                                                                                                                                                         |
 | `ctx.timestamp` / `ctx.date`                   | Deterministic time                                                                                                                                                                                                      |
 | `ctx.logger`                                   | Replay-aware logger                                                                                                                                                                                                     |
@@ -1102,17 +1102,17 @@ Extends `WorkflowContext` with the following additions:
 | Resource                                   | Operations                                                                                                                              |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `ctx.steps.*`                              | `(args)` → `CompensationStepCall<T>` (Tier 1) — chain `.retry()` then resolve via `.resolve(ctx)`; resolves to `CompensationStepResult<T>` |
-| `ctx.channels.*`                           | `.receive()` → `ChannelReceiveCall<T>` (Tier 2); `.receiveNowait()` → `DirectAwaitable<T \| undefined>` (Tier 3)                        |
-| `ctx.streams.*`                            | `.write()` → `DirectAwaitable<number>` (Tier 3)                                                                                         |
-| `ctx.events.*`                             | `.set()` → `DirectAwaitable<void>` (Tier 3)                                                                                             |
+| `ctx.channels.*`                           | `.receive()` → `ChannelReceiveCall<T>` (Tier 2); `.receiveNowait()` → `AtomicResult<T \| undefined>` (Tier 3)                        |
+| `ctx.streams.*`                            | `.write()` → `AtomicResult<number>` (Tier 3)                                                                                         |
+| `ctx.events.*`                             | `.set()` → `AtomicResult<void>` (Tier 3)                                                                                             |
 | `ctx.childWorkflows.*`                     | `(options)` → `CompensationWorkflowCall<T>` (Tier 1) — resolve via `.resolve(ctx)`; resolves to `WorkflowResult<T>`                     |
-| `ctx.foreignWorkflows.*`                   | `.get(key)` → `ForeignWorkflowHandle`; `.channels.*.send()` → `DirectAwaitable<void>` (Tier 3)                                          |
+| `ctx.foreignWorkflows.*`                   | `.get(key)` → `ForeignWorkflowHandle`; `.channels.*.send()` → `AtomicResult<void>` (Tier 3)                                          |
 | `ctx.patches.*`                            | `await ctx.patches.name` → `boolean` (Tier 3)                                                                                           |
 | `ctx.scope(name, entries, callback)`       | Structured concurrency → `ScopeCall<R, ...>` (Tier 1) — resolve via `.resolve(ctx)`; `.failure(cb)` receives `ScopeFailureInfo<...>`     |
 | `ctx.all(entries)`                         | → `ScopeCall<{ ... }, ...>` (Tier 1) — resolve via `.resolve(ctx)`; `.failure(cb)` receives `ScopeFailureInfo<...>`                      |
 | `ctx.first(entries)`                       | → `FirstCall<FirstResult<E>, E, ...>` (Tier 1) — resolve via `.resolve(ctx)`; use `.failure(cb)` for fallback                              |
 | `ctx.listen(handles)`                      | Channel-only multiplexing — same as `WorkflowContext`                                                                                   |
-| `handle.resolve(ctx)`                      | Resolves any Tier 1 `DeterministicAwaitable`                                                                                            |
+| `handle.resolve(ctx)`                      | Resolves any Tier 1 `DurableHandle`                                                                                            |
 | `ctx.sleep()` / `ctx.rng.*`               | Same as WorkflowContext                                                                                                                 |
 | `ctx.logger`                               | Replay-aware logger                                                                                                                     |
 
@@ -1130,7 +1130,7 @@ Extends `CompensationContext` with the following additions:
 
 | Resource      | Operations                                                       |
 | ------------- | ---------------------------------------------------------------- |
-| `.channels.*` | `.send()` → `DirectAwaitable<void>` (Tier 3, directly awaitable) |
+| `.channels.*` | `.send()` → `AtomicResult<void>` (Tier 3, directly awaitable) |
 
 ### External (`engine.workflows.*`)
 
@@ -1272,7 +1272,7 @@ Work in Progress — Public API design complete. Internal implementation pending
 - Type definitions with standard schema support
 - `defineStep()` — flat structure with `execute`, `schema`, `retryPolicy`
 - `defineWorkflow()` with full type safety
-- **Three-tier awaitable hierarchy** — Tier 1 (`DeterministicAwaitable`, execute-only via `.resolve(ctx)`), Tier 2 (`WorkflowAwaitable`, directly awaitable + valid scope entry), Tier 3 (`DirectAwaitable`, directly awaitable, not a scope entry). Enforced at compile time with no runtime overhead.
+- **Three-tier awaitable hierarchy** — Tier 1 (`DurableHandle`, execute-only via `.resolve(ctx)`), Tier 2 (`BlockingResult`, directly awaitable + valid scope entry), Tier 3 (`AtomicResult`, directly awaitable, not a scope entry). Enforced at compile time with no runtime overhead.
 - **`handle.resolve(ctx)` as the primary resolution path for Tier 1** on base contexts; **`ctx.join(handle)` restricted to `BranchHandle` on concurrency contexts** — enforces scope-path lifetime at compile time and prevents execution-root handles from being resolved in `CompensationContext` and vice versa.
 - **Closure-based structured concurrency** via `ctx.scope(name, entries, callback)` — entries are always `(ctx) => Promise<T>` closures; each branch receives a path-specialized context preventing accidental outer-context closure.
 - **Scope path symbol system** — `scopeDivider` and `branchDivider` unique symbols interleaved in `ScopePath` make scope name transitions and branch key transitions structurally unambiguous at both type and runtime level. Collision detection works for literal keys; dynamic (`string`) keys disable the check from that point downward.
@@ -1288,12 +1288,12 @@ Work in Progress — Public API design complete. Internal implementation pending
 - `BaseContext` / `WorkflowContext` / `CompensationContext` hierarchy
 - **CompensationContext with full structured concurrency** — `scope(name, ...)` plus scope-local `select()/match()` and `CompensationStepCall.retry()`
 - **`ctx.childWorkflows.*` / `ctx.foreignWorkflows.*`** split — structured vs message-only access
-- **`.startDetached(opts)` for fire-and-forget child starts** — returns `DirectAwaitable<ForeignWorkflowHandle>` (Tier 3)
+- **`.startDetached(opts)` for fire-and-forget child starts** — returns `AtomicResult<ForeignWorkflowHandle>` (Tier 3)
 - Error observability — `StepExecutionError`, `StepErrorAccessor`, `WorkflowExecutionError`
 - Engine-level handles retain `sigterm()`, `sigkill()`, `execution.wait()`, and `compensation.wait()` with typed terminal outcomes
 - Lifecycle events with "never" semantics (external API)
 - Stream iterators (external API; streams close implicitly on workflow termination)
-- **Patches for safe workflow evolution** — boolean-form only (`await ctx.patches.name`), Tier 3 (`DirectAwaitable<boolean>`)
+- **Patches for safe workflow evolution** — boolean-form only (`await ctx.patches.name`), Tier 3 (`AtomicResult<boolean>`)
 - Typed deterministic RNG (`ctx.rng.*`)
 - `beforeCompensate` / `afterCompensate` / `beforeSettle` lifecycle hooks on workflow definition
 - **`WorkflowHeader` / `defineWorkflowHeader`** — minimal authoring descriptors for circular reference resolution and self-referential workflows

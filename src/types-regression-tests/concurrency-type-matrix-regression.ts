@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineWorkflow } from "../workflow";
 import type {
-  DeterministicAwaitable,
+  DurableHandle,
   FirstResult,
   Listener,
   ListenerEvent,
@@ -35,21 +35,21 @@ type FailureArgOfFirstCall<T> = T extends {
   ? F
   : never;
 
-// Extract the inner type T from DeterministicAwaitable<T> via phantom field inference.
+// Extract the inner type T from DurableHandle<T> via phantom field inference.
 type AwaitedDeterministic<T> =
-  T extends DeterministicAwaitable<infer U> ? U : never;
+  T extends DurableHandle<infer U> ? U : never;
 
-// DeterministicAwaitable is no longer natively awaitable — Awaited<> does NOT unwrap it.
-type _AwaitedDeterministicAwaitable = Awaited<
-  DeterministicAwaitable<"timed_out">
+// DurableHandle is no longer natively awaitable — Awaited<> does NOT unwrap it.
+type _AwaitedDurableHandle = Awaited<
+  DurableHandle<"timed_out">
 >;
 type _AwaitedIsNotUnwrapped = Assert<
-  IsEqual<_AwaitedDeterministicAwaitable, DeterministicAwaitable<"timed_out">>
+  IsEqual<_AwaitedDurableHandle, DurableHandle<"timed_out">>
 >;
 
 // AwaitedDeterministic<> still extracts T correctly via the phantom field.
 type _AwaitedDeterministicExtract = AwaitedDeterministic<
-  DeterministicAwaitable<"timed_out">
+  DurableHandle<"timed_out">
 >;
 type _AwaitedDeterministicNoAny = Assert<
   IsAny<_AwaitedDeterministicExtract> extends false ? true : false
@@ -113,7 +113,7 @@ const CancelMessage = z.object({
  * - ctx.join() is only available on concurrency contexts, not base contexts
  * - ctx.join() accepts BranchHandle, rejects StepCall
  * - scope entries' branchCtx is typed as path-specialized WorkflowContext
- * - scope() on concurrency context returns DeterministicAwaitable (not BranchHandle)
+ * - scope() on concurrency context returns DurableHandle (not BranchHandle)
  * - ctx.listen() available on all contexts; yields { key, message }
  * - ctx.select() only on concurrency contexts
  * - ctx.match(sel) returns AsyncIterable<SelectDataKeyedUnion<M>>
@@ -132,11 +132,11 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
   result: z.object({ ok: z.boolean() }),
 
   async execute(ctx, args) {
-    // WorkflowAwaitable (sleep, sleepUntil) is directly awaitable — no .resolve(ctx) needed.
+    // BlockingResult (sleep, sleepUntil) is directly awaitable — no .resolve(ctx) needed.
     const sleepResult = await ctx.sleep(30);
     type _SleepResultIsVoid = Assert<IsEqual<typeof sleepResult, void>>;
 
-    // .resolve(ctx) resolves a DeterministicAwaitable (step call) to its inner type.
+    // .resolve(ctx) resolves a DurableHandle (step call) to its inner type.
     const stepResult = await ctx.steps.bookFlight(args.destination, args.customerId).resolve(ctx);
     type _StepResultNoAny = Assert<
       IsAny<typeof stepResult> extends false ? true : false
@@ -145,11 +145,11 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
       IsEqual<typeof stepResult, { id: string; price: number }>
     >;
 
-    // Tier-1 (DeterministicAwaitable): no .then() — execute-only.
+    // Tier-1 (DurableHandle): no .then() — execute-only.
     // @ts-expect-error StepCall has no then() method
     ctx.steps.bookFlight(args.destination, args.customerId).then(() => "bad");
 
-    // Tier-2/3: .then() IS available on WorkflowAwaitable and DirectAwaitable.
+    // Tier-2/3: .then() IS available on BlockingResult and AtomicResult.
     ctx.sleep(30).then(() => "ok");
     ctx.channels.cancel.receive().then(() => "ok");
     ctx.channels.cancel.receiveNowait().then(() => "ok");
@@ -168,13 +168,13 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
     >;
     await campaignHandle.channels.nudge.send({ type: "nudge" });
 
-    // receiveNowait() returns DirectAwaitable — directly awaitable, non-blocking.
+    // receiveNowait() returns AtomicResult — directly awaitable, non-blocking.
     const nowaitResult = await ctx.channels.cancel.receiveNowait();
     type _NowaitResultNoAny = Assert<
       IsAny<typeof nowaitResult> extends false ? true : false
     >;
 
-    // Blocking receive is directly awaitable (WorkflowAwaitable).
+    // Blocking receive is directly awaitable (BlockingResult).
     const receiveResult = await ctx.channels.cancel.receive();
     type _ReceiveResultNoAny = Assert<
       IsAny<typeof receiveResult> extends false ? true : false
@@ -352,7 +352,7 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
             branchCtx.steps.bookFlight(args.destination, args.customerId).resolve(branchCtx),
         },
         async (ctx, { timer, booking }) => {
-          // scope() on concurrency context returns DeterministicAwaitable (not BranchHandle)
+          // scope() on concurrency context returns DurableHandle (not BranchHandle)
           const innerScope = ctx.scope(
             "InnerScope",
             {
@@ -360,8 +360,8 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
             },
             async (innerCtx, { inner }) => await innerCtx.join(inner),
           );
-          type _InnerScopeIsDeterministicAwaitable = Assert<
-            typeof innerScope extends DeterministicAwaitable<any, any> ? true : false
+          type _InnerScopeIsDurableHandle = Assert<
+            typeof innerScope extends DurableHandle<any, any> ? true : false
           >;
 
           // ctx.join() works for BranchHandles
@@ -541,24 +541,24 @@ export const concurrencyTypeMatrixRegressionWorkflow = defineWorkflow({
     });
 
     // ==========================================================================
-    // scope() on concurrency context: returns DeterministicAwaitable always
+    // scope() on concurrency context: returns DurableHandle always
     // ==========================================================================
 
     await ctx.scope(
         "ScopeReturnTypeRegression",
         {},
         async (concurrencyCtx) => {
-          // scope() on WorkflowConcurrencyContext returns DeterministicAwaitable
+          // scope() on WorkflowConcurrencyContext returns DurableHandle
           const innerScope = concurrencyCtx.scope(
             "InnerDet",
             {},
             async () => "done" as const,
           );
           type _InnerScopeIsDeterministic = Assert<
-            typeof innerScope extends DeterministicAwaitable<"done", any> ? true : false
+            typeof innerScope extends DurableHandle<"done", any> ? true : false
           >;
           // NOT a BranchHandle (no scopePathBrand)
-          // We just check it's DeterministicAwaitable and not anything we'd
+          // We just check it's DurableHandle and not anything we'd
           // erroneously use as a branch handle directly with ctx.select()
           const result = await innerScope.resolve(concurrencyCtx);
           type _InnerResultIsDone = Assert<IsEqual<typeof result, "done">>;

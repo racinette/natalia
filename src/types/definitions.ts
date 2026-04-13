@@ -1,6 +1,6 @@
 import type { StandardSchemaV1 } from "./standard-schema";
 import type { CompensationContext, WorkflowContext } from "./context";
-import type { DirectAwaitable } from "./context";
+import type { AtomicResult } from "./context";
 import type {
   JsonInput,
   JsonSchemaConstraint,
@@ -85,7 +85,7 @@ export type RngDefinitions = Record<
  * }
  * ```
  */
-export interface PatchAccessor extends DirectAwaitable<boolean> {}
+export interface PatchAccessor extends AtomicResult<boolean> {}
 
 // =============================================================================
 // RETRY POLICY

@@ -119,7 +119,7 @@ export type ExecutionRoot = typeof executionRoot;
 /** @internal Used as the `TRoot` type parameter on compensation-context handles. */
 export type CompensationRoot = typeof compensationRoot;
 
-declare const deterministicAwaitableBrand: unique symbol;
+declare const durableHandleBrand: unique symbol;
 declare const rootScopeBrand: unique symbol;
 declare const phantomValueType: unique symbol;
 
@@ -146,7 +146,7 @@ declare const compensationResolverBrand: unique symbol;
  * Marker interface satisfied by all execution-phase contexts
  * (`WorkflowContext`, `WorkflowConcurrencyContext`).
  *
- * Used as the parameter type for `DeterministicAwaitable<T, ExecutionRoot>.resolve()`,
+ * Used as the parameter type for `DurableHandle<T, ExecutionRoot>.resolve()`,
  * allowing the handle to check that it is being resolved from the correct context
  * without creating a circular import between this file and itself.
  */
@@ -159,24 +159,24 @@ export interface ExecutionResolver {
  * Marker interface satisfied by all compensation-phase contexts
  * (`CompensationContext`, `CompensationConcurrencyContext`).
  *
- * Used as the parameter type for `DeterministicAwaitable<T, CompensationRoot>.resolve()`.
+ * Used as the parameter type for `DurableHandle<T, CompensationRoot>.resolve()`.
  */
 export interface CompensationResolver {
   /** @internal Brand — do not access at runtime. */
   readonly [compensationResolverBrand]: true;
 }
 
-export interface DeterministicAwaitable<
+export interface DurableHandle<
   T,
   TRoot extends RootScope = RootScope,
 > {
   /** @internal Brand discriminator — do not access at runtime. */
-  readonly [deterministicAwaitableBrand]: true;
+  readonly [durableHandleBrand]: true;
   /** @internal Root context discriminator — do not access at runtime. */
   readonly [rootScopeBrand]: TRoot;
   /**
    * @internal Covariant phantom field — allows TypeScript to infer `T` via
-   * `H extends DeterministicAwaitable<infer T, ...>` in conditional types.
+   * `H extends DurableHandle<infer T, ...>` in conditional types.
    * Optional so it never appears in required field checks.
    * Do not access at runtime.
    */
@@ -186,7 +186,7 @@ export interface DeterministicAwaitable<
    * Resolve this handle against its originating context.
    *
    * Replaces the former `ctx.execute(handle)` pattern — instead of passing the handle into the
-   * context, pass the context into the handle. The result is a `DirectAwaitable<T>`
+   * context, pass the context into the handle. The result is an `AtomicResult<T>`
    * which can be directly `await`-ed but is not a native `Promise` and cannot
    * be accidentally passed into `Promise.all` or other JS concurrency primitives.
    *
@@ -208,11 +208,11 @@ export interface DeterministicAwaitable<
    */
   resolve(
     ctx: TRoot extends ExecutionRoot ? ExecutionResolver : CompensationResolver,
-  ): DirectAwaitable<T>;
+  ): AtomicResult<T>;
 }
 
-declare const directAwaitableBrand: unique symbol;
-declare const workflowAwaitableBrand: unique symbol;
+declare const atomicResultBrand: unique symbol;
+declare const blockingResultBrand: unique symbol;
 
 /**
  * Directly awaitable deterministic workflow primitive.
@@ -227,16 +227,16 @@ declare const workflowAwaitableBrand: unique symbol;
  *
  * @typeParam T - The resolved value type.
  */
-export interface DirectAwaitable<T> {
+export interface AtomicResult<T> {
   /** @internal Brand discriminator — do not access at runtime. */
-  readonly [directAwaitableBrand]: true;
+  readonly [atomicResultBrand]: true;
 
   then<TResult = T>(
     onfulfilled?:
       | ((value: T) => TResult | PromiseLike<TResult>)
       | null
       | undefined,
-  ): DirectAwaitable<TResult>;
+  ): AtomicResult<TResult>;
 
   /**
    * Await-compatibility signature used by TypeScript's `Awaited<T>` extraction.
@@ -249,7 +249,7 @@ export interface DirectAwaitable<T> {
 /**
  * Directly awaitable blocking workflow primitive.
  *
- * Extends `DirectAwaitable<T>` with a scope-entry brand, making it valid
+ * Extends `AtomicResult<T>` with a scope-entry brand, making it valid
  * as a `ctx.scope()` / `ctx.all()` entry in addition to being directly
  * awaitable.
  *
@@ -258,9 +258,9 @@ export interface DirectAwaitable<T> {
  *
  * @typeParam T - The resolved value type.
  */
-export interface WorkflowAwaitable<T> extends DirectAwaitable<T> {
+export interface BlockingResult<T> extends AtomicResult<T> {
   /** @internal Brand discriminator — do not access at runtime. */
-  readonly [workflowAwaitableBrand]: true;
+  readonly [blockingResultBrand]: true;
 }
 
 // =============================================================================
@@ -280,7 +280,7 @@ export interface WorkflowAwaitable<T> extends DirectAwaitable<T> {
  * @typeParam T - The resolved value type (may include `undefined` or a default
  *               for timeout overloads).
  */
-export interface ChannelReceiveCall<T> extends WorkflowAwaitable<T> {
+export interface ChannelReceiveCall<T> extends BlockingResult<T> {
   /** @internal Brand discriminator — do not access at runtime. */
   readonly _kind: "channel_receive_call";
 }
@@ -328,10 +328,10 @@ export interface ChannelHandle<T> extends AsyncIterable<T> {
    * Returns `undefined` if no message is available.
    *
    * Use this instead of `receive(0)` to avoid return-type ambiguity when the
-   * timeout value is dynamic. Returns a `DirectAwaitable<T | undefined>` that
+   * timeout value is dynamic. Returns a `AtomicResult<T | undefined>` that
    * cannot be passed as a scope entry (it is atomic/non-blocking).
    */
-  receiveNowait(): DirectAwaitable<T | undefined>;
+  receiveNowait(): AtomicResult<T | undefined>;
 
   /**
    * Non-blocking poll with an explicit default.
@@ -342,7 +342,7 @@ export interface ChannelHandle<T> extends AsyncIterable<T> {
    */
   receiveNowait<TDefault>(
     defaultValue: TDefault,
-  ): DirectAwaitable<T | TDefault>;
+  ): AtomicResult<T | TDefault>;
 
   /**
    * Async iteration over channel messages.
@@ -365,7 +365,7 @@ export interface StreamAccessor<T> {
    * @param data - Record data (z.input type — encoded).
    * @returns The offset at which the record was saved.
    */
-  write(data: T): DirectAwaitable<number>;
+  write(data: T): AtomicResult<number>;
 }
 
 /**
@@ -375,7 +375,7 @@ export interface EventAccessor {
   /**
    * Set the event (idempotent — second call is no-op).
    */
-  set(): DirectAwaitable<void>;
+  set(): AtomicResult<void>;
 }
 
 // =============================================================================
@@ -465,7 +465,7 @@ export type ScopeNameArg<
 /**
  * Rest-parameter constraint for `ctx.join()` scope-path enforcement.
  *
- * - For a plain `DeterministicAwaitable` (no scope path), resolves to `[]` — no path check needed.
+ * - For a plain `DurableHandle` (no scope path), resolves to `[]` — no path check needed.
  * - For a `BranchHandle<T, THandlePath>`, resolves to `[]` when `THandlePath` is a prefix
  *   of the current scope path `TCurrentPath`, or to an error tuple otherwise.
  */
@@ -514,7 +514,7 @@ export interface BranchHandle<
   T,
   TScopePath extends ScopePath = ScopePath,
   TRoot extends RootScope = RootScope,
-> extends DeterministicAwaitable<T, TRoot> {
+> extends DurableHandle<T, TRoot> {
   /** @internal Type-level scope ownership brand. */
   readonly [scopePathBrand]: TScopePath;
 }
@@ -874,7 +874,7 @@ export interface ScheduleHandle extends AsyncIterable<ScheduleTick> {
    * Suspend until the next scheduled tick.
    * Returns immediately if the next scheduled time is already in the past.
    */
-  sleep(): WorkflowAwaitable<ScheduleTick>;
+  sleep(): BlockingResult<ScheduleTick>;
   /**
    * Cancel a pending sleep and stop future iteration.
    */
@@ -928,7 +928,7 @@ export interface StepCall<
   TFail = never,
   HasCompensation extends boolean = false,
   Tctx = unknown,
-> extends DeterministicAwaitable<T | TFail, ExecutionRoot> {
+> extends DurableHandle<T | TFail, ExecutionRoot> {
   /**
    * Register a compensation callback for this step.
    * Runs during LIFO unwinding when the workflow fails.
@@ -974,7 +974,7 @@ export interface StepCall<
  *
  * @typeParam T - Decoded step result type (z.output<Schema>).
  */
-export interface CompensationStepCall<T> extends DeterministicAwaitable<
+export interface CompensationStepCall<T> extends DurableHandle<
   CompensationStepResult<T>,
   CompensationRoot
 > {
@@ -1006,7 +1006,7 @@ export interface ForeignWorkflowHandle<
     [K in keyof TChannels]: {
       send(
         data: StandardSchemaV1.InferInput<TChannels[K]>,
-      ): DirectAwaitable<void>;
+      ): AtomicResult<void>;
     };
   };
 }
@@ -1029,7 +1029,7 @@ export interface WorkflowCallResult<
   TFail = never,
   HasCompensation extends boolean = false,
   Tctx = unknown,
-> extends DeterministicAwaitable<T | TFail, ExecutionRoot> {
+> extends DurableHandle<T | TFail, ExecutionRoot> {
   /**
    * Register a compensation callback for this child workflow invocation.
    * Runs during LIFO unwinding when the parent workflow fails.
@@ -1074,7 +1074,7 @@ export interface WorkflowCall<
   TFail = never,
   HasCompensation extends boolean = false,
   Tctx = unknown,
-> extends DeterministicAwaitable<T | TFail, ExecutionRoot> {
+> extends DurableHandle<T | TFail, ExecutionRoot> {
   /**
    * Register a compensation callback.
    */
@@ -1106,7 +1106,7 @@ export interface ScopeCall<
   TSteps extends StepDefinitions = StepDefinitions,
   TChildWorkflows extends WorkflowDefinitions = WorkflowDefinitions,
   TRoot extends RootScope = RootScope,
-> extends DeterministicAwaitable<T | TFail, TRoot> {
+> extends DurableHandle<T | TFail, TRoot> {
   /**
    * Handle scope/all failure after the scope has fully unwound.
    */
@@ -1122,7 +1122,7 @@ export interface FirstCall<
   TSteps extends StepDefinitions = StepDefinitions,
   TChildWorkflows extends WorkflowDefinitions = WorkflowDefinitions,
   TRoot extends RootScope = RootScope,
-> extends DeterministicAwaitable<T | TFail, TRoot> {
+> extends DurableHandle<T | TFail, TRoot> {
   /**
    * Handle the "all branches failed" case for first().
    */
@@ -1141,7 +1141,7 @@ export interface FirstCall<
  *
  * @typeParam T - Decoded child workflow result type.
  */
-export interface CompensationWorkflowCall<T> extends DeterministicAwaitable<
+export interface CompensationWorkflowCall<T> extends DurableHandle<
   WorkflowResult<T>,
   CompensationRoot
 > {}
@@ -1211,7 +1211,7 @@ export interface ChildWorkflowAccessor<
    */
   startDetached(
     options: DetachedStartOptions<W>,
-  ): DirectAwaitable<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
+  ): AtomicResult<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
 }
 
 /**
@@ -1279,17 +1279,17 @@ export interface LifecycleEventAccessor {
    * Wait for the lifecycle event to be set.
    * Returns "never" if the workflow reached a terminal state without this event firing.
    */
-  wait(): WorkflowAwaitable<EventWaitResultNoTimeout>;
+  wait(): BlockingResult<EventWaitResultNoTimeout>;
 
   /**
    * Wait for the lifecycle event to be set, with a timeout (in seconds).
    */
-  wait(timeoutSeconds: number): WorkflowAwaitable<EventWaitResult>;
+  wait(timeoutSeconds: number): BlockingResult<EventWaitResult>;
 
   /**
    * Check if the lifecycle event is set (non-blocking).
    */
-  get(): DirectAwaitable<EventCheckResult>;
+  get(): AtomicResult<EventCheckResult>;
 }
 
 /**
@@ -1301,17 +1301,17 @@ export interface EventAccessorReadonly {
    * Wait for the event to be set.
    * Returns "never" if the workflow reached a terminal state without setting this event.
    */
-  wait(): WorkflowAwaitable<EventWaitResultNoTimeout>;
+  wait(): BlockingResult<EventWaitResultNoTimeout>;
 
   /**
    * Wait for the event to be set, with a timeout (in seconds).
    */
-  wait(timeoutSeconds: number): WorkflowAwaitable<EventWaitResult>;
+  wait(timeoutSeconds: number): BlockingResult<EventWaitResult>;
 
   /**
    * Check if the event is set (non-blocking).
    */
-  get(): DirectAwaitable<EventCheckResult>;
+  get(): AtomicResult<EventCheckResult>;
 }
 
 /**
@@ -1387,13 +1387,13 @@ export interface BaseContext<
    * Durable sleep.
    * @param seconds - Duration in seconds.
    */
-  sleep(seconds: number): WorkflowAwaitable<void>;
+  sleep(seconds: number): BlockingResult<void>;
 
   /**
    * Durable sleep until a target instant.
    * @param target - Target time as Date or epoch milliseconds.
    */
-  sleepUntil(target: Date | number): WorkflowAwaitable<void>;
+  sleepUntil(target: Date | number): BlockingResult<void>;
 
   /**
    * Deterministic random utilities.
@@ -1500,10 +1500,10 @@ export interface CompensationContext<
    * Use `handle.resolve(ctx)` for lazy (not-yet-running) handles such as steps,
    * child workflows, and `scope()`/`all()`/`first()` results.
    */
-  join<H extends DeterministicAwaitable<any, CompensationRoot>>(
+  join<H extends DurableHandle<any, CompensationRoot>>(
     handle: H,
     ..._check: IsJoinableByPath<H, TScopePath>
-  ): H extends DeterministicAwaitable<infer T, any>
+  ): H extends DurableHandle<infer T, any>
     ? Promise<T>
     : Promise<never>;
 
@@ -1811,10 +1811,10 @@ export interface WorkflowContext<
    * Use `handle.resolve(ctx)` for lazy (not-yet-running) handles such as steps,
    * child workflows, and `scope()`/`all()`/`first()` results.
    */
-  join<H extends DeterministicAwaitable<any, ExecutionRoot>>(
+  join<H extends DurableHandle<any, ExecutionRoot>>(
     handle: H,
     ..._check: IsJoinableByPath<H, TScopePath>
-  ): H extends DeterministicAwaitable<infer T, any>
+  ): H extends DurableHandle<infer T, any>
     ? Promise<T>
     : Promise<never>;
 
@@ -2056,10 +2056,10 @@ export interface WorkflowConcurrencyContext<
    *
    * Use `handle.resolve(ctx)` for lazy (not-yet-running) handles like steps and child workflows.
    */
-  join<H extends DeterministicAwaitable<any, ExecutionRoot>>(
+  join<H extends DurableHandle<any, ExecutionRoot>>(
     handle: H,
     ..._check: IsJoinableByPath<H, TScopePath>
-  ): H extends DeterministicAwaitable<infer T, any>
+  ): H extends DurableHandle<infer T, any>
     ? Promise<T>
     : Promise<never>;
 
@@ -2287,10 +2287,10 @@ export interface CompensationConcurrencyContext<
    *
    * Use `handle.resolve(ctx)` for lazy (not-yet-running) handles.
    */
-  join<H extends DeterministicAwaitable<any, CompensationRoot>>(
+  join<H extends DurableHandle<any, CompensationRoot>>(
     handle: H,
     ..._check: IsJoinableByPath<H, TScopePath>
-  ): H extends DeterministicAwaitable<infer T, any>
+  ): H extends DurableHandle<infer T, any>
     ? Promise<T>
     : Promise<never>;
 
