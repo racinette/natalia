@@ -9,6 +9,9 @@
 19. real cron-like workflows. I feel like outside 
     - see sketch below.
 20. search result completeness.
+21. force the compensation context to explicitly handle `.failure` and `.timeout`. This HAS to be forced before `.resolve` can happen.
+22. `maxConcurrent` for the request handlers.
+23. maybe reintroduce the per-consumer metadata filters. this could save us a lot of writes when consuming messages. however, it seems like these need to be client-side: even though we can reliably pick them from the database by constructing a query, we wouldn't be able to batch multiple consumers into a single query. but maybe we could? by making a `WHERE (${CONSUMER[1]_FILTER}) OR (${CONSUMER[2]_FILTER})` with `JSONB_OBJECT('consumer1', ${CONSUMER[1]_FILTER}, 'consumer2', ${CONSUMER[2]_FILTER}) AS involved_consumers` to route to the actual consumers. Seems like the best balance.
 
 I guess if I do all of this the public API will be feature complete.
 
