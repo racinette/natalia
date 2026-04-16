@@ -1695,6 +1695,7 @@ const unregister = client.registerTopicConsumer(
     await ingestToWarehouse(record, { signal });
   },
   {
+    neverExpire: true,
     filter: (q) => q.and(
       q.meta.tenantId.eq("acme"),
       q.payload.type.eq("booking.confirmed"),
@@ -1725,7 +1726,7 @@ const unregister = client.registerTopicConsumer(
           // event.attempts: AttemptAccessor — inspect error history
           return "skip";
         }
-        if (event.type === "offsetExpired") return "skip";
+        // if (event.type === "offsetExpired") return "skip";  // neverExpire: true, so that event type is not possible
         return "halt";
       },
       retryPolicy: {
@@ -1789,13 +1790,26 @@ Each row comes back with `affected_consumers: { "analyticsConsumer": true, "bill
 - `registration.onRegistered` — called when the consumer successfully acquires the advisory lock and becomes active. Useful for logging, metrics, readiness probes. Purely runtime notification.
 - `registration.onError` — called when a registration attempt fails (e.g., advisory lock conflict). Purely runtime notification.
 
+**`neverExpire` option:**
+
+When `neverExpire: true`, the topic's retention purge will not delete records that this consumer has not yet processed. The consumer's offset is guaranteed to always point to valid records — the `offsetExpired` event can never fire.
+
+This is a per-consumer property, not per-topic. A topic can have both `neverExpire` consumers (that block retention) and normal consumers (that accept offset expiration). Retention purge deletes a record only when the retention period has elapsed AND no `neverExpire` consumer has `last_id < record.id`.
+
+Consequence: a halted or offline `neverExpire` consumer causes unbounded storage growth. Deregistering the consumer (deleting the `topic_consumers` row) releases the hold.
+
+The `onConsumeError` event type is narrowed at the type level based on `neverExpire`:
+
+- `neverExpire: true` → event is only `"attemptsExhausted"`. No `"offsetExpired"` case.
+- `neverExpire: false` or omitted → event is `"attemptsExhausted" | "offsetExpired"`.
+
 **Consume error handling (`onConsumeError`):**
 
-When record processing exhausts its `retryPolicy.maxAttempts` or the consumer's offset has expired, the engine needs a decision: `"skip"` (advance past the record) or `"halt"` (stop consuming). The `onConsumeError` callback makes this decision.
+When record processing exhausts its `retryPolicy.maxAttempts` or (when `neverExpire` is not set) the consumer's offset has expired, the engine needs a decision: `"skip"` (advance past the record) or `"halt"` (stop consuming). The `onConsumeError` callback makes this decision.
 
 - `onConsumeError.callback` — receives `{ signal: AbortSignal }` (fires on consumer shutdown) and an event. Returns `"skip"` or `"halt"`.
   - `event.type === "attemptsExhausted"`: record processing failed after all retry attempts. `event.attempts: AttemptAccessor` provides the error history for informed decisions.
-  - `event.type === "offsetExpired"`: the consumer's offset points to records that have been purged by retention. The consumer must skip ahead.
+  - `event.type === "offsetExpired"` (only when `neverExpire` is not `true`): the consumer's offset points to records that have been purged by retention. The consumer must skip ahead.
 - `onConsumeError.retryPolicy` — runtime-level retry policy (milliseconds, infinite) for when the callback throws. `intervalMs`, `backoffRate`, `maxIntervalMs`. If the callback keeps failing, the consumer halts (safe default — don't silently skip messages).
 
 **Defaults when `onConsumeError` is omitted:**
@@ -1810,6 +1824,81 @@ When record processing exhausts its `retryPolicy.maxAttempts` or the consumer's 
 **If `onConsumeError.callback` exhausts its own retries** (keeps throwing), the consumer halts. This prevents an infinite loop where the decision callback itself is broken.
 
 Consumer identity is enforced via session-level Postgres advisory locks. One active instance per named consumer per topic at a time.
+
+### Batch topic consumer
+
+For bulk processing use cases (warehouse sync, analytics ingestion, batch API calls), a batch consumer processes multiple records per handler invocation. The entire batch is the unit of work — all records succeed or all are retried.
+
+```typescript
+const unregister = client.registerBatchTopicConsumer(
+  auditTopic,
+  "warehouseSync",
+  async ({ signal }, records) => {
+    // records: readonly TopicRecord<TPayload, TMetadata>[] — guaranteed non-empty
+    await bulkInsertToWarehouse(records, { signal });
+  },
+  {
+    batch: {
+      maxRecords: 500,          // required — upper bound per handler invocation (SQL LIMIT)
+      intervalSeconds: 10,      // required — polling frequency
+      minRecords: 50,           // optional — skip tick if fewer available; default 1
+      flushAfterSeconds: 60,    // optional — force-invoke below minRecords after this duration
+    },
+    neverExpire: true,
+    filter: (q) => q.meta.tenantId.eq("acme"),
+    retryPolicy: {
+      timeoutSeconds: 120,
+      maxAttempts: 3,
+      intervalSeconds: 30,
+      backoffRate: 2,
+      maxIntervalSeconds: 300,
+    },
+    registration: { /* same as single-record consumer */ },
+    onConsumeError: {
+      callback: async ({ signal }, event) => {
+        if (event.type === "attemptsExhausted") return "skip"; // skip entire batch
+        // if (event.type === "offsetExpired") return "skip";  // is not an option, since neverExpire: true
+        return "halt";
+      },
+      retryPolicy: { intervalMs: 5000, backoffRate: 2, maxIntervalMs: 60_000 },
+    },
+  },
+);
+```
+
+**`TopicRecord` type:**
+
+```typescript
+interface TopicRecord<TPayload, TMetadata> {
+  readonly id: string;
+  readonly payload: TPayload;   // InferOutput<TPayloadSchema>
+  readonly metadata: TMetadata; // InferOutput<TMetadataSchema>
+}
+```
+
+Both the single-record consumer and the batch consumer receive records of this shape. The single-record handler gets one `TopicRecord`; the batch handler gets `readonly TopicRecord[]`.
+
+**Batch options:**
+
+| Setting | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `maxRecords` | yes | — | Upper bound on batch size. Maps to SQL `LIMIT`. Controls memory and handler timeout budget. |
+| `intervalSeconds` | yes | — | Polling frequency. Every N seconds, query for available records. |
+| `minRecords` | no | `1` | Minimum records to trigger the handler. If fewer are available, skip this tick. |
+| `flushAfterSeconds` | no | `undefined` | Force-invoke even below `minRecords` if this duration has elapsed since the last successful handler invocation. Prevents indefinite stalling on low-throughput topics with a `minRecords` threshold. |
+
+**Polling loop:**
+
+1. Every `intervalSeconds`, query up to `maxRecords` from `topic_records WHERE id > last_id` (with filter if set).
+2. If result count >= `minRecords`, invoke the handler.
+3. If result count < `minRecords` and `flushAfterSeconds` is set and `now - last_invoked_at >= flushAfterSeconds`, invoke the handler anyway.
+4. If result count < `minRecords` and no flush condition, skip this tick.
+5. On handler success, advance `last_id` to the highest record ID in the batch.
+6. On handler failure, record the attempt (with `from_record_id` and `to_record_id`) and schedule retry per `retryPolicy`.
+
+**Retry semantics:**
+
+The entire batch is the unit of retry. If the handler throws, the attempt row records `from_record_id` and `to_record_id` to identify the chunk. The offset does not advance. On retry, the same batch is re-fetched (same ID range). After exhaustion, `onConsumeError` decides for the batch as a whole — `"skip"` advances past `to_record_id`, `"halt"` stops the consumer.
 
 ### Insert ordering guarantee
 
@@ -1841,7 +1930,8 @@ CREATE TABLE topic_consumers (
 CREATE TABLE topic_consumer_attempt (
   id              BIGSERIAL PRIMARY KEY,
   consumer_id     BIGINT NOT NULL REFERENCES topic_consumers(id) ON DELETE CASCADE,
-  record_id       BIGINT NOT NULL REFERENCES topic_records(id) ON DELETE CASCADE,
+  from_record_id  BIGINT NOT NULL REFERENCES topic_records(id) ON DELETE CASCADE,
+  to_record_id    BIGINT NOT NULL REFERENCES topic_records(id) ON DELETE CASCADE,
   attempt         INT NOT NULL,
   error_message   TEXT,
   error_type      TEXT,
@@ -2250,6 +2340,7 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - `StepTimeoutError`, `RequestTimeoutError`, `ChildWorkflowError`, `ChildWorkflowTimeoutError`, `LooseWorkflowError`
 - `StepBoundary`, `MAIN_BRANCH`, `BranchPathItem`, `MANUAL`
 - `Unsubscribe`
+- `TopicRecord`
 - `RegisterTopicConsumerError`, `RegisterTopicConsumerErrorEvent`, `TopicConsumerAlreadyActiveError`, `TopicConsumerConsumeErrorEvent`
 - `ScheduledDeliveryOptions`
 - `IWorkflowConnection`, `IWorkflowTransaction`
@@ -2299,7 +2390,11 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - `RequestCall` gains `.priority(value)` builder method. `requests` table gains `priority INT NOT NULL DEFAULT 0` column.
 - `client.requests.<name>.resolve()`, `.cancel()`, `.list()` — manual resolution client API for requests.
 - `registerQueueHandler` and `registerRequestHandler` gain `maxConcurrent` option for consumer concurrency control.
-- `registerTopicConsumer` gains `filter` option for metadata-based record filtering.
+- `registerTopicConsumer` and `registerBatchTopicConsumer` gain `neverExpire` option — prevents retention from purging records not yet consumed. `onConsumeError` event type is narrowed at compile time: `neverExpire: true` excludes `"offsetExpired"`.
+- `registerTopicConsumer` gains `filter` option for metadata and payload filtering.
+- `registerBatchTopicConsumer` — new batch consumer with `maxRecords`, `intervalSeconds`, `minRecords`, `flushAfterSeconds` options. Entire batch is the unit of retry.
+- `TopicRecord<TPayload, TMetadata>` — shared record type for both single-record and batch consumers.
+- `topic_consumer_attempt.record_id` replaced by `from_record_id` and `to_record_id` (supports both single-record and batch ranges; single-record: both equal).
 - Search query: range comparisons (`gt`/`gte`/`lt`/`lte`) and sorting restricted to homogeneously typed fields (purely `string` or purely `number`). Union types only get equality comparisons.
 
 ### Connection and transaction model
