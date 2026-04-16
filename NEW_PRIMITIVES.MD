@@ -1222,7 +1222,7 @@ const unregister = client.registerQueueHandler(
 unregister();
 ```
 
-The handler receives `{ signal: AbortSignal }` as its first argument. The signal fires after `retryPolicy.timeoutSeconds` per attempt. `maxAttempts` is meaningful for queues: after exhaustion, the message is dead-lettered with `max_attempts`. Failed attempts are written to `queue_message_attempt` — only failures are recorded, successful processing writes the result directly. All retry policy fields are in seconds (durable, persisted to DB).
+The handler receives `{ signal: AbortSignal }` as its first argument. The signal fires after `retryPolicy.timeoutSeconds` per attempt. `maxAttempts` is meaningful for queues: after exhaustion, the message is dead-lettered with `max_attempts`. Failed attempts are written to `queue_message_attempt` — only failures are recorded, successful processing writes the result directly. All retry policy fields are in seconds (durable, persisted to DB). Throwing `UnrecoverableError` dead-letters the message immediately, bypassing remaining retry attempts (see Part 15b).
 
 `maxConcurrent` controls the maximum number of messages this consumer instance handles concurrently. When omitted (`undefined`), there is no limit — the consumer claims messages as fast as they arrive. When set, the consumer claims at most `maxConcurrent` messages at a time and waits for a slot to open before claiming the next. This prevents overwhelming downstream services and controls resource usage per consumer instance.
 
@@ -1317,6 +1317,83 @@ FOR UPDATE SKIP LOCKED;
 ### Purpose
 
 A global typed request-response primitive. A workflow posts a typed request and blocks until a registered handler returns a typed response. The workflow does not know who handles the request.
+
+### Use cases
+
+The request primitive is distinct from steps: steps perform an action and return a result (the workflow controls the logic), while requests are passive waiters for an external entity to fulfill a need (the workflow doesn't know or care how). This creates four distinct handler configurations, each serving a different real-world pattern:
+
+**1. Handler is the sole resolver**
+
+The handler always resolves the request programmatically. No fallback, no manual mode. The handler is effectively "the service" — it receives work and returns results. Unlike a step, the logic lives on the worker side (separately deployed, independently versioned), and multiple workflows share the same handler.
+
+*Use case:* An ML scoring service. Workflows submit data for scoring, a handler runs the model and returns predictions. The workflow doesn't embed ML logic — it delegates to the handler.
+
+```typescript
+client.registerRequestHandler(mlScoring, async ({ signal }, request) => {
+  return await runModel(request.features, { signal });
+}, {
+  retryPolicy: { timeoutSeconds: 30, maxAttempts: 5, intervalSeconds: 2 },
+  // No onExhausted — handler must resolve or the request stays pending.
+});
+```
+
+**2. Handler resolves, with manual fallback on exhaustion**
+
+The handler tries to resolve programmatically. If all attempts fail, the system transitions to manual mode — a human or external process completes the work. The handler is the optimistic fast path; manual resolution is the safety net.
+
+*Use case:* A hotel reservation system. The handler searches for availability, but if no hotel matches after retries (inventory changes, API downtime), an operations team manually finds and books a room.
+
+```typescript
+client.registerRequestHandler(reserveHotel, async ({ signal }, request) => {
+  const hotel = await searchAvailability(request, { signal });
+  if (hotel) return { hotelId: hotel.id, confirmation: hotel.ref };
+  throw new Error("No availability");
+}, {
+  retryPolicy: { timeoutSeconds: 10, maxAttempts: 3, intervalSeconds: 5 },
+  onExhausted: {
+    callback: async ({ signal }, request) => {
+      await notifyOpsTeam(request, { signal });
+      return MANUAL;
+    },
+    retryPolicy: { intervalMs: 5000, backoffRate: 1.5, maxIntervalMs: 60_000 },
+  },
+});
+```
+
+**3. Check-or-wait (handler returns `MANUAL` directly)**
+
+The handler checks whether an external condition has already been met. If yes, it resolves immediately. If not, it returns `MANUAL` — signaling that the answer will arrive from outside (a webhook, a user action, a third-party callback). The handler doesn't retry blindly; it makes an informed decision on each attempt.
+
+*Use case:* Payment confirmation. A workflow requests confirmation that a bank transfer has landed. The handler polls the bank API — if the transfer is confirmed, it resolves. If not, it returns `MANUAL`, and a webhook from the bank later calls `client.requests.paymentConfirmation.resolve()`.
+
+```typescript
+client.registerRequestHandler(paymentConfirmation, async ({ signal }, request) => {
+  const status = await checkPaymentStatus(request.paymentId, { signal });
+  if (status.confirmed) {
+    return { confirmed: true, transactionId: status.txId };
+  }
+  // Not yet — stop retrying, wait for webhook
+  return MANUAL;
+}, {
+  retryPolicy: { timeoutSeconds: 10, maxAttempts: 3, intervalSeconds: 10 },
+});
+```
+
+The distinction from pattern 2: here the handler *decides* to stop on each attempt (returns `MANUAL`), rather than being forced to stop after exhaustion. Throwing an error still retries — the handler uses `throw` for transient failures (bank API unreachable) and `return MANUAL` for definitive "not yet" determinations.
+
+**4. Full external resolution (no handler)**
+
+No handler is registered. The request sits in the database until an external actor resolves it via `client.requests.<name>.resolve()`. The workflow is purely passive.
+
+*Use case:* Human-in-the-loop approval. A compliance workflow creates a review request. A dashboard displays pending requests. A compliance officer reviews the data and clicks "approve" or "reject," which calls the client API.
+
+```typescript
+// No handler registered — resolution comes from the dashboard
+const decision = await ctx.requests
+  .complianceReview({ orderId, riskScore, flaggedRules })
+  .timeout(86400 * 7, () => ({ decision: "auto-reject" as const, note: "Review timed out" }))
+  .resolve(ctx);
+```
 
 ### Definition
 
@@ -1442,7 +1519,14 @@ Failed handler attempts are written to the `request_attempt` table. Only failure
 declare const MANUAL: unique symbol;
 ```
 
-A module-level export. Returned from `onExhausted` to signal that the request should transition to manual mode.
+A module-level export. Can be returned from two places:
+
+1. **From the handler itself** — the handler checked the external system and determined the result isn't available yet. Retrying won't help — the resolution will come from outside. The engine stops invoking the handler and transitions the request to `status = 'manual'`. This is a non-exceptional outcome: the handler successfully determined that it can't resolve the request.
+2. **From `onExhausted`** — the handler exhausted its retry budget. The fallback decision is to wait for external resolution.
+
+In both cases, the request transitions to manual mode and waits for `client.requests.<name>.resolve()`.
+
+The handler return type is `TResponse | typeof MANUAL`.
 
 ### Client registration API
 
@@ -1479,6 +1563,38 @@ const unregister = client.registerRequestHandler(
   },
 );
 ```
+
+**Example: check-or-wait (handler returns `MANUAL` directly)**
+
+```typescript
+const unregister = client.registerRequestHandler(
+  paymentConfirmation,
+  async ({ signal }, request) => {
+    // Check if the payment has already been confirmed externally
+    const status = await checkPaymentStatus(request.paymentId, { signal });
+    if (status.confirmed) {
+      return { confirmed: true, transactionId: status.txId };
+    }
+    // Not confirmed yet — stop trying, wait for webhook to resolve via client API
+    return MANUAL;
+  },
+  {
+    retryPolicy: {
+      timeoutSeconds: 10,
+      maxAttempts: 3,
+      intervalSeconds: 5,
+    },
+    // No onExhausted needed — the handler itself transitions to manual
+    // when it determines the result isn't available yet.
+    // If the handler throws (e.g., network error), it retries normally.
+    // If it returns MANUAL, retries stop immediately.
+  },
+);
+```
+
+The distinction between throwing and returning `MANUAL` is important:
+- **Throw** → transient failure, retry. The external system might be temporarily unreachable.
+- **Return `MANUAL`** → definitive determination. The handler successfully checked and the result isn't available yet. Retrying won't change that.
 
 **Example: try once, default to manual (event-driven resolution)**
 
@@ -2097,6 +2213,62 @@ interface AttemptAccessor {
 
 ---
 
+## Part 15b: Handler Early Termination
+
+### `MANUAL` return from request handlers
+
+Request handlers can return the `MANUAL` sentinel directly (in addition to `onExhausted` returning it). This enables the "check-or-wait" pattern: the handler checks an external system, resolves the request if the condition is met, or returns `MANUAL` to transition to manual mode immediately — without exhausting retry attempts.
+
+- **Return `TResponse`** → request resolved. Workflow unblocks.
+- **Return `MANUAL`** → stop retrying, transition to `status = 'manual'`. Wait for external resolution via `client.requests.<name>.resolve()`.
+- **Throw** → transient failure, retry per `retryPolicy`.
+
+Handler return type: `TResponse | typeof MANUAL`.
+
+### `UnrecoverableError` for queue and topic handlers
+
+A throwable `Error` subclass that signals the engine to skip retries and proceed directly to the exhaustion path. Used when the handler determines that retrying will not produce a different outcome — the input itself is the problem, not the handler or its dependencies.
+
+```typescript
+class UnrecoverableError extends Error {
+  constructor(message?: string);
+}
+```
+
+**Queue handlers:** throwing `UnrecoverableError` dead-letters the message immediately, bypassing remaining retry attempts. The attempt is recorded normally in `queue_message_attempt`.
+
+**Topic consumers (single-record and batch):** throwing `UnrecoverableError` triggers `onConsumeError` with `event.type === "attemptsExhausted"` immediately, bypassing remaining retry attempts. The attempt is recorded normally in `topic_consumer_attempt`. The `onConsumeError` callback then decides: `"skip"` or `"halt"`.
+
+```typescript
+// Queue handler — dead-letter a malformed message immediately
+client.registerQueueHandler(notificationsQueue, async ({ signal }, message) => {
+  if (!isValidPayload(message)) {
+    throw new UnrecoverableError("Malformed payload, retrying will not help");
+  }
+  await sendEmail(message.userId, message.body, { signal });
+}, { retryPolicy: { ... } });
+
+// Topic consumer — skip an unprocessable record immediately
+client.registerTopicConsumer(auditTopic, "analyticsConsumer", async ({ signal }, record) => {
+  if (!isSupportedEventType(record.payload.type)) {
+    throw new UnrecoverableError(`Unsupported event type: ${record.payload.type}`);
+  }
+  await ingestToWarehouse(record, { signal });
+}, { retryPolicy: { ... } });
+```
+
+**Distinction from regular exceptions:**
+
+| Thrown value | Queue behavior | Topic behavior |
+| --- | --- | --- |
+| Regular `Error` | Retry per `retryPolicy` | Retry per `retryPolicy` |
+| `UnrecoverableError` | Dead-letter immediately | `onConsumeError("attemptsExhausted")` immediately |
+| `AttemptError` | Retry per `retryPolicy` (structured details persisted) | Retry per `retryPolicy` (structured details persisted) |
+
+`UnrecoverableError` is NOT applicable to request handlers — use `return MANUAL` instead. Requests have a fundamentally different exhaustion semantic (manual mode vs dead-letter).
+
+---
+
 ## Part 16: Scheduled Delivery
 
 ### `ScheduledDeliveryOptions` type
@@ -2338,7 +2510,7 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - `RequestCompensationResult`, `RequestResolveResult`, `RequestCancelResult`, `RequestListItem`, `RequestListResult`, `AttemptAccessor`, `Attempt`, `AttemptError`
 - `WorkflowError`, `WorkflowErrorValue`, `WorkflowFailureInfo`
 - `StepTimeoutError`, `RequestTimeoutError`, `ChildWorkflowError`, `ChildWorkflowTimeoutError`, `LooseWorkflowError`
-- `StepBoundary`, `MAIN_BRANCH`, `BranchPathItem`, `MANUAL`
+- `StepBoundary`, `MAIN_BRANCH`, `BranchPathItem`, `MANUAL`, `UnrecoverableError`
 - `Unsubscribe`
 - `TopicRecord`
 - `RegisterTopicConsumerError`, `RegisterTopicConsumerErrorEvent`, `TopicConsumerAlreadyActiveError`, `TopicConsumerConsumeErrorEvent`
@@ -2396,6 +2568,8 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - `TopicRecord<TPayload, TMetadata>` — shared record type for both single-record and batch consumers.
 - `topic_consumer_attempt.record_id` replaced by `from_record_id` and `to_record_id` (supports both single-record and batch ranges; single-record: both equal).
 - Search query: range comparisons (`gt`/`gte`/`lt`/`lte`) and sorting restricted to homogeneously typed fields (purely `string` or purely `number`). Union types only get equality comparisons.
+- Request handler return type is now `TResponse | typeof MANUAL`. Returning `MANUAL` from the handler transitions the request to manual mode immediately without exhausting retries.
+- `UnrecoverableError` — new throwable for queue and topic handlers. Bypasses remaining retry attempts: dead-letters (queues) or triggers `onConsumeError("attemptsExhausted")` (topics) immediately.
 
 ### Connection and transaction model
 
