@@ -453,6 +453,79 @@ Constructing `WorkflowError` directly is not supported — the `ctx.errors` fact
 - **`throw new Error("Cannot read property of undefined")`** → the workflow **halts**. This is an accidental exception. The engine records a halt and pauses execution.
 - **`throw new WorkflowError(...)`** (constructed directly, not via `ctx.errors`) → the workflow **halts**. The `errorCode` does not match a declared error — treated as undeclared/accidental.
 
+### Compensation error model
+
+The compensation VEL has its own error map, declared separately from the execution error map:
+
+```typescript
+defineWorkflow({
+  errors: {
+    OrderInvalid: z.object({ orderId: z.string() }),
+    InsufficientFunds: z.object({ amount: z.number(), balance: z.number() }),
+  },
+  compensation: {
+    errors: {
+      RefundFailed: z.object({ chargeId: z.string(), reason: z.string() }),
+    },
+  },
+  // ...
+});
+```
+
+Inside compensation callbacks, `ctx.errors` exposes the compensation error factories — not the execution error factories:
+
+```typescript
+.compensate("cancel-booking", async (ctx, result) => {
+  const refundResult = await ctx.steps.refund({ chargeId: result.data.chargeId }).resolve(ctx);
+  if (!refundResult.ok) {
+    // Declared compensation error — compensation FAILS (stops)
+    throw ctx.errors.RefundFailed("Refund could not be processed", {
+      chargeId: result.data.chargeId,
+      reason: refundResult.reason,
+    });
+  }
+})
+```
+
+**Compensation error semantics — the key asymmetry with execution errors:**
+
+The compensation VEL is strictly more resilient than the execution VEL. Nothing except an explicitly declared compensation error can fail the compensation block. The following are **not** failure conditions in compensation:
+
+| Event | Execution VEL behavior | Compensation VEL behavior |
+| --- | --- | --- |
+| Declared `ctx.errors.X(...)` thrown | Workflow fails → compensation runs | Compensation fails (stops) |
+| Undeclared exception | Workflow halts | Compensation halts |
+| Step timeout | Caught via `.timeout()` — or fails workflow | Caught via `.timeout()` — handled inline |
+| Child workflow failure | Propagated — may fail workflow | Handled inline — never fails compensation |
+| Request timeout | Caught via `.timeout()` — or fails workflow | Caught via `.timeout()` — handled inline |
+
+The rationale: compensation is cleanup. Step timeouts, child workflow failures, and request timeouts are *expected* conditions during cleanup — the systems you're trying to undo may be partially degraded. These are handled by the retry policy and timeout callbacks, not by failing the compensation block. Only when the developer explicitly determines that compensation cannot proceed (throws a declared error) does the compensation stop.
+
+**When `compensation.errors` is omitted (the common case):**
+
+`ctx.errors` on the compensation context has no factories. There is no way to fail compensation — only halt. This is the correct default for most workflows: compensation should be written to be as robust as possible, and there's no anticipated "compensation can't proceed" scenario.
+
+**`CompensationFailureInfo`:**
+
+When compensation fails via a declared error, the failure is surfaced through the external handle:
+
+```typescript
+type CompensationFailureInfo<TCompensationErrors> = {
+  [K in keyof TCompensationErrors & string]: {
+    readonly type: "CompensationError";
+    readonly errorCode: K;
+    readonly message: string;
+    readonly details: TCompensationErrors[K] extends true
+      ? undefined
+      : InferOutput<TCompensationErrors[K]>;
+  };
+}[keyof TCompensationErrors & string];
+```
+
+This is a distributive mapped type — the same pattern as `WorkflowErrorValue`. Each declared compensation error becomes a variant in the union, with `errorCode` narrowed to the literal key and `details` typed from the schema. The caller discriminates on `errorCode` to get typed access to `details`.
+
+Observable via `handle.compensation.wait()` — returns the compensation terminal state including failure info if compensation failed.
+
 ### External error types
 
 At the external caller level, errors are plain JSON values — no class instances, no prototype chains, no `instanceof` checks. All error variants share a common `type` discriminant field and a `scopePath` field:
@@ -801,6 +874,7 @@ Split all shared primitives between the two VELs. Each VEL gets its own dedicate
 | `ctx.events`     | Execution events     | Compensation events                        |
 | `ctx.attributes` | Execution attributes | Compensation attributes                    |
 | `ctx.rng`        | Execution RNG        | Compensation RNG (separate seed)           |
+| `ctx.errors`     | From `errors`        | From `compensation.errors`                 |
 
 This is a hard split. The execution VEL cannot read from or write to compensation channels, and vice versa. External callers target specific channels when sending messages.
 
@@ -2432,6 +2506,9 @@ defineWorkflow({
   topics:                { [name: string]: TopicDefinition<R, Meta> },
   attributes:            { [name: string]: JsonSchemaConstraint },
   errors:                { [name: string]: JsonSchemaConstraint | true },
+  compensation: {
+    errors:              { [name: string]: JsonSchemaConstraint | true },  // optional
+  },
   idempotencyKeyFactory: (args: InferOutput<TArgs>) => string,  // optional
 });
 ```
@@ -2508,7 +2585,7 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - `SearchQueryNode`, `SearchQuery`
 - `DeadLetterRecordFields`, `DeadLetterSort`, `DeadLetterCursor`, `DeadLetteredMessage`, `DeadLetterHandle`
 - `RequestCompensationResult`, `RequestResolveResult`, `RequestCancelResult`, `RequestListItem`, `RequestListResult`, `AttemptAccessor`, `Attempt`, `AttemptError`
-- `WorkflowError`, `WorkflowErrorValue`, `WorkflowFailureInfo`
+- `WorkflowError`, `WorkflowErrorValue`, `WorkflowFailureInfo`, `CompensationFailureInfo`
 - `StepTimeoutError`, `RequestTimeoutError`, `ChildWorkflowError`, `ChildWorkflowTimeoutError`, `LooseWorkflowError`
 - `StepBoundary`, `MAIN_BRANCH`, `BranchPathItem`, `MANUAL`, `UnrecoverableError`
 - `Unsubscribe`
@@ -2570,6 +2647,8 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - Search query: range comparisons (`gt`/`gte`/`lt`/`lte`) and sorting restricted to homogeneously typed fields (purely `string` or purely `number`). Union types only get equality comparisons.
 - Request handler return type is now `TResponse | typeof MANUAL`. Returning `MANUAL` from the handler transitions the request to manual mode immediately without exhausting retries.
 - `UnrecoverableError` — new throwable for queue and topic handlers. Bypasses remaining retry attempts: dead-letters (queues) or triggers `onConsumeError("attemptsExhausted")` (topics) immediately.
+- `defineWorkflow` gains `compensation.errors` — separate error map for the compensation VEL. `ctx.errors` in compensation context is populated from `compensation.errors`, not `errors`. Only declared compensation errors can fail compensation; all other exceptions halt.
+- `CompensationFailureInfo` — new type for observing compensation failure via `handle.compensation.wait()`.
 
 ### Connection and transaction model
 
