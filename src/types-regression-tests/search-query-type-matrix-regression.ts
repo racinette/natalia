@@ -194,11 +194,21 @@ export async function searchQueryTypeMatrixRegression(): Promise<void> {
     sort: [
       { namespace: "engine", path: "createdAt", direction: "desc" },
       { namespace: "meta", path: "riskScore", direction: "asc" },
-      // positive regression: non-scalar metadata sort path is allowed
-      { namespace: "meta", path: "tenant.flags", direction: "desc" },
     ],
     limit: 50,
   });
+
+  const invalidMetaSortArrayPath: WorkflowSearchQuery<SearchTypeMatrixQueryMetadata> =
+    {
+      sort: [
+        {
+          namespace: "meta",
+          // @ts-expect-error non-comparable metadata path (array) is not sortable
+          path: "tenant.flags",
+          direction: "desc",
+        },
+      ],
+    };
 
   type _ObjectResultNoAny = Assert<
     IsAny<typeof objectQueryResult> extends false ? true : false
@@ -287,6 +297,7 @@ export async function searchQueryTypeMatrixRegression(): Promise<void> {
   void invalidMetaEqValueType;
   void invalidSortDirection;
   void invalidMetaSortPath;
+  void invalidMetaSortArrayPath;
 
   // ---------------------------------------------------------------------------
   // Builder overload: valid usages
@@ -305,7 +316,7 @@ export async function searchQueryTypeMatrixRegression(): Promise<void> {
       sort: [
         { namespace: "engine", path: "createdAt", direction: "desc" },
         { namespace: "meta", path: "riskScore", direction: "asc" },
-        // positive regression: non-scalar metadata sort path is allowed
+        // @ts-expect-error non-comparable metadata path (object) is not sortable
         { namespace: "meta", path: "tenant", direction: "asc" },
       ],
       limit: 20,
@@ -363,7 +374,7 @@ export async function searchQueryTypeMatrixRegression(): Promise<void> {
         q.meta.present.status.eq(1),
         q.meta.present.status.eq("shipping"),
         q.meta.present.status.in([1, 2, "delivered", undefined]),
-        // range exists because status has comparable branches (string|number)
+        // @ts-expect-error status is string|number union — range comparisons rejected
         q.meta.present.status.gte(2),
         // scalar capability on present itself because one branch is number
         q.meta.present.gt(10),
@@ -405,7 +416,9 @@ export async function searchQueryTypeMatrixRegression(): Promise<void> {
         q.meta.deep.a.b.c.d.eq("delivered"),
         q.meta.deep.a.b.c.d.eq(undefined),
         q.meta.deep.a.b.c.d.in([1, "x", undefined]),
+        // @ts-expect-error d is string|number union — range comparisons rejected
         q.meta.deep.a.b.c.d.gte(0),
+        // @ts-expect-error d is string|number union — range comparisons rejected
         q.meta.deep.a.b.c.d.gte("a"),
         // b is union(object | number | undefined), so it should support both
         // object descent and scalar range operations.

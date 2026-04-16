@@ -1077,7 +1077,7 @@ Multiple pending halts per workflow are allowed. Each represents a replay attemp
 
 ### Goal
 
-The existing `src/types/search-query.ts` implements a typed query AST parameterized over two hardcoded namespaces: `engine` and `meta`. Generalizing it enables reuse for topic metadata filters, dead-letter payload filters, and any future query surfaces.
+The existing `src/types/search-query.ts` implements a typed query AST parameterized over two hardcoded namespaces: `engine` and `meta`. Generalizing it enables reuse for topic consumer metadata filters, dead-letter payload filters, and any future query surfaces.
 
 ### Task
 
@@ -1095,6 +1095,31 @@ type WorkflowSearchQueryBuilder<TMeta extends SearchMetadataRecord> =
 The `SearchQuery<TNamespaces>` builder exposes one sub-builder per namespace key, each using the existing predicate machinery (`eq`, `ne`, `in`, `notIn`, `gt`, `gte`, `lt`, `lte`, `exists`, `contains`, `containsAny`, `containsAll`) typed to that namespace's field record. The `and`, `or`, `not` combinators remain top-level.
 
 Existing aliases are kept so no call sites break.
+
+### Range comparison restriction for union types
+
+Range comparisons (`gt`, `gte`, `lt`, `lte`) and sorting are now restricted to fields where the non-null/non-undefined value resolves to purely `string` or purely `number` — not a union of both, and not a union with non-comparable types.
+
+**Rationale:** Postgres JSONB has a total ordering across types (`null < boolean < number < string < array < object`), but this ordering is opaque and backend-specific. "Is `[1,2,3]` greater than `{"a": 1}`?" is answerable in Postgres but not meaningfully answerable in client-side filtering or in other storage backends. Restricting range comparisons to homogeneously typed fields ensures:
+
+1. **Client-side filterability** — queries can be evaluated in-process with trivial JavaScript comparisons.
+2. **Storage portability** — no dependency on Postgres's JSONB type ordering semantics.
+3. **Developer clarity** — `field.gt(42)` on a field that might hold a string is confusing, regardless of what the database does.
+
+Equality comparisons (`eq`, `ne`, `in`, `notIn`) remain available for all scalar types including unions — equality is universally well-defined.
+
+**Sorting** follows the same rule: only fields with a homogeneous comparable type can appear in `sort` clauses. `MetaSortablePath` is now `MetaComparablePath` (was `MetaAnyPath`).
+
+| Field type | Equality (`eq`/`ne`/`in`/`notIn`) | Range (`gt`/`gte`/`lt`/`lte`) | Sort |
+| --- | --- | --- | --- |
+| `string` | yes | yes | yes |
+| `number` | yes | yes | yes |
+| `boolean` | yes | no | no |
+| `null` | yes | no | no |
+| `string \| null` | yes | no | no |
+| `string \| number` | yes | no | no |
+| `string \| object` | yes | no | no |
+| `readonly string[]` | `contains`/`containsAny`/`containsAll` | no | no |
 
 ---
 
@@ -1431,6 +1456,7 @@ const unregister = client.registerRequestHandler(
     return { decision, note: "reviewed" };
   },
   {
+    maxConcurrent: 5,
     retryPolicy: {
       timeoutSeconds: 60,
       maxAttempts: 3,
@@ -1666,10 +1692,13 @@ const unregister = client.registerTopicConsumer(
   auditTopic,
   "analyticsConsumer",
   async ({ signal }, record) => {
-    if (record.metadata?.tenantId !== "acme") return;
     await ingestToWarehouse(record, { signal });
   },
   {
+    filter: (q) => q.and(
+      q.meta.tenantId.eq("acme"),
+      q.payload.type.eq("booking.confirmed"),
+    ),
     retryPolicy: {
       timeoutSeconds: 10,
       maxAttempts: 5,
@@ -1712,6 +1741,47 @@ const unregister = client.registerTopicConsumer(
 **Consumer handler:**
 
 The consumer callback receives `{ signal: AbortSignal }` as its first argument. The signal fires after `retryPolicy.timeoutSeconds` per attempt. Failed attempts are written to a `topic_consumer_attempt` table (FK on consumer + record) — only failures are recorded, successful processing advances the offset. All retry policy fields are in seconds (durable, persisted to DB).
+
+**Metadata filter (`filter`):**
+
+Optional. A predicate builder callback that receives a `SearchQuery<{ meta: TMetadata; payload: TPayload }>` builder with namespaces for both the topic's metadata and payload schemas. Only records matching the filter are delivered to the handler — non-matching records are skipped (offset advances past them without invoking the handler).
+
+```typescript
+filter: (q) => q.meta.tenantId.eq("acme")
+filter: (q) => q.and(q.meta.type.eq("booking.confirmed"), q.payload.amount.gte(100))
+filter: (q) => q.or(q.payload.type.eq("booking.confirmed"), q.payload.type.eq("booking.cancelled"))
+```
+
+Both namespaces map directly to their JSONB columns in the `topic_records` table (`metadata` and `payload` respectively). The same restricted predicate system applies — equality-only for union types, range comparisons only for homogeneously typed fields.
+
+**Execution strategy:** the engine batches multiple consumers for the same topic into a single query, fetching all potentially relevant records in one round-trip and routing them to the correct consumers client-side. The `affected_consumers` column uses each consumer's filter as a boolean expression inside `jsonb_build_object`, so the engine knows exactly which consumers need each record without re-evaluating the filters in application code.
+
+```sql
+-- Two consumers on the same topic, each with their own filter and offset:
+--   analyticsConsumer: metadata tenantId = 'acme' AND payload type = 'booking.confirmed', last_id = 1042
+--   billingConsumer:   metadata type = 'payment',                                        last_id = 1098
+
+SELECT
+  id,
+  payload,
+  metadata,
+  jsonb_build_object(
+    'analyticsConsumer', (metadata->>'tenantId' = 'acme' AND payload->>'type' = 'booking.confirmed'),
+    'billingConsumer',   (metadata->>'type' = 'payment')
+  ) AS affected_consumers
+FROM topic_records
+WHERE topic_name = 'auditEvents'
+  AND id > 1042                           -- min(last_id) across all batched consumers
+  AND (
+    (id > 1042 AND metadata->>'tenantId' = 'acme' AND payload->>'type' = 'booking.confirmed')
+    OR
+    (id > 1098 AND metadata->>'type' = 'payment')
+  )
+ORDER BY id ASC
+LIMIT 100;
+```
+
+Each row comes back with `affected_consumers: { "analyticsConsumer": true, "billingConsumer": false }` (or both true for overlapping matches). The engine dispatches accordingly. Since filters use the restricted predicate system (equality-only for union types), client-side fallback evaluation is trivially correct — no Postgres-specific ordering semantics leak into the routing logic.
 
 **Registration options (`registration`):**
 
@@ -2229,6 +2299,8 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - `RequestCall` gains `.priority(value)` builder method. `requests` table gains `priority INT NOT NULL DEFAULT 0` column.
 - `client.requests.<name>.resolve()`, `.cancel()`, `.list()` — manual resolution client API for requests.
 - `registerQueueHandler` and `registerRequestHandler` gain `maxConcurrent` option for consumer concurrency control.
+- `registerTopicConsumer` gains `filter` option for metadata-based record filtering.
+- Search query: range comparisons (`gt`/`gte`/`lt`/`lte`) and sorting restricted to homogeneously typed fields (purely `string` or purely `number`). Union types only get equality comparisons.
 
 ### Connection and transaction model
 

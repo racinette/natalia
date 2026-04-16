@@ -105,10 +105,24 @@ type MetaScalarBranchAtPath<
   P extends MetaAnyPath<T>,
 > = Extract<MetaPathValue<T, P>, SearchMetadataScalar | undefined>;
 
+/**
+ * Comparable branch at a path — only admits the path if the non-null/undefined
+ * value resolves to purely `string` or purely `number`, not a union of both.
+ * This ensures range comparisons (gt/gte/lt/lte) are only available when
+ * ordering is unambiguous and client-side filterable.
+ */
 type MetaComparableBranchAtPath<
   T extends SearchMetadataRecord,
   P extends MetaAnyPath<T>,
-> = Extract<MetaPathValue<T, P>, string | number>;
+> = Extract<MetaPathValue<T, P>, string | number> extends infer C
+  ? [C] extends [never]
+    ? never
+    : [C] extends [string]
+      ? string
+      : [C] extends [number]
+        ? number
+        : never // string | number union → no range comparisons
+  : never;
 
 type MetaArrayElementBranchAtPath<
   T extends SearchMetadataRecord,
@@ -137,7 +151,11 @@ type MetaArrayPath<T extends SearchMetadataRecord> = {
     : P;
 }[MetaAnyPath<T>];
 
-type MetaSortablePath<T extends SearchMetadataRecord> = MetaAnyPath<T>;
+/**
+ * Sortable paths — only paths where the comparable value is purely `string` or
+ * purely `number`. Sorting requires unambiguous ordering, same as range comparisons.
+ */
+type MetaSortablePath<T extends SearchMetadataRecord> = MetaComparablePath<T>;
 
 type MetaObjectValueAtKey<
   TValue,
@@ -149,7 +167,20 @@ type MetaScalarCapabilityValue<TValue> = Extract<
   SearchMetadataScalar | undefined
 >;
 
-type MetaComparableCapabilityValue<TValue> = Extract<TValue, string | number>;
+/**
+ * Comparable capability value — only resolves to `string` or `number` when the
+ * extractable comparable branch is purely one type. Rejects `string | number`
+ * unions to prevent ambiguous range comparisons.
+ */
+type MetaComparableCapabilityValue<TValue> = Extract<TValue, string | number> extends infer C
+  ? [C] extends [never]
+    ? never
+    : [C] extends [string]
+      ? string
+      : [C] extends [number]
+        ? number
+        : never
+  : never;
 
 type MetaArrayCapabilityElement<TValue> = TValue extends unknown
   ? TValue extends readonly (infer E)[]

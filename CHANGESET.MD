@@ -9,9 +9,13 @@
 19. real cron-like workflows. I feel like outside 
     - see sketch below.
 20. search result completeness.
-21. force the compensation context to explicitly handle `.failure` and `.timeout`. This HAS to be forced before `.resolve` can happen.
-22. `maxConcurrent` for the request handlers.
-23. maybe reintroduce the per-consumer metadata filters. this could save us a lot of writes when consuming messages. however, it seems like these need to be client-side: even though we can reliably pick them from the database by constructing a query, we wouldn't be able to batch multiple consumers into a single query. but maybe we could? by making a `WHERE (${CONSUMER[1]_FILTER}) OR (${CONSUMER[2]_FILTER})` with `JSONB_OBJECT('consumer1', ${CONSUMER[1]_FILTER}, 'consumer2', ${CONSUMER[2]_FILTER}) AS involved_consumers` to route to the actual consumers. Seems like the best balance.
+21. force the compensation context to explicitly handle `.failure` and `.timeout`. This HAS to be forced before a `.resolve` can happen. Currently we leak errors into workflow compensation logic: this is really bad design, as we can force the dev to follow the API strictly by encoding the constraint into the types themselves.
+24. Now, the requests differ from the steps in this way: steps perform an action to return a result, while requests are passive waiters for an unknown entity to resolve their needs. In our modelling a request can be resolved by a handler. And there are 4 main scenarios I can think based on the API available:
+  1. **Resolved by handler**: the handler is the sole source of request resolution. Very similar to a step, but the logic lives on the worker.
+  2. **Resolved by handler, unless timeout**: the handler is the main source of request resolution, but if a timeout/exhastion happens, the system switches the request to manual resolution mode.
+  3. **Already resolved handler check or wait for external resolution**: the request may already have been resolved by now, and with the handler we reach out to the system to check, resolving if the condition is alredy met. Otherwise, if we've checked and found nothing, we switch to manual mode waiting for the system to mark the request resolved, once the condition has been met asynchronously. *This pattern is not currently directly available.* For this pattern to be implementable, we need to introduce throwing a `StopTryingException` - or whatever name fits better, which effectively means we're NOT returning from the handler, but we also signal the engine to NOT run the handler anymore, even if it hasn't yet timed out/exhausted attempts. *It is important that this case is different from the regular exceptions.* Currently, any exception will trigger a retry - and this is healthy behavior, in case we communicate with external systems with flaky transports. So we have to have both behaviors available.
+  4. **Full external resolution**: handler isn't being registered, so the only way to resolve a request is by an externally incoming event.
+Also, the `StopTryingException` exception seems to be useful for the other handlers as well: queues, topics. Maybe not so much for the topics.
 
 I guess if I do all of this the public API will be feature complete.
 
