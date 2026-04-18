@@ -23,11 +23,11 @@ The changes are organized into two categories:
 8. **Virtual Event Loop (VEL)** — deterministic concurrent execution model
 9. **Compensation model redesign** — parallel compensation VEL, eager/deferred separation, structured compensation lifecycle
 10. **Halt model** — unified soft failure mechanism for unexpected exceptions
-11. **Error model** — schema-only error definitions, `ctx.errors` factories, explicit vs accidental failure distinction
-12. **Step timeout unification** — `maxAttempts` moves from retry policy to `.timeout()` builder
-13. **AttemptAccessor refactoring** — rename `StepErrorAccessor` → `AttemptAccessor`, rename `StepExecutionError` → `Attempt`, introduce `AttemptError` throwable class, unify attempt record shape, make `count()` async
+11. **Error model** — two-tier `terminalErrors` / `branchErrors`, `ExplicitError` throwable, `ctx.terminalErrors` / `ctx.branchErrors` factories, externally-visible `ErrorValue<TTerminalErrors>` only
+12. **Step timeout unification** — `maxAttempts` moves from retry policy to `.timeout()` builder; `.timeout(boundary, cb)` callback is mandatory
+13. **AttemptAccessor refactoring** — rename `StepErrorAccessor` → `AttemptAccessor`, introduce `Failure` base record + `Attempt extends Failure` for retried operations, introduce `AttemptError` throwable class, unify attempt record shape, make `count()` async
 14. **Context splitting** — separate primitive instances for execution and compensation VELs
-15. **Convenience scope methods** — `ctx.best()`, `ctx.atMost()`, `ctx.atLeast()`, `ctx.joinSafe()`
+15. **Convenience scope methods and structured-concurrency consumption** — `ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atMost`, `ctx.atLeast`, `ctx.best`; single-overload `ctx.match` returning a discriminated `{ key, val }` async iterable; `ctx.join` returning the typed `val` directly
 16. **Database schema** — unified tree model for execution and compensation
 17. **`idempotencyKeyFactory`** — derive idempotency keys from workflow args, make `idempotencyKey` required
 18. **Serializable step arguments** — `args` schema on `defineStep`, single object arg pattern, full observability
@@ -243,7 +243,7 @@ Compensation runs on a separate, independent VEL. This allows:
 
 ### Two compensation paths
 
-**Deferred compensation (LIFO stack):** registered via `.compensate()` on step/workflow calls, or standalone via `ctx.registerCompensation(name, cb)`. Pushed onto a LIFO stack. Executed in reverse order when the workflow fails (throws a declared error via `ctx.errors`). The LIFO order ensures that the most recently registered compensation runs first, preserving the natural "undo in reverse" semantics.
+**Deferred compensation (LIFO stack):** registered via `.compensate()` on step/workflow calls, or standalone via `ctx.registerCompensation(name, cb)`. Pushed onto a LIFO stack. Executed in reverse order when the workflow fails (throws a declared `terminalErrors` factory via `ctx.terminalErrors`). The LIFO order ensures that the most recently registered compensation runs first, preserving the natural "undo in reverse" semantics.
 
 **Eager compensation (FIFO queue):** dispatched when a step times out and the timeout is caught, or when a scope exits with unconsumed branches, or standalone via `ctx.compensateEagerly(name, cb)`. Pushed to the compensation VEL's FIFO queue and executed immediately in the background while the main workflow continues.
 
@@ -298,6 +298,18 @@ The `.compensate()` builder also accepts an optional custom name for cases where
 compensate(cb: CompensationCallback): StepCall<...>;
 compensate(name: string, cb: CompensationCallback): StepCall<...>;
 ```
+
+### Builder chain ordering
+
+The chain on `StepCall`, `WorkflowCall`, and `RequestCall` is **strictly ordered**. Each method may be called at most once, and `.compensate` is a hard fence:
+
+```
+(.retry)? → (.timeout)? → (.failure on WorkflowCall — mandatory)? → (.compensate)? → (.complete)? → .resolve
+```
+
+After `.compensate` is called, subsequent attempts to call `.retry`, `.timeout`, or `.failure` resolve to `never` at the type level. The reason is that the compensation callback's `result` parameter type *depends on* whether `.timeout` and `.failure` were applied earlier in the chain (e.g., a step with `.timeout(boundary, () => null)` produces `T | null`; without `.timeout`, it produces `T`). Allowing later chained `.timeout` or `.failure` to retroactively widen or narrow the inferred type would change the type the compensation callback was authored against, silently invalidating it. Locking the chain after `.compensate` makes the callback's type stable at the point it is written.
+
+`.failure` is type-mandatory on `WorkflowCall`: `.compensate` and `.resolve` both require `"failure" extends Called`. This collapses any "uncaught child workflow failure" path out of the external surface — child workflow failures must be handled at the call site or they halt (see Part 4 — child failures are not part of the external `FailureInfo`).
 
 ### Eager promotion on caught failure/timeout
 
@@ -362,7 +374,7 @@ This cleanly separates eager compensation (operational, happens as side effects 
 
 ### Problem
 
-Any unexpected exception (anything that is not a declared `ctx.errors` throw) in workflow or compensation code puts the engine in an undefined state. The code between the last durable step and the exception is non-deterministic on replay. Retrying the code block is not safe — it may have already modified in-memory state.
+Any unexpected exception (anything that the surrounding context's mode does not classify as a declared failure — see the per-context throw rules below) in workflow or compensation code puts the engine in an undefined state. The code between the last durable step and the exception is non-deterministic on replay. Retrying the code block is not safe — it may have already modified in-memory state.
 
 ### Solution: unified halts
 
@@ -391,21 +403,56 @@ CREATE TABLE halt (
 
 There is no "skip" mechanism. Skipping a halted block would leave state inconsistent — subsequent code may depend on mutations the skipped block was supposed to perform. This applies equally to execution and compensation halts.
 
+### Per-context throw rules
+
+Whether a thrown value fails (the surrounding scope/branch) or halts (the workflow) depends on **which mode** the surrounding context is in. The error model in Part 4 introduces three branch modes (`"none"`, `"any"`, `"explicit"`) and a workflow-level `terminalErrors` map. The rules:
+
+| Surrounding context | Throw recognized as failure | Anything else |
+| --- | --- | --- |
+| `execute` body of `defineWorkflow` | `ctx.terminalErrors.X(...)` only | **halts** |
+| Scope body / branch in mode `"none"` (the default for shorthand-form bodies and branches) | `ctx.terminalErrors.X(...)` only — escapes the scope | **halts** |
+| Branch (or scope body) in mode `"any"` | any throw is captured as a `Failure` record at the parent's consumption point | engine-internal exceptions only — these halt |
+| Branch (or scope body) in mode `"explicit"` (declared `errors` map) | `ctx.branchErrors.X(...)` factories scoped to the declared keys; surfaces as `ErrorValue<TBranchErrors>` at the parent's consumption point | **halts** |
+| Inside `.timeout(cb)` / `.failure(cb)` callbacks | inherits the surrounding context's mode (the callback is chained inline; throws propagate to the same enclosing branch/body and obey the rules above) | inherits |
+| Inside a compensation callback | `ctx.terminalErrors.X(...)` from the compensation namespace only | **halts** the compensation VEL |
+
+Two things to keep in mind:
+
+1. **`terminalErrors` always escape.** A `terminalErrors` factory thrown from anywhere inside the workflow execution (including from inside a branch in mode `"any"` or `"explicit"`) bypasses the branch's local error contract and propagates up to fail the workflow. The local contract only governs *non-terminal* throws.
+2. **Engine-level failures are not in scope here.** Step timeouts, request timeouts, and child workflow failures never reach the throw machinery — they are surfaced via mandatory `.timeout(cb)` / `.failure(cb)` callbacks at the call site. If those callbacks themselves throw, the rules above apply to the throw.
+
 ---
 
 ## Part 4: Error Model
 
 ### Problem
 
-Currently, any thrown exception fails the entire workflow. There is no way to distinguish between an intentional business failure ("this order is invalid") and an accidental programming error ("cannot read property of undefined"). Additionally, external callers have no typed access to failure details — all errors are opaque.
+Three distinct concerns have historically been collapsed into one error surface:
 
-### Solution: schema-only error definitions
+1. **Intentional business failure** ("this order is invalid") that the developer wants the external caller to handle.
+2. **Recoverable per-branch failure** ("provider A's quote lookup blew up — fall back to provider B") that should not bubble out of the structured-concurrency boundary that contains it.
+3. **Operational engine events** (a step timed out, a child workflow failed, a request was cancelled) that are call-site-local — the developer either handles them at the call site or treats their occurrence as a bug.
 
-Errors are defined as named entries at `defineWorkflow` level, following the same pattern as channels, streams, events, and other primitives. Each error has a name (the object key) and an optional standard-schema for its details. The value `true` means the error carries no details.
+Lumping all three into a single `WorkflowFailureInfo` external union forces the caller to triage fundamentally different categories with the same switch statement, and forces engine-level events through recursive child-workflow nesting that defeats type safety.
+
+### Solution: a two-tier error model
+
+The library exposes two kinds of error declarations, with sharply different visibility:
+
+| Concept | Declared at | Caught at | Visible at the external boundary |
+| --- | --- | --- | --- |
+| `terminalErrors` | `defineWorkflow.terminalErrors`, `defineWorkflow.compensation.terminalErrors` | Nothing — escapes all scopes; fails the workflow | **Yes** — sole variant of external `FailureInfo` |
+| `branchErrors` | Per-branch `errors:` field on the branch's object form | The branch's parent consumption point (`match` / `join` / the outer `.resolve()` of a scope or convenience method) | **No** — handled locally |
+
+Plus one residual category: unexpected throws **halt** (Part 3). The `terminalErrors` map is therefore the *only* external-failure surface; engine-level events (step timeouts, request timeouts, child workflow failures) are not part of `FailureInfo` at all — they are surfaced through mandatory `.timeout(cb)` / `.failure(cb)` callbacks at the call site, and if the developer does nothing about them, an unhandled engine-level event halts the workflow.
+
+### Schema-only error definitions at the workflow level
+
+`terminalErrors` are declared as named entries at `defineWorkflow` level, following the same pattern as channels, streams, events, and other primitives. Each entry has a name (the object key) and either a standard-schema for its details or `true` (no details).
 
 ```typescript
 defineWorkflow({
-  errors: {
+  terminalErrors: {
     OrderInvalid: z.object({ orderId: z.string() }),
     InsufficientFunds: z.object({ amount: z.number(), balance: z.number() }),
     Cancelled: true,
@@ -414,57 +461,195 @@ defineWorkflow({
 });
 ```
 
-There are no `WorkflowError` subclasses. Error classes are not user-defined. Instead, the workflow context exposes factory functions keyed by error name:
+There are no `ExplicitError` subclasses — error classes are not user-defined. Instead, the workflow context exposes factory functions keyed by terminal-error name:
 
 ```typescript
 execute: async (ctx) => {
   if (!valid) {
-    throw ctx.errors.OrderInvalid("Order is invalid", { orderId: "123" });
+    throw ctx.terminalErrors.OrderInvalid("Order is invalid", { orderId: "123" });
   }
   if (balance < amount) {
-    throw ctx.errors.InsufficientFunds("Not enough balance", { amount, balance });
+    throw ctx.terminalErrors.InsufficientFunds("Not enough balance", { amount, balance });
   }
-  throw ctx.errors.Cancelled("User cancelled the order");
+  throw ctx.terminalErrors.Cancelled("User cancelled the order");
 }
 ```
 
-Each factory function returns a `WorkflowError` instance. The engine catches it, verifies that its `errorCode` matches one of the declared keys, and serializes to JSONB.
+A `terminalErrors` throw escapes every scope, every branch, every convenience method, and every callback. It is the **only** way to fail the workflow from inside `execute`. The compensation LIFO unwind is triggered. The workflow settles as `failed` and the external caller receives the typed value.
 
-**For errors with details** (schema provided), the factory signature is `(message: string, details: InferInput<TSchema>) => WorkflowError`.
+**For errors with details** (schema provided), the factory signature is `(message: string, details: InferInput<TSchema>) => ExplicitError`.
 
-**For errors without details** (`true`), the factory signature is `(message: string) => WorkflowError`.
+**For errors without details** (`true`), the factory signature is `(message: string) => ExplicitError`.
 
-### `WorkflowError` base class
+### Per-branch error declarations
 
-`WorkflowError` is the internal throwable. It is not subclassed by users. It carries an `errorCode` and optional `details`, both assigned by the `ctx.errors.X(...)` factory.
+Branches inside scopes (and the scope body itself) declare their failure contract via an `errors:` field on the branch's object form. Three modes:
 
 ```typescript
-class WorkflowError extends Error {
+errors?: "none" | "any" | { [name: string]: JsonSchemaConstraint | true };
+```
+
+| Mode | When `errors` is | `ctx.branchErrors` inside `execute` | Recognized failure | Anything else |
+| --- | --- | --- | --- | --- |
+| `"none"` (default) | omitted, or `"none"` | empty | only `terminalErrors` (escapes) | **halts** |
+| `"any"` | `"any"` | empty (no factories — the dev throws plain `Error` or any value) | any throw becomes a `Failure` record | engine-internal exceptions only |
+| `"explicit"` | a non-empty map | factories scoped to the declared keys | `ctx.branchErrors.X(...)` becomes typed `ErrorValue<TBranchErrors>` | **halts** |
+
+The four shapes a branch (or scope body) can take, all equivalent in the modes they imply:
+
+```typescript
+// Form 1 — function shorthand. Mode "none". Default.
+async (ctx) => { /* returns T */ }
+
+// Form 2 — object form, mode "none" (explicit).
+{ execute: async (ctx) => { /* ... */ }, errors: "none" }
+
+// Form 3 — object form, mode "any".
+{ execute: async (ctx) => { /* ... */ }, errors: "any" }
+// The dev throws `throw new Error(...)` or any value; the engine captures it as Failure.
+
+// Form 4 — object form, mode "explicit".
+{
+  execute: async (ctx) => {
+    if (badInput) throw ctx.branchErrors.InvalidInput("...", { field: "amount" });
+  },
+  errors: { InvalidInput: z.object({ field: z.string() }), Cancelled: true },
+}
+```
+
+**Default for shorthand-form branches and scope bodies is mode `"none"`.** A function-shorthand branch only halts on anything other than a `terminalErrors` throw. The dev opts into `"any"` or `"explicit"` via the object form. This default is conservative: it prevents accidental capture of programming errors and forces the developer to make an explicit decision about which throws are recoverable.
+
+### Two namespaces in `ctx`
+
+The workflow context exposes two distinct error-factory namespaces:
+
+| Namespace | Available where | Sourced from | Throw escapes to |
+| --- | --- | --- | --- |
+| `ctx.terminalErrors` | everywhere — `execute`, every branch, every callback, every compensation | `defineWorkflow.terminalErrors` (in execution context) or `defineWorkflow.compensation.terminalErrors` (in compensation context) | the workflow root → fails the workflow → external `FailureInfo` |
+| `ctx.branchErrors` | only inside a branch (or scope body) whose `errors:` is an explicit map | the branch's own `errors:` map | the parent consumption point → typed `ErrorValue<TBranchErrors>` at `match` / `join` / `.resolve()` |
+
+The two namespaces never share names — they are separate properties on `ctx`. A branch in mode `"none"` or `"any"` simply has `ctx.branchErrors` typed as `Record<string, never>` (empty). A branch in mode `"explicit"` has `ctx.branchErrors` typed against its declared keys.
+
+The split makes "this throw escapes everything" (terminal) vs "this throw is a value at my parent's consumption point" (branch) syntactically distinct at the throw site.
+
+### `ExplicitError` — the throwable class
+
+`ExplicitError` is the internal throwable created by both `ctx.terminalErrors.X(...)` and `ctx.branchErrors.X(...)`. It is not subclassed by users, and constructing it directly is not supported — the factories are the only sanctioned way to create instances.
+
+```typescript
+class ExplicitError extends Error {
   readonly errorCode: string;
   readonly details: unknown;
 }
 ```
 
-Constructing `WorkflowError` directly is not supported — the `ctx.errors` factories are the only sanctioned way to create instances. If any `WorkflowError` is caught by the engine whose `errorCode` does not match a declared error name, the engine treats it as an unexpected exception and **halts** the workflow, not fails it. This enforces the contract: only explicitly declared errors can fail a workflow.
+When the engine catches an `ExplicitError`:
 
-### The distinction
+- If its `errorCode` matches a declared `terminalErrors` key → the workflow fails (or, in compensation, the compensation VEL fails). The error escapes all scopes.
+- Else if its `errorCode` matches the *current* branch's declared `branchErrors` keys → the branch fails with a typed `ErrorValue<TBranchErrors>` at the parent consumption point.
+- Else → halt.
 
-- **`throw ctx.errors.OrderInvalid("...")`** → the workflow **fails**. The `errorCode` matches a declared error. The LIFO compensation unwind is triggered. The workflow settles as `failed`.
-- **`throw new Error("Cannot read property of undefined")`** → the workflow **halts**. This is an accidental exception. The engine records a halt and pauses execution.
-- **`throw new WorkflowError(...)`** (constructed directly, not via `ctx.errors`) → the workflow **halts**. The `errorCode` does not match a declared error — treated as undeclared/accidental.
+The same class covers both contexts because the two are distinguished by which factory minted the instance and by where it is caught. From the engine's perspective, every `ExplicitError` is a candidate for either escape (terminal) or local capture (branch); the resolution is purely a function of where the catch boundary sits and what's declared at that boundary.
+
+A `ExplicitError` with an `errorCode` that matches *neither* the workflow's `terminalErrors` nor the current branch's `branchErrors` halts. This catches the case where a branch is refactored, a key is renamed, and a stale throw remains.
+
+### `Failure` — the captured-throw record
+
+When a branch is in mode `"any"`, every throw that isn't a `terminalErrors` factory is captured into a `Failure` record (defined in Part 15). `Failure` is also the base shape that `Attempt` extends — the engine uses identical extraction rules for both, the only difference being that `Attempt` adds an `attempt: number` for retried operations.
+
+```typescript
+interface Failure {
+  readonly startedAt: Date;
+  readonly failedAt: Date;
+  readonly message: string | null;
+  readonly type: string | null;       // class name or AttemptError.type
+  readonly details: JsonInput | undefined;
+}
+
+interface Attempt extends Failure {
+  readonly attempt: number;           // 1-indexed
+}
+```
+
+Branches use `Failure` (single attempt — no number). Steps, queue handlers, request handlers, and topic consumers continue to use `Attempt` because they retry. See Part 15 for the engine extraction rules.
+
+### Per-context throw rules — recap
+
+The full rules (also given in Part 3) for what a throw does, indexed by the context it originates in:
+
+| Context | Recognized failure throws | Anything else |
+| --- | --- | --- |
+| `execute` body of `defineWorkflow` | `ctx.terminalErrors.X(...)` | **halt** |
+| Branch / scope body in mode `"none"` (shorthand default) | `ctx.terminalErrors.X(...)` | **halt** |
+| Branch / scope body in mode `"any"` | any throw → `Failure` at parent consumption point; `ctx.terminalErrors.X(...)` still escapes | engine-internal exceptions only — these halt |
+| Branch / scope body in mode `"explicit"` | `ctx.branchErrors.X(...)` from the declared map; `ctx.terminalErrors.X(...)` still escapes | **halt** |
+| `.timeout(cb)` / `.failure(cb)` callback | inherits the surrounding context's mode (the throw propagates as if from where the chain was authored) | inherits |
+| Compensation `execute` / shorthand body / mode-`"none"` branch | `ctx.terminalErrors.X(...)` from the *compensation* namespace | **halt the compensation VEL** |
+| Compensation branch / body in mode `"any"` or `"explicit"` | same as execution-side `"any"` / `"explicit"` (uses compensation's `ctx.branchErrors`) | **halt the compensation VEL** |
+
+### External error types
+
+At the external caller level the failure surface collapses to a single type — the workflow's declared terminal errors:
+
+```typescript
+type FailureInfo<TTerminalErrors> = ErrorValue<TTerminalErrors>;
+```
+
+`ErrorValue<T>` is a distributive mapped type used both for terminal-error external surfaces and for branch-error consumption points:
+
+```typescript
+type ErrorValue<TErrors> = {
+  [K in keyof TErrors & string]: {
+    readonly type: "ExplicitError";
+    readonly errorCode: K;
+    readonly message: string;
+    readonly details: TErrors[K] extends true
+      ? undefined
+      : StandardSchemaV1.InferOutput<TErrors[K]>;
+  };
+}[keyof TErrors & string];
+```
+
+> **Engine-level failures (step timeouts, request timeouts, child workflow failures) are not part of the external failure surface.** They are call-site-local. Each must be either consumed by a mandatory callback (`.timeout(boundary, cb)`, `.failure(cb)`) at the call site — in which case the callback can throw a `terminalErrors` to surface the failure externally, throw a `branchErrors` to surface it at the local consumption point, or return a recovery value — or, if no callback is chained where one would have applied, the engine treats the unhandled engine event as a programmer oversight and **halts** (consistent with Part 3).
+
+This collapses the previously externally-visible `StepTimeoutError`, `RequestTimeoutError`, `ChildWorkflowError`, `ChildWorkflowTimeoutError`, and `LooseWorkflowError` out of the public surface entirely. They are **not** removed as concepts — `StepFailureInfo` and `ChildWorkflowFailureInfo<TChildTerminalErrors>` continue to exist as the *callback info* types passed into `.timeout(cb)` and `.failure(cb)` respectively (see Part 5). They simply no longer escape to the caller.
+
+A direct consequence: **child workflow failure typing now works cleanly without recursion.** The parent's `.failure(cb)` on a child `WorkflowCall` receives `ChildWorkflowFailureInfo<TChildTerminalErrors>` where `TChildTerminalErrors` are exactly the child's declared `terminalErrors`, fully typed. The parent then either returns a recovery value, throws `ctx.terminalErrors.X(...)` (lifting into the parent's own terminal contract — typed in the parent's own terms), throws `ctx.branchErrors.X(...)` (lifting into the local branch contract), or rethrows. Nothing recursive escapes; the parent's external surface contains only the parent's own `terminalErrors`.
+
+### External caller usage
+
+```typescript
+const result = await client.workflows.order.execute({ ... });
+if (!result.ok && result.status === "failed") {
+  // result.error is ErrorValue<{ OrderInvalid, InsufficientFunds, Cancelled }>
+  switch (result.error.errorCode) {
+    case "OrderInvalid":
+      // result.error.details: { orderId: string } — fully typed
+      break;
+    case "InsufficientFunds":
+      // result.error.details: { amount: number, balance: number }
+      break;
+    case "Cancelled":
+      // result.error.details: undefined — no details
+      break;
+  }
+}
+```
+
+The outer `switch (result.error.type)` from prior versions disappears — there is no longer a union of error categories. Discriminating on `errorCode` is the only step.
 
 ### Compensation error model
 
-The compensation VEL has its own error map, declared separately from the execution error map:
+The compensation VEL has its own `terminalErrors` map, declared separately at `defineWorkflow.compensation.terminalErrors`:
 
 ```typescript
 defineWorkflow({
-  errors: {
+  terminalErrors: {
     OrderInvalid: z.object({ orderId: z.string() }),
     InsufficientFunds: z.object({ amount: z.number(), balance: z.number() }),
   },
   compensation: {
-    errors: {
+    terminalErrors: {
       RefundFailed: z.object({ chargeId: z.string(), reason: z.string() }),
     },
   },
@@ -472,14 +657,16 @@ defineWorkflow({
 });
 ```
 
-Inside compensation callbacks, `ctx.errors` exposes the compensation error factories — not the execution error factories:
+Inside compensation callbacks, `ctx.terminalErrors` exposes the *compensation* terminal-error factories — not the execution ones (the contexts are split, see Part 6):
 
 ```typescript
 .compensate("cancel-booking", async (ctx, result) => {
-  const refundResult = await ctx.steps.refund({ chargeId: result.data.chargeId }).resolve(ctx);
+  const refundResult = await ctx.steps
+    .refund({ chargeId: result.data.chargeId })
+    .timeout(60, () => ({ ok: false, reason: "timeout" } as const))
+    .resolve(ctx);
   if (!refundResult.ok) {
-    // Declared compensation error — compensation FAILS (stops)
-    throw ctx.errors.RefundFailed("Refund could not be processed", {
+    throw ctx.terminalErrors.RefundFailed("Refund could not be processed", {
       chargeId: result.data.chargeId,
       reason: refundResult.reason,
     });
@@ -487,191 +674,34 @@ Inside compensation callbacks, `ctx.errors` exposes the compensation error facto
 })
 ```
 
-**Compensation error semantics — the key asymmetry with execution errors:**
+The same per-branch error-declaration system applies symmetrically inside compensation. A compensation branch can be in mode `"none"`, `"any"`, or `"explicit"`. The defaults are identical: shorthand-form bodies and branches default to mode `"none"`.
 
-The compensation VEL is strictly more resilient than the execution VEL. Nothing except an explicitly declared compensation error can fail the compensation block. The following are **not** failure conditions in compensation:
+**The asymmetry with execution is structural, not type-level:** compensation is the cleanup pass and the only structural special-case is that `defineWorkflow.compensation.terminalErrors` is optional (when omitted, `ctx.terminalErrors` in compensation has no factories — there is no way to fail the compensation VEL with an explicit error, only halt). The recommendation remains: leave `compensation.terminalErrors` empty unless there is a genuine "compensation cannot proceed" condition the external observer must distinguish.
 
-| Event | Execution VEL behavior | Compensation VEL behavior |
+| Event | Execution VEL | Compensation VEL |
 | --- | --- | --- |
-| Declared `ctx.errors.X(...)` thrown | Workflow fails → compensation runs | Compensation fails (stops) |
-| Undeclared exception | Workflow halts | Compensation halts |
-| Step timeout | Caught via `.timeout()` — or fails workflow | Caught via `.timeout()` — handled inline |
-| Child workflow failure | Propagated — may fail workflow | Handled inline — never fails compensation |
-| Request timeout | Caught via `.timeout()` — or fails workflow | Caught via `.timeout()` — handled inline |
+| `ctx.terminalErrors.X(...)` thrown | Workflow fails → compensation runs | Compensation VEL fails (stops) |
+| `ctx.branchErrors.X(...)` thrown (in an `"explicit"` branch/body) | Captured at the parent consumption point as `ErrorValue<TBranchErrors>` | Same |
+| Any throw in an `"any"` branch/body | Captured at the parent consumption point as `Failure` | Same |
+| Step timeout (no `.timeout(cb)` chained) | Halt | Halt |
+| Step timeout (caught via `.timeout(cb)`) | Callback runs; its return value is the resolved result | Same |
+| Child workflow failure (no `.failure(cb)` chained — disallowed by type) | Compile-time error | Compile-time error |
+| Child workflow failure (caught via `.failure(cb)`) | Callback runs; its return value or rethrow follows per-context rules | Same |
+| Undeclared exception (anywhere mode is `"none"` or `"explicit"`) | Halt the execution VEL | Halt the compensation VEL |
 
-The rationale: compensation is cleanup. Step timeouts, child workflow failures, and request timeouts are *expected* conditions during cleanup — the systems you're trying to undo may be partially degraded. These are handled by the retry policy and timeout callbacks, not by failing the compensation block. Only when the developer explicitly determines that compensation cannot proceed (throws a declared error) does the compensation stop.
+The rationale for keeping compensation strict-by-default: cleanup is supposed to be defensive. If a step times out or a child workflow fails inside a compensation callback, that is an *expected* condition — the systems being undone may be partially degraded. The `.timeout(cb)` / `.failure(cb)` callbacks at the call site are how the developer declares what to do. There is no implicit "if anything goes wrong in compensation, give up silently."
 
-**When `compensation.errors` is omitted (the common case):**
+**`CompensationFailureInfo<TCompensationTerminalErrors>`** collapses to `ErrorValue<TCompensationTerminalErrors>` — the same shape, sourced from the compensation map. Observable via `handle.compensation.wait()`.
 
-`ctx.errors` on the compensation context has no factories. There is no way to fail compensation — only halt. This is the correct default for most workflows: compensation should be written to be as robust as possible, and there's no anticipated "compensation can't proceed" scenario.
+### Rationale recap
 
-**`CompensationFailureInfo`:**
+Three rough edges in the prior design motivated this collapse:
 
-When compensation fails via a declared error, the failure is surfaced through the external handle:
+1. **`WorkflowFailureInfo` was a four-way union of conceptually disjoint things.** Lumping the developer-declared business signal (`WorkflowErrorValue`) with engine-generated operational events (`StepTimeoutError`, `RequestTimeoutError`, `ChildWorkflowError`, `ChildWorkflowTimeoutError`) forced the external caller to triage two categories with the same switch, and forced `ChildWorkflowError` to recursively carry a `LooseWorkflowError` — defeating type safety for any non-trivial child workflow tree. The fix: only developer-declared errors reach the external boundary.
 
-```typescript
-type CompensationFailureInfo<TCompensationErrors> = {
-  [K in keyof TCompensationErrors & string]: {
-    readonly type: "CompensationError";
-    readonly errorCode: K;
-    readonly message: string;
-    readonly details: TCompensationErrors[K] extends true
-      ? undefined
-      : InferOutput<TCompensationErrors[K]>;
-  };
-}[keyof TCompensationErrors & string];
-```
+2. **Error scoping was binary (workflow vs nothing).** There was no clean way to model recoverable per-branch failures that should fail one branch without failing the whole workflow. Scope-level `.failure(cb)` existed but received a loose `ScopeFailureInfo<TSteps, TChildWorkflows>` with an `{ kind: "exception"; error: unknown }` escape hatch, defeating type safety. The fix: per-branch `errors:` declarations with three modes; the consumer pattern-matches on a typed result.
 
-This is a distributive mapped type — the same pattern as `WorkflowErrorValue`. Each declared compensation error becomes a variant in the union, with `errorCode` narrowed to the literal key and `details` typed from the schema. The caller discriminates on `errorCode` to get typed access to `details`.
-
-Observable via `handle.compensation.wait()` — returns the compensation terminal state including failure info if compensation failed.
-
-### External error types
-
-At the external caller level, errors are plain JSON values — no class instances, no prototype chains, no `instanceof` checks. All error variants share a common `type` discriminant field and a `scopePath` field:
-
-```typescript
-type WorkflowFailureInfo<TErrors, TSteps, TRequests, TChildWorkflows> =
-  | WorkflowErrorValue<TErrors>
-  | StepTimeoutError<TSteps>
-  | RequestTimeoutError<TRequests>
-  | ChildWorkflowError<TChildWorkflows>
-  | ChildWorkflowTimeoutError<TChildWorkflows>;
-```
-
-**`WorkflowErrorValue`** — the workflow's own declared errors. Fully typed, discriminated by `errorCode`:
-
-```typescript
-type WorkflowErrorValue<TErrors> = {
-  [K in keyof TErrors]: {
-    type: "WorkflowError";
-    errorCode: K;
-    message: string;
-    details: TErrors[K] extends true ? never : StandardSchemaV1.InferOutput<TErrors[K]>;
-    scopePath: string[];
-  };
-}[keyof TErrors];
-```
-
-**`StepTimeoutError`** — a step exhausted its `.timeout()` boundary without a handler. Fully typed per step — switch on `stepName` to get typed args:
-
-```typescript
-type StepTimeoutError<TSteps> = {
-  [K in keyof TSteps & string]: {
-    type: "StepTimeoutError";
-    stepName: K;
-    args: StandardSchemaV1.InferOutput<TSteps[K]["args"]>;
-    reason: "attempts_exhausted" | "deadline";
-    scopePath: string[];
-  };
-}[keyof TSteps & string];
-```
-
-**`RequestTimeoutError`** — a request exhausted its `.timeout()` boundary without a handler. Fully typed per request — switch on `requestName` to get typed args:
-
-```typescript
-type RequestTimeoutError<TRequests> = {
-  [K in keyof TRequests & string]: {
-    type: "RequestTimeoutError";
-    requestName: K;
-    args: StandardSchemaV1.InferOutput<TRequests[K]["request"]>;
-    reason: "attempts_exhausted" | "deadline";
-    scopePath: string[];
-  };
-}[keyof TRequests & string];
-```
-
-**`ChildWorkflowError`** — a child workflow failed (threw a declared error, step timed out, etc.) and the parent didn't handle it with `.failure()`. Typed per child workflow definition — switch on `childWorkflowName` to get typed args. The actual error from the child is packaged under the `error` field as a `LooseWorkflowError` (loosely typed, recursively nested):
-
-```typescript
-type ChildWorkflowError<TChildWorkflows> = {
-  [K in keyof TChildWorkflows & string]: {
-    type: "ChildWorkflowError";
-    childWorkflowName: K;
-    idempotencyKey: string;
-    args: StandardSchemaV1.InferOutput<TChildWorkflows[K]["args"]>;
-    scopePath: string[];
-    error: LooseWorkflowError;
-  };
-}[keyof TChildWorkflows & string];
-```
-
-**`ChildWorkflowTimeoutError`** — the parent timed out waiting for the child (parent-side `.timeout()` on `WorkflowCall` without a handler). The child is terminated. Distinct from `ChildWorkflowError` — the child didn't fail on its own, the parent gave up:
-
-```typescript
-type ChildWorkflowTimeoutError<TChildWorkflows> = {
-  [K in keyof TChildWorkflows & string]: {
-    type: "ChildWorkflowTimeoutError";
-    childWorkflowName: K;
-    idempotencyKey: string;
-    args: StandardSchemaV1.InferOutput<TChildWorkflows[K]["args"]>;
-    scopePath: string[];
-  };
-}[keyof TChildWorkflows & string];
-```
-
-**`LooseWorkflowError`** — the recursively nested error structure inside `ChildWorkflowError.error`. Uses the same `type` discriminant but all fields are loosely typed (`string`, `unknown`). The recursive nesting IS the propagation path — each `ChildWorkflowError` layer carries the identity and args of the child that failed:
-
-```typescript
-type LooseWorkflowError =
-  | { type: "WorkflowError"; errorCode: string; message: string; details: unknown }
-  | { type: "StepTimeoutError"; stepName: string; args: unknown; reason: "attempts_exhausted" | "deadline" }
-  | { type: "RequestTimeoutError"; requestName: string; args: unknown; reason: "attempts_exhausted" | "deadline" }
-  | { type: "ChildWorkflowError"; childWorkflowName: string; idempotencyKey: string; args: unknown; error: LooseWorkflowError }
-  | { type: "ChildWorkflowTimeoutError"; childWorkflowName: string; idempotencyKey: string; args: unknown };
-```
-
-### External caller usage
-
-```typescript
-const result = await client.workflows.order.execute({ ... });
-if (!result.ok && result.status === "failed") {
-  switch (result.error.type) {
-    case "WorkflowError":
-      switch (result.error.errorCode) {
-        case "OrderInvalid":
-          // result.error.details: { orderId: string } — fully typed
-          break;
-        case "InsufficientFunds":
-          // result.error.details: { amount: number, balance: number }
-          break;
-        case "Cancelled":
-          // result.error.details: never — no details
-          break;
-      }
-      break;
-    case "StepTimeoutError":
-      // result.error.stepName: "bookFlight" | "validateOrder" | ...
-      // result.error.args: typed per step
-      break;
-    case "RequestTimeoutError":
-      // result.error.requestName: "humanReview" | ...
-      // result.error.args: typed per request
-      break;
-    case "ChildWorkflowError":
-      // result.error.childWorkflowName: "payment" | ...
-      // result.error.idempotencyKey: string
-      // result.error.args: typed per child workflow
-      // result.error.error: LooseWorkflowError — drill into the actual cause
-      break;
-    case "ChildWorkflowTimeoutError":
-      // result.error.childWorkflowName: "payment" | ...
-      // result.error.idempotencyKey: string
-      // result.error.args: typed per child workflow
-      break;
-  }
-}
-```
-
-### Child workflow error propagation
-
-When a child workflow fails and `.failure()` is NOT chained on the `WorkflowCall`, the child's error propagates to the parent as an unhandled failure — the parent workflow fails. At the parent's external result level, this appears as a `ChildWorkflowError` with the child's identity, args, and the actual error recursively nested under `.error`.
-
-When the parent's `.timeout()` fires on a child without a handler, the child is terminated and the parent fails with a `ChildWorkflowTimeoutError`.
-
-When `.failure()` IS chained, the handler receives a `ChildWorkflowFailureInfo` containing the child's serialized error value. The handler returns a recovery value and the parent continues. The child's error does not propagate.
-
-This avoids recursive type expansion: child workflow errors are `ChildWorkflowError` at the parent's external boundary with the nested error loosely typed as `LooseWorkflowError`. Only the workflow's own declared errors are fully typed. The recursive nesting of `LooseWorkflowError` provides the full propagation path without a separate `propagationPath` field.
+3. **`match` was verbose and weakly typed.** The prior `ctx.match(sel, handlers)` form accepted a per-key `{ complete, failure }` object whose `failure` parameter was the loose `ScopeFailureInfo` rather than the branch's own typed errors. The fix (Part 7): a single `match` overload returning a discriminated `{ key, val }` async iterable, where `val` shape per key reflects the source's mode.
 
 ---
 
@@ -679,20 +709,20 @@ This avoids recursive type expansion: child workflow errors are `ChildWorkflowEr
 
 ### Problem
 
-`maxAttempts` lives in `RetryPolicyOptions` alongside retry behavior configuration. But `maxAttempts` is not a retry behavior — it is a stop condition. It answers "when to give up," not "how to retry." This creates confusion: a step configured with no `maxAttempts` and no deadline retries forever, making `.failure()` unreachable dead code.
+`maxAttempts` lives in `RetryPolicyOptions` alongside retry behavior configuration. But `maxAttempts` is not a retry behavior — it is a stop condition. It answers "when to give up," not "how to retry." Compounding this: there was no clean rule about which call-site error events were external-visible vs call-site-local, and the `.timeout(boundary)` no-callback form created unhandled engine events in the workflow's external surface.
 
 ### Solution
 
-Remove `maxAttempts` from `RetryPolicyOptions`. Move it to the `.timeout()` builder method. Remove `.failure()` from `StepCall` entirely — steps can only succeed or time out.
+Remove `maxAttempts` from `RetryPolicyOptions`. Move it into a `.timeout()` builder boundary. Make the `.timeout(boundary, cb)` callback form the **only** valid form (no callback = the call has no boundary at all and retries forever). Make `.failure(cb)` mandatory on `WorkflowCall`. Order the chain. Remove the engine-level error variants from the external `FailureInfo` (Part 4).
 
 **`RetryPolicyOptions` becomes purely about retry behavior:**
 
 ```typescript
 interface RetryPolicyOptions {
-  intervalSeconds?: number; // initial retry interval (default: 1)
-  backoffRate?: number; // backoff multiplier (default: 2)
-  maxIntervalSeconds?: number; // interval cap (default: 300)
-  timeoutSeconds?: number; // per-attempt execution timeout (signal abort)
+  intervalSeconds?: number;     // initial retry interval (default: 1)
+  backoffRate?: number;         // backoff multiplier (default: 2)
+  maxIntervalSeconds?: number;  // interval cap (default: 300)
+  timeoutSeconds?: number;      // per-attempt execution timeout (signal abort)
 }
 ```
 
@@ -706,26 +736,58 @@ type StepBoundary =
   | { maxAttempts: number; deadline?: Date; seconds?: never };
 ```
 
-`seconds` and `deadline` are mutually exclusive — `seconds` is a relative wall-clock timeout, `deadline` is an absolute timestamp. `maxAttempts` can coexist with either.
-
-The shorthand accepts `number` (seconds) or `Date` (deadline):
+`seconds` and `deadline` are mutually exclusive — `seconds` is a relative wall-clock timeout, `deadline` is an absolute timestamp. `maxAttempts` can coexist with either. The shorthand `number` (seconds) or `Date` (deadline) is accepted in place of a `StepBoundary` everywhere.
 
 ```typescript
-.timeout(60)                                    // 60 seconds overall
-.timeout(60, () => null)                        // 60 seconds, return null on timeout
-.timeout(new Date("2027-01-10"))                // absolute deadline
-.timeout(new Date("2027-01-10"), () => null)    // deadline, return null on timeout
-.timeout({ maxAttempts: 5 })                    // 5 attempts max
-.timeout({ maxAttempts: 5, seconds: 60 })       // whichever fires first
-.timeout({ maxAttempts: 5, deadline: d })       // whichever fires first
-.timeout({ maxAttempts: 5, seconds: 60 }, () => null)
+.timeout(60, (ctx, info) => null)                        // 60 seconds overall
+.timeout(new Date("2027-01-10"), (ctx, info) => null)    // absolute deadline
+.timeout({ maxAttempts: 5 }, (ctx, info) => null)        // 5 attempts max
+.timeout({ maxAttempts: 5, seconds: 60 }, (ctx, info) => null)
+.timeout({ maxAttempts: 5, deadline: d }, (ctx, info) => null)
 ```
 
 `maxAttempts` and `seconds`/`deadline` complement each other — both can coexist in the same boundary. `maxAttempts` limits how many times the step is tried. `seconds`/`deadline` limits total wall-clock time. Whichever boundary is reached first terminates the step.
 
-**Updated `StepCall`:**
+> **`.timeout()` is itself optional, but the callback is mandatory when `.timeout()` is called.** If `.timeout()` is omitted entirely, the operation retries forever (per `RetryPolicyOptions`); there is no boundary, and the only way the call returns is success. If `.timeout()` is called, it must include a callback. The `.timeout(boundary)` no-callback form is removed: it would force a "timeout exceeded with no recourse" path into the workflow's external `FailureInfo`, which is exactly the engine-level surface that Part 4 collapses out. The mandatory callback ensures every declared boundary has an explicit local recovery path. If recovery should fail the workflow, the callback throws `ctx.terminalErrors.X(...)`; if it should fail just the local branch, throws `ctx.branchErrors.X(...)`; if it should produce a value, it returns one.
 
-Builder methods use the `Called` type parameter to make invalid states unrepresentable — each builder method returns `never` if it has already been called in the chain, preventing duplicate calls at compile time.
+### Chain ordering
+
+The chain on `StepCall`, `WorkflowCall`, and `RequestCall` is strictly ordered, encoded via the `Called` type parameter:
+
+```
+(.retry)? → (.timeout)? → (.failure on WorkflowCall — mandatory)? → (.compensate)? → (.complete)? → .resolve
+```
+
+Each method may be called at most once. `.compensate` is a fence: after it is called, subsequent attempts to call `.retry`, `.timeout`, or `.failure` resolve to `never`. The reason — repeated from Part 2 because it is the central rationale — is that the compensation callback's `result` parameter type *depends on* the union narrowed by the prior chain steps. Allowing later chained `.timeout` or `.failure` to retroactively widen or narrow that union would silently invalidate the type the compensation callback was authored against. Locking the chain after `.compensate` is what makes the callback's type stable at the point it is written.
+
+### Callback signatures
+
+`.timeout` and `.failure` callbacks both receive `(ctx, info)`. The `ctx` parameter is the surrounding workflow or compensation context — callbacks can invoke durable primitives (steps, requests, channels, attribute writes) inside recovery, just as they can in the surrounding body. This was a real expansion: the prior design exposed only `info`, which made it impossible to do durable recovery work like "post a Slack notification when this step times out."
+
+```typescript
+type TimeoutInfo<TArgs> = {
+  readonly reason: "attempts_exhausted" | "deadline";
+  readonly args: TArgs;
+  readonly attempts: AttemptAccessor;
+};
+
+type StepFailureInfo<TArgs> = TimeoutInfo<TArgs>;
+// Identical shape — kept as an alias for callback-info typing on steps.
+
+type ChildWorkflowFailureInfo<TArgs, TChildTerminalErrors> =
+  | { readonly status: "failed"; readonly args: TArgs; readonly error: ErrorValue<TChildTerminalErrors> }
+  | { readonly status: "terminated"; readonly args: TArgs }
+  | { readonly status: "timed_out"; readonly args: TArgs; readonly reason: "attempts_exhausted" | "deadline" };
+```
+
+A throw inside any callback follows the per-context throw rules (Part 3). The callback inherits the mode of the branch or body where its enclosing chain was authored:
+
+- Inside an `"any"` branch (or `"any"` scope body): captured as `Failure`.
+- Inside an `"explicit"` branch: must match the branch's declared subset, else halt.
+- Inside a `"none"` branch (or `"none"` body): must be a `terminalErrors` factory, else halt.
+- Inside the workflow's `execute` body: must be a `terminalErrors` factory, else halt.
+
+### Updated `StepCall`
 
 ```typescript
 interface StepCall<
@@ -736,7 +798,17 @@ interface StepCall<
   Tctx = unknown,
   Called extends string = never,
 > extends DurableHandle<T | TTimeout, ExecutionRoot> {
-  compensate: "compensate" extends Called ? never :
+  retry: "retry" | "timeout" | "compensate" | "complete" extends Called ? never :
+    (policy: RetryPolicyOptions) =>
+      StepCall<TArgs, T, TTimeout, HasCompensation, Tctx, Called | "retry">;
+
+  timeout: "timeout" | "compensate" | "complete" extends Called ? never :
+    & (<R>(secondsOrDeadline: number | Date, cb: (ctx: Tctx, info: TimeoutInfo<TArgs>) => R) =>
+        StepCall<TArgs, T, Awaited<R>, HasCompensation, Tctx, Called | "timeout">)
+    & (<R>(opts: StepBoundary, cb: (ctx: Tctx, info: TimeoutInfo<TArgs>) => R) =>
+        StepCall<TArgs, T, Awaited<R>, HasCompensation, Tctx, Called | "timeout">);
+
+  compensate: "compensate" | "complete" extends Called ? never :
     & ((
         cb: (ctx: Tctx, result: StepCompensationResult<TArgs, T>) => Promise<void>,
       ) => StepCall<TArgs, T, TTimeout, true, Tctx, Called | "compensate">)
@@ -745,31 +817,18 @@ interface StepCall<
         cb: (ctx: Tctx, result: StepCompensationResult<TArgs, T>) => Promise<void>,
       ) => StepCall<TArgs, T, TTimeout, true, Tctx, Called | "compensate">);
 
-  retry: "retry" extends Called ? never :
-    (policy: RetryPolicyOptions) =>
-      StepCall<TArgs, T, TTimeout, HasCompensation, Tctx, Called | "retry">;
-
-  timeout: "timeout" extends Called ? never :
-    & ((secondsOrDeadline: number | Date) =>
-        StepCall<TArgs, T, never, HasCompensation, Tctx, Called | "timeout">)
-    & (<R>(secondsOrDeadline: number | Date, cb: () => R) =>
-        StepCall<TArgs, T, Awaited<R>, HasCompensation, Tctx, Called | "timeout">)
-    & ((opts: StepBoundary) =>
-        StepCall<TArgs, T, never, HasCompensation, Tctx, Called | "timeout">)
-    & (<R>(opts: StepBoundary, cb: () => R) =>
-        StepCall<TArgs, T, Awaited<R>, HasCompensation, Tctx, Called | "timeout">);
-
   complete: "complete" extends Called ? never :
-    <R>(cb: (data: T) => R) =>
-      StepCall<TArgs, Awaited<R>, TTimeout, HasCompensation, Tctx, Called | "complete">;
+    <R>(cb: (data: T | TTimeout) => R) =>
+      StepCall<TArgs, Awaited<R>, never, HasCompensation, Tctx, Called | "complete">;
 }
 ```
 
-Key changes:
+Key changes from the prior version:
 
-- **`TFail` is gone.** Replaced by `TTimeout`. Steps cannot "fail" — they succeed or time out.
-- **`.failure()` is removed.** Steps retry forever unless bounded by `.timeout()`.
-- **`.timeout()` replaces `.failure()` as the explicit error handling surface.** Without `.timeout()` chained and a timeout boundary reached, the workflow fails with a `StepTimeoutError`.
+- **No `.failure()` on `StepCall`.** Steps don't fail — they succeed or hit a boundary. Reaching a boundary fires `.timeout(boundary, cb)` if chained; if `.timeout()` was omitted, the operation retries forever.
+- **`.timeout(boundary)` no-callback form is gone.** The callback is mandatory when `.timeout()` is chained.
+- **No engine-level `StepTimeoutError` in the external surface.** If the developer omits `.timeout(cb)` and the operation never naturally terminates, that's their choice (retry forever). If they chain `.timeout(cb)`, the callback owns the recovery.
+- **Callback receives `(ctx, info)`** — recovery can invoke durable primitives.
 
 The old pattern:
 
@@ -785,11 +844,13 @@ Becomes:
 ```typescript
 const result = await ctx.steps
   .bookFlight({ destination: dest, passengerId: id })
-  .timeout({ maxAttempts: 3 }, () => null)
+  .timeout({ maxAttempts: 3 }, (ctx, info) => null)
   .resolve(ctx);
 ```
 
-### Updated `StepCompensationResult`
+### `StepCompensationResult`
+
+The compensation callback's `result` parameter — passed at LIFO unwind or eager promotion — is unchanged in shape and remains a discriminated union. It represents the *engine-level* outcome of the step (was the work completed, did it hit its boundary, was it terminated), not the workflow-side recovery value (which is what `.timeout(cb)` produced and is the one used by the rest of the workflow). The engine-level outcome is what compensation needs to know about: whether the side effect was performed.
 
 ```typescript
 type StepCompensationResult<TArgs, T> =
@@ -805,54 +866,81 @@ type StepCompensationResult<TArgs, T> =
 
 `args` is the deserialized step arguments, typed by the step's `args` schema. Available on all variants except `"terminated"` (where the step was never attempted).
 
-### Child workflow timeout
+### Updated `WorkflowCall`
 
-Child workflows keep `.failure()` (child workflows genuinely fail via their declared `ctx.errors`). A new `.timeout()` is added separately:
+`.failure(cb)` is **type-mandatory**: `.compensate` and `.resolve` both require `"failure" extends Called`. There is no path to terminating a child workflow chain without declaring how to handle the child's failure. This is what collapses every "uncaught child workflow failure" event out of the parent's external `FailureInfo`.
 
 ```typescript
 interface WorkflowCall<
+  TArgs,
   T,
+  TChildTerminalErrors,
   TFail = never,
   TTimeout = never,
   HasCompensation extends boolean = false,
   Tctx = unknown,
   Called extends string = never,
 > extends DurableHandle<T | TFail | TTimeout, ExecutionRoot> {
-  compensate: "compensate" extends Called ? never :
-    & ((
-        cb: (ctx: Tctx, result: ChildWorkflowCompensationResult<T>) => Promise<void>,
-      ) => WorkflowCall<T, TFail, TTimeout, true, Tctx, Called | "compensate">)
-    & ((
-        name: string,
-        cb: (ctx: Tctx, result: ChildWorkflowCompensationResult<T>) => Promise<void>,
-      ) => WorkflowCall<T, TFail, TTimeout, true, Tctx, Called | "compensate">);
+  retry: "retry" | "timeout" | "failure" | "compensate" | "complete" extends Called ? never :
+    (policy: RetryPolicyOptions) =>
+      WorkflowCall<TArgs, T, TChildTerminalErrors, TFail, TTimeout, HasCompensation, Tctx, Called | "retry">;
 
-  failure: "failure" extends Called ? never :
-    <R>(cb: (failure: ChildWorkflowFailureInfo) => R) =>
-      WorkflowCall<T, Awaited<R>, TTimeout, HasCompensation, Tctx, Called | "failure">;
+  timeout: "timeout" | "failure" | "compensate" | "complete" extends Called ? never :
+    & (<R>(secondsOrDeadline: number | Date, cb: (ctx: Tctx, info: TimeoutInfo<TArgs>) => R) =>
+        WorkflowCall<TArgs, T, TChildTerminalErrors, TFail, Awaited<R>, HasCompensation, Tctx, Called | "timeout">)
+    & (<R>(opts: StepBoundary, cb: (ctx: Tctx, info: TimeoutInfo<TArgs>) => R) =>
+        WorkflowCall<TArgs, T, TChildTerminalErrors, TFail, Awaited<R>, HasCompensation, Tctx, Called | "timeout">);
 
-  timeout: "timeout" extends Called ? never :
-    & ((secondsOrDeadline: number | Date) =>
-        WorkflowCall<T, TFail, never, HasCompensation, Tctx, Called | "timeout">)
-    & (<R>(secondsOrDeadline: number | Date, cb: () => R) =>
-        WorkflowCall<T, TFail, Awaited<R>, HasCompensation, Tctx, Called | "timeout">)
-    & ((opts: StepBoundary) =>
-        WorkflowCall<T, TFail, never, HasCompensation, Tctx, Called | "timeout">)
-    & (<R>(opts: StepBoundary, cb: () => R) =>
-        WorkflowCall<T, TFail, Awaited<R>, HasCompensation, Tctx, Called | "timeout">);
+  // Type-mandatory: must be called before .compensate or .resolve.
+  failure: "failure" | "compensate" | "complete" extends Called ? never :
+    <R>(cb: (ctx: Tctx, info: ChildWorkflowFailureInfo<TArgs, TChildTerminalErrors>) => R) =>
+      WorkflowCall<TArgs, T, TChildTerminalErrors, Awaited<R>, TTimeout, HasCompensation, Tctx, Called | "failure">;
 
-  complete: "complete" extends Called ? never :
-    <R>(cb: (data: T) => R) =>
-      WorkflowCall<Awaited<R>, TFail, TTimeout, HasCompensation, Tctx, Called | "complete">;
+  compensate: "failure" extends Called
+    ? "compensate" | "complete" extends Called ? never :
+        & ((
+            cb: (ctx: Tctx, result: StepCompensationResult<TArgs, T | TFail | TTimeout>) => Promise<void>,
+          ) => WorkflowCall<TArgs, T, TChildTerminalErrors, TFail, TTimeout, true, Tctx, Called | "compensate">)
+        & ((
+            name: string,
+            cb: (ctx: Tctx, result: StepCompensationResult<TArgs, T | TFail | TTimeout>) => Promise<void>,
+          ) => WorkflowCall<TArgs, T, TChildTerminalErrors, TFail, TTimeout, true, Tctx, Called | "compensate">)
+    : never;
+
+  complete: "failure" extends Called
+    ? "complete" extends Called ? never :
+        <R>(cb: (data: T | TFail | TTimeout) => R) =>
+          WorkflowCall<TArgs, Awaited<R>, TChildTerminalErrors, never, never, HasCompensation, Tctx, Called | "complete">
+    : never;
+
+  // Inherited from DurableHandle, but also gated on .failure being called:
+  // resolve(ctx): "failure" extends Called ? Promise<T | TFail | TTimeout> : never;
 }
 ```
 
-The distinction:
+The `TChildTerminalErrors` type parameter threads the child workflow's declared `terminalErrors` map into the `.failure(cb)` callback's info type. The callback receives `ChildWorkflowFailureInfo<TArgs, TChildTerminalErrors>`:
 
-- `.failure()` handles child workflow failure (child threw a declared error via `ctx.errors`) and termination.
-- `.timeout()` handles parent-side patience (the parent gives up waiting). This is separate from child-side failure. Accepts `number` (seconds), `Date` (deadline), or `StepBoundary` (structured options with `maxAttempts`/`seconds`/`deadline`).
-- Without `.failure()` chained, a child workflow failure auto-fails the parent. Without `.timeout()` chained, a timeout auto-fails the parent.
-- Each builder method can only be called once per chain — the `Called` type parameter tracks which methods have been used and makes duplicates resolve to `never`.
+```typescript
+type ChildWorkflowFailureInfo<TArgs, TChildTerminalErrors> =
+  | { status: "failed"; args: TArgs; error: ErrorValue<TChildTerminalErrors> }
+  | { status: "terminated"; args: TArgs }
+  | { status: "timed_out"; args: TArgs; reason: "attempts_exhausted" | "deadline" };
+```
+
+The `error` field is fully typed against the child's own `terminalErrors` — no `LooseWorkflowError`, no recursive nesting. The parent narrows on `errorCode` exactly as if it had received an `ErrorValue` directly. This is the central type-safety win of the redesign.
+
+What `.failure(cb)` can do:
+
+- **Return a recovery value** — the parent continues with that value. The child's failure does not propagate.
+- **Throw `ctx.terminalErrors.X(...)`** — lifts the child's failure into the parent's own terminal contract. The parent's external surface uses the parent's terms.
+- **Throw `ctx.branchErrors.X(...)`** — lifts into the local branch's contract. Fails only the local branch (escapes to the local match/join consumption point).
+- **Rethrow** the engine's own `info` value — semantically equivalent to "I have nothing to add, fail the parent." But because `.failure(cb)` is type-mandatory, this rethrow must also obey the per-context throw rules: rethrowing the typed `info` (which is not an `ExplicitError`) inside a `"none"` body would halt. The intended pattern is to throw a typed terminal/branch error explicitly.
+
+### Rationale recap
+
+- **Mandatory callback on `.timeout()`.** Without it, the no-callback form would push a typed engine event into the external `FailureInfo`. The whole point of Part 4's collapse is to keep that surface free of engine events.
+- **Mandatory `.failure(cb)` on `WorkflowCall`.** Same argument, doubled: the prior `ChildWorkflowError` carried recursive `LooseWorkflowError`, which is nominally typed but actually a black hole. Forcing the parent to declare a handler at the call site means the child's failure either becomes the parent's recovery value, or becomes one of the parent's own typed terminal/branch errors. Either way the parent's external surface stays clean.
+- **Chain ordering.** Compensation callbacks were authored against the union narrowed by `.timeout` and `.failure` chained earlier. Allowing those to be chained later would change the type and silently invalidate the callback. Locking the chain after `.compensate` keeps the type stable.
 
 ---
 
@@ -866,122 +954,282 @@ The execution VEL and compensation VEL run in parallel. If they share channels, 
 
 Split all shared primitives between the two VELs. Each VEL gets its own dedicated instances:
 
-| Primitive        | Execution VEL        | Compensation VEL                           |
-| ---------------- | -------------------- | ------------------------------------------ |
-| `ctx.channels`   | Execution channels   | Compensation channels                      |
-| `ctx.state`      | Execution state      | Compensation state (separate factory call) |
-| `ctx.streams`    | Execution streams    | Compensation streams                       |
-| `ctx.events`     | Execution events     | Compensation events                        |
-| `ctx.attributes` | Execution attributes | Compensation attributes                    |
-| `ctx.rng`        | Execution RNG        | Compensation RNG (separate seed)           |
-| `ctx.errors`     | From `errors`        | From `compensation.errors`                 |
+| Primitive             | Execution VEL                              | Compensation VEL                                            |
+| --------------------- | ------------------------------------------ | ----------------------------------------------------------- |
+| `ctx.channels`        | Execution channels                         | Compensation channels                                       |
+| `ctx.state`           | Execution state                            | Compensation state (separate factory call)                  |
+| `ctx.streams`         | Execution streams                          | Compensation streams                                        |
+| `ctx.events`          | Execution events                           | Compensation events                                         |
+| `ctx.attributes`      | Execution attributes                       | Compensation attributes                                     |
+| `ctx.rng`             | Execution RNG                              | Compensation RNG (separate seed)                            |
+| `ctx.terminalErrors`  | From `terminalErrors`                      | From `compensation.terminalErrors` (may be empty)           |
+| `ctx.branchErrors`    | From the surrounding branch's `errors:` map (only inside an `"explicit"`-mode branch; empty record otherwise) | Same — sourced from the surrounding compensation branch's `errors:` map |
 
 This is a hard split. The execution VEL cannot read from or write to compensation channels, and vice versa. External callers target specific channels when sending messages.
 
 The state factory function is called twice — once for each VEL — producing independent state objects. RNG streams are seeded separately so the same `ctx.rng.txnId.uuidv4()` call produces different (but individually deterministic) values in each VEL.
 
+### Unified builder shape across contexts
+
+The compensation context exposes the **same** `StepCall`, `WorkflowCall`, and `RequestCall` types as the execution context — there are no `CompensationStepCall<T>` / `CompensationWorkflowCall<T>` distinct types. The single `Tctx` type parameter on each call type carries the compensation-context flavor (so `.compensate(cb)`, `.timeout(cb)`, `.failure(cb)` callbacks receive the appropriate context). The implication is that a step or child workflow invoked from inside a compensation callback uses identical builder ergonomics — `.retry`, `.timeout(boundary, cb)`, `.failure(cb)` (on `WorkflowCall`), `.compensate(cb)`, `.complete(cb)`, `.resolve(ctx)` — and obeys identical chain ordering and per-context throw rules.
+
+The previous distinction (separate compensation-side call types) is dropped because it added a parallel API surface without adding any expressive power: the only meaningful axis of variation between execution and compensation is which `ctx` the chain runs against, and that's already a type parameter.
+
 ---
 
-## Part 7: Convenience Scope Methods
+## Part 7: Scopes, Convenience Scope Methods, and Structured-Concurrency Consumption
 
-All scopes must be named. The convenience methods follow the same pattern.
+All scopes must be named. The convenience scope methods (`.all`, `.first`, `.atMost`, `.atLeast`, `.best`) and the consumption surface (`select` / `match` / `join`) live on the same context.
 
-### `ctx.joinSafe(handle, onError)`
+### Branch and scope-body shape
 
-Joins a branch handle, catching failure via a handler callback instead of throwing. The error handler receives the failure info and returns a recovery value. The return type is `T | Awaited<R>` — either the branch succeeded normally, or the handler produced a fallback. This follows the same pattern as `.timeout()` and `.failure()` elsewhere in the API.
+A scope branch (and a scope body) accepts the same four shapes (defined in Part 4):
 
 ```typescript
-const result = await ctx.joinSafe(
-  flightHandle,
-  (error) => null,   // error: ScopeFailureInfo<TSteps, TChildWorkflows>
-);
-// result: FlightResult | null
+// Form 1 — function shorthand. Mode "none" by default. Anything thrown that isn't
+// a `terminalErrors` factory halts.
+async (ctx) => { /* returns T */ }
+
+// Form 2 — object form, mode "none" (explicit).
+{ execute: async (ctx) => { /* ... */ }, errors: "none" }
+
+// Form 3 — object form, mode "any". Any throw → captured as Failure at the parent
+// consumption point. terminalErrors still escape.
+{ execute: async (ctx) => { /* ... */ }, errors: "any" }
+
+// Form 4 — object form, mode "explicit". Throws of `ctx.branchErrors.X(...)`
+// from the declared keys are captured as ErrorValue<TBranchErrors> at the parent
+// consumption point. Anything else halts. terminalErrors still escape.
+{
+  execute: async (ctx) => {
+    if (badInput) throw ctx.branchErrors.InvalidInput("...", { field: "x" });
+  },
+  errors: { InvalidInput: z.object({ field: z.string() }) },
+}
 ```
 
-### `ctx.best(name, entries)`
+**Default for shorthand and bare object form is mode `"none"`.** This is the conservative default that prevents accidental capture of programming errors. Branches and scope bodies are symmetric in this regard.
 
-Collect as many results as possible. Branches that fail are compensated eagerly; branches that succeed have their results collected. Returns all successful results as an array:
+`ctx.scope(name, branches, body)` follows the same shape rules. A function-shorthand body means mode `"none"`: the body's outer `.resolve()` returns the bare value `T`, and any non-`terminalErrors` throw inside the body halts. An object-form body in mode `"any"` makes the outer `.resolve()` return `{ ok: true; res: T } | { ok: false; err: Failure }`. An object-form body in mode `"explicit"` makes it return `{ ok: true; res: T } | { ok: false; err: ErrorValue<TBodyErrors> }`. The body's `errors:` declaration is independent of any branch's `errors:`.
+
+```typescript
+const result = await ctx
+  .scope("Confirm", { /* branches */ }, async (ctx, handles) => {
+    /* mode "none" — bare T return */
+    return computed;
+  })
+  .resolve(ctx);
+// result: <bare T>
+
+const wrapped = await ctx
+  .scope("Confirm", { /* branches */ }, {
+    execute: async (ctx, handles) => { return computed; },
+    errors: "any",
+  })
+  .resolve(ctx);
+// wrapped: { ok: true; res: T } | { ok: false; err: Failure }
+```
+
+### Structured-concurrency consumption: `select`, `match`, `join`
+
+These three methods consume the typed handles produced by the surrounding scope. They live on `ctx` (and on the inner `ctx` exposed to scope bodies).
+
+**`ctx.select(handles)`** — wait for the first selectable to complete, return its key. Unchanged from prior versions. Returns the key only; the developer subsequently awaits the chosen handle if a value is needed.
+
+**`ctx.match(sel)`** — single overload, no handlers. Returns an async iterable of `{ key, val }` pairs in the order each selectable resolves. The consumer pattern-matches in a `for await` loop. The shape of `val` is determined by the source:
+
+| Source | `val` shape |
+| --- | --- |
+| Branch handle in mode `"none"` | `T` (bare value) |
+| Branch handle in mode `"any"` | `{ ok: true; res: T } \| { ok: false; err: Failure }` |
+| Branch handle in mode `"explicit"` | `{ ok: true; res: T } \| { ok: false; err: ErrorValue<TBranchErrors> }` |
+| `ChannelHandle<T>` / `ChannelReceiveCall<T>` | `T` (channels don't fail) |
+| `Sleep` (`ctx.sleep(...)` / `ctx.sleepUntil(...)`) | `void` — the key alone is the signal |
+
+```typescript
+type MatchYield<S extends Record<string, Selectable>> = {
+  [K in keyof S & string]: { key: K; val: ValShape<S[K]> };
+}[keyof S & string];
+
+match<S extends Record<string, Selectable>>(sel: S): AsyncIterable<MatchYield<S>>;
+```
+
+The discriminant is `key`. The consumer narrows `val` by switching on `key`:
+
+```typescript
+for await (const { key, val } of ctx.match({
+  flight: flightHandle,        // mode "any"
+  hotel: hotelHandle,          // mode "explicit" with errors { Sold: true }
+  msg: ctx.channels.cancel.receive(),
+  giveUp: ctx.sleep(60),
+})) {
+  switch (key) {
+    case "flight":
+      // val: { ok: true; res: FlightBooking } | { ok: false; err: Failure }
+      if (!val.ok) console.warn(val.err.message);
+      else recordFlight(val.res);
+      break;
+    case "hotel":
+      // val: { ok: true; res: HotelBooking } | { ok: false; err: ErrorValue<{ Sold: true }> }
+      if (!val.ok) {
+        if (val.err.errorCode === "Sold") fallbackToOtherHotel();
+      }
+      break;
+    case "msg":
+      // val: CancelMessage
+      return cancelEverything(val);
+    case "giveUp":
+      // val: void
+      return abortAll();
+  }
+}
+```
+
+**There is no handler-form `match`.** The previous `ctx.match(sel, handlers)` overload (with per-key `{ complete, failure }` callbacks) is removed entirely. The reasons: handlers nest poorly (the onboarding example previously took 5 branches × 2 handlers each = 50+ lines of nested closures), the `failure` parameter was the loose `ScopeFailureInfo` instead of the branch's own typed errors, and developers reaching for early-exit, ordered-effect, or shared-mutable-state patterns inside handlers were forced into awkward workarounds. A linear `for await` loop with discriminated yields collapses both the verbosity and the typing weakness.
+
+The onboarding example (`src/examples/onboarding-verification.example.ts`) is the canonical motivation: under this revision it collapses from ~60 lines of handler closures to ~25 lines of straight-line control flow with stronger types throughout.
+
+**`ctx.join(handle)`** — returns the typed `val` shape directly (no `{ key, val }` wrapper, since there is only one source).
+
+```typescript
+join<H extends Selectable>(handle: H): Promise<ValShape<H>>;
+```
+
+For a mode-`"none"` handle, `join` returns `T`. For a mode-`"any"` handle, it returns `{ ok: true; res: T } | { ok: false; err: Failure }`. For a mode-`"explicit"` handle, `{ ok: true; res: T } | { ok: false; err: ErrorValue<TBranchErrors> }`. **`ctx.joinSafe` is removed** — its job (typed catch on join) is what `join(handle)` already does when the handle's mode demands it. Authoring a branch in mode `"any"` or `"explicit"` is the way to opt into "join doesn't throw, it returns a value to switch on."
+
+These three operations are also available on the compensation context with identical signatures.
+
+### Convenience scope methods
+
+These are *scope variants* where the engine acts as the body — each defines its own consumption strategy. All return `{ ok: true; res: ... } | { ok: false; err: ... }` (or, for primitives that have no failure case, the bare result). The `err` shape is defined per primitive inline. **None of these primitives expose a `.failure(cb)` builder method** — failure is in the return value; the developer pattern-matches.
+
+| Method | Strategy | `res` (when `ok`) | `err` (when not `ok`) |
+| --- | --- | --- | --- |
+| `.all` | wait for every branch | `Record<K, branch-K's val shape>` | `{ errorCode: "SomeBranchesFailed"; message; details: { failed: Partial<Record<K, branch-K's err shape>>; completed: Partial<Record<K, branch-K's res shape>> } }` |
+| `.first` | first to complete wins; the rest are eagerly compensated | `{ key: K; value: T_K }` | `{ errorCode: "NoBranchCompleted"; message; details: { branchFailures: Record<K, branch-K's err shape> } }` |
+| `.atMost(n)` | first `n` to complete; the rest are eagerly compensated. No failure case (always returns whatever is available) | `Array<{ key: K; value: T_K }>` (length ≤ `n`) | (no failure case — always unwrapped) |
+| `.atLeast(n)` | wait until at least `n` complete | `Array<{ key: K; value: T_K }>` (length ≥ `n`) | `{ errorCode: "QuorumNotMet"; message; details: { required: n; got: number; failed: Partial<Record<K, branch-K's err shape>>; completed: Partial<Record<K, branch-K's res shape>> } }` |
+| `.best` | collect as many as complete; failures are eagerly compensated. No failure case | `Array<{ key: K; value: T_K }>` (best-effort) | (no failure case — always unwrapped) |
+
+The "branch-K's val shape" / "branch-K's err shape" / "branch-K's res shape" terminology references the per-branch mode table from `match`:
+
+- A branch in mode `"none"`: its `val` shape is `T`. Its `res` shape is `T`. Its `err` shape is *uninhabited* (the branch can't fail without halting). If a `"none"`-mode branch is used inside an `.all` / `.first` / `.atLeast` and it halts, the convenience method itself halts (the halt propagates).
+- A branch in mode `"any"`: `val` is `{ ok, res } | { ok, err }`. Its `res` shape is `T`. Its `err` shape is `Failure`.
+- A branch in mode `"explicit"`: `val` is `{ ok, res } | { ok, err }`. Its `res` shape is `T`. Its `err` shape is `ErrorValue<TBranchErrors>`.
+
+Examples:
+
+```typescript
+const result = await ctx
+  .all("BookEverything", {
+    flight: { execute: async (c) => bookFlight(c), errors: "any" },
+    hotel:  { execute: async (c) => bookHotel(c),  errors: { Sold: true } },
+    car:    async (c) => bookCar(c),  // mode "none" — halts if anything goes wrong
+  })
+  .resolve(ctx);
+// result:
+//   { ok: true;  res: { flight: FlightBooking; hotel: HotelBooking; car: CarBooking } }
+// | { ok: false; err: { errorCode: "SomeBranchesFailed"; message; details: {
+//                        failed: Partial<{ flight: Failure; hotel: ErrorValue<{ Sold: true }> }>;
+//                        completed: Partial<{ flight: FlightBooking; hotel: HotelBooking; car: CarBooking }>;
+//                      } } }
+```
+
+```typescript
+const winner = await ctx
+  .first("FastestQuote", {
+    providerA: async (c) => c.steps.getQuote({ provider: "A" }).resolve(c),
+    providerB: async (c) => c.steps.getQuote({ provider: "B" }).resolve(c),
+    providerC: async (c) => c.steps.getQuote({ provider: "C" }).resolve(c),
+  })
+  .resolve(ctx);
+// winner:
+//   { ok: true;  res: { key: "providerA" | "providerB" | "providerC"; value: Quote } }
+// | { ok: false; err: { errorCode: "NoBranchCompleted"; ... } }
+```
+
+```typescript
+const some = await ctx
+  .atMost("PickTwo", 2, {
+    providerA: async (c) => c.steps.getQuote({ provider: "A" }).resolve(c),
+    providerB: async (c) => c.steps.getQuote({ provider: "B" }).resolve(c),
+    providerC: async (c) => c.steps.getQuote({ provider: "C" }).resolve(c),
+  })
+  .resolve(ctx);
+// some: Array<{ key: ...; value: Quote }>  (length ≤ 2). No failure case.
+```
+
+```typescript
+const quorum = await ctx
+  .atLeast("EnsureQuorum", 3, {
+    nodeA: async (c) => c.steps.healthCheck({ node: "A" }).resolve(c),
+    nodeB: async (c) => c.steps.healthCheck({ node: "B" }).resolve(c),
+    nodeC: async (c) => c.steps.healthCheck({ node: "C" }).resolve(c),
+    nodeD: async (c) => c.steps.healthCheck({ node: "D" }).resolve(c),
+    nodeE: async (c) => c.steps.healthCheck({ node: "E" }).resolve(c),
+  })
+  .resolve(ctx);
+// quorum:
+//   { ok: true;  res: Array<{ key; value: HealthCheck }> /* length ≥ 3 */ }
+// | { ok: false; err: { errorCode: "QuorumNotMet"; details: { required: 3; got; ... } } }
+```
 
 ```typescript
 const results = await ctx
   .best("GetAllQuotes", {
-    providerA: async (ctx) => ctx.steps.getQuote({ provider: "A" }).resolve(ctx),
-    providerB: async (ctx) => ctx.steps.getQuote({ provider: "B" }).resolve(ctx),
-    providerC: async (ctx) => ctx.steps.getQuote({ provider: "C" }).resolve(ctx),
+    providerA: async (c) => c.steps.getQuote({ provider: "A" }).resolve(c),
+    providerB: async (c) => c.steps.getQuote({ provider: "B" }).resolve(c),
+    providerC: async (c) => c.steps.getQuote({ provider: "C" }).resolve(c),
   })
   .resolve(ctx);
-// results: Array<{ key: "providerA" | "providerB" | "providerC", data: Quote }>
+// results: Array<{ key: ...; value: Quote }>. No failure case.
 ```
-
-### `ctx.atMost(name, n, entries)`
-
-Collect at most `n` results. Short-circuits after `n` successes; remaining branches are compensated eagerly:
-
-```typescript
-const results = await ctx
-  .atMost("PickTwo", 2, {
-    providerA: async (ctx) => ctx.steps.getQuote({ provider: "A" }).resolve(ctx),
-    providerB: async (ctx) => ctx.steps.getQuote({ provider: "B" }).resolve(ctx),
-    providerC: async (ctx) => ctx.steps.getQuote({ provider: "C" }).resolve(ctx),
-  })
-  .resolve(ctx);
-// results: Array<{ key: "providerA" | "providerB" | "providerC", data: Quote }>
-// results.length <= 2
-```
-
-### `ctx.atLeast(name, n, entries)`
-
-Collect at least `n` results before returning. Fails if fewer than `n` branches succeed:
-
-```typescript
-const results = await ctx
-  .atLeast("EnsureQuorum", 3, {
-    nodeA: async (ctx) => ctx.steps.healthCheck({ node: "A" }).resolve(ctx),
-    nodeB: async (ctx) => ctx.steps.healthCheck({ node: "B" }).resolve(ctx),
-    nodeC: async (ctx) => ctx.steps.healthCheck({ node: "C" }).resolve(ctx),
-    nodeD: async (ctx) => ctx.steps.healthCheck({ node: "D" }).resolve(ctx),
-    nodeE: async (ctx) => ctx.steps.healthCheck({ node: "E" }).resolve(ctx),
-  })
-  .resolve(ctx);
-// results: Array<{ key: ..., data: HealthCheckResult }>
-// results.length >= 3
-```
-
-### Return type
-
-All three methods return `Array<{ key: K, data: EntryResult<K> }>`. This provides true type safety with a natural iteration interface. The consumer expects to iterate options, so an array is more natural than a partial object.
 
 ### Type signatures
 
+The shape of the call types differs only in the result type and (for `.atLeast`) the additional `n` parameter:
+
 ```typescript
-best<
-  Name extends string,
-  E extends Record<string, ScopeEntry<any>>,
->(
-  name: ScopeNameArg<TScopePath, Name>,
-  entries: E,
-): BestCall<Array<{ key: keyof E & string; data: EntryResult<E, keyof E & string> }>, E, TSteps, TChildWorkflows, ExecutionRoot>;
+type EntryRes<E, K extends keyof E> = /* the branch's res shape */;
+type EntryErr<E, K extends keyof E> = /* the branch's err shape */;
 
-atMost<
-  Name extends string,
-  E extends Record<string, ScopeEntry<any>>,
->(
-  name: ScopeNameArg<TScopePath, Name>,
-  n: number,
-  entries: E,
-): AtMostCall<Array<{ key: keyof E & string; data: EntryResult<E, keyof E & string> }>, E, TSteps, TChildWorkflows, ExecutionRoot>;
+interface AllResult<E> {
+  ok: true;
+  res: { [K in keyof E]: EntryRes<E, K> };
+} | {
+  ok: false;
+  err: {
+    errorCode: "SomeBranchesFailed";
+    message: string;
+    details: {
+      failed: Partial<{ [K in keyof E]: EntryErr<E, K> }>;
+      completed: Partial<{ [K in keyof E]: EntryRes<E, K> }>;
+    };
+  };
+}
 
-atLeast<
-  Name extends string,
-  E extends Record<string, ScopeEntry<any>>,
->(
-  name: ScopeNameArg<TScopePath, Name>,
-  n: number,
-  entries: E,
-): AtLeastCall<Array<{ key: keyof E & string; data: EntryResult<E, keyof E & string> }>, E, TSteps, TChildWorkflows, ExecutionRoot>;
+all<Name extends string, E extends Record<string, ScopeEntry<any>>>(
+  name: ScopeNameArg<TScopePath, Name>, entries: E,
+): AllCall<AllResult<E>, E, TSteps, TChildWorkflows, ExecutionRoot>;
+
+first<Name extends string, E extends Record<string, ScopeEntry<any>>>(
+  name: ScopeNameArg<TScopePath, Name>, entries: E,
+): FirstCall<FirstResult<E>, E, TSteps, TChildWorkflows, ExecutionRoot>;
+
+atMost<Name extends string, E extends Record<string, ScopeEntry<any>>>(
+  name: ScopeNameArg<TScopePath, Name>, n: number, entries: E,
+): AtMostCall<Array<{ key: keyof E & string; value: EntryRes<E, keyof E & string> }>, E, TSteps, TChildWorkflows, ExecutionRoot>;
+
+atLeast<Name extends string, E extends Record<string, ScopeEntry<any>>>(
+  name: ScopeNameArg<TScopePath, Name>, n: number, entries: E,
+): AtLeastCall<AtLeastResult<E>, E, TSteps, TChildWorkflows, ExecutionRoot>;
+
+best<Name extends string, E extends Record<string, ScopeEntry<any>>>(
+  name: ScopeNameArg<TScopePath, Name>, entries: E,
+): BestCall<Array<{ key: keyof E & string; value: EntryRes<E, keyof E & string> }>, E, TSteps, TChildWorkflows, ExecutionRoot>;
 ```
 
-`ScopeNameArg` enforces the ancestor name collision check, consistent with `ctx.scope()`.
+`ScopeNameArg` enforces the ancestor name collision check, consistent with `ctx.scope()`. None of these call types exposes a `.failure(cb)` builder; the chain on each is `(.compensate)? → (.complete)? → .resolve` (compensation is for the synthetic engine-as-body, which is a single registered cleanup).
 
 ---
 
@@ -1465,7 +1713,7 @@ No handler is registered. The request sits in the database until an external act
 // No handler registered — resolution comes from the dashboard
 const decision = await ctx.requests
   .complianceReview({ orderId, riskScore, flaggedRules })
-  .timeout(86400 * 7, () => ({ decision: "auto-reject" as const, note: "Review timed out" }))
+  .timeout(86400 * 7, (ctx, info) => ({ decision: "auto-reject" as const, note: "Review timed out" }))
   .resolve(ctx);
 ```
 
@@ -1489,10 +1737,10 @@ const humanReview = defineRequest({
 
 ### Workflow-internal API
 
-Requests are Tier 1 but NOT `StepCall` instances. They have their own call type extending `DurableHandle` directly. Timeout is controlled via the `.timeout()` builder, following the same pattern as `StepCall` — not as a constructor option.
+Requests are Tier 1 but NOT `StepCall` instances. They have their own call type extending `DurableHandle` directly. Timeout is controlled via the `.timeout(boundary, cb)` builder, following the same pattern as `StepCall` — not as a constructor option. As with steps, the `.timeout()` callback is mandatory; the no-callback form does not exist.
 
 ```typescript
-// Wait indefinitely (no .timeout() chained)
+// Wait indefinitely (no .timeout() chained — request retries forever, only resolves on success)
 const result = await ctx.requests
   .humanReview({ context: "...", data: signals })
   .compensate(async (ctx, result) => {
@@ -1503,57 +1751,57 @@ const result = await ctx.requests
 // With timeout + fallback
 const result = await ctx.requests
   .humanReview({ context: "...", data: signals })
+  .priority(1)
+  .timeout(300, (ctx, info) => null)
   .compensate(async (ctx, result) => {
     /* ... */
   })
-  .timeout(300, () => null)
-  .complete((r) => r.decision)
+  .complete((r) => r?.decision ?? "auto-reject")
   .resolve(ctx);
-// result: "approve" | "reject" | null
+// result: "approve" | "reject" | "auto-reject"
 
 // With deadline
 const result = await ctx.requests
   .humanReview({ context: "...", data: signals })
-  .timeout(new Date("2027-01-10T08:00:00Z"), () => null)
+  .timeout(new Date("2027-01-10T08:00:00Z"), (ctx, info) => null)
   .resolve(ctx);
 ```
 
 ### `RequestCall` type
 
+The chain order is `(.priority)? → (.timeout)? → (.compensate)? → (.complete)? → .resolve`. Each method may be called at most once. Like `StepCall`, `RequestCall` has no `.failure(cb)` — requests do not have a "failure" concept distinct from timeout (the only outcomes the workflow sees are "resolved with response" and "timeout reached"; handler retries and the manual-mode lifecycle are entirely on the handler side, see "Retry policy and exhaustion" below). The chain after `.compensate` is locked from `.priority`/`.timeout` for the same reason as `StepCall` (Part 5): the compensation callback's `result` parameter type depends on the union narrowed by `.timeout(cb)`.
+
 ```typescript
 interface RequestCall<
+  TPayload,
   T,
   TTimeout = never,
   HasCompensation extends boolean = false,
   Tctx = unknown,
   Called extends string = never,
 > extends DurableHandle<T | TTimeout, ExecutionRoot> {
-  compensate: "compensate" extends Called ? never :
+  priority: "priority" | "timeout" | "compensate" | "complete" extends Called ? never :
+    (value: number) =>
+      RequestCall<TPayload, T, TTimeout, HasCompensation, Tctx, Called | "priority">;
+
+  timeout: "timeout" | "compensate" | "complete" extends Called ? never :
+    & (<R>(secondsOrDeadline: number | Date, cb: (ctx: Tctx, info: TimeoutInfo<TPayload>) => R) =>
+        RequestCall<TPayload, T, Awaited<R>, HasCompensation, Tctx, Called | "timeout">)
+    & (<R>(opts: StepBoundary, cb: (ctx: Tctx, info: TimeoutInfo<TPayload>) => R) =>
+        RequestCall<TPayload, T, Awaited<R>, HasCompensation, Tctx, Called | "timeout">);
+
+  compensate: "compensate" | "complete" extends Called ? never :
     & ((
-        cb: (ctx: Tctx, result: RequestCompensationResult<T>) => Promise<void>,
-      ) => RequestCall<T, TTimeout, true, Tctx, Called | "compensate">)
+        cb: (ctx: Tctx, result: RequestCompensationResult<T | TTimeout>) => Promise<void>,
+      ) => RequestCall<TPayload, T, TTimeout, true, Tctx, Called | "compensate">)
     & ((
         name: string,
-        cb: (ctx: Tctx, result: RequestCompensationResult<T>) => Promise<void>,
-      ) => RequestCall<T, TTimeout, true, Tctx, Called | "compensate">);
-
-  timeout: "timeout" extends Called ? never :
-    & ((secondsOrDeadline: number | Date) =>
-        RequestCall<T, never, HasCompensation, Tctx, Called | "timeout">)
-    & (<R>(secondsOrDeadline: number | Date, cb: () => R) =>
-        RequestCall<T, Awaited<R>, HasCompensation, Tctx, Called | "timeout">)
-    & ((opts: StepBoundary) =>
-        RequestCall<T, never, HasCompensation, Tctx, Called | "timeout">)
-    & (<R>(opts: StepBoundary, cb: () => R) =>
-        RequestCall<T, Awaited<R>, HasCompensation, Tctx, Called | "timeout">);
-
-  priority: "priority" extends Called ? never :
-    (value: number) =>
-      RequestCall<T, TTimeout, HasCompensation, Tctx, Called | "priority">;
+        cb: (ctx: Tctx, result: RequestCompensationResult<T | TTimeout>) => Promise<void>,
+      ) => RequestCall<TPayload, T, TTimeout, true, Tctx, Called | "compensate">);
 
   complete: "complete" extends Called ? never :
-    <R>(cb: (data: T) => R) =>
-      RequestCall<Awaited<R>, TTimeout, HasCompensation, Tctx, Called | "complete">;
+    <R>(cb: (data: T | TTimeout) => R) =>
+      RequestCall<TPayload, Awaited<R>, never, HasCompensation, Tctx, Called | "complete">;
 }
 ```
 
@@ -1773,7 +2021,7 @@ Requests support optional priority, mirroring queue message priority.
 // Workflow call site — priority on the builder
 const decision = await ctx.requests.humanReview({ context: "order-123", data: orderData })
   .priority(1)        // urgent — processed before default-priority requests
-  .timeout(3600)
+  .timeout(3600, (ctx, info) => ({ decision: "auto-reject" as const, note: "Review timed out" }))
   .resolve(ctx);
 ```
 
@@ -1805,7 +2053,8 @@ const pending = await client.requests.humanReview.list({
 });
 // pending: { items: Array<{ id, payload, status, createdAt, attempts: AttemptAccessor }>, cursor }
 
-// Cancel a request (workflow sees RequestTimeoutError)
+// Cancel a request (workflow's .timeout(cb) callback fires with reason: "deadline";
+// or, if no .timeout() was chained at the call site, the workflow halts)
 const cancelResult = await client.requests.humanReview.cancel(requestId);
 ```
 
@@ -1841,7 +2090,7 @@ interface RequestListResult<TPayload> {
 - `resolve()` validates the response against the request's response schema. Type-safe: the second argument is `InferInput<TResponseSchema>`.
 - `resolve()` on a `'claimed'` request interrupts the handler via its `AbortSignal` (the handler's signal fires, the resolve wins).
 - `resolve()` on a `'pending'` request resolves it before any handler claims it — useful for requests that don't need a handler at all (pure human-in-the-loop).
-- `cancel()` transitions the request to `'cancelled'` and the workflow sees `RequestTimeoutError`.
+- `cancel()` transitions the request to `'cancelled'`. From the workflow's perspective, this fires the call site's `.timeout(cb)` callback with `reason: "deadline"` (the cancellation is treated as a deadline reached externally). If no `.timeout()` was chained at the call site, the workflow halts (per the per-context throw rules in Part 3).
 - `list()` supports filtering by status and cursor-based pagination.
 - `attempts` on each list item provides the error history for requests that have been attempted.
 
@@ -2214,11 +2463,11 @@ When a `Date` is provided, the receive blocks until a message arrives or the abs
 
 **Rename `StepErrorAccessor` → `AttemptAccessor`:** shared interface for lazy access to per-attempt records across steps, queue dead-lettered messages, topic consumer failures, and request handler failures.
 
-**Rename `StepExecutionError` → `Attempt`:** the previous name leaked the step origin into a type shared across all attempt-bearing contexts. A queue handler's dead-letter inspection should not surface a "StepExecutionError." The new name is context-neutral and reflects that an attempt is not always erroneous — it may have ended abruptly (process crash, signal abort) with no error information captured.
+**Introduce `Failure` (base) and `Attempt extends Failure` (with `attempt: number`).** The previous single `StepExecutionError` type leaked the step origin into a type shared across all attempt-bearing contexts and conflated *captured throws with no retry context* (what a mode-`"any"` branch surfaces — a single throw, no attempt number) with *captured throws inside a retried operation* (what a step / queue handler / request handler / topic consumer surfaces — one record per attempt with a 1-indexed number). Splitting into `Failure` (the base) and `Attempt extends Failure` (the retried-operation extension) makes both contexts type-correct without losing field reuse.
 
-**Introduce `AttemptError` class:** a throwable `Error` subclass that handlers can use to attach structured, JSON-serializable details to failures. When the engine catches an `AttemptError`, it persists `type`, `message`, and `details` directly. When it catches a plain `Error`, it extracts `message` and `constructor.name`. When it catches any other thrown value, it best-efforts `String(thrown)` for the message. This means all error fields on the `Attempt` record are nullable — JavaScript's `throw` can throw anything, including values with no message, no type, and no details.
+**Introduce `AttemptError` class:** a throwable `Error` subclass that handlers can use to attach structured, JSON-serializable details to failures. When the engine catches an `AttemptError`, it persists `type`, `message`, and `details` directly. When it catches a plain `Error`, it extracts `message` and `constructor.name`. When it catches any other thrown value, it best-efforts `String(thrown)` for the message. This means all error fields on `Failure` (and therefore `Attempt`) are nullable — JavaScript's `throw` can throw anything, including values with no message, no type, and no details.
 
-**Unify attempt record shape:** all attempt-bearing subsystems (steps, queue handlers, topic consumers, request handlers) share the same DB column pattern: `attempt`, `error_message`, `error_type`, `error_details`, `started_at`, `failed_at`. Error columns are nullable (a thrown `undefined` or an abruptly terminated attempt has no error info). The public type reflects this with `startedAt` and `failedAt` (both `Date`), replacing the old single `timestamp` field. This captures attempt duration — useful for diagnosing slow failures vs immediate crashes.
+**Unify attempt record shape:** all attempt-bearing subsystems (steps, queue handlers, topic consumers, request handlers) share the same DB column pattern: `attempt`, `error_message`, `error_type`, `error_details`, `started_at`, `failed_at`. Error columns are nullable (a thrown `undefined` or an abruptly terminated attempt has no error info). The public type reflects this with `startedAt` and `failedAt` (both `Date`), replacing the old single `timestamp` field. This captures duration — useful for diagnosing slow failures vs immediate crashes.
 
 **`count` property → `count()` async method:** consistent with the fully lazy interface.
 
@@ -2243,26 +2492,27 @@ class AttemptError extends Error {
 }
 ```
 
-**Engine extraction rules** when catching a thrown value:
+### Engine extraction rules
 
-| Thrown value | `error_type` | `error_message` | `error_details` |
+The same rules apply to producing both `Failure` records (for any throw captured by a mode-`"any"` branch — see Part 4) and `Attempt` records (for steps, queue handlers, request handlers, topic consumers — one row per attempt). The only difference between the two contexts is that `Attempt` adds the `attempt: number` (1-indexed) on top of the `Failure` shape.
+
+| Thrown value | `type` | `message` | `details` |
 | --- | --- | --- | --- |
 | `AttemptError` instance | `.type` | `.message` | `.details` |
+| `ExplicitError` instance (escaped from inside a mode-`"any"` branch — usually shouldn't happen because terminal errors escape, but if a `branchErrors` is thrown into mode-`"any"` capture) | `"ExplicitError"` (or `null` for non-`AttemptError` `Error` subclasses, depending on serializer) | `.message` | `{ errorCode, details }` |
 | `Error` instance | `.constructor.name` | `.message` | `null` |
 | `string` | `null` | the string | `null` |
 | anything else | `null` | `String(thrown)` | `null` |
 
-### `Attempt` (read-side record)
+### `Failure` (base record — captured single throw)
 
-A plain data record representing a single persisted attempt. All error fields are nullable — the attempt may have been abrupt (no clean failure captured), or the thrown value may not have carried the relevant information.
+A plain data record representing a single captured throw. Used by mode-`"any"` branches at consumption points (`match`, `join`, `.all`/`.first`/`.atLeast` `err.details.failed[K]` slots).
 
 ```typescript
-interface Attempt {
-  /** 1-indexed attempt number */
-  readonly attempt: number;
-  /** When the attempt started */
+interface Failure {
+  /** When the operation started */
   readonly startedAt: Date;
-  /** When the attempt was recorded as failed */
+  /** When the operation was recorded as failed */
   readonly failedAt: Date;
   /** Error message (null if unknown) */
   readonly message: string | null;
@@ -2270,6 +2520,17 @@ interface Attempt {
   readonly type: string | null;
   /** Structured details (undefined if not provided) */
   readonly details: JsonInput | undefined;
+}
+```
+
+### `Attempt` (retried-operation record)
+
+A `Failure` augmented with the 1-indexed attempt number. Used by `AttemptAccessor` for steps / queue / request / topic handlers.
+
+```typescript
+interface Attempt extends Failure {
+  /** 1-indexed attempt number */
+  readonly attempt: number;
 }
 ```
 
@@ -2487,7 +2748,7 @@ The `args` field is a `JsonSchemaConstraint` — the same constraint as everythi
 
 The codebase follows a strict encode-on-write, decode-on-read discipline using `StandardSchemaV1`'s two type parameters. Standard Schema does not support bidirectional transforms (there is no `encode(Output) → Input`), so the write side must always accept `InferInput` (the JSON-serializable form):
 
-- **Call sites** (write side) accept `InferInput`: `ctx.steps.X(args)`, `ctx.childWorkflows.X.start({ args })`, `ctx.errors.X(message, details)`, `channel.send(data)`, `stream.write(data)`. The developer provides the serializable form.
+- **Call sites** (write side) accept `InferInput`: `ctx.steps.X(args)`, `ctx.childWorkflows.X.start({ args })`, `ctx.terminalErrors.X(message, details)`, `ctx.branchErrors.X(message, details)`, `channel.send(data)`, `stream.write(data)`. The developer provides the serializable form.
 - **Callbacks** (read side) receive `InferOutput`: `execute({ signal }, args)`, `beforeSettle`, compensation callbacks, `idempotencyKeyFactory(args)`. The engine deserializes from the database and validates through the schema, producing the decoded form.
 - **External results** (read side) are typed as `InferOutput`: step results, workflow results, error details, timeout error args. The external caller receives the decoded form.
 
@@ -2505,13 +2766,15 @@ defineWorkflow({
   requests:              { [name: string]: RequestDefinition<Req, Res> },
   topics:                { [name: string]: TopicDefinition<R, Meta> },
   attributes:            { [name: string]: JsonSchemaConstraint },
-  errors:                { [name: string]: JsonSchemaConstraint | true },
+  terminalErrors:        { [name: string]: JsonSchemaConstraint | true },
   compensation: {
-    errors:              { [name: string]: JsonSchemaConstraint | true },  // optional
+    terminalErrors:      { [name: string]: JsonSchemaConstraint | true },  // optional
   },
   idempotencyKeyFactory: (args: InferOutput<TArgs>) => string,  // optional
 });
 ```
+
+Per-branch `errors:` declarations are *not* set here — they are declared inline on the branch (or scope-body) object form (see Part 4).
 
 ### `defineStep` changes
 
@@ -2530,38 +2793,52 @@ defineStep({
 | Change                                  | Details                                                                                  |
 | --------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `ctx.queues.X.enqueue(payload, opts?)`  | Sync buffered, both contexts                                                             |
-| `ctx.requests.X(payload)`               | Tier 1, both contexts (no `.compensate()` in `CompensationContext`). Timeout via builder. |
+| `ctx.requests.X(payload)`               | Tier 1, both contexts (no `.compensate()` distinction in compensation context — same builder shape). Timeout via builder; `.timeout(boundary, cb)` callback mandatory. |
 | `ctx.topics.X.publish(payload, opts?)`  | Sync buffered, both contexts                                                             |
 | `ctx.attributes.X.set(value)`           | Sync buffered, both contexts                                                             |
-| `ctx.errors.X(message, details?)`       | Factory functions for declared error classes. Keyed by error name.                       |
+| `ctx.terminalErrors.X(message, details?)` | Factory functions for declared workflow-level terminal errors. Always available. Throw escapes everything. |
+| `ctx.branchErrors.X(message, details?)` | Factory functions scoped to the *current branch*'s declared `errors:` map. Empty record outside an `"explicit"`-mode branch. Throw is captured at parent consumption point. |
 | `ctx.registerCompensation(name, cb)`    | Sync buffered, `WorkflowContext` only. Registers deferred LIFO compensation.             |
 | `ctx.compensateEagerly(name, cb)`       | Sync buffered, `WorkflowContext` only. Dispatches eager FIFO compensation.               |
-| `ctx.joinSafe(handle, onError)`         | Available on concurrency contexts. Error handler returns recovery value.                 |
-| `ctx.best(name, entries)`               | Tier 1, collects all successful results.                                                 |
-| `ctx.atMost(name, n, entries)`          | Tier 1, collects at most N results.                                                      |
-| `ctx.atLeast(name, n, entries)`         | Tier 1, collects at least N results (fails if fewer).                                    |
-| `ctx.first(name, entries)`              | Now requires a name argument.                                                            |
-| `ctx.all(name, entries)`                | Now requires a name argument.                                                            |
-| `ctx.scope(name, entries, callback)`    | Unchanged (already named).                                                               |
+| `ctx.match(sel)`                        | Single overload. Returns `AsyncIterable<{ key, val }>`. `val` shape per source mode (Part 7). No handler form. |
+| `ctx.join(handle)`                      | Returns the typed `val` shape directly (no `{ key, val }`). `joinSafe` is removed. |
+| `ctx.select(handles)`                   | Unchanged. Returns the key of the first selectable to complete.                          |
+| `ctx.best(name, entries)`               | Returns `Array<{ key, value }>` (best-effort). No failure case.                          |
+| `ctx.atMost(name, n, entries)`          | Returns `Array<{ key, value }>` (length ≤ `n`). No failure case.                         |
+| `ctx.atLeast(name, n, entries)`         | Returns `{ ok, res } \| { ok, err: { errorCode: "QuorumNotMet"; ... } }`.                |
+| `ctx.first(name, entries)`              | Returns `{ ok, res: { key, value } } \| { ok, err: { errorCode: "NoBranchCompleted"; ... } }`. |
+| `ctx.all(name, entries)`                | Returns `{ ok, res: Record<K, ...> } \| { ok, err: { errorCode: "SomeBranchesFailed"; ... } }`. |
+| `ctx.scope(name, entries, body)`        | Body accepts the same shorthand/object forms as branches. Mode `"none"` default; outer `.resolve()` returns bare `T` in mode `"none"`, wrapped `{ ok, res } \| { ok, err }` in mode `"any"`/`"explicit"`. |
 
 ### `StepCall` changes
 
 | Change                                            | Details                                                                           |
 | ------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `.failure()` removed                              | Steps cannot fail — they succeed or time out.                                     |
-| `.timeout(boundary, cb?)` added                   | Replaces `.failure()`. Accepts `number`, `Date`, or `StepBoundary`.               |
+| `.failure()` not present                          | Steps don't fail; they succeed or hit a `.timeout` boundary.                      |
+| `.timeout(boundary, cb)` callback mandatory       | No-callback form removed. `boundary` accepts `number`, `Date`, or `StepBoundary`. Callback receives `(ctx, info)` so it can invoke durable primitives. |
 | `TFail` type parameter removed                    | Replaced by `TTimeout`.                                                           |
-| `TArgs` type parameter added                      | Threads serializable args type through to compensation callbacks.                 |
-| `.compensate()` accepts optional name              | `.compensate("name", cb)` for explicit identity.                                  |
-| `Called` type parameter added                      | Builder methods resolve to `never` after first call — prevents duplicate chaining. |
+| `TArgs` type parameter added                      | Threads serializable args type through to compensation callbacks and `TimeoutInfo`. |
+| `.compensate()` accepts optional name             | `.compensate("name", cb)` for explicit identity.                                  |
+| `Called` type parameter ordered                   | Chain order `(.retry)? → (.timeout)? → (.compensate)? → (.complete)? → .resolve`. After `.compensate`, `.retry`/`.timeout` resolve to `never`. |
 
 ### `WorkflowCall` changes
 
 | Change                                | Details                                                                           |
 | ------------------------------------- | --------------------------------------------------------------------------------- |
-| `.timeout(boundary, cb?)` added       | Parent-side patience. Accepts `number`, `Date`, or `StepBoundary`.                |
+| `.failure(cb)` type-mandatory         | `.compensate` and `.resolve` require `"failure" extends Called`. Callback receives `(ctx, info: ChildWorkflowFailureInfo<TArgs, TChildTerminalErrors>)`, fully typed against the child's declared `terminalErrors`. |
+| `.timeout(boundary, cb)` callback mandatory | Same shape as on `StepCall`. Callback receives `(ctx, info: TimeoutInfo<TArgs>)`. |
+| `TArgs` and `TChildTerminalErrors` type parameters added | Threads parent-side child args + child's terminal-error map into callbacks. |
 | `.compensate()` accepts optional name | `.compensate("name", cb)` for explicit identity.                                  |
-| `Called` type parameter added          | Builder methods resolve to `never` after first call — prevents duplicate chaining. |
+| `Called` type parameter ordered       | Chain order `(.retry)? → (.timeout)? → .failure → (.compensate)? → (.complete)? → .resolve`. After `.compensate`, `.retry`/`.timeout`/`.failure` resolve to `never`. |
+
+### `RequestCall` changes
+
+| Change                                | Details                                                                           |
+| ------------------------------------- | --------------------------------------------------------------------------------- |
+| No `.failure(cb)`                     | Requests don't have a failure concept distinct from timeout.                      |
+| `.timeout(boundary, cb)` callback mandatory | Same shape as on `StepCall`. Callback receives `(ctx, info: TimeoutInfo<TPayload>)`. |
+| `.priority(n)`                        | Optional. Lower number = higher urgency. Default `0`.                             |
+| `Called` type parameter ordered       | Chain order `(.priority)? → (.timeout)? → (.compensate)? → (.complete)? → .resolve`. |
 
 ### `RetryPolicyOptions` changes (step-level)
 
@@ -2584,9 +2861,9 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - `defineQueue`, `defineRequest`, `defineTopic`
 - `SearchQueryNode`, `SearchQuery`
 - `DeadLetterRecordFields`, `DeadLetterSort`, `DeadLetterCursor`, `DeadLetteredMessage`, `DeadLetterHandle`
-- `RequestCompensationResult`, `RequestResolveResult`, `RequestCancelResult`, `RequestListItem`, `RequestListResult`, `AttemptAccessor`, `Attempt`, `AttemptError`
-- `WorkflowError`, `WorkflowErrorValue`, `WorkflowFailureInfo`, `CompensationFailureInfo`
-- `StepTimeoutError`, `RequestTimeoutError`, `ChildWorkflowError`, `ChildWorkflowTimeoutError`, `LooseWorkflowError`
+- `RequestCompensationResult`, `RequestResolveResult`, `RequestCancelResult`, `RequestListItem`, `RequestListResult`, `AttemptAccessor`, `Failure`, `Attempt`, `AttemptError`
+- `ExplicitError`, `ErrorValue`, `FailureInfo`, `CompensationFailureInfo`
+- `TimeoutInfo`, `StepFailureInfo`, `ChildWorkflowFailureInfo`
 - `StepBoundary`, `MAIN_BRANCH`, `BranchPathItem`, `MANUAL`, `UnrecoverableError`
 - `Unsubscribe`
 - `TopicRecord`
@@ -2595,49 +2872,98 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - `IWorkflowConnection`, `IWorkflowTransaction`
 - `RetentionSetter`
 
+### Removed exports
+
+- `WorkflowError`, `WorkflowErrorValue`, `WorkflowFailureInfo` (the old union form). Replaced by `ExplicitError` (throwable) and `ErrorValue<T>` / `FailureInfo<TTerminalErrors>` (external value types).
+- `StepTimeoutError`, `RequestTimeoutError`, `ChildWorkflowError`, `ChildWorkflowTimeoutError`, `LooseWorkflowError`. Engine-level failures (step timeouts, request timeouts, child workflow failures, child workflow timeouts) are no longer part of the external `FailureInfo` surface — they are handled at the call site via `.timeout(cb)` / `.failure(cb)` callbacks, or they halt the workflow.
+- `joinSafe` (method removed from concurrency contexts).
+- The handler-form overload of `ctx.match` (handlers map). Only the `AsyncIterable<{ key, val }>` form remains.
+
 ### Breaking changes
 
+#### Error model
+
+- Two-tier error model: `terminalErrors` (workflow-wide, escape all scopes) replace the old `errors` field on `defineWorkflow`. Per-branch `branchErrors` are declared inline on the branch (or scope-body) `errors:` field with three modes: `"none"` (default — no captures, throws halt), `"any"` (capture any throw as `Failure`), or an explicit `{ Name: schema | true }` map (typed branch errors only).
+- `WorkflowError` (and `LooseWorkflowError`) removed. `ExplicitError` is the new single throwable class for declared errors.
+- `ctx.errors.X(...)` split into two namespaces:
+    - `ctx.terminalErrors.X(...)` — always available; throw escapes all scopes and surfaces as `FailureInfo`.
+    - `ctx.branchErrors.X(...)` — empty record outside an `"explicit"`-mode branch; throw is captured at the parent consumption point (`match`/`join`/convenience method) as `{ ok: false, err: ErrorValue<...> }`.
+- External `WorkflowFailureInfo` union eliminated. The new `FailureInfo<TTerminalErrors> = ErrorValue<TTerminalErrors>` includes only declared terminal errors. Engine-level failures (step timeouts, request timeouts, child workflow failures, child workflow timeouts) never appear externally — they are handled at the call site or they halt.
+- `StepTimeoutError`, `RequestTimeoutError`, `ChildWorkflowError`, `ChildWorkflowTimeoutError`, `LooseWorkflowError` removed.
+- `defineWorkflow.errors` renamed to `defineWorkflow.terminalErrors`. `defineWorkflow.compensation.errors` renamed to `defineWorkflow.compensation.terminalErrors`. Only declared terminal errors can fail compensation; all other exceptions halt.
+- Per-context throw rules: in any "execute" body or `"none"`-mode branch, only `ctx.terminalErrors.X(...)` fails (escapes); any other throw halts. In `"any"`-mode branches, every throw is captured as a `Failure`. In `"explicit"`-mode branches, only `ctx.branchErrors.X(...)` is captured; any other throw halts.
+
+#### Builder chains
+
+- All builder chains (`StepCall`, `WorkflowCall`, `RequestCall`) enforce strict ordering via the `Called` type parameter:
+    - `StepCall`: `(.retry)? → (.timeout)? → (.compensate)? → (.complete)? → .resolve`
+    - `WorkflowCall`: `(.retry)? → (.timeout)? → .failure → (.compensate)? → (.complete)? → .resolve` (`.failure` is type-mandatory)
+    - `RequestCall`: `(.priority)? → (.timeout)? → (.compensate)? → (.complete)? → .resolve`
+- `.compensate()` locks the chain — subsequent `.retry`/`.timeout`/`.failure` resolve to `never`. This stabilizes the result type passed to compensation callbacks.
+- `.timeout(boundary, cb)` callback is now mandatory on `StepCall`, `WorkflowCall`, `RequestCall`. The no-callback overload is removed. Without `.timeout()`, the operation has no engine-imposed deadline (only its retry policy applies).
+- `.failure(cb)` is mandatory (type-level) on `WorkflowCall`. `.compensate` and `.resolve` require `"failure" extends Called`.
+- `StepCall.failure()` not present. Steps don't fail; they succeed or hit a `.timeout` boundary.
+- `RequestCall` has no `.failure(cb)`.
+- `.timeout(cb)` and `.failure(cb)` callbacks now receive `(ctx, info)` — they may invoke durable primitives.
+    - `TimeoutInfo<TArgs>` — args, attempts accessor, deadline.
+    - `StepFailureInfo<TArgs>` — internal use only (not on `StepCall`).
+    - `ChildWorkflowFailureInfo<TArgs, TChildTerminalErrors>` — args, child workflow id, fully typed `error: ErrorValue<TChildTerminalErrors>`.
+
+#### Structured concurrency
+
+- `ctx.match(sel)` is a single overload returning `AsyncIterable<{ key, val }>`. The handler-map form is removed. `val` shape is determined by the source: branches → `T` (mode `"none"`) or `{ ok, res } | { ok, err }` (mode `"any"`/`"explicit"`); channels → `{ msg }`; sleep → `{ deadline }`.
+- `ctx.joinSafe` removed. `ctx.join(handle)` returns the typed `val` directly (bare `T` for `"none"`, the wrapped variant for `"any"`/`"explicit"`).
+- `ctx.scope(name, entries, body)` — body accepts the same shorthand/object forms as branches with the same `errors:` modes. Outer `.resolve()` returns bare `T` in mode `"none"`, wrapped `{ ok, res } | { ok, err }` otherwise.
+- Convenience scope methods updated:
+    - `ctx.first(name, entries)` → `{ ok, res: { key, value } } | { ok, err: { errorCode: "NoBranchCompleted"; ... } }`
+    - `ctx.all(name, entries)` → `{ ok, res: Record<K, ...> } | { ok, err: { errorCode: "SomeBranchesFailed"; ... } }`
+    - `ctx.atLeast(name, n, entries)` → `{ ok, res } | { ok, err: { errorCode: "QuorumNotMet"; ... } }`
+    - `ctx.atMost(name, n, entries)` → `Array<{ key, value }>` (no failure case)
+    - `ctx.best(name, entries)` → `Array<{ key, value }>` (no failure case)
+
+#### Attempts
+
 - `StepErrorAccessor` renamed to `AttemptAccessor`.
-- `StepExecutionError` renamed to `Attempt`. Fields changed: `timestamp: number` (epoch ms) replaced by `startedAt: Date` and `failedAt: Date`. Error fields (`message`, `type`, `details`) are now nullable — reflects that JavaScript can throw non-Error values and attempts can end abruptly.
-- New `AttemptError` throwable class introduced for structured error reporting from handler code.
+- `Failure` — new base record for a single captured throw (used by `"any"`-mode branches). Fields: `startedAt`, `failedAt`, nullable `message`/`type`/`details`.
+- `Attempt extends Failure` — adds `attempt: number` for retried operations (steps, queues, requests, topics).
+- `StepExecutionError` removed (replaced by `Attempt`). `timestamp: number` (epoch ms) replaced by `startedAt: Date` and `failedAt: Date`. Error fields are now nullable.
+- New `AttemptError` throwable class for structured error reporting from handler code.
 - `StepCompensationResult.errors` renamed to `.attempts`. `status: "failed"` renamed to `status: "timed_out"` with `reason: "attempts_exhausted" | "deadline"`.
 - `StepCompensationResult` gains `args` field (typed by step's `args` schema). Now generic over `<TArgs, T>`.
 - `StepErrorAccessor.count` (sync) → `AttemptAccessor.count()` (async).
-- `StepCall.failure()` removed. Use `.timeout()`.
-- `StepCall` gains `TArgs` type parameter for serializable step arguments.
-- `StepFailureInfo` removed.
-- `maxAttempts` removed from `RetryPolicyOptions`.
+
+#### Naming and signatures
+
 - `addCompensation()` renamed to `registerCompensation(name, cb)` (now named, now sync buffered).
+- `RetentionSettings` → `RetentionSetter<TStatus extends string>`.
 - `ctx.first(entries)` → `ctx.first(name, entries)` (name required).
 - `ctx.all(entries)` → `ctx.all(name, entries)` (name required).
-- `RetentionSettings` → `RetentionSetter<TStatus extends string>`.
-- Unhandled exceptions now halt the workflow instead of failing it (only declared `ctx.errors` cause failure).
-- `WorkflowError` is no longer subclassed. Errors are defined as `{ name: schema | true }` on `defineWorkflow`. `ctx.errors.X(...)` factory functions replace direct `throw new WorkflowError(...)`.
-- Throwing a `WorkflowError` with an undeclared `errorCode` halts the workflow instead of failing it.
-- External error types use `type` as the unified discriminant field: `"WorkflowError"`, `"StepTimeoutError"`, `"RequestTimeoutError"`, `"ChildWorkflowError"`, `"ChildWorkflowTimeoutError"`.
-- Created `ChildWorkflowError` (with recursively nested `LooseWorkflowError`) and `ChildWorkflowTimeoutError`.
 - Queue `publish` renamed to `enqueue` (`ctx.queues.X.enqueue(...)`).
-- `ctx.joinSafe(handle)` → `ctx.joinSafe(handle, onError)` (error handler callback, not discriminated union).
+- `StepDefinition.schema` renamed to `result`. New `args` field added (required `JsonSchemaConstraint`).
+- Step call sites: positional arguments replaced by a single schema-validated object (`ctx.steps.X({ ... })`).
+- Step `execute` callback: `({ signal }, ...args: TArgs)` → `({ signal }, args: InferOutput<TArgsSchema>)`.
+- All handler registration callbacks (`queue`, `request`, `topic`) now receive `{ signal: AbortSignal }` as the first argument.
+- `StepCall` gains `TArgs` type parameter for serializable step arguments. `WorkflowCall` gains `TArgs` and `TChildTerminalErrors`.
+- `RequestCall` gains `.priority(value)` builder method. `requests` table gains `priority INT NOT NULL DEFAULT 0` column.
+- `client.requests.<name>.resolve()`, `.cancel()`, `.list()` — manual resolution client API for requests.
+- Request handler return type is now `TResponse | typeof MANUAL`. Returning `MANUAL` from the handler transitions the request to manual mode immediately without exhausting retries.
 - Branch key path representation changed from `(string | Symbol)[]` to `BranchPathItem[]` (`{ scope, branch }` objects with `MAIN_BRANCH` unique symbol).
-- `topic_consumer_offsets` table removed — `last_id` merged into `topic_consumers`.
-- Request workflow API: `timeout` removed from call options — use `.timeout()` builder instead.
-- Builder methods on `StepCall`, `WorkflowCall`, `RequestCall` resolve to `never` after first call (prevents duplicate chaining via `Called` type parameter).
-- All handler registration callbacks (`queue`, `request`, `topic`) now receive `{ signal: AbortSignal }` as first argument.
-- Handler retry policies use seconds (`intervalSeconds`, `maxIntervalSeconds`) instead of milliseconds. Runtime-level retry policies remain in milliseconds.
-- Topic consumer: `registrationRetry` and `onRegisterError` restructured into `registration: { retryPolicy, onRegistered, onError }`. `onConsumeError` restructured into `onConsumeError: { callback, retryPolicy }` with defined throw/retry behavior.
 - `.timeout()` on `StepCall` and `WorkflowCall` now accepts `Date` (deadline) in addition to `number` (seconds).
 - `channel.receive()` now accepts `Date` (deadline) in addition to `number` (seconds timeout).
-- `StepDefinition.schema` renamed to `result`. New `args` field added (required `JsonSchemaConstraint`).
-- Step call sites: positional arguments replaced by single schema-validated object (`ctx.steps.X({ ... })`).
-- Step `execute` callback: `({ signal }, ...args: TArgs)` → `({ signal }, args: InferOutput<TArgsSchema>)`.
 - `idempotencyKey` is now required on all workflow start calls (client, child workflow, detached). Optional if `idempotencyKeyFactory` is defined on the workflow.
 - `idempotencyKeyFactory` receives post-validation args (same as `execute`).
+- `maxAttempts` removed from step-level `RetryPolicyOptions`.
+- Handler retry policies use seconds (`intervalSeconds`, `maxIntervalSeconds`) instead of milliseconds. Runtime-level retry policies remain in milliseconds.
+- Topic consumer: `registrationRetry` and `onRegisterError` restructured into `registration: { retryPolicy, onRegistered, onError }`. `onConsumeError` restructured into `onConsumeError: { callback, retryPolicy }` with defined throw/retry behavior.
+
+#### Engine and runtime
+
 - VEL execution strategy: branch interleaving order within a scope is an implementation detail. Workflow logic must not rely on it.
 - Buffered operations (`stream.write`, `event.set`, `attribute.set`, `queue.enqueue`, `topic.publish`, `channel.send` (foreign), `registerCompensation`, `compensateEagerly`, `startDetached`) are now synchronous — they return `void` and are not `await`ed. `AtomicResult<void>` is removed for these operations.
 - Step records are batched and committed in a single transaction when all branches are blocked. Side-effecting work (step execution, child workflow dispatch, request dispatch) starts only after the batch commit.
 - `receiveNowait` and `patch` are awaitable reads — they trigger a buffer flush before reading from committed state.
-- `RequestCall` gains `.priority(value)` builder method. `requests` table gains `priority INT NOT NULL DEFAULT 0` column.
-- `client.requests.<name>.resolve()`, `.cancel()`, `.list()` — manual resolution client API for requests.
+- `topic_consumer_offsets` table removed — `last_id` merged into `topic_consumers`.
+- Request workflow API: `timeout` removed from call options — use `.timeout()` builder instead.
 - `registerQueueHandler` and `registerRequestHandler` gain `maxConcurrent` option for consumer concurrency control.
 - `registerTopicConsumer` and `registerBatchTopicConsumer` gain `neverExpire` option — prevents retention from purging records not yet consumed. `onConsumeError` event type is narrowed at compile time: `neverExpire: true` excludes `"offsetExpired"`.
 - `registerTopicConsumer` gains `filter` option for metadata and payload filtering.
@@ -2645,10 +2971,8 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - `TopicRecord<TPayload, TMetadata>` — shared record type for both single-record and batch consumers.
 - `topic_consumer_attempt.record_id` replaced by `from_record_id` and `to_record_id` (supports both single-record and batch ranges; single-record: both equal).
 - Search query: range comparisons (`gt`/`gte`/`lt`/`lte`) and sorting restricted to homogeneously typed fields (purely `string` or purely `number`). Union types only get equality comparisons.
-- Request handler return type is now `TResponse | typeof MANUAL`. Returning `MANUAL` from the handler transitions the request to manual mode immediately without exhausting retries.
-- `UnrecoverableError` — new throwable for queue and topic handlers. Bypasses remaining retry attempts: dead-letters (queues) or triggers `onConsumeError("attemptsExhausted")` (topics) immediately.
-- `defineWorkflow` gains `compensation.errors` — separate error map for the compensation VEL. `ctx.errors` in compensation context is populated from `compensation.errors`, not `errors`. Only declared compensation errors can fail compensation; all other exceptions halt.
-- `CompensationFailureInfo` — new type for observing compensation failure via `handle.compensation.wait()`.
+- `UnrecoverableError` — throwable for queue and topic handlers. Bypasses remaining retry attempts: dead-letters (queues) or triggers `onConsumeError("attemptsExhausted")` (topics) immediately.
+- `CompensationFailureInfo` — type for observing compensation failure via `handle.compensation.wait()`. Mirrors `FailureInfo` but draws from `compensation.terminalErrors`.
 
 ### Connection and transaction model
 
