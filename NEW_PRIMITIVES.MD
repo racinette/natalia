@@ -433,7 +433,7 @@ Three distinct concerns have historically been collapsed into one error surface:
 2. **Recoverable per-branch failure** ("provider A's quote lookup blew up — fall back to provider B") that should not bubble out of the structured-concurrency boundary that contains it.
 3. **Operational engine events** (a step timed out, a child workflow failed, a request was cancelled) that are call-site-local — the developer either handles them at the call site or treats their occurrence as a bug.
 
-Lumping all three into a single `WorkflowFailureInfo` external union forces the caller to triage fundamentally different categories with the same switch statement, and forces engine-level events through recursive child-workflow nesting that defeats type safety.
+Lumping all three into a single external failure union forces the caller to triage fundamentally different categories with the same switch statement, and forces engine-level events through recursive child-workflow nesting that defeats type safety.
 
 ### Solution: a two-tier error model
 
@@ -612,9 +612,9 @@ type ErrorValue<TErrors> = {
 
 > **Engine-level failures (step timeouts, request timeouts, child workflow failures) are not part of the external failure surface.** They are call-site-local. Each must be either consumed by a mandatory callback (`.timeout(boundary, cb)`, `.failure(cb)`) at the call site — in which case the callback can throw a `terminalErrors` to surface the failure externally, throw a `branchErrors` to surface it at the local consumption point, or return a recovery value — or, if no callback is chained where one would have applied, the engine treats the unhandled engine event as a programmer oversight and **halts** (consistent with Part 3).
 
-This collapses the previously externally-visible `StepTimeoutError`, `RequestTimeoutError`, `ChildWorkflowError`, `ChildWorkflowTimeoutError`, and `LooseWorkflowError` out of the public surface entirely. They are **not** removed as concepts — `StepFailureInfo` and `ChildWorkflowFailureInfo<TChildTerminalErrors>` continue to exist as the *callback info* types passed into `.timeout(cb)` and `.failure(cb)` respectively (see Part 5). They simply no longer escape to the caller.
+Engine-level events surface only as *callback info* types — `StepFailureInfo` for `.timeout(cb)` and `ChildWorkflowFailureInfo<TChildTerminalErrors>` for `.failure(cb)` (see Part 5) — never as a value the external caller sees.
 
-A direct consequence: **child workflow failure typing now works cleanly without recursion.** The parent's `.failure(cb)` on a child `WorkflowCall` receives `ChildWorkflowFailureInfo<TChildTerminalErrors>` where `TChildTerminalErrors` are exactly the child's declared `terminalErrors`, fully typed. The parent then either returns a recovery value, throws `ctx.terminalErrors.X(...)` (lifting into the parent's own terminal contract — typed in the parent's own terms), throws `ctx.branchErrors.X(...)` (lifting into the local branch contract), or rethrows. Nothing recursive escapes; the parent's external surface contains only the parent's own `terminalErrors`.
+A direct consequence: **child workflow failure typing works cleanly without recursion.** The parent's `.failure(cb)` on a child `WorkflowCall` receives `ChildWorkflowFailureInfo<TChildTerminalErrors>` where `TChildTerminalErrors` are exactly the child's declared `terminalErrors`, fully typed. The parent then either returns a recovery value, throws `ctx.terminalErrors.X(...)` (lifting into the parent's own terminal contract — typed in the parent's own terms), throws `ctx.branchErrors.X(...)` (lifting into the local branch contract), or rethrows. Nothing recursive escapes; the parent's external surface contains only the parent's own `terminalErrors`.
 
 ### External caller usage
 
@@ -636,7 +636,7 @@ if (!result.ok && result.status === "failed") {
 }
 ```
 
-The outer `switch (result.error.type)` from prior versions disappears — there is no longer a union of error categories. Discriminating on `errorCode` is the only step.
+There is no outer discriminant (no union of error categories). The external caller discriminates on `errorCode` directly.
 
 ### Compensation error model
 
@@ -697,7 +697,7 @@ The rationale for keeping compensation strict-by-default: cleanup is supposed to
 
 Three rough edges in the prior design motivated this collapse:
 
-1. **`WorkflowFailureInfo` was a four-way union of conceptually disjoint things.** Lumping the developer-declared business signal (`WorkflowErrorValue`) with engine-generated operational events (`StepTimeoutError`, `RequestTimeoutError`, `ChildWorkflowError`, `ChildWorkflowTimeoutError`) forced the external caller to triage two categories with the same switch, and forced `ChildWorkflowError` to recursively carry a `LooseWorkflowError` — defeating type safety for any non-trivial child workflow tree. The fix: only developer-declared errors reach the external boundary.
+1. **The external failure surface lumped conceptually disjoint things.** A developer-declared business signal lived in the same union as engine-generated operational events (step timeout, request timeout, child workflow failure, child workflow timeout). The external caller had to triage both categories with the same switch, and child workflow failures had to recursively carry a fully untyped child error variant — defeating type safety for any non-trivial child workflow tree. The fix: only developer-declared errors reach the external boundary.
 
 2. **Error scoping was binary (workflow vs nothing).** There was no clean way to model recoverable per-branch failures that should fail one branch without failing the whole workflow. Scope-level `.failure(cb)` existed but received a loose `ScopeFailureInfo<TSteps, TChildWorkflows>` with an `{ kind: "exception"; error: unknown }` escape hatch, defeating type safety. The fix: per-branch `errors:` declarations with three modes; the consumer pattern-matches on a typed result.
 
@@ -709,7 +709,7 @@ Three rough edges in the prior design motivated this collapse:
 
 ### Problem
 
-`maxAttempts` lives in `RetryPolicyOptions` alongside retry behavior configuration. But `maxAttempts` is not a retry behavior — it is a stop condition. It answers "when to give up," not "how to retry." Compounding this: there was no clean rule about which call-site error events were external-visible vs call-site-local, and the `.timeout(boundary)` no-callback form created unhandled engine events in the workflow's external surface.
+`maxAttempts` lives in `RetryPolicyOptions` alongside retry behavior configuration. But `maxAttempts` is not a retry behavior — it is a stop condition. It answers "when to give up," not "how to retry." Compounding this: today's `StepCall.failure(cb)` and `WorkflowCall.failure(cb)` callbacks receive only an `info` argument, with no surrounding context — making it impossible to do durable recovery work like "post a Slack notification when this step times out." And there is no clean rule about which call-site error events become external-visible vs call-site-local — engine events surface alongside developer errors at the workflow boundary.
 
 ### Solution
 
@@ -748,7 +748,7 @@ type StepBoundary =
 
 `maxAttempts` and `seconds`/`deadline` complement each other — both can coexist in the same boundary. `maxAttempts` limits how many times the step is tried. `seconds`/`deadline` limits total wall-clock time. Whichever boundary is reached first terminates the step.
 
-> **`.timeout()` is itself optional, but the callback is mandatory when `.timeout()` is called.** If `.timeout()` is omitted entirely, the operation retries forever (per `RetryPolicyOptions`); there is no boundary, and the only way the call returns is success. If `.timeout()` is called, it must include a callback. The `.timeout(boundary)` no-callback form is removed: it would force a "timeout exceeded with no recourse" path into the workflow's external `FailureInfo`, which is exactly the engine-level surface that Part 4 collapses out. The mandatory callback ensures every declared boundary has an explicit local recovery path. If recovery should fail the workflow, the callback throws `ctx.terminalErrors.X(...)`; if it should fail just the local branch, throws `ctx.branchErrors.X(...)`; if it should produce a value, it returns one.
+> **`.timeout()` is itself optional, but the callback is mandatory when `.timeout()` is called.** If `.timeout()` is omitted entirely, the operation retries forever (per `RetryPolicyOptions`); there is no boundary, and the only way the call returns is success. If `.timeout()` is called, it must include a callback. There is no `.timeout(boundary)` no-callback form: such a form would force a "timeout exceeded with no recourse" path into the workflow's external `FailureInfo`, which is exactly the engine-level surface that Part 4 collapses out. The mandatory callback ensures every declared boundary has an explicit local recovery path. If recovery should fail the workflow, the callback throws `ctx.terminalErrors.X(...)`; if it should fail just the local branch, throws `ctx.branchErrors.X(...)`; if it should produce a value, it returns one.
 
 ### Chain ordering
 
@@ -927,7 +927,7 @@ type ChildWorkflowFailureInfo<TArgs, TChildTerminalErrors> =
   | { status: "timed_out"; args: TArgs; reason: "attempts_exhausted" | "deadline" };
 ```
 
-The `error` field is fully typed against the child's own `terminalErrors` — no `LooseWorkflowError`, no recursive nesting. The parent narrows on `errorCode` exactly as if it had received an `ErrorValue` directly. This is the central type-safety win of the redesign.
+The `error` field is fully typed against the child's own `terminalErrors` — no untyped child variant, no recursive nesting. The parent narrows on `errorCode` exactly as if it had received an `ErrorValue` directly. This is the central type-safety win of the redesign.
 
 What `.failure(cb)` can do:
 
@@ -939,7 +939,7 @@ What `.failure(cb)` can do:
 ### Rationale recap
 
 - **Mandatory callback on `.timeout()`.** Without it, the no-callback form would push a typed engine event into the external `FailureInfo`. The whole point of Part 4's collapse is to keep that surface free of engine events.
-- **Mandatory `.failure(cb)` on `WorkflowCall`.** Same argument, doubled: the prior `ChildWorkflowError` carried recursive `LooseWorkflowError`, which is nominally typed but actually a black hole. Forcing the parent to declare a handler at the call site means the child's failure either becomes the parent's recovery value, or becomes one of the parent's own typed terminal/branch errors. Either way the parent's external surface stays clean.
+- **Mandatory `.failure(cb)` on `WorkflowCall`.** Same argument, doubled: a child workflow's failure can only be safely observed in the parent if it is typed against the *parent's* error vocabulary. Forcing the parent to declare a handler at the call site means the child's failure either becomes the parent's recovery value, or becomes one of the parent's own typed terminal/branch errors. Either way the parent's external surface stays clean.
 - **Chain ordering.** Compensation callbacks were authored against the union narrowed by `.timeout` and `.failure` chained earlier. Allowing those to be chained later would change the type and silently invalidate the callback. Locking the chain after `.compensate` keeps the type stable.
 
 ---
@@ -1095,7 +1095,7 @@ The onboarding example (`src/examples/onboarding-verification.example.ts`) is th
 join<H extends Selectable>(handle: H): Promise<ValShape<H>>;
 ```
 
-For a mode-`"none"` handle, `join` returns `T`. For a mode-`"any"` handle, it returns `{ ok: true; res: T } | { ok: false; err: Failure }`. For a mode-`"explicit"` handle, `{ ok: true; res: T } | { ok: false; err: ErrorValue<TBranchErrors> }`. **`ctx.joinSafe` is removed** — its job (typed catch on join) is what `join(handle)` already does when the handle's mode demands it. Authoring a branch in mode `"any"` or `"explicit"` is the way to opt into "join doesn't throw, it returns a value to switch on."
+For a mode-`"none"` handle, `join` returns `T`. For a mode-`"any"` handle, it returns `{ ok: true; res: T } | { ok: false; err: Failure }`. For a mode-`"explicit"` handle, `{ ok: true; res: T } | { ok: false; err: ErrorValue<TBranchErrors> }`. There is no separate "safe" form of `join` — authoring a branch in mode `"any"` or `"explicit"` is the way to opt into "join doesn't throw, it returns a value to switch on."
 
 These three operations are also available on the compensation context with identical signatures.
 
@@ -2801,7 +2801,7 @@ defineStep({
 | `ctx.registerCompensation(name, cb)`    | Sync buffered, `WorkflowContext` only. Registers deferred LIFO compensation.             |
 | `ctx.compensateEagerly(name, cb)`       | Sync buffered, `WorkflowContext` only. Dispatches eager FIFO compensation.               |
 | `ctx.match(sel)`                        | Single overload. Returns `AsyncIterable<{ key, val }>`. `val` shape per source mode (Part 7). No handler form. |
-| `ctx.join(handle)`                      | Returns the typed `val` shape directly (no `{ key, val }`). `joinSafe` is removed. |
+| `ctx.join(handle)`                      | Returns the typed `val` shape directly (no `{ key, val }` wrapper). For mode-`"any"`/`"explicit"` branches, returns `{ ok, res } \| { ok, err }`; for mode-`"none"`, bare `T`. |
 | `ctx.select(handles)`                   | Unchanged. Returns the key of the first selectable to complete.                          |
 | `ctx.best(name, entries)`               | Returns `Array<{ key, value }>` (best-effort). No failure case.                          |
 | `ctx.atMost(name, n, entries)`          | Returns `Array<{ key, value }>` (length ≤ `n`). No failure case.                         |
@@ -2874,23 +2874,20 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 
 ### Removed exports
 
-- `WorkflowError`, `WorkflowErrorValue`, `WorkflowFailureInfo` (the old union form). Replaced by `ExplicitError` (throwable) and `ErrorValue<T>` / `FailureInfo<TTerminalErrors>` (external value types).
-- `StepTimeoutError`, `RequestTimeoutError`, `ChildWorkflowError`, `ChildWorkflowTimeoutError`, `LooseWorkflowError`. Engine-level failures (step timeouts, request timeouts, child workflow failures, child workflow timeouts) are no longer part of the external `FailureInfo` surface — they are handled at the call site via `.timeout(cb)` / `.failure(cb)` callbacks, or they halt the workflow.
-- `joinSafe` (method removed from concurrency contexts).
+- `WorkflowError` (the user-throwable base error class). Replaced by `ExplicitError` (the single throwable for declared errors) and `ErrorValue<T>` / `FailureInfo<TTerminalErrors>` (external value types).
+- `StepTimeoutError` (the user-throwable timeout error class). Engine-level step timeouts no longer surface as throwable error classes — the developer handles them at the call site via `.timeout(cb)`, or the workflow halts.
 - The handler-form overload of `ctx.match` (handlers map). Only the `AsyncIterable<{ key, val }>` form remains.
 
 ### Breaking changes
 
 #### Error model
 
-- Two-tier error model: `terminalErrors` (workflow-wide, escape all scopes) replace the old `errors` field on `defineWorkflow`. Per-branch `branchErrors` are declared inline on the branch (or scope-body) `errors:` field with three modes: `"none"` (default — no captures, throws halt), `"any"` (capture any throw as `Failure`), or an explicit `{ Name: schema | true }` map (typed branch errors only).
-- `WorkflowError` (and `LooseWorkflowError`) removed. `ExplicitError` is the new single throwable class for declared errors.
-- `ctx.errors.X(...)` split into two namespaces:
-    - `ctx.terminalErrors.X(...)` — always available; throw escapes all scopes and surfaces as `FailureInfo`.
-    - `ctx.branchErrors.X(...)` — empty record outside an `"explicit"`-mode branch; throw is captured at the parent consumption point (`match`/`join`/convenience method) as `{ ok: false, err: ErrorValue<...> }`.
-- External `WorkflowFailureInfo` union eliminated. The new `FailureInfo<TTerminalErrors> = ErrorValue<TTerminalErrors>` includes only declared terminal errors. Engine-level failures (step timeouts, request timeouts, child workflow failures, child workflow timeouts) never appear externally — they are handled at the call site or they halt.
-- `StepTimeoutError`, `RequestTimeoutError`, `ChildWorkflowError`, `ChildWorkflowTimeoutError`, `LooseWorkflowError` removed.
-- `defineWorkflow.errors` renamed to `defineWorkflow.terminalErrors`. `defineWorkflow.compensation.errors` renamed to `defineWorkflow.compensation.terminalErrors`. Only declared terminal errors can fail compensation; all other exceptions halt.
+- Two-tier error model introduced: `terminalErrors` (workflow-wide, escape all scopes, surface externally as `FailureInfo`) and per-branch `branchErrors` (caught at the parent consumption point). Per-branch `branchErrors` are declared inline on the branch (or scope-body) `errors:` field with three modes: `"none"` (default — no captures, throws halt), `"any"` (capture any throw as `Failure`), or an explicit `{ Name: schema | true }` map (typed branch errors only).
+- `WorkflowError` (the user-throwable base error class) removed in favor of `ExplicitError` — the single throwable class for declared errors. `StepTimeoutError` likewise removed (engine-level step timeouts are now consumed by `.timeout(cb)` or they halt).
+- Workflow-level `terminalErrors` are declared on `defineWorkflow.terminalErrors` (and `defineWorkflow.compensation.terminalErrors`). They are accessed via two namespaces on `ctx`:
+    - `ctx.terminalErrors.X(...)` — always available; throw escapes all scopes and surfaces externally as `FailureInfo`.
+    - `ctx.branchErrors.X(...)` — empty record outside an `"explicit"`-mode branch; throw is captured at the parent consumption point (`match` / `join` / convenience method) as `{ ok: false, err: ErrorValue<...> }`.
+- The external failure surface is now `FailureInfo<TTerminalErrors> = ErrorValue<TTerminalErrors>` — only declared terminal errors. Engine-level events (step timeouts, request timeouts, child workflow failures) never appear externally; they are handled at the call site or they halt.
 - Per-context throw rules: in any "execute" body or `"none"`-mode branch, only `ctx.terminalErrors.X(...)` fails (escapes); any other throw halts. In `"any"`-mode branches, every throw is captured as a `Failure`. In `"explicit"`-mode branches, only `ctx.branchErrors.X(...)` is captured; any other throw halts.
 
 #### Builder chains
@@ -2912,7 +2909,7 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 #### Structured concurrency
 
 - `ctx.match(sel)` is a single overload returning `AsyncIterable<{ key, val }>`. The handler-map form is removed. `val` shape is determined by the source: branches → `T` (mode `"none"`) or `{ ok, res } | { ok, err }` (mode `"any"`/`"explicit"`); channels → `{ msg }`; sleep → `{ deadline }`.
-- `ctx.joinSafe` removed. `ctx.join(handle)` returns the typed `val` directly (bare `T` for `"none"`, the wrapped variant for `"any"`/`"explicit"`).
+- `ctx.join(handle)` returns the typed `val` directly (bare `T` for `"none"`, the wrapped variant for `"any"`/`"explicit"`). There is no separate "safe" form — branch mode controls whether `join` returns a switchable value or rethrows.
 - `ctx.scope(name, entries, body)` — body accepts the same shorthand/object forms as branches with the same `errors:` modes. Outer `.resolve()` returns bare `T` in mode `"none"`, wrapped `{ ok, res } | { ok, err }` otherwise.
 - Convenience scope methods updated:
     - `ctx.first(name, entries)` → `{ ok, res: { key, value } } | { ok, err: { errorCode: "NoBranchCompleted"; ... } }`
@@ -2935,10 +2932,8 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 #### Naming and signatures
 
 - `addCompensation()` renamed to `registerCompensation(name, cb)` (now named, now sync buffered).
-- `RetentionSettings` → `RetentionSetter<TStatus extends string>`.
 - `ctx.first(entries)` → `ctx.first(name, entries)` (name required).
 - `ctx.all(entries)` → `ctx.all(name, entries)` (name required).
-- Queue `publish` renamed to `enqueue` (`ctx.queues.X.enqueue(...)`).
 - `StepDefinition.schema` renamed to `result`. New `args` field added (required `JsonSchemaConstraint`).
 - Step call sites: positional arguments replaced by a single schema-validated object (`ctx.steps.X({ ... })`).
 - Step `execute` callback: `({ signal }, ...args: TArgs)` → `({ signal }, args: InferOutput<TArgsSchema>)`.
