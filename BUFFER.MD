@@ -1,16 +1,20 @@
-# Compensation Reformation — A Vision Document for the Next Iteration of `NEW_PRIMITIVES.MD`
+# Isolation Reformation — A Vision Document for the Next Iteration of `NEW_PRIMITIVES.MD`
 
 ## 0. Framing
 
-`NEW_PRIMITIVES.MD` is a buffer of changes against the current codebase. This document is a **second buffer**: a reformation of the compensation portions of `NEW_PRIMITIVES.MD` itself. The "before" snippets below quote `NEW_PRIMITIVES.MD` as it currently stands; the "after" snippets sketch where the reformation lands. Once folded in, `NEW_PRIMITIVES.MD` remains the authoritative document and this one is retired.
+`NEW_PRIMITIVES.MD` is a buffer of changes against the current codebase. This document is a **second buffer**: a reformation of portions of `NEW_PRIMITIVES.MD` itself, driven by a single principle — **the syntactic shape of isolated units of work must reflect their semantic isolation**. The "before" snippets below quote `NEW_PRIMITIVES.MD` as it currently stands; the "after" snippets sketch where the reformation lands. Once folded in, `NEW_PRIMITIVES.MD` remains the authoritative document and this one is retired.
 
-The reformation is concentrated in: Part 2 (compensation model), Part 3 (halt model — compensation half), Part 4 (error model — compensation half), Part 5 (chain ordering), Part 6 (context splitting), Part 8 (database schema — compensation tables), Part 11 (requests — compensation handler shape), Part 13 (attributes — handle exposure for per-instance attributes), Part 18 (`defineStep` shape), and the Summary tables. Parts 1, 7, 9, 10, 12, 14–17, and the execution-side passages of Parts 3 and 4, are conceptually untouched.
+The reformation covers two domains:
+
+1. **Compensation** (§1–§13): compensation becomes a property of the operation it undoes, with per-instance isolation, pre-defined structure, and a query surface for external observability. Concentrated in: Part 2 (compensation model), Part 3 (halt model — compensation half), Part 4 (error model — compensation half), Part 5 (chain ordering), Part 6 (context splitting), Part 8 (database schema — compensation tables), Part 11 (requests — compensation handler shape), Part 13 (attributes — handle exposure for per-instance attributes), Part 18 (`defineStep` shape), and the Summary tables.
+
+2. **Branches** (§15): branches become pre-defined units of work with serializable args/result, definition-scoped errors, and the same query surface. The two-namespace error model (`terminalErrors` + `branchErrors`) collapses to a single `errors` field at every level. Concentrated in: Part 1 (VEL — branch entry shape), Part 4 (error model — complete rewrite), Part 7 (scopes and consumption), Part 8 (database schema — branch tables), and the Summary tables.
 
 ## 1. The Driving Insight
 
-Every primitive in `NEW_PRIMITIVES.MD` is constructed against the goal of making invalid states unrepresentable. Compensation is the lone holdout: a compensation block is currently an inline closure registered against a step or workflow call, and JavaScript's lexical-scope semantics let that closure read execution-side bindings, mutate them, and accidentally couple itself to in-flight workflow state. The semantic guarantee the engine provides (separate VELs, separate state) is invisible at the call site.
+Every primitive in `NEW_PRIMITIVES.MD` is constructed against the goal of making invalid states unrepresentable. Two constructs are holdouts: **compensation closures** and **branch closures**. Both are inline async callbacks, and JavaScript's lexical-scope semantics let them read bindings from the enclosing scope, mutate them, and accidentally couple semantically independent code paths to one another. The semantic guarantees the engine provides (separate VELs for compensation, deterministic-but-implementation-defined interleaving for branches) are invisible at the call site.
 
-The canonical "before" — straight from `compensation-hooks.example.ts` — is a closure that reads outer-scope `args`:
+The canonical "before" for compensation — straight from `compensation-hooks.example.ts` — is a closure that reads outer-scope `args`:
 
 ```typescript
 async execute(ctx, args) {
@@ -29,7 +33,22 @@ async execute(ctx, args) {
 }
 ```
 
-The reformation begins from one observation: **the syntactic shape of compensation must reflect its semantic isolation**. Once that is taken seriously, a chain of follow-on simplifications becomes available, because much of the prior compensation surface existed to paper over the closure problem.
+The canonical "before" for branches:
+
+```typescript
+await ctx.scope("booking", {
+  flight: async (ctx) => {
+    // Same problem: `args`, `counter`, any mutable binding from the parent
+    // scope is freely accessible. Two branches can race on shared state.
+    return await ctx.steps.bookFlight(args.destination).resolve(ctx);
+  },
+  hotel: async (ctx) => {
+    return await ctx.steps.bookHotel(args).resolve(ctx);
+  },
+}, async (ctx, handles) => { /* ... */ }).resolve(ctx);
+```
+
+The reformation begins from one observation: **the syntactic shape of isolated units of work must reflect their semantic isolation**. Once that is taken seriously, a chain of follow-on simplifications becomes available — for compensation (§2–§13) because much of the prior surface existed to paper over the closure problem, and for branches (§15) because the inline-callback model was the only thing preventing a unified error model and true per-invocation observability.
 
 ## 2. Compensation Becomes a Property of the Operation
 
@@ -604,7 +623,7 @@ const failure = await handle.compensation.wait();
 
 ### After
 
-`defineWorkflow.compensation` is gone. `ctx.terminalErrors` is gone from compensation contexts. A compensation reports its outcome as a typed return value via the optional `result` schema on its definition (see §4's example). Early `return` is the explicit short-circuit. Throws are reserved for halts (§7).
+`defineWorkflow.compensation` is gone. The compensation context has no `ctx.errors` (the workflow's `errors` are not accessible — see §15 for the unified error model). A compensation reports its outcome as a typed return value via the optional `result` schema on its definition (see §4's example). Early `return` is the explicit short-circuit. Throws are reserved for halts (§7).
 
 Aggregate workflow-level compensation status reads (`handle.compensation.wait()`, `CompensationFailureInfo`) are gone too. Per-instance reads via `findUnique(...).result()` and `findUnique(...).events.compensationSettled.wait()` (when defined by the step) replace them. If the developer wants an aggregate, they build it explicitly out of `findMany` counts.
 
@@ -1017,6 +1036,8 @@ ctx.steps.bookHotel(args).complete(r => r.confirmationId).timeout(60, () => null
 
 ## 12. What Disappears
 
+### Compensation
+
 | Surface | Before (`NEW_PRIMITIVES.MD` today) | After |
 | --- | --- | --- |
 | Compensation closure API | `.compensate(cb)`, `.compensate(name, cb)` on `StepCall`, `WorkflowCall`, `RequestCall` | Removed. Compensation lives in `defineStep.compensation` / `defineRequest.compensation: true \| { result }` |
@@ -1031,6 +1052,19 @@ ctx.steps.bookHotel(args).complete(r => r.confirmationId).timeout(60, () => null
 | Step type families | Single `StepDefinition` | Same single type, with `IsStepCompensable<S>` helper for namespace filtering |
 | Halt skippability | Unskippable in both VELs (Part 3) | Unskippable in execution; skippable per-instance in compensation |
 | Builder `.compensate` fence | Hard ordering, post-fence methods → `never` | No fence. Chain methods commutative |
+
+### Branches and errors
+
+| Surface | Before (`NEW_PRIMITIVES.MD` today) | After |
+| --- | --- | --- |
+| Inline branch closures | `ctx.scope("name", { foo: async (ctx) => { ... } }, body)` | Removed. Branches are pre-defined on `defineWorkflow.branches`. Call site: `ctx.branches.foo(args)` |
+| Inline branch forms | Four forms: function shorthand, object `"none"`, `"any"`, `"explicit"` | Removed. Error mode is part of the branch definition |
+| `terminalErrors` | `defineWorkflow.terminalErrors`, `ctx.terminalErrors.X(...)` | Renamed to `defineWorkflow.errors`, `ctx.errors.X(...)` |
+| `branchErrors` | Per-branch `errors:` field on inline object form, `ctx.branchErrors.X(...)` | Replaced. Branch `errors` declared at definition time, accessed via `ctx.errors.X(...)` inside the branch |
+| Two error namespaces | `ctx.terminalErrors` (workflow-wide) + `ctx.branchErrors` (branch-local) | Single `ctx.errors` at every level, contents determined by declaration site |
+| `ScopeCall.failure(cb)` | Handler for scope-body failures | Removed. Scope body follows the parent's error regime |
+| `ScopeEntry` type | `(ctx) => Promise<T>` — inline callback | `BranchEntry<T, TErrors>` — opaque wrapper from `ctx.branches.X(args)` |
+| Branch observability | None — branches are opaque closures | `findUnique` / `findMany` / `skip` / `status` / `result` on workflow handle |
 
 `defineWorkflow` simplifies sharply:
 
@@ -1051,7 +1085,8 @@ defineWorkflow({
 defineWorkflow({
   name, args,
   channels, streams, events, attributes, queues, requests, topics,
-  terminalErrors,
+  errors,                         // renamed from terminalErrors
+  branches,                       // pre-defined branch definitions
   steps,                          // each step may carry its own compensation
   execute: async (ctx, args) => { /* ... */ },
 });
@@ -1085,6 +1120,360 @@ The "unified tree model" framing of the current Part 8 needs revisiting: under t
 
 Implementation details below this level — exact column lists, indexes, foreign keys, retention semantics — are provisional and to be designed alongside the public API.
 
+## 15. Branch Isolation
+
+The compensation reformation (§1–§13) eliminated the closure problem for compensation. Branches are the last remaining primitive where inline closures couple semantically independent code paths to one another.
+
+### The problem
+
+Branches today are inline async callbacks passed to `ctx.scope`:
+
+```typescript
+await ctx.scope("booking", {
+  flight: async (ctx) => {
+    const booking = await ctx.steps.bookFlight(args.destination).resolve(ctx);
+    //                                         ^^^^^^^^^^^^^^^^
+    // `args` is captured from the parent scope. Nothing prevents this closure from
+    // reading — or mutating — any variable in the parent's lexical scope.
+    return booking;
+  },
+  hotel: async (ctx) => {
+    const booking = await ctx.steps.bookHotel(args).resolve(ctx);
+    return booking;
+  },
+}, async (ctx, { flight, hotel }) => {
+  // scope body — orchestrates the handles
+}).resolve(ctx);
+```
+
+Three problems:
+
+1. **Shared mutable state.** Both `flight` and `hotel` can read and mutate `args`, `counter`, or any other variable in the enclosing scope. The VEL interleaves branches in a deterministic but implementation-defined order — relying on that order is a bug, and the language does nothing to prevent it. Today this is a discipline problem; with the closure visible at the call site, it *looks* like sequential code and developers treat it accordingly.
+
+2. **No way to pass arguments without closures.** If we banned closure capture (a lint rule, a convention), branches would have no way to receive input. You cannot pass typed arguments to `async (ctx) => { ... }`. The closure *is* the argument-passing mechanism, and that is exactly the design flaw.
+
+3. **`terminalErrors` inside branches.** A branch can throw `ctx.terminalErrors.X(...)`, killing the entire workflow. A concurrent unit of work that is supposed to be independent of the workflow lifecycle has the power to terminate it unilaterally. This undermines the isolation that scopes are supposed to provide. `branchErrors` (Part 4, mode `"explicit"`) exist to capture branch-local failures, but `terminalErrors` bypass this entirely — they escape all scopes.
+
+These are the exact same problems the compensation reformation addressed for compensation closures. The solution is the same: **make the syntactic shape reflect the semantic isolation.**
+
+### Before — `NEW_PRIMITIVES.MD` Part 4 and Part 7
+
+Branches are inline closures with four forms:
+
+```typescript
+// Form 1 — function shorthand (mode "none")
+async (ctx) => { return value; }
+
+// Form 2 — object form (mode "none")
+{ execute: async (ctx) => { ... }, errors: "none" }
+
+// Form 3 — object form (mode "any")
+{ execute: async (ctx) => { ... }, errors: "any" }
+
+// Form 4 — object form (mode "explicit")
+{
+  execute: async (ctx) => {
+    if (badInput) throw ctx.branchErrors.InvalidInput("bad", { field: "x" });
+  },
+  errors: { InvalidInput: z.object({ field: z.string() }) },
+}
+```
+
+The scope call carries the branch implementations inline:
+
+```typescript
+await ctx.scope("booking", {
+  flight: { execute: async (ctx) => { ... }, errors: "any" },
+  hotel:  { execute: async (ctx) => { ... }, errors: { Sold: true } },
+}, async (ctx, { flight, hotel }) => { ... }).resolve(ctx);
+```
+
+Two error namespaces exist on the context:
+- `ctx.terminalErrors` — workflow-wide, always available, escapes all scopes.
+- `ctx.branchErrors` — scoped to the current branch's declared `errors:` map (empty in modes `"none"` and `"any"`).
+
+### After — branches become pre-defined
+
+Branches are declared on `defineWorkflow.branches` (and on `defineStep.compensation.branches`) alongside all other primitives. Each branch has `args`, `result`, `errors`, and `execute` — the same structure as every other pre-defined unit of work in the system.
+
+```typescript
+defineWorkflow({
+  name: "tripBooking",
+  args: z.object({ destination: z.string(), customerId: z.string() }),
+  errors: {
+    BookingFailed: z.object({ reason: z.string() }),
+  },
+
+  steps: { bookFlight, bookHotel, /* ... */ },
+
+  branches: {
+    flightBooking: {
+      args: z.object({ destination: z.string(), customerId: z.string() }),
+      result: z.object({ confirmationId: z.string() }),
+      errors: "any",
+      execute: async (ctx, args) => {
+        const booking = await ctx.steps
+          .bookFlight({ destination: args.destination, passengerId: args.customerId })
+          .timeout(30, (ctx, info) => null)
+          .resolve(ctx);
+        if (booking === null) {
+          throw new Error("Flight booking timed out");
+          // In mode "any", this is captured as a Failure at the consumption point.
+        }
+        return { confirmationId: booking.confirmationId };
+      },
+    },
+
+    hotelBooking: {
+      args: z.object({ city: z.string(), guestName: z.string() }),
+      result: z.object({ confirmationId: z.string() }),
+      errors: {
+        Sold: true,
+        Unavailable: z.object({ until: z.string() }),
+      },
+      execute: async (ctx, args) => {
+        const result = await ctx.steps
+          .bookHotel({ city: args.city, guestName: args.guestName })
+          .resolve(ctx);
+        if (result.status === "sold-out") {
+          throw ctx.errors.Sold("No rooms available");
+        }
+        if (result.status === "unavailable") {
+          throw ctx.errors.Unavailable("Temporarily unavailable", { until: result.retryAfter });
+        }
+        return { confirmationId: result.confirmationId };
+      },
+    },
+  },
+
+  execute: async (ctx, args) => {
+    // Scope body: sequential orchestration in the workflow's error regime.
+    // ctx.errors here is the *workflow's* errors: { BookingFailed }.
+    const result = await ctx.scope("booking", {
+      flight: ctx.branches.flightBooking({
+        destination: args.destination,
+        customerId: args.customerId,
+      }),
+      hotel: ctx.branches.hotelBooking({
+        city: args.destination,
+        guestName: args.customerId,
+      }),
+    }, async (ctx, { flight, hotel }) => {
+      const flightResult = await ctx.join(flight);
+      // flightResult: { ok: true; res: { confirmationId: string } }
+      //             | { ok: false; err: Failure }
+      // (mode "any" — any throw is captured)
+
+      const hotelResult = await ctx.join(hotel);
+      // hotelResult: { ok: true; res: { confirmationId: string } }
+      //            | { ok: false; err: ErrorValue<{ Sold: true; Unavailable: ... }> }
+      // (mode "explicit" — only declared errors are captured)
+
+      if (!flightResult.ok || !hotelResult.ok) {
+        // Deliberate decision to fail the workflow.
+        throw ctx.errors.BookingFailed("One or more bookings failed", {
+          reason: "branch failure",
+        });
+      }
+
+      return {
+        flight: flightResult.res.confirmationId,
+        hotel: hotelResult.res.confirmationId,
+      };
+    }).resolve(ctx);
+
+    return result;
+  },
+});
+```
+
+### Key design decisions
+
+**1. Unified `errors` — no more `terminalErrors` vs `branchErrors`.**
+
+The two-namespace model (`ctx.terminalErrors` + `ctx.branchErrors`) is replaced by a single `errors` field at every level. The semantics are determined by the level at which `errors` is declared:
+
+| Level | `errors` declared at | Effect of throwing `ctx.errors.X(...)` |
+| --- | --- | --- |
+| Workflow | `defineWorkflow.errors` | Fails the workflow. Visible externally as `FailureInfo`. |
+| Branch | `defineWorkflow.branches.foo.errors` | Fails the branch. Captured at the parent consumption point. |
+
+There is no cross-level access. A branch's `execute` callback receives a context whose `ctx.errors` contains only the branch's own declared errors — never the workflow's errors. A workflow body's `ctx.errors` contains only the workflow's errors — never any branch's errors. If the same error name appears at both levels, they are independent declarations with independent semantics.
+
+This eliminates the escape hatch: a branch can no longer unilaterally kill its parent workflow by throwing a terminal error. If the developer wants the workflow to fail when a branch fails, they must observe the branch failure at the scope body (which is sequential workflow-level code) and make that a deliberate decision:
+
+```typescript
+const hotelResult = await ctx.join(hotel);
+if (!hotelResult.ok) {
+  throw ctx.errors.BookingFailed("Hotel branch failed", { reason: "..." });
+  //       ^^^^^^ workflow-level error, thrown from the scope body (workflow context)
+}
+```
+
+**2. The three modes are intrinsic to the branch definition.**
+
+| `errors` field on branch | Mode | `ctx.errors` inside `execute` | Failure at consumption point |
+| --- | --- | --- | --- |
+| omitted or `"none"` | `"none"` | empty (`Record<string, never>`) | Any throw halts the branch |
+| `"any"` | `"any"` | empty | Any throw → `Failure` record |
+| `{ Name: schema \| true }` | `"explicit"` | factories for declared keys | `ctx.errors.X(...)` → `ErrorValue<TBranchErrors>` |
+
+The mode is fixed at definition time. The same branch always uses the same error contract regardless of where it is spawned.
+
+**3. Branches have full access to workflow primitives.**
+
+A branch's `execute` callback receives a context with: `steps`, `requests`, `queues`, `topics`, `childWorkflows`, `channels`, `streams`, `events`, `attributes`, `branches`, `patches`, `rng` — everything the workflow context has. The only difference is `errors`: the branch sees its own `errors`, not the workflow's.
+
+A branch can spawn nested scopes with other branches (`ctx.scope("inner", { b: ctx.branches.bar(...) }, ...)`). The inner branch gets *its* own `errors` from *its* own definition. Nesting does not change any branch's error contract.
+
+**4. `ctx.branches.foo(args)` returns a typed entry.**
+
+The invocation serializes the args and returns an opaque entry carrying the branch definition, the serialized args, and the type information for the result and error mode:
+
+```typescript
+// The generics carry:
+// - T: the result type (InferOutput<TResult>)
+// - TErrors: the error contract ("none" | "any" | { Name: schema })
+// The scope and convenience methods extract these to produce correctly typed handles.
+type BranchEntry<T, TErrors> = /* opaque — engine internal */;
+```
+
+The scope accepts `Record<string, BranchEntry<any, any>>` as entries. The same branch definition can be invoked multiple times with different args in the same scope:
+
+```typescript
+await ctx.scope("parallel-lookups", {
+  paris: ctx.branches.hotelBooking({ city: "Paris", guestName: "Alice" }),
+  rome:  ctx.branches.hotelBooking({ city: "Rome",  guestName: "Alice" }),
+  tokyo: ctx.branches.hotelBooking({ city: "Tokyo", guestName: "Alice" }),
+}, async (ctx, { paris, rome, tokyo }) => {
+  // Three independent instances of the same branch definition.
+}).resolve(ctx);
+```
+
+**5. The scope body remains an inline callback.**
+
+The scope body is orchestration code. It is sequential relative to the parent context. It receives a concurrency-narrowed context with `match`, `join`, `select` for consuming branch handles. Its `ctx.errors` is the *parent's* errors (the workflow's errors in a top-level scope, or the enclosing branch's errors in a nested scope). The scope body can throw recognized errors just as if the code were written directly in the parent's body — because semantically, it is.
+
+The scope no longer has its own error mode. There is no `ScopeCall.failure(cb)`. The scope body either returns a value, throws a recognized parent-level error (which propagates), or throws something unrecognized (which halts the parent, following the parent's halt rules).
+
+**6. Convenience methods accept branch entries.**
+
+All structured concurrency methods work with the new entry type:
+
+```typescript
+// ctx.all — wait for all branches
+const results = await ctx.all("booking", {
+  flight: ctx.branches.flightBooking({ destination: "Paris", customerId: "c1" }),
+  hotel:  ctx.branches.hotelBooking({ city: "Paris", guestName: "Alice" }),
+}).resolve(ctx);
+// results: { flight: { ok, res } | { ok, err }, hotel: { ok, res } | { ok, err } }
+
+// ctx.first — first to complete, rest compensated
+const winner = await ctx.first("fastest-hotel", {
+  paris: ctx.branches.hotelBooking({ city: "Paris", guestName: "Alice" }),
+  rome:  ctx.branches.hotelBooking({ city: "Rome",  guestName: "Alice" }),
+}).resolve(ctx);
+// winner: { ok: true; res: { key: "paris" | "rome"; value: ... } }
+//       | { ok: false; err: { errorCode: "NoBranchCompleted"; ... } }
+
+// ctx.match — streaming consumption
+const sel = ctx.select({ flight, hotel, cancel: ctx.channels.cancel.receive() });
+for await (const { key, val } of ctx.match(sel)) {
+  // channels still work as match sources — unchanged.
+}
+```
+
+Note: `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, `ctx.best` no longer have a `.failure(cb)` method. `ScopeCall.failure(cb)` is removed entirely. The error information is in the return value, determined by each branch's error mode.
+
+**7. Branch invocations are queryable entities.**
+
+Every branch invocation is persisted with serializable args and result. The same `findUnique` / `findMany` query surface that exists for compensation block instances (§5) and request compensations (§10) applies to branches:
+
+```typescript
+// External handle:
+const branchInfo = await workflowInstance.branches.hotelBooking
+  .findUnique(q => q.args.city.eq("Paris"))
+  .status();
+// → { status: "unique"; value: "running" }
+
+await workflowInstance.branches.hotelBooking
+  .findUnique(q => q.args.city.eq("Paris"))
+  .result();
+// → { status: "unique"; value: { confirmationId: "rsv_abc" } }
+//   { status: "unique"; value: null }  // not yet completed
+
+// Skip a halted branch (same pattern as compensation blocks):
+await workflowInstance.branches.hotelBooking
+  .findUnique(q => q.args.city.eq("Paris"))
+  .skip({ confirmationId: "manual-resolution" });
+
+// List all running hotel booking branches:
+const running = await workflowInstance.branches.hotelBooking
+  .findMany(q => q.metadata.status.eq("running"));
+await running.count();  // → 3
+```
+
+The status set for branches:
+
+```typescript
+type BranchStatus =
+  "pending" | "running" | "completed" | "failed" | "halted" | "skipped";
+```
+
+- `pending` — registered in the scope, not yet started.
+- `running` — actively executing on the VEL.
+- `completed` — `execute` returned successfully.
+- `failed` — `execute` threw a recognized error (mode `"any"` or `"explicit"`).
+- `halted` — `execute` threw an unrecognized error (mode `"none"` or `"explicit"`) or hit a replay divergence.
+- `skipped` — an operator skipped the branch via the external API.
+
+**8. Same syntax applies to compensation blocks.**
+
+Branches declared on `defineStep.compensation.branches` are available inside the `undo` callback as `ctx.branches`. They share the compensation block's declared dependencies (steps, requests, queues, topics, childWorkflows) and per-instance primitives (channels, streams, events, attributes).
+
+```typescript
+const bookHotel = defineStep({
+  // ...
+  compensation: {
+    steps: { findHotelReservation, cancelHotelStep },
+    branches: {
+      lookupAndCancel: {
+        args: z.object({ firstName: z.string(), lastName: z.string() }),
+        result: z.object({ cancelled: z.boolean() }),
+        errors: "any",
+        execute: async (ctx, args) => {
+          const found = await ctx.steps.findHotelReservation(args)
+            .timeout({ maxAttempts: 5 }, () => null)
+            .resolve(ctx);
+          if (found === null || found.kind === "not-found") {
+            return { cancelled: false };
+          }
+          if (found.kind === "unique") {
+            await ctx.steps.cancelHotelStep({ confirmationId: found.confirmationId })
+              .resolve(ctx);
+            return { cancelled: true };
+          }
+          throw new Error("Ambiguous match — needs operator");
+        },
+      },
+    },
+    undo: async (ctx, args, info) => {
+      // use ctx.branches.lookupAndCancel(args) in a scope if needed
+    },
+  },
+});
+```
+
+### What changes in `NEW_PRIMITIVES.MD`
+
+| Part | Change |
+| --- | --- |
+| Part 1 (VEL) | Branch entries are no longer inline closures — they reference pre-defined branches via `ctx.branches.X(args)`. The VEL mechanics (interleaving, blocking, scope entry/exit) are unchanged. |
+| Part 4 (Error model) | `terminalErrors` renamed to `errors` on `defineWorkflow`. `branchErrors` removed as a concept — branches have their own `errors` at definition time. The two-namespace model (`ctx.terminalErrors` + `ctx.branchErrors`) collapses to a single `ctx.errors` whose contents depend on the current level. Per-context throw rules simplify: workflow body throws workflow `errors`; branch body throws branch `errors`; no cross-level access. |
+| Part 7 (Scopes and consumption) | The four inline branch forms (function shorthand, object with `"none"`, `"any"`, `"explicit"`) are removed. Branches are always pre-defined references. `ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, `ctx.best` accept `Record<string, BranchEntry>` instead of `Record<string, (ctx) => Promise<T>>`. `ScopeCall.failure(cb)` is removed — the scope body follows the parent's error regime. `ctx.match` and `ctx.join` continue to work with branch handles; the `val` shape is determined by the branch definition's error mode. |
+| Part 8 (Database) | Branch invocations gain their own rows with serialized args and results. The parallel-table pattern (§13) applies to branches as it does to compensation blocks. |
+| Summary tables | `defineWorkflow` gains `branches` field. `branchErrors` removed from context. `terminalErrors` renamed to `errors`. `ScopeCall.failure(cb)` removed. `ScopeEntry` type changes from callback to `BranchEntry`. |
+
 ## 14. The full sequence
 
 - §0 Framing
@@ -1101,3 +1490,4 @@ Implementation details below this level — exact column lists, indexes, foreign
 - §11 The Chain Simplifies
 - §12 What Disappears
 - §13 Storage Shape and Why
+- §15 Branch Isolation (pre-defined branches, unified `errors`, queryable invocations, removal of `terminalErrors`/`branchErrors`/`ScopeCall.failure`)
