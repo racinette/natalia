@@ -198,7 +198,11 @@ const findHotelReservation = defineStep({
     checkIn:   z.string(),
     checkOut:  z.string(),
   }),
-  result: z.union([z.object({ confirmationId: z.string() }), z.null()]),
+  result: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("unique"), confirmationId: z.string() }),
+    z.object({ kind: z.literal("ambiguous"), candidates: z.array(z.string()) }),
+    z.object({ kind: z.literal("not-found") }),
+  ]),
   execute: async ({ signal }, args) => { /* ... */ },
 });
 
@@ -215,28 +219,28 @@ const bookHotel = defineStep({
         return;
       }
 
-      if (info.status === "terminated") {
-        // The step never ran. Nothing to undo.
-        return;
-      }
-
-      // info.status === "timed_out".
-      // At least one attempt was made — the booking may exist on the remote
-      // side even though we never got a confirmation. Look it up by guest
-      // details and cancel if found.
-      const attemptCount = await info.attempts.count();
-      if (attemptCount === 0) return;  // boundary fired before any I/O — safe to skip.
-
+      // info.status === "timed_out" or "terminated".
+      // In both cases, the step was attempted — the booking may exist on the
+      // remote side even though we never got a confirmation. (Remember: if the
+      // step was never attempted at all, the engine does not run compensation.)
+      // Look it up by guest details and cancel if found.
       const found = await ctx.steps
         .findHotelReservation(args)
         .timeout({ maxAttempts: 5 }, () => null)
         .resolve(ctx);
 
-      if (found === null) return;  // genuinely no booking exists.
+      if (found === null) return;  // lookup itself timed out — escalate elsewhere.
+      if (found.kind === "not-found") return;  // genuinely no booking exists.
 
-      await ctx.steps
-        .cancelHotelStep({ confirmationId: found.confirmationId })
-        .resolve(ctx);
+      if (found.kind === "unique") {
+        await ctx.steps
+          .cancelHotelStep({ confirmationId: found.confirmationId })
+          .resolve(ctx);
+        return;
+      }
+
+      // found.kind === "ambiguous" — multiple candidates.
+      // The §4 expanded example handles this path with operator escalation.
     },
   },
 });
@@ -280,15 +284,25 @@ There is no way for an external operator to address one compensation specificall
 The "uncertain timed-out" path needs human input when an automatic lookup is ambiguous. Each declared primitive has a real, distinct purpose:
 
 - `attributes.lookupSummary` — the latest assessment of "what we know so far," readable by the dashboard.
-- `streams.audit` — a tail-able log the operator can follow live.
-- `channels.operatorDecision` — the operator's binding decision, sent to *this instance* specifically.
+- `streams.audit` — an appendable log the operator can follow.
+- `requests.operatorResolution` — a one-shot request to an operator for a binding decision on *this instance* specifically. Modeled as a request rather than a channel: the operator sends exactly one response, and the request primitive's handler/manual-resolution semantics fit naturally (the operator dashboard resolves it via `client.requests.operatorResolution.resolve(...)`).
 - `events.compensationSettled` — fires once, the moment this instance reaches a terminal outcome; external observers can `wait` on it.
 
 ```typescript
-const OperatorDecision = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("confirm-no-booking") }),
-  z.object({ action: z.literal("cancel-by-id"), confirmationId: z.string() }),
-]);
+const operatorResolution = defineRequest({
+  name: "operatorResolution",
+  request: z.object({
+    stepName: z.string(),
+    guestName: z.string(),
+    candidates: z.array(z.string()),
+  }),
+  response: z.discriminatedUnion("action", [
+    z.object({ action: z.literal("confirm-no-booking") }),
+    z.object({ action: z.literal("cancel-by-id"), confirmationId: z.string() }),
+  ]),
+  // No `compensation: true` — this request is not itself compensable.
+  // It can therefore be used as a dependency inside a compensation block (§9).
+});
 
 const bookHotel = defineStep({
   // ... args, result, execute as before ...
@@ -305,19 +319,17 @@ const bookHotel = defineStep({
     streams: {
       audit: z.object({ msg: z.string(), ts: z.number() }),
     },
-    channels: {
-      operatorDecision: OperatorDecision,
-    },
     events: {
       compensationSettled: true,
     },
 
     steps: { findHotelReservation, cancelHotelStep },
+    requests: { operatorResolution },
 
     result: z.discriminatedUnion("kind", [
       z.object({ kind: z.literal("compensated"), confirmationId: z.string() }),
       z.object({ kind: z.literal("verified-no-op") }),
-      z.object({ kind: z.literal("operator-confirmed") }),
+      z.object({ kind: z.literal("operator-resolved"), action: z.string() }),
     ]),
 
     undo: async (ctx, args, info) => {
@@ -338,7 +350,9 @@ const bookHotel = defineStep({
         return settle({ kind: "compensated", confirmationId: info.result.confirmationId });
       }
 
-      // info.status === "timed_out" — uncertain.
+      // info.status === "timed_out" or "terminated" — uncertain.
+      // The booking may exist on the remote side even though we never got
+      // a confirmation. Look it up by guest details.
       ctx.attributes.lookupSummary.set({ kind: "waiting" });
 
       const found = await ctx.steps
@@ -346,27 +360,52 @@ const bookHotel = defineStep({
         .timeout({ maxAttempts: 5 }, () => null)
         .resolve(ctx);
 
-      if (found === null) {
+      if (found === null || found.kind === "not-found") {
         ctx.attributes.lookupSummary.set({ kind: "not-found" });
-        ctx.streams.audit.write({ msg: "no reservation found", ts: ctx.timestamp });
+        ctx.streams.audit.write({
+          msg: found === null ? "lookup timed out, treating as not-found" : "no reservation found",
+          ts: ctx.timestamp,
+        });
         return settle({ kind: "verified-no-op" });
       }
 
-      // Found something. We could just cancel it, but the safer pattern when
-      // the booking system is known-flaky is to surface the candidate to an
-      // operator and ask for confirmation.
+      if (found.kind === "unique") {
+        // Unambiguous match — cancel directly, no operator needed.
+        ctx.attributes.lookupSummary.set({
+          kind: "found", confirmationId: found.confirmationId,
+        });
+        ctx.streams.audit.write({
+          msg: `found reservation ${found.confirmationId}, cancelling`,
+          ts: ctx.timestamp,
+        });
+        await ctx.steps
+          .cancelHotelStep({ confirmationId: found.confirmationId })
+          .timeout({ maxAttempts: 10 }, () => null)
+          .resolve(ctx);
+        return settle({ kind: "compensated", confirmationId: found.confirmationId });
+      }
+
+      // Ambiguous: multiple candidates match the guest details.
+      // This is the only path where we need human intervention.
       ctx.attributes.lookupSummary.set({
-        kind: "found", confirmationId: found.confirmationId,
+        kind: "ambiguous", candidates: found.candidates,
       });
       ctx.streams.audit.write({
-        msg: `awaiting operator decision for ${found.confirmationId}`,
+        msg: `ambiguous: ${found.candidates.length} candidates, requesting operator resolution`,
         ts: ctx.timestamp,
       });
 
-      const decision = await ctx.channels.operatorDecision.receive();
+      const decision = await ctx.requests
+        .operatorResolution({
+          stepName: "bookHotel",
+          guestName: `${args.firstName} ${args.lastName}`,
+          candidates: found.candidates,
+        })
+        .resolve(ctx);
+
       if (decision.action === "confirm-no-booking") {
         ctx.attributes.lookupSummary.set({ kind: "not-found" });
-        return settle({ kind: "operator-confirmed" });
+        return settle({ kind: "operator-resolved", action: "confirm-no-booking" });
       }
 
       await ctx.steps
@@ -412,14 +451,19 @@ interface CompensationBlockNamespace<TArgs, TResult, TPrim> {
 }
 ```
 
-The unique handle exposes per-instance reads (only meaningful over a single row), and writes that fan out to one row. Naming for attributes/streams/events follows the established APIs (`attributes.X.get`/`getNowait` from Part 13, `streams.X.read`/`readNowait`/`tail` from Part 14, `events.X.wait` from the events part):
+The unique handle exposes per-instance reads (only meaningful over a single row), and writes that fan out to one row. Naming for attributes/streams/events follows the established APIs (`attributes.X.get`/`getNowait` from Part 13, `streams.X.read`/`readNowait` from Part 14, `events.X.wait`/`isSet` from the existing codebase):
 
 ```typescript
 interface CompensationBlockUniqueHandle<TArgs, TResult, TPrim> {
   status(): Promise<FindUniqueResult<CompensationBlockStatus>>;
-  result(): Promise<FindUniqueResult<TResult | null>>;  // null while not yet completed
+  result(): Promise<FindUniqueResult<TResult | null>>;  // null while not yet completed/skipped
   args():   Promise<FindUniqueResult<TArgs>>;
-  skip():   Promise<
+  // When a result schema is declared, skip() requires a result value (audit metadata).
+  // When no result schema is declared (void), skip() takes no arguments.
+  skip(...args: TResult extends void
+    ? []
+    : [result: InferInput<TResult>]
+  ): Promise<
     | FindUniqueResult<{ skipped: true }>
     | { readonly status: "already_terminal";
         readonly current: "completed" | "skipped" }
@@ -440,14 +484,27 @@ interface CompensationBlockUniqueHandle<TArgs, TResult, TPrim> {
 
   streams: {
     [K in keyof TPrim["streams"]]: {
-      readNowait(opts?: { afterRecordId?: string; limit?: number }): Promise<...>;
-      tail(opts?: { afterRecordId?: string; signal?: AbortSignal }): AsyncIterable<...>;
+      // Matches the existing external stream handle pattern (read + readNowait from Part 14).
+      // read: blocking random-access at a specific offset.
+      // readNowait: non-blocking random-access at a specific offset.
+      // iterator: sequential iteration starting/ending at given offsets.
+      read(offset: number, opts?: { signal?: AbortSignal }):
+        Promise<FindUniqueResult<StreamReadResult<InferOutput<TPrim["streams"][K]>>>>;
+      readNowait(offset: number):
+        Promise<FindUniqueResult<StreamReadResult<InferOutput<TPrim["streams"][K]>>>>;
+      iterator(startOffset?: number, endOffset?: number):
+        FindUniqueResult<StreamIteratorHandleExternal<InferOutput<TPrim["streams"][K]>>>;
     };
   };
 
   events: {
     [K in keyof TPrim["events"]]: {
-      wait(opts?: { signal?: AbortSignal }): Promise<FindUniqueResult<true | { status: "never" }>>;
+      // Matches the existing external event handle: wait (blocking) + isSet (non-blocking).
+      wait(opts?: { signal?: AbortSignal }):
+        Promise<FindUniqueResult<{ ok: true; status: "set" } | { ok: false; status: "never" }>>;
+      isSet():
+        Promise<FindUniqueResult<{ ok: true; status: "set" } | { ok: false; status: "not_set" }
+                              | { ok: false; status: "never" }>>;
     };
   };
 
@@ -473,7 +530,10 @@ interface CompensationBlockSubsetHandle<TArgs, TResult, TPrim> {
     }[];
     cursor: string | null;
   }>;
-  skip(): Promise<{ affected: number }>;
+  skip(...args: TResult extends void
+    ? []
+    : [result: InferInput<TResult>]
+  ): Promise<{ affected: number }>;
 
   channels: {
     [K in keyof TPrim["channels"]]: {
@@ -490,24 +550,21 @@ Forcing the caller to commit to a single instance for reads is intentional. It p
 ### Usage
 
 ```typescript
-// "Bob's hotel cancellation is awaiting operator input. Tell it to cancel the candidate."
-await workflowInstance.compensations.bookHotel
-  .findUnique(q => q.args.firstName.eq("Bob"))
-  .channels.operatorDecision.send({
-    action: "cancel-by-id",
-    confirmationId: "rsv_abc",
-  });
-// → { status: "unique"; value: { delivered: true } }
-//   { status: "missing" }
-//   { status: "ambiguous"; count: 3 }
-
-// Dashboard polling.
+// Dashboard polling — check how far the compensation has gotten.
 const summary = await workflowInstance.compensations.bookHotel
   .findUnique(q => q.args.firstName.eq("Bob"))
   .attributes.lookupSummary.getNowait();
-// → { status: "unique"; value: { value: { kind: "found"; ... }; version: 4 } }
+// → { status: "unique"; value: { value: { kind: "ambiguous"; candidates: [...] }; version: 4 } }
 //   { status: "missing" }
 //   { status: "ambiguous"; count: 3 }
+
+// Wait for Bob's hotel compensation to settle.
+await workflowInstance.compensations.bookHotel
+  .findUnique(q => q.args.firstName.eq("Bob"))
+  .events.compensationSettled.wait({ signal });
+// → { status: "unique"; value: { ok: true; status: "set" } }
+//   { status: "unique"; value: { ok: false; status: "never" } }
+//   { status: "missing" }
 
 // "Skip every halted hotel-cancellation across this workflow."
 const halted = workflowInstance.compensations.bookHotel
@@ -569,18 +626,24 @@ The Part 3 halt model forks. Execution halts remain unskippable. Compensation ha
 
 ```typescript
 // One stuck cancellation among many.
+// When the step's compensation declares a result schema, skip() requires a result value —
+// the operator records what happened so the audit trail is complete.
 const halted = workflowInstance.compensations.bookHotel
   .findUnique(q => q.args.firstName.eq("Bob"));
-const outcome = await halted.skip();
+const outcome = await halted.skip({
+  kind: "operator-resolved", action: "confirm-no-booking",
+});
 // → { status: "unique"; value: { skipped: true } }
 //   { status: "missing" }
 //   { status: "ambiguous"; count: number }
 //   { status: "already_terminal"; current: "completed" | "skipped" }
 
-// Bulk skip — fan-out UPDATE.
+// Bulk skip — fan-out UPDATE. Same result written to every matched instance.
 const allStuck = workflowInstance.compensations.bookHotel
   .findMany(q => q.metadata.status.eq("halted"));
-await allStuck.skip();   // → { affected: number }
+await allStuck.skip({
+  kind: "operator-resolved", action: "confirm-no-booking",
+});   // → { affected: number }
 ```
 
 Implementation note (provisional): the Part 8 `halt` table likely splits into `workflow_halt` and `compensation_block_halt`, with the latter carrying a `skipped` status the former does not.
@@ -612,17 +675,9 @@ A step with a `compensation` field is a "compensable step." A request with `comp
 ```typescript
 type IsStepCompensable<S>    = S extends { compensation: object } ? true : false;
 type IsRequestCompensable<R> = R extends { compensation: true }   ? true : false;
-
-type NonCompensableSteps<TSteps> = {
-  [K in keyof TSteps as IsStepCompensable<TSteps[K]> extends true ? never : K]: TSteps[K];
-};
-
-type NonCompensableRequests<TRequests> = {
-  [K in keyof TRequests as IsRequestCompensable<TRequests[K]> extends true ? never : K]: TRequests[K];
-};
 ```
 
-The reason for the distinction: **compensable operations cannot be invoked from inside a compensation `undo` callback**. Permitting recursion would unravel the per-instance isolation that makes everything else clean. The library refuses to model it.
+The reason for the distinction: **compensable operations cannot be declared as dependencies of a compensation block**. Permitting a compensable step inside another step's `compensation.steps` would open the door to recursive compensation chains — compensation spawning compensation — which unravels the per-instance isolation that makes everything else clean. The library refuses to model it.
 
 ### Before
 
@@ -630,26 +685,42 @@ The reason for the distinction: **compensable operations cannot be invoked from 
 
 ### After
 
-The compensation context's `steps` and `requests` namespaces are filtered to non-compensable variants:
+The constraint is enforced at **definition time**, not at the context level. The `compensation.steps` and `compensation.requests` fields on `defineStep` accept only non-compensable definitions:
 
 ```typescript
-interface CompensationContext<TPrim, TDeps> {
-  steps:    { [K in keyof TDeps["steps"]]:    StepCallFactory<TDeps["steps"][K]> };
-  requests: { [K in keyof TDeps["requests"]]: RequestCallFactory<TDeps["requests"][K]> };
-  // ... queues, topics, childWorkflows, etc.
+interface StepCompensation<TArgs, TResult, TPrim, TDeps, TCompResult> {
+  // ...
 
-  // Per-instance primitives:
-  channels:   { [K in keyof TPrim["channels"]]:   ChannelHandle<...> };
-  streams:    { [K in keyof TPrim["streams"]]:    StreamHandle<...> };
-  events:     { [K in keyof TPrim["events"]]:     EventHandle };
-  attributes: { [K in keyof TPrim["attributes"]]: AttributeHandle<...> };
+  // Only non-compensable definitions are accepted here.
+  // Attempting to pass a compensable step (one with its own `compensation` field)
+  // or a compensable request (one with `compensation: true`) is a type error
+  // at the defineStep call site.
+  steps?:    { [name: string]: NonCompensableStepDefinition };
+  requests?: { [name: string]: NonCompensableRequestDefinition };
 
-  // No terminalErrors. No compensations. No compensateEagerly. No registerCompensation.
-  // No `.compensate(...)` on any call type.
+  // ...
 }
 ```
 
-`TDeps["steps"]` is constrained at the `defineStep` boundary to `{ [name: string]: NonCompensableStepDefinition }` — so `findHotelReservation` (no compensation) is allowed; `bookHotel` (has compensation) is not. The error surfaces at the `defineStep` call, not at use.
+From the compensation context's point of view, there is no filtering and no awareness of whether compensation exists or not. The context receives exactly the dependencies that were declared, and the call signatures look identical to those in the execution context — the same `StepCall`, the same builder chain, the same `.resolve(ctx)`. The abstraction is transparent: the `undo` callback has no syntactic or semantic way to tell that it is "inside compensation" rather than inside a regular workflow body. The only difference is which steps and requests were declared available.
+
+```typescript
+const bookHotel = defineStep({
+  // ...
+  compensation: {
+    // cancelHotelStep has no `compensation` field → accepted.
+    // bookHotel itself (which has `compensation`) → type error if passed here.
+    steps: { cancelHotelStep, findHotelReservation },
+
+    undo: async (ctx, args, info) => {
+      // ctx.steps here contains exactly { cancelHotelStep, findHotelReservation }.
+      // The calls look identical to execution-side calls — same builder, same .resolve(ctx).
+      await ctx.steps.cancelHotelStep({ confirmationId: info.result.confirmationId })
+        .resolve(ctx);
+    },
+  },
+});
+```
 
 This restriction does *not* apply to child workflows. Each child workflow has its own internal compensation lifecycle; spawning one from inside compensation is fine.
 
@@ -682,7 +753,7 @@ const refundCharge = defineRequest({
   name: "refundCharge",
   request: z.object({ chargeId: z.string() }),
   response: z.object({ refundId: z.string() }),
-  compensation: true,    // renamed from `requiresCompensation` for consistency.
+  compensation: true,    // shorthand for `compensation: {}` (no result schema).
 });
 ```
 
@@ -777,11 +848,135 @@ client.registerRequestCompensationHandler(
 //    (No code at all.)
 ```
 
-The `MANUAL` sentinel reuses Part 11's existing module-level export. Resolution from outside reuses the existing pattern (`client.requests.<name>.resolve(...)` or its compensation analogue) — exact API surface is provisional and to be settled during the public API design pass.
+The `MANUAL` sentinel reuses Part 11's existing module-level export.
 
-A discussion item still open: should request compensation invocations be **lightweight** (stateless worker handler, no per-instance primitives, no `findUnique`/`findMany` surface) or **heavyweight** (per-instance entities with declared primitives, like step compensations)? Lightweight is simpler and probably right for v1. Heavyweight buys consistency with step compensations.
+### Request compensations are lightweight — no per-instance primitives, no durable execution
 
-The call site, in either case, loses `.compensate(...)`:
+Request compensation invocations are **not** heavyweight entities. There is no per-instance VEL, no per-instance primitives (channels, streams, events, attributes), and no halt semantics. The handler is a stateless worker callback — it runs, retries on failure, and either completes or enters manual mode. This is a direct consequence of the request primitive's nature: the request's implementation is fully decoupled from the workflow logic, and the compensation inherits that decoupling.
+
+This does not mean request compensation invocations are invisible. They are **observable entities** with a query surface parallel to step compensation block instances — `findUnique`, `findMany`, `status`, `result`, `skip`, `attempts`. The difference is structural: no primitives, no halts, a simpler status set.
+
+### Expanded definition — `compensation` as object
+
+`compensation: true` remains valid as shorthand for `compensation: {}` (no result schema — the handler returns `void | typeof MANUAL`). The expanded object form adds an optional `result` schema for typed compensation outcomes:
+
+```typescript
+const refundCharge = defineRequest({
+  name: "refundCharge",
+  request: z.object({ chargeId: z.string() }),
+  response: z.object({ refundId: z.string() }),
+  compensation: {
+    result: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("refunded"), refundId: z.string() }),
+      z.object({ kind: z.literal("charge-not-found") }),
+      z.object({ kind: z.literal("operator-resolved"), note: z.string() }),
+    ]),
+  },
+});
+```
+
+When a `result` schema is declared, the handler's return type becomes `InferInput<TCompResult> | typeof MANUAL` (instead of `void | typeof MANUAL`). The `registerRequestCompensationHandler` signature updates accordingly:
+
+```typescript
+declare function registerRequestCompensationHandler<TReq, TRes, TCompResult>(
+  definition: RequestDefinition<TReq, TRes> & { compensation: { result?: TCompResult } },
+  handler: (
+    ctx: { signal: AbortSignal },
+    payload: InferOutput<TReq>,
+    info: RequestCompensationInfo<InferOutput<TRes>>,
+  ) => Promise<(TCompResult extends undefined ? void : InferInput<TCompResult>) | typeof MANUAL>,
+  options: { /* same as before */ },
+): Unsubscribe;
+```
+
+### Status set
+
+Request compensation invocations have a reduced status set — no `halted` (no durable execution to halt):
+
+```typescript
+type RequestCompensationStatus =
+  "pending" | "running" | "completed" | "skipped" | "manual";
+```
+
+- `pending` — registered, no handler has claimed it yet.
+- `running` — a handler is actively processing it.
+- `completed` — handler returned successfully.
+- `manual` — handler returned `MANUAL` or `onExhausted` returned `MANUAL` or no handler was registered.
+- `skipped` — an operator skipped it via the external API.
+
+### Query surface
+
+Request compensation invocations are queryable via the same `findUnique` / `findMany` pattern as step compensations, namespaced under the request definition on the workflow handle:
+
+```typescript
+interface RequestCompensationNamespace<TPayload, TCompResult> {
+  findUnique(query: (q: SearchQuery<{ payload: TPayload; metadata: RequestCompBlockMetadata }>) => SearchQueryNode):
+    RequestCompensationUniqueHandle<TPayload, TCompResult>;
+  findUnique(id: RequestCompensationInstanceId):
+    RequestCompensationUniqueHandle<TPayload, TCompResult>;
+  findMany(query: (q: SearchQuery<{ payload: TPayload; metadata: RequestCompBlockMetadata }>) => SearchQueryNode):
+    RequestCompensationSubsetHandle<TPayload, TCompResult>;
+}
+
+interface RequestCompensationUniqueHandle<TPayload, TCompResult> {
+  status(): Promise<FindUniqueResult<RequestCompensationStatus>>;
+  result(): Promise<FindUniqueResult<TCompResult | null>>;  // null while not yet completed/skipped
+  payload(): Promise<FindUniqueResult<TPayload>>;
+  info(): Promise<FindUniqueResult<RequestCompensationInfo<unknown>>>;
+  attempts(): Promise<FindUniqueResult<AttemptAccessor>>;
+  skip(...args: TCompResult extends void
+    ? []
+    : [result: InferInput<TCompResult>]
+  ): Promise<
+    | FindUniqueResult<{ skipped: true }>
+    | { readonly status: "already_terminal";
+        readonly current: "completed" | "skipped" }
+  >;
+
+  // No channels, streams, events, attributes — lightweight.
+}
+
+interface RequestCompensationSubsetHandle<TPayload, TCompResult> {
+  count(): Promise<number>;
+  list(opts?: { limit?: number; cursor?: string }): Promise<{
+    items: readonly {
+      id: RequestCompensationInstanceId;
+      status: RequestCompensationStatus;
+      payload: TPayload;
+    }[];
+    cursor: string | null;
+  }>;
+  skip(...args: TCompResult extends void
+    ? []
+    : [result: InferInput<TCompResult>]
+  ): Promise<{ affected: number }>;
+}
+```
+
+### Usage
+
+```typescript
+// Operator sees a stuck refund compensation in manual mode.
+// They processed it externally and want to record the outcome.
+await workflowInstance.requestCompensations.refundCharge
+  .findUnique(q => q.payload.chargeId.eq("ch_123"))
+  .skip({ kind: "operator-resolved", note: "Refund processed via partner portal" });
+// → { status: "unique"; value: { skipped: true } }
+
+// Dashboard: check compensation status.
+const status = await workflowInstance.requestCompensations.refundCharge
+  .findUnique(q => q.payload.chargeId.eq("ch_123"))
+  .status();
+// → { status: "unique"; value: "manual" }
+
+// Bulk skip all manual refund compensations — same result written to every matched instance.
+await workflowInstance.requestCompensations.refundCharge
+  .findMany(q => q.metadata.status.eq("manual"))
+  .skip({ kind: "operator-resolved", note: "Batch-resolved by ops team" });
+// → { affected: 3 }
+```
+
+The call site loses `.compensate(...)`:
 
 ```typescript
 await ctx.requests
@@ -824,14 +1019,14 @@ ctx.steps.bookHotel(args).complete(r => r.confirmationId).timeout(60, () => null
 
 | Surface | Before (`NEW_PRIMITIVES.MD` today) | After |
 | --- | --- | --- |
-| Compensation closure API | `.compensate(cb)`, `.compensate(name, cb)` on `StepCall`, `WorkflowCall`, `RequestCall` | Removed. Compensation lives in `defineStep.compensation` / `defineRequest.compensation: true` |
+| Compensation closure API | `.compensate(cb)`, `.compensate(name, cb)` on `StepCall`, `WorkflowCall`, `RequestCall` | Removed. Compensation lives in `defineStep.compensation` / `defineRequest.compensation: true \| { result }` |
 | Standalone registration | `ctx.registerCompensation(name, cb)`, `ctx.compensateEagerly(name, cb)` | Removed |
 | Workflow-level compensation primitives | `defineWorkflow.compensation: { terminalErrors }` | Removed. Per-instance primitives live on `defineStep.compensation` |
 | Compensation hooks | `beforeCompensate`, `afterCompensate` on `defineWorkflow` | Removed. Orchestration lives in the relevant compensable step's `undo` |
 | Compensation outcome (external aggregate) | `CompensationFailureInfo<T>`, `handle.compensation.wait()` | Removed. Per-instance reads via `findUnique(...).result()` and per-instance events |
 | Compensation outcome (internal callback) | `StepCompensationResult<TArgs, T>` (compensation closure's `result` parameter) | Replaced by `(ctx, args, info)` where `info: CompensationInfo<TResult>` |
 | Request compensation outcome | `RequestCompensationResult<TResponse>` (closure parameter) | Replaced by `(ctx, payload, info)` where `info: RequestCompensationInfo<TResponse>` |
-| Request "needs compensation" flag | (none — every `.compensate(...)` is per-call-site) | `defineRequest({ compensation: true })` |
+| Request "needs compensation" flag | (none — every `.compensate(...)` is per-call-site) | `defineRequest({ compensation: true \| { result } })` |
 | `state` primitive | `defineWorkflow.state`, `compensation.state`, `ctx.state` | Removed entirely. `const state = {}` in the body has the same semantics |
 | Step type families | Single `StepDefinition` | Same single type, with `IsStepCompensable<S>` helper for namespace filtering |
 | Halt skippability | Unskippable in both VELs (Part 3) | Unskippable in execution; skippable per-instance in compensation |
@@ -890,48 +1085,19 @@ The "unified tree model" framing of the current Part 8 needs revisiting: under t
 
 Implementation details below this level — exact column lists, indexes, foreign keys, retention semantics — are provisional and to be designed alongside the public API.
 
-## 14. Open Surface for the Next Round of Discussion
-
-The design above is conceptually settled. What remains to be discussed during the public API design pass:
-
-- **Exact field names** on `defineStep.compensation` — `undo` vs alternatives is settled (`undo`); the rest of the record needs to be drafted against the type sketches in §2 and §10.
-- **Status enum** on compensation block instances — exact membership (`pending | running | completed | halted | skipped` is provisional).
-- **Lightweight vs heavyweight** request compensations — does `defineRequest({ compensation: true })` ever expand into `defineRequest({ compensation: { ... } })` to declare per-instance primitives, or stay strictly lightweight?
-- **`SearchQuery` instantiation** for `q.metadata` on compensation block instances — which fields are queryable, what comparisons are supported per field.
-- **Manual-resolution surface** for request compensation (parallel to `client.requests.<name>.resolve(...)` from Part 11) — exact shape.
-- **Handle method surface** for `findUnique` / `findMany` — every read operation must be a `FindUniqueResult<...>` (or subset analog); double-check the shape against the established attribute / stream / event / channel APIs.
-- **Storage layout details** — exact column lists, indexes, foreign keys, retention semantics for the parallel compensation tables.
-- **Integration into `NEW_PRIMITIVES.MD`** itself — exact rewrite scope per Part, preservation of cross-references, refresh of the Summary tables.
-
-The reformation is internally consistent and structurally complete. It is ready to be folded into `NEW_PRIMITIVES.MD` once the open items above are resolved through the next round of public API design.
-
-The document is complete — §14 ends it. The full sequence:
+## 14. The full sequence
 
 - §0 Framing
 - §1 The Driving Insight
 - §2 Compensation Becomes a Property of the Operation (with `CompensableStepDefinition` and `StepCompensation` type sketches, minimal shorthand example)
 - §3 The Compensation Outcome Doctrine (`CompensationInfo<TResult>`, the flaky-API `timed_out` discussion, expanded `bookHotel` example with the lookup-only-when-needed pattern)
 - §4 Compensation Block Instances as First-Class Entities (full-featured example using all four declared primitives genuinely)
-- §5 The Query-Grounding Handle Pattern (with `FindUniqueResult`, unique-handle and subset-handle type sketches, naming grounded against `attributes.X.get/getNowait`, `streams.X.readNowait/tail`, `events.X.wait`)
+- §5 The Query-Grounding Handle Pattern (with `FindUniqueResult`, unique-handle and subset-handle type sketches, naming grounded against `attributes.X.get/getNowait`, `streams.X.read/readNowait/iterator`, `events.X.wait/isSet`)
 - §6 Failure Semantics: Return, Don't Throw
 - §7 Halts in Compensation Are Skippable
 - §8 The Single Compensation VEL, Reframed
 - §9 Type-Level Discrimination Without a Separate Type (`IsStepCompensable` / `IsRequestCompensable` helpers)
-- §10 Request Compensation: The Necessary Asymmetry (`compensation: true` flag, `registerRequestCompensationHandler` modeled on `registerRequestHandler`, all four use-case patterns)
+- §10 Request Compensation: The Necessary Asymmetry (`compensation: true | { result }` flag, `registerRequestCompensationHandler`, all four use-case patterns, query surface with `findUnique`/`findMany`, `skip()` with result)
 - §11 The Chain Simplifies
 - §12 What Disappears
 - §13 Storage Shape and Why
-- §14 Open Surface for the Next Round of Discussion
-
-If a particular section still feels under-developed — for example, you'd like me to draft the `SearchQuery` namespaces for `q.metadata` more concretely, or to flesh out the manual-resolution client API surface for request compensation, or to expand any of the type sketches into fully-elaborated TS definitions — say which one and I'll extend it in place.
-
----
-
-Ok, I've output the buffer to the @BUFFER.MD file. Changed some things that were inconsistent.
-
-A rewrite is still needed for:
-
-1. @BUFFER.MD:607-655 This section seems to imply that we "filter out" the compensable steps/requests at context level, not showing them inside the context as an option. If so, this is wrong: we DO NOT ALLOW THEM TO BE ADDED TO THE DEFINITION. And from the POV of a context, we've built the abstraction in such a way, that it doesn't know whether a compensation is present or not: and isn't supposed to, since the call looks exactly the same in both cases.
-2. @BUFFER.MD:441-446 could you make sure that the client indeed has this signatures for reading from a stream? I doubt it, I don't remember adding any tail methods. Make sure the signature is consistent with what we've already got. It also concerns the other primitives and their methods you've listed under this section. Make sure to check.
-3. @BUFFER.MD:323-378 I do not like the example. The logic is strange. Instead of trying to cancel the booking in case we've found a confirmationId, why are we going straight to the operator? Why not try with a timeout and then go? Strange logic, make it more realistic. Also we don't actually need this to be a channel: it's a request rather.
-4. @BUFFER.MD:183-186 please, keep this in mind. It's important.
