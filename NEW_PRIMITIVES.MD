@@ -2957,7 +2957,6 @@ All handler registrations (queue, request, topic) consolidate retry configuratio
 - Buffered operations (`stream.write`, `event.set`, `attribute.set`, `queue.enqueue`, `topic.publish`, `channel.send` (foreign), `registerCompensation`, `compensateEagerly`, `startDetached`) are now synchronous — they return `void` and are not `await`ed. `AtomicResult<void>` is removed for these operations.
 - Step records are batched and committed in a single transaction when all branches are blocked. Side-effecting work (step execution, child workflow dispatch, request dispatch) starts only after the batch commit.
 - `receiveNowait` and `patch` are awaitable reads — they trigger a buffer flush before reading from committed state.
-- `topic_consumer_offsets` table removed — `last_id` merged into `topic_consumers`.
 - Request workflow API: `timeout` removed from call options — use `.timeout()` builder instead.
 - `registerQueueHandler` and `registerRequestHandler` gain `maxConcurrent` option for consumer concurrency control.
 - `registerTopicConsumer` and `registerBatchTopicConsumer` gain `neverExpire` option — prevents retention from purging records not yet consumed. `onConsumeError` event type is narrowed at compile time: `neverExpire: true` excludes `"offsetExpired"`.
