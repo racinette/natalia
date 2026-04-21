@@ -11,6 +11,7 @@
 20. search result completeness.
 21. force the compensation context to explicitly handle `.failure` and `.timeout`. This HAS to be forced before a `.resolve` can happen. Currently we leak errors into workflow compensation logic: this is really bad design, as we can force the dev to follow the API strictly by encoding the constraint into the types themselves.
 22. add timeout to .join
+23. remove terminated from in-workflow results of a childWorkflow. make attached children interminable. if they were terminable, this would become a part of business logic - and it never should. termination isn't something business logic expects to happen: it's stupid business logic, if it does.
 
 I guess if I do all of this the public API will be feature complete.
 
