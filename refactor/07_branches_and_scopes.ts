@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defineBranch, defineWorkflow } from "../workflow";
+import { defineBranch, defineRequest, defineStep, defineWorkflow } from "../workflow";
 import type { BranchInstanceStatus, MatchEvent } from "../types";
 
 type Assert<T extends true> = T;
@@ -28,9 +28,25 @@ const fraudBranch = defineBranch({
   },
 });
 
+const normalizeStep = defineStep({
+  name: "normalizeStep",
+  args: z.object({ orderId: z.string() }),
+  result: z.object({ normalized: z.string() }),
+  async execute(_ctx, args) {
+    return { normalized: args.orderId.toUpperCase() };
+  },
+});
+
+const approvalRequest = defineRequest({
+  name: "approvalRequest",
+  payload: z.object({ orderId: z.string() }),
+  response: z.object({ approved: z.boolean() }),
+});
+
 const followUpWorkflow = defineWorkflow({
   name: "branchesAndScopesFollowUp",
   args: z.object({ orderId: z.string() }),
+  errors: { FollowUpFailed: z.object({ orderId: z.string() }) },
   result: z.object({ ok: z.boolean() }),
   async execute(_ctx, _args) {
     return { ok: true };
@@ -40,6 +56,12 @@ const followUpWorkflow = defineWorkflow({
 export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
   name: "branchesAndScopesAcceptance",
   args: z.object({ orderId: z.string() }),
+  steps: {
+    normalize: normalizeStep,
+  },
+  requests: {
+    approval: approvalRequest,
+  },
   childWorkflows: {
     followUp: followUpWorkflow,
   },
@@ -165,6 +187,156 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
       },
     );
 
+    type ChildJoinResult =
+      | { ok: true; result: { ok: boolean } }
+      | {
+          ok: false;
+          status: "failed";
+          error: {
+            readonly code: "FollowUpFailed";
+            readonly message: string;
+            readonly details: { orderId: string };
+          };
+        };
+    type BranchQuoteJoinResult =
+      | { ok: true; result: { provider: string; price: number } }
+      | { ok: false; status: "failed"; error: unknown };
+    type MixedEntryJoinResult =
+      | { normalized: string }
+      | { approved: boolean }
+      | ChildJoinResult
+      | BranchQuoteJoinResult;
+    type MixedEntrySuccess =
+      | { normalized: string }
+      | { approved: boolean }
+      | { ok: boolean }
+      | { provider: string; price: number };
+
+    const mixedMapStep = ctx.steps.normalize({ orderId: args.orderId });
+    const mixedMapRequest = ctx.requests.approval({ orderId: args.orderId });
+    const mixedMapChild = ctx.childWorkflows.followUp({ args: { orderId: args.orderId } });
+    const mixedMapBranch = ctx.branches.quote({ provider: "mixed-map" });
+    const mixedEntryMap = new Map<
+      "step" | "request" | "child" | "branch",
+      | typeof mixedMapStep
+      | typeof mixedMapRequest
+      | typeof mixedMapChild
+      | typeof mixedMapBranch
+    >([
+      ["step", mixedMapStep],
+      ["request", mixedMapRequest],
+      ["child", mixedMapChild],
+      ["branch", mixedMapBranch],
+    ]);
+
+    const scopedEntryFamily = await ctx.scope(
+      "EntryFamilyScope",
+      {
+        step: ctx.steps.normalize({ orderId: args.orderId }),
+        request: ctx.requests.approval({ orderId: args.orderId }),
+        child: ctx.childWorkflows.followUp({ args: { orderId: args.orderId } }),
+        branch: ctx.branches.quote({ provider: "single-branch" }),
+        mixedTuple: [
+          ctx.steps.normalize({ orderId: args.orderId }),
+          ctx.requests.approval({ orderId: args.orderId }),
+          ctx.childWorkflows.followUp({ args: { orderId: args.orderId } }),
+          ctx.branches.quote({ provider: "mixed-tuple" }),
+        ] as const,
+        mixedMap: mixedEntryMap,
+      },
+      async (scopeCtx, entries) => {
+        const stepResult = await scopeCtx.join(entries.step);
+        type _StepEntryJoin = Assert<IsEqual<typeof stepResult, { normalized: string }>>;
+
+        const requestResult = await scopeCtx.join(entries.request);
+        type _RequestEntryJoin = Assert<IsEqual<typeof requestResult, { approved: boolean }>>;
+
+        const childResult = await scopeCtx.join(entries.child);
+        type _ChildEntryJoin = Assert<IsEqual<typeof childResult, ChildJoinResult>>;
+
+        const branchResult = await scopeCtx.join(entries.branch);
+        type _BranchEntryJoin = Assert<IsEqual<typeof branchResult, BranchQuoteJoinResult>>;
+
+        const tupleStep = await scopeCtx.join(entries.mixedTuple[0]);
+        type _TupleStepJoin = Assert<IsEqual<typeof tupleStep, { normalized: string }>>;
+
+        const tupleRequest = await scopeCtx.join(entries.mixedTuple[1]);
+        type _TupleRequestJoin = Assert<IsEqual<typeof tupleRequest, { approved: boolean }>>;
+
+        const tupleChild = await scopeCtx.join(entries.mixedTuple[2]);
+        type _TupleChildJoin = Assert<IsEqual<typeof tupleChild, ChildJoinResult>>;
+
+        const tupleBranch = await scopeCtx.join(entries.mixedTuple[3]);
+        type _TupleBranchJoin = Assert<IsEqual<typeof tupleBranch, BranchQuoteJoinResult>>;
+
+        const mapEntry = entries.mixedMap.get("step");
+        if (mapEntry) {
+          const mapResult = await scopeCtx.join(mapEntry);
+          type _MapEntryJoin = Assert<IsEqual<typeof mapResult, MixedEntryJoinResult>>;
+        }
+
+        for await (const event of scopeCtx.match(entries)) {
+          type _EntryFamilyMatch = Assert<
+            IsEqual<
+              typeof event,
+              | MatchEvent<"step", { normalized: string }>
+              | MatchEvent<"request", { approved: boolean }>
+              | MatchEvent<"child", { ok: boolean }>
+              | MatchEvent<"branch", { provider: string; price: number }>
+              | (MatchEvent<"mixedTuple", MixedEntrySuccess> & { index: 0 | 1 | 2 | 3 })
+              | (MatchEvent<"mixedMap", MixedEntrySuccess> & {
+                  mapKey: "step" | "request" | "child" | "branch";
+                })
+            >
+          >;
+          break;
+        }
+
+        return true;
+      },
+    );
+
+    const entryFamilyAll = await ctx.all("EntryFamilyAll", {
+      step: ctx.steps.normalize({ orderId: args.orderId }),
+      request: ctx.requests.approval({ orderId: args.orderId }),
+      child: ctx.childWorkflows.followUp({ args: { orderId: args.orderId } }),
+      branch: ctx.branches.quote({ provider: "all-entry-family" }),
+      mixedTuple: [
+        ctx.steps.normalize({ orderId: args.orderId }),
+        ctx.requests.approval({ orderId: args.orderId }),
+        ctx.childWorkflows.followUp({ args: { orderId: args.orderId } }),
+        ctx.branches.quote({ provider: "all-mixed-tuple" }),
+      ] as const,
+      mixedMap: mixedEntryMap,
+    });
+    type _AllStepEntry = Assert<
+      IsEqual<typeof entryFamilyAll.step, { normalized: string }>
+    >;
+    type _AllRequestEntry = Assert<
+      IsEqual<typeof entryFamilyAll.request, { approved: boolean }>
+    >;
+    type _AllChildEntry = Assert<IsEqual<typeof entryFamilyAll.child, { ok: boolean }>>;
+    type _AllBranchEntry = Assert<
+      IsEqual<typeof entryFamilyAll.branch, { provider: string; price: number }>
+    >;
+    type _AllTupleEntries = Assert<
+      IsEqual<
+        typeof entryFamilyAll.mixedTuple,
+        readonly [
+          { normalized: string },
+          { approved: boolean },
+          { ok: boolean },
+          { provider: string; price: number },
+        ]
+      >
+    >;
+    type _AllMapEntry = Assert<
+      IsEqual<
+        NonNullable<ReturnType<typeof entryFamilyAll.mixedMap.get>>,
+        MixedEntrySuccess
+      >
+    >;
+
     // @ts-expect-error convenience scopes must be named
     await ctx.all({
       quote: ctx.branches.quote({ provider: "unnamed-all" }),
@@ -209,7 +381,7 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
       fraud: ctx.branches.fraud({ orderId: args.orderId }),
     });
 
-    return { ok: scopedObject && scopedTuple && scopedMap };
+    return { ok: scopedObject && scopedTuple && scopedMap && scopedEntryFamily };
   },
 });
 
