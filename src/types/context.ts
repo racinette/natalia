@@ -7,12 +7,13 @@ import type {
   RngDefinitions,
   StepDefinition,
   StepDefinitions,
+  RequestDefinition,
+  RequestDefinitions,
   WorkflowDefinitions,
   AnyWorkflowHeader,
   PatchAccessor,
   RngAccessors,
   RetryPolicyOptions,
-  DeadlineOptions,
   RetentionSetter,
   WorkflowInvocationBaseOptions,
 } from "./definitions";
@@ -133,6 +134,7 @@ declare const nataliaEntryBrand: unique symbol;
 declare const nataliaEntryValue: unique symbol;
 declare const stepEntryBrand: unique symbol;
 declare const workflowEntryBrand: unique symbol;
+declare const requestEntryBrand: unique symbol;
 
 export interface AwaitableEntry<T> extends PromiseLike<T> {
   readonly [nataliaEntryBrand]: true;
@@ -147,9 +149,16 @@ export interface WorkflowEntry<T> extends AwaitableEntry<T> {
   readonly [workflowEntryBrand]: true;
 }
 
+export interface RequestEntry<T> extends AwaitableEntry<T> {
+  readonly [requestEntryBrand]: true;
+}
+
 export interface StepCallOptions {
   readonly retry?: RetryPolicyOptions;
-  readonly timeout?: StepBoundary;
+}
+
+export interface StepTimeoutCallOptions extends StepCallOptions {
+  readonly timeout: StepBoundary;
 }
 
 export type StepBoundary =
@@ -170,14 +179,14 @@ type SerializedInputFromOutput<T> =
         ? { [K in keyof T]: SerializedInputFromOutput<T[K]> }
         : Extract<T, JsonInput>;
 
-type StepInvocationInput<TArgsSchema extends StandardSchemaV1> =
-  unknown extends StandardSchemaV1.InferInput<TArgsSchema>
-    ? SerializedInputFromOutput<StandardSchemaV1.InferOutput<TArgsSchema>>
-    : StandardSchemaV1.InferInput<TArgsSchema> extends infer TInput
+type SchemaInvocationInput<TSchema extends StandardSchemaV1> =
+  unknown extends StandardSchemaV1.InferInput<TSchema>
+    ? SerializedInputFromOutput<StandardSchemaV1.InferOutput<TSchema>>
+    : StandardSchemaV1.InferInput<TSchema> extends infer TInput
       ? TInput extends object
         ? {
             [K in keyof TInput]: unknown extends TInput[K]
-              ? StandardSchemaV1.InferOutput<TArgsSchema> extends infer TOutputMap
+              ? StandardSchemaV1.InferOutput<TSchema> extends infer TOutputMap
                 ? K extends keyof TOutputMap
                   ? SerializedInputFromOutput<TOutputMap[K]>
                   : JsonScalarInput
@@ -191,12 +200,20 @@ export interface StepAccessor<
   TArgsSchema extends StandardSchemaV1,
   TResult,
 > {
-  (args: StepInvocationInput<TArgsSchema>): StepEntry<TResult>;
+  (args: SchemaInvocationInput<TArgsSchema>): StepEntry<TResult>;
   (
-    args: StepInvocationInput<TArgsSchema>,
+    args: SchemaInvocationInput<TArgsSchema>,
+    opts: StepTimeoutCallOptions,
+  ): StepEntry<TimeoutResult<TResult>>;
+  (
+    args: SchemaInvocationInput<TArgsSchema>,
     opts: StepCallOptions,
   ): StepEntry<TResult>;
 }
+
+export type TimeoutResult<T> =
+  | { ok: true; result: T }
+  | { ok: false; status: "timeout" };
 
 declare const durableHandleBrand: unique symbol;
 declare const rootScopeBrand: unique symbol;
@@ -1245,8 +1262,16 @@ export type ChildWorkflowStartOptions<W extends AnyWorkflowHeader> =
   WorkflowInvocationBaseOptions<
     InferWorkflowArgsInput<W>,
     InferWorkflowMetadataInput<W>
-  > &
-    DeadlineOptions;
+  >;
+
+export interface ChildWorkflowCallOptions {
+  readonly retry?: RetryPolicyOptions;
+}
+
+export interface ChildWorkflowTimeoutCallOptions
+  extends ChildWorkflowCallOptions {
+  readonly timeout: StepBoundary;
+}
 
 /**
  * Child workflow start options in attached mode.
@@ -1286,7 +1311,20 @@ export interface ChildWorkflowAccessor<
 > {
   (
     options: AttachedChildWorkflowStartOptions<W>,
-  ): WorkflowEntry<InferWorkflowResult<W>>;
+  ): WorkflowEntry<AttachedChildWorkflowResult<InferWorkflowResult<W>>>;
+
+  (
+    options: AttachedChildWorkflowStartOptions<W>,
+    opts: ChildWorkflowTimeoutCallOptions,
+  ): WorkflowEntry<
+    | AttachedChildWorkflowResult<InferWorkflowResult<W>>
+    | { ok: false; status: "timeout" }
+  >;
+
+  (
+    options: AttachedChildWorkflowStartOptions<W>,
+    opts: ChildWorkflowCallOptions,
+  ): WorkflowEntry<AttachedChildWorkflowResult<InferWorkflowResult<W>>>;
 
   /**
    * Start this child workflow in detached mode.
@@ -1300,6 +1338,33 @@ export interface ChildWorkflowAccessor<
   startDetached(
     options: DetachedStartOptions<W>,
   ): AwaitableEntry<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
+}
+
+export type AttachedChildWorkflowResult<T> =
+  | { ok: true; result: T }
+  | { ok: false; status: "failed"; error: unknown };
+
+export interface RequestCallOptions {
+  readonly priority?: number;
+}
+
+export interface RequestTimeoutCallOptions extends RequestCallOptions {
+  readonly timeout: StepBoundary;
+}
+
+export interface RequestAccessor<
+  TPayloadSchema extends StandardSchemaV1,
+  TResponse,
+> {
+  (payload: SchemaInvocationInput<TPayloadSchema>): RequestEntry<TResponse>;
+  (
+    payload: SchemaInvocationInput<TPayloadSchema>,
+    opts: RequestTimeoutCallOptions,
+  ): RequestEntry<TimeoutResult<TResponse>>;
+  (
+    payload: SchemaInvocationInput<TPayloadSchema>,
+    opts: RequestCallOptions,
+  ): RequestEntry<TResponse>;
 }
 
 /**
@@ -1526,6 +1591,7 @@ export interface CompensationContext<
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
+  TRequests extends RequestDefinitions = Record<string, never>,
   TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
   TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
@@ -1547,6 +1613,18 @@ export interface CompensationContext<
           TArgs,
           CompensationStepResult<StandardSchemaV1.InferOutput<TResultSchema>>
         >
+      : never;
+  };
+
+  /**
+   * Requests for external request-response work.
+   */
+  readonly requests: {
+    [K in keyof TRequests]: TRequests[K] extends RequestDefinition<
+      infer TPayload,
+      infer TResponseSchema
+    >
+      ? RequestAccessor<TPayload, StandardSchemaV1.InferOutput<TResponseSchema>>
       : never;
   };
 
@@ -1625,6 +1703,7 @@ export interface CompensationContext<
           TStreams,
           TEvents,
           TSteps,
+          TRequests,
           TChildWorkflows,
           TForeignWorkflows,
           TPatches,
@@ -1644,6 +1723,7 @@ export interface CompensationContext<
         TStreams,
         TEvents,
         TSteps,
+        TRequests,
         TChildWorkflows,
         TForeignWorkflows,
         TPatches,
@@ -1674,6 +1754,7 @@ export interface CompensationContext<
           TStreams,
           TEvents,
           TSteps,
+          TRequests,
           TChildWorkflows,
           TForeignWorkflows,
           TPatches,
@@ -1705,6 +1786,7 @@ export interface CompensationContext<
           TStreams,
           TEvents,
           TSteps,
+          TRequests,
           TChildWorkflows,
           TForeignWorkflows,
           TPatches,
@@ -1743,6 +1825,7 @@ export type CompensationCallback<
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
+  TRequests extends RequestDefinitions = Record<string, never>,
   TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
   TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
@@ -1754,6 +1837,7 @@ export type CompensationCallback<
     TStreams,
     TEvents,
     TSteps,
+    TRequests,
     TChildWorkflows,
     TForeignWorkflows,
     TPatches,
@@ -1799,6 +1883,7 @@ export interface WorkflowContext<
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
+  TRequests extends RequestDefinitions = Record<string, never>,
   TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
   TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
@@ -1821,6 +1906,18 @@ export interface WorkflowContext<
   };
 
   /**
+   * Requests for external request-response work.
+   */
+  readonly requests: {
+    [K in keyof TRequests]: TRequests[K] extends RequestDefinition<
+      infer TPayload,
+      infer TResponseSchema
+    >
+      ? RequestAccessor<TPayload, StandardSchemaV1.InferOutput<TResponseSchema>>
+      : never;
+  };
+
+  /**
    * Child workflow accessors — structured invocation (lifecycle managed by parent).
    * Calling an accessor returns a `WorkflowCall<T>` (result mode with builders).
    * Use `.startDetached(opts)` to start without lifecycle management.
@@ -1834,6 +1931,7 @@ export interface WorkflowContext<
         TStreams,
         TEvents,
         TSteps,
+        TRequests,
         TChildWorkflows,
         TForeignWorkflows,
         TPatches,
@@ -1919,6 +2017,7 @@ export interface WorkflowContext<
           TStreams,
           TEvents,
           TSteps,
+          TRequests,
           TChildWorkflows,
           TForeignWorkflows,
           TPatches,
@@ -1938,6 +2037,7 @@ export interface WorkflowContext<
         TStreams,
         TEvents,
         TSteps,
+        TRequests,
         TChildWorkflows,
         TForeignWorkflows,
         TPatches,
@@ -1968,6 +2068,7 @@ export interface WorkflowContext<
           TStreams,
           TEvents,
           TSteps,
+          TRequests,
           TChildWorkflows,
           TForeignWorkflows,
           TPatches,
@@ -1999,6 +2100,7 @@ export interface WorkflowContext<
           TStreams,
           TEvents,
           TSteps,
+          TRequests,
           TChildWorkflows,
           TForeignWorkflows,
           TPatches,
@@ -2046,6 +2148,7 @@ export interface WorkflowContext<
       TStreams,
       TEvents,
       TSteps,
+      TRequests,
       TChildWorkflows,
       TForeignWorkflows,
       TPatches,
@@ -2072,6 +2175,7 @@ export interface WorkflowConcurrencyContext<
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
+  TRequests extends RequestDefinitions = Record<string, never>,
   TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
   TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
@@ -2084,6 +2188,7 @@ export interface WorkflowConcurrencyContext<
     TStreams,
     TEvents,
     TSteps,
+    TRequests,
     TChildWorkflows,
     TForeignWorkflows,
     TPatches,
@@ -2120,6 +2225,7 @@ export interface WorkflowConcurrencyContext<
           TStreams,
           TEvents,
           TSteps,
+          TRequests,
           TChildWorkflows,
           TForeignWorkflows,
           TPatches,
@@ -2139,6 +2245,7 @@ export interface WorkflowConcurrencyContext<
         TStreams,
         TEvents,
         TSteps,
+        TRequests,
         TChildWorkflows,
         TForeignWorkflows,
         TPatches,
@@ -2169,6 +2276,7 @@ export interface WorkflowConcurrencyContext<
           TStreams,
           TEvents,
           TSteps,
+          TRequests,
           TChildWorkflows,
           TForeignWorkflows,
           TPatches,
@@ -2199,6 +2307,7 @@ export interface WorkflowConcurrencyContext<
           TStreams,
           TEvents,
           TSteps,
+          TRequests,
           TChildWorkflows,
           TForeignWorkflows,
           TPatches,
@@ -2291,6 +2400,7 @@ export interface CompensationConcurrencyContext<
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
+  TRequests extends RequestDefinitions = Record<string, never>,
   TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
   TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
@@ -2303,6 +2413,7 @@ export interface CompensationConcurrencyContext<
     TStreams,
     TEvents,
     TSteps,
+    TRequests,
     TChildWorkflows,
     TForeignWorkflows,
     TPatches,
@@ -2338,6 +2449,7 @@ export interface CompensationConcurrencyContext<
           TStreams,
           TEvents,
           TSteps,
+          TRequests,
           TChildWorkflows,
           TForeignWorkflows,
           TPatches,
@@ -2357,6 +2469,7 @@ export interface CompensationConcurrencyContext<
         TStreams,
         TEvents,
         TSteps,
+        TRequests,
         TChildWorkflows,
         TForeignWorkflows,
         TPatches,
@@ -2387,6 +2500,7 @@ export interface CompensationConcurrencyContext<
           TStreams,
           TEvents,
           TSteps,
+          TRequests,
           TChildWorkflows,
           TForeignWorkflows,
           TPatches,
@@ -2417,6 +2531,7 @@ export interface CompensationConcurrencyContext<
           TStreams,
           TEvents,
           TSteps,
+          TRequests,
           TChildWorkflows,
           TForeignWorkflows,
           TPatches,

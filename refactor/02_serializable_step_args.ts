@@ -54,13 +54,13 @@ defineStep({
   schema: z.object({ ok: z.boolean() }),
 });
 
+// @ts-expect-error `args` is required so invocation input is persistable
 defineStep({
   name: "argsRequired",
   result: z.object({ ok: z.boolean() }),
   async execute() {
     return { ok: true };
   },
-  // @ts-expect-error `args` is required so invocation input is persistable
 });
 
 export const serializableStepArgsAcceptanceWorkflow = defineWorkflow({
@@ -82,10 +82,10 @@ export const serializableStepArgsAcceptanceWorkflow = defineWorkflow({
     // @ts-expect-error positional step args are no longer accepted
     await ctx.steps.bookSerializableFlight("Paris", "p-123");
 
-    // @ts-expect-error call sites accept encoded input, not arbitrary decoded-only values
     await ctx.steps.bookSerializableFlight({
       destination: "Paris",
       passengerId: "p-123",
+      // @ts-expect-error call sites accept encoded input, not arbitrary decoded-only values
       requestedAt: { not: "serializable" },
     });
 

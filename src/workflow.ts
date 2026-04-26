@@ -1,11 +1,13 @@
 import type { StandardSchemaV1 } from "./types/standard-schema";
 import type {
   StepDefinition,
+  RequestDefinition,
   RetryPolicyOptions,
   ChannelDefinitions,
   StreamDefinitions,
   EventDefinitions,
   StepDefinitions,
+  RequestDefinitions,
   WorkflowDefinitions,
   WorkflowDefinition,
   WorkflowHeader,
@@ -15,6 +17,7 @@ import type {
   CompensationContext,
   PatchDefinitions,
   RngDefinitions,
+  WorkflowErrorDefinitions,
 } from "./types";
 
 // =============================================================================
@@ -124,6 +127,43 @@ export function defineStep(config: {
 }
 
 // =============================================================================
+// DEFINE REQUEST
+// =============================================================================
+
+/**
+ * Define a typed request-response interaction.
+ */
+export function defineRequest<
+  TPayloadSchema extends JsonSchemaConstraint,
+  TResponseSchema extends JsonSchemaConstraint,
+>(config: {
+  name: string;
+  payload: TPayloadSchema;
+  response: TResponseSchema;
+}): RequestDefinition<TPayloadSchema, TResponseSchema>;
+export function defineRequest(config: {
+  name: string;
+  payload: JsonSchemaConstraint;
+  response: JsonSchemaConstraint;
+}): RequestDefinition<any, any> {
+  if (!config.name || typeof config.name !== "string") {
+    throw new Error("Request name must be a non-empty string");
+  }
+  if (!config.payload || !("~standard" in config.payload)) {
+    throw new Error("Request payload must be a standard schema");
+  }
+  if (!config.response || !("~standard" in config.response)) {
+    throw new Error("Request response must be a standard schema");
+  }
+
+  return {
+    name: config.name,
+    payload: config.payload,
+    response: config.response,
+  };
+}
+
+// =============================================================================
 // DEFINE WORKFLOW HEADER
 // =============================================================================
 
@@ -180,13 +220,15 @@ export function defineWorkflowHeader<
   TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<void, void>,
   TResult extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
+  TErrors extends WorkflowErrorDefinitions = Record<string, never>,
 >(config: {
   name: string;
   channels?: TChannels;
   args?: TArgs;
   metadata?: TMetadata;
   result?: TResult;
-}): WorkflowHeader<TChannels, TArgs, TMetadata, TResult> {
+  errors?: TErrors;
+}): WorkflowHeader<TChannels, TArgs, TMetadata, TResult, TErrors> {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Workflow name must be a non-empty string");
   }
@@ -227,7 +269,17 @@ export function defineWorkflowHeader<
       throw new Error("result must be a standard schema");
     }
   }
-  return config as WorkflowHeader<TChannels, TArgs, TMetadata, TResult>;
+  if (config.errors !== undefined) {
+    if (typeof config.errors !== "object" || Array.isArray(config.errors)) {
+      throw new Error("errors must be an object");
+    }
+    for (const [name, schema] of Object.entries(config.errors)) {
+      if (!schema || typeof schema !== "object" || !("~standard" in schema)) {
+        throw new Error(`Error '${name}' must have a standard schema`);
+      }
+    }
+  }
+  return config as WorkflowHeader<TChannels, TArgs, TMetadata, TResult, TErrors>;
 }
 
 // =============================================================================
@@ -303,11 +355,13 @@ export function defineWorkflow<
   TStreams extends StreamDefinitions = Record<string, never>,
   TEvents extends EventDefinitions = Record<string, never>,
   TSteps extends StepDefinitions = Record<string, never>,
+  TRequests extends RequestDefinitions = Record<string, never>,
   TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
   TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<void, void>,
+  TErrors extends WorkflowErrorDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
 >(config: {
@@ -317,6 +371,7 @@ export function defineWorkflow<
   streams?: TStreams;
   events?: TEvents;
   steps?: TSteps;
+  requests?: TRequests;
   childWorkflows?: TChildWorkflows;
   foreignWorkflows?: TForeignWorkflows;
   patches?: TPatches;
@@ -324,6 +379,7 @@ export function defineWorkflow<
   result?: TResultSchema;
   args?: TArgs;
   metadata?: TMetadata;
+  errors?: TErrors;
   retention?:
     | number
     | {
@@ -339,6 +395,7 @@ export function defineWorkflow<
       TStreams,
       TEvents,
       TSteps,
+      TRequests,
       TChildWorkflows,
       TForeignWorkflows,
       TPatches,
@@ -353,6 +410,7 @@ export function defineWorkflow<
       TStreams,
       TEvents,
       TSteps,
+      TRequests,
       TChildWorkflows,
       TForeignWorkflows,
       TPatches,
@@ -370,6 +428,7 @@ export function defineWorkflow<
             TStreams,
             TEvents,
             TSteps,
+            TRequests,
             TChildWorkflows,
             TForeignWorkflows,
             TPatches,
@@ -386,6 +445,7 @@ export function defineWorkflow<
             TStreams,
             TEvents,
             TSteps,
+            TRequests,
             TChildWorkflows,
             TForeignWorkflows,
             TPatches,
@@ -401,6 +461,7 @@ export function defineWorkflow<
       TStreams,
       TEvents,
       TSteps,
+      TRequests,
       TChildWorkflows,
       TForeignWorkflows,
       TPatches,
@@ -414,11 +475,13 @@ export function defineWorkflow<
   TStreams,
   TEvents,
   TSteps,
+  TRequests,
   TChildWorkflows,
   TForeignWorkflows,
   TResultSchema,
   TArgs,
   TMetadata,
+  TErrors,
   TPatches,
   TRng
 > {
@@ -496,6 +559,28 @@ export function defineWorkflow<
     }
   }
 
+  // Validate requests
+  const requests = config.requests ?? ({} as TRequests);
+  if (config.requests !== undefined) {
+    if (typeof config.requests !== "object" || Array.isArray(config.requests)) {
+      throw new Error("requests must be an object");
+    }
+    for (const [name, request] of Object.entries(config.requests)) {
+      if (!request || typeof request !== "object") {
+        throw new Error(`Request '${name}' must be a valid request definition`);
+      }
+      if (!request.name || typeof request.name !== "string") {
+        throw new Error(`Request '${name}' must have a name`);
+      }
+      if (!request.payload || !("~standard" in request.payload)) {
+        throw new Error(`Request '${name}' must have a standard payload schema`);
+      }
+      if (!request.response || !("~standard" in request.response)) {
+        throw new Error(`Request '${name}' must have a standard response schema`);
+      }
+    }
+  }
+
   // Validate childWorkflows
   const childWorkflows = config.childWorkflows ?? ({} as TChildWorkflows);
   if (config.childWorkflows !== undefined) {
@@ -562,6 +647,19 @@ export function defineWorkflow<
       !("~standard" in config.metadata)
     ) {
       throw new Error("metadata must be a standard schema");
+    }
+  }
+
+  // Validate errors if provided
+  const errors = config.errors ?? ({} as TErrors);
+  if (config.errors !== undefined) {
+    if (typeof config.errors !== "object" || Array.isArray(config.errors)) {
+      throw new Error("errors must be an object");
+    }
+    for (const [name, schema] of Object.entries(config.errors)) {
+      if (!schema || typeof schema !== "object" || !("~standard" in schema)) {
+        throw new Error(`Error '${name}' must have a standard schema`);
+      }
     }
   }
 
@@ -656,8 +754,10 @@ export function defineWorkflow<
     streams,
     events,
     steps,
+    requests,
     childWorkflows,
     foreignWorkflows,
+    errors,
     patches,
     rng,
   } as WorkflowDefinition<
@@ -666,11 +766,13 @@ export function defineWorkflow<
     TStreams,
     TEvents,
     TSteps,
+    TRequests,
     TChildWorkflows,
     TForeignWorkflows,
     TResultSchema,
     TArgs,
     TMetadata,
+    TErrors,
     TPatches,
     TRng
   >;

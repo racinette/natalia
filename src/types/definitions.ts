@@ -94,9 +94,7 @@ export interface PatchAccessor extends AtomicResult<boolean> {}
 /**
  * Configuration for retry behavior and timeouts.
  */
-export interface RetryPolicyBaseOptions {
-  /** Maximum retry attempts (default: unlimited) */
-  maxAttempts?: number;
+export interface RetryPolicyOptions {
   /** Initial retry interval in seconds (default: 1) */
   intervalSeconds?: number;
   /** Backoff multiplier (default: 2) */
@@ -108,18 +106,12 @@ export interface RetryPolicyBaseOptions {
 }
 
 /**
- * Mutually exclusive deadline options.
- * Provide at most one of `deadlineSeconds` or `deadlineUntil`.
+ * Mutually exclusive deadline options for workflow start boundaries.
  */
 export type DeadlineOptions =
   | { deadlineSeconds: number; deadlineUntil?: never }
   | { deadlineUntil: Date | number; deadlineSeconds?: never }
   | { deadlineSeconds?: undefined; deadlineUntil?: undefined };
-
-/**
- * Retry policy with optional total deadline.
- */
-export type RetryPolicyOptions = RetryPolicyBaseOptions & DeadlineOptions;
 
 // =============================================================================
 // STEP DEFINITION
@@ -159,6 +151,38 @@ export interface StepDefinition<
  */
 export type StepDefinitions = Record<string, StepDefinition<any, any>>;
 
+// =============================================================================
+// REQUEST DEFINITION
+// =============================================================================
+
+/**
+ * Request definition - created via defineRequest().
+ *
+ * Requests are typed request-response interactions with external handlers or
+ * manual resolution. Workflow code controls payload, priority, and observation
+ * timeout at call time.
+ */
+export interface RequestDefinition<
+  TPayloadSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+  TResponseSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+> {
+  readonly name: string;
+  /** Payload schema for observable, serializable request input. */
+  readonly payload: TPayloadSchema;
+  /** Response schema for encoding/decoding resolved request data. */
+  readonly response: TResponseSchema;
+}
+
+/**
+ * Map of request definitions.
+ */
+export type RequestDefinitions = Record<string, RequestDefinition<any, any>>;
+
+/**
+ * Map of declared workflow business errors.
+ */
+export type WorkflowErrorDefinitions = Record<string, JsonSchemaConstraint>;
+
 /**
  * Map of workflow definitions for child/foreign workflow references.
  * Accepts both full `WorkflowDefinition` objects and lightweight
@@ -172,6 +196,8 @@ export type WorkflowDefinitions = Record<string, AnyWorkflowHeader>;
  * Useful for avoiding repeated `WorkflowDefinition<any, ...>` constraints.
  */
 export type AnyWorkflowDefinition = WorkflowDefinition<
+  any,
+  any,
   any,
   any,
   any,
@@ -296,12 +322,14 @@ export interface WorkflowHeader<
     void,
     void
   >,
+  TErrors extends WorkflowErrorDefinitions = Record<string, never>,
 > {
   readonly name: string;
   readonly channels?: TChannels;
   readonly args?: TArgs;
   readonly metadata?: TMetadata;
   readonly result?: TResult;
+  readonly errors?: TErrors;
 }
 
 /**
@@ -310,7 +338,7 @@ export interface WorkflowHeader<
  * both full `WorkflowDefinition` objects and lightweight `WorkflowHeader`
  * descriptors satisfy this type.
  */
-export type AnyWorkflowHeader = WorkflowHeader<any, any, any, any>;
+export type AnyWorkflowHeader = WorkflowHeader<any, any, any, any, any>;
 
 // =============================================================================
 // DETERMINISTIC RNG
@@ -432,6 +460,7 @@ export interface WorkflowDefinition<
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
+  TRequests extends RequestDefinitions,
   TChildWorkflows extends WorkflowDefinitions,
   TForeignWorkflows extends WorkflowDefinitions,
   TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<
@@ -446,6 +475,7 @@ export interface WorkflowDefinition<
     void,
     void
   >,
+  TErrors extends WorkflowErrorDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
 > extends PublicWorkflowHeader<
@@ -473,6 +503,9 @@ export interface WorkflowDefinition<
 
   /** Step definitions */
   readonly steps?: TSteps;
+
+  /** Request definitions */
+  readonly requests?: TRequests;
 
   /** Child workflow definitions (for ctx.childWorkflows) */
   readonly childWorkflows?: TChildWorkflows;
@@ -509,6 +542,9 @@ export interface WorkflowDefinition<
    */
   readonly metadata?: TMetadata;
 
+  /** Declared workflow business errors. */
+  readonly errors?: TErrors;
+
   /**
    * Workflow retention policy for garbage collection.
    *
@@ -544,6 +580,7 @@ export interface WorkflowDefinition<
       TStreams,
       TEvents,
       TSteps,
+      TRequests,
       TChildWorkflows,
       TForeignWorkflows,
       TPatches,
@@ -563,6 +600,7 @@ export interface WorkflowDefinition<
       TStreams,
       TEvents,
       TSteps,
+      TRequests,
       TChildWorkflows,
       TForeignWorkflows,
       TPatches,
@@ -590,6 +628,7 @@ export interface WorkflowDefinition<
           TStreams,
           TEvents,
           TSteps,
+          TRequests,
           TChildWorkflows,
           TForeignWorkflows,
           TPatches,
@@ -606,6 +645,7 @@ export interface WorkflowDefinition<
           TStreams,
           TEvents,
           TSteps,
+          TRequests,
           TChildWorkflows,
           TForeignWorkflows,
           TPatches,
@@ -626,6 +666,7 @@ export interface WorkflowDefinition<
       TStreams,
       TEvents,
       TSteps,
+      TRequests,
       TChildWorkflows,
       TForeignWorkflows,
       TPatches,

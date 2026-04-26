@@ -134,7 +134,7 @@
 export * from "./types";
 
 // Public API - Definition helpers
-export { defineStep, defineWorkflow, defineWorkflowHeader } from "./workflow";
+export { defineRequest, defineStep, defineWorkflow, defineWorkflowHeader } from "./workflow";
 
 // Public API - Engine
 export { WorkflowEngine, type WorkflowEngineConfig } from "./engine";

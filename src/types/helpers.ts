@@ -97,6 +97,8 @@ export type InferWorkflowState<W> =
     any,
     any,
     any,
+    any,
+    any,
     any
   >
     ? TState
