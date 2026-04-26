@@ -91,32 +91,63 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
       },
     );
 
+    // @ts-expect-error scope inputs must keep a top-level object shape
+    await ctx.scope("TopLevelTupleRejected", [ctx.branches.quote({ provider: "tuple" })], async () => true);
+
+    const mapEntries = new Map([
+      ["a", ctx.branches.quote({ provider: "map-a" })],
+      ["b", ctx.branches.quote({ provider: "map-b" })],
+    ] as const);
+    // @ts-expect-error scope inputs must keep a top-level object shape
+    await ctx.scope("TopLevelMapRejected", mapEntries, async () => true);
+
     const scopedTuple = await ctx.scope(
       "TupleScope",
-      [
-        ctx.branches.quote({ provider: "tuple-a" }),
-        ctx.branches.quote({ provider: "tuple-b" }),
-      ] as const,
+      {
+        quotes: [
+          ctx.branches.quote({ provider: "tuple-a" }),
+          ctx.branches.quote({ provider: "tuple-b" }),
+        ] as const,
+      },
       async (scopeCtx, branches) => {
+        await scopeCtx.join(branches.quotes[0]);
+
         for await (const event of scopeCtx.match(branches)) {
-          type _TupleKey = Assert<IsEqual<typeof event.key, 0 | 1>>;
+          type _TupleEvent = Assert<
+            IsEqual<
+              typeof event,
+              MatchEvent<"quotes", { provider: string; price: number }> & { index: 0 | 1 }
+            >
+          >;
           break;
         }
         return true;
       },
     );
 
-    const mapEntries = new Map([
-      ["a", ctx.branches.quote({ provider: "map-a" })],
-      ["b", ctx.branches.quote({ provider: "map-b" })],
-    ] as const);
-    const scopedMap = await ctx.scope("MapScope", mapEntries, async (scopeCtx, branches) => {
-      for await (const event of scopeCtx.match(branches)) {
-        type _MapKey = Assert<IsEqual<typeof event.key, "a" | "b">>;
-        break;
-      }
-      return true;
-    });
+    const scopedMap = await ctx.scope(
+      "MapScope",
+      { quotesByProvider: mapEntries },
+      async (scopeCtx, branches) => {
+        const quoteA = branches.quotesByProvider.get("a");
+        if (quoteA) {
+          await scopeCtx.join(quoteA);
+        }
+
+        for await (const event of scopeCtx.match(branches)) {
+          type _MapEvent = Assert<
+            IsEqual<
+              typeof event,
+              MatchEvent<"quotesByProvider", { provider: string; price: number }> & {
+                mapKey: "a" | "b";
+              }
+            >
+          >;
+          break;
+        }
+        return true;
+      },
+    );
 
     const all = await ctx.all({
       quote: ctx.branches.quote({ provider: "all" }),

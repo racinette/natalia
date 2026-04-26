@@ -258,6 +258,14 @@ export type TimeoutResult<T> =
   | { ok: true; result: T }
   | { ok: false; status: "timeout" };
 
+export interface JoinOptions {
+  readonly timeout: StepBoundary;
+}
+
+export type JoinTimeoutResult = { ok: false; status: "timeout" };
+
+export type JoinResult<H> = H extends AwaitableEntry<infer T> ? T : never;
+
 declare const durableHandleBrand: unique symbol;
 declare const rootScopeBrand: unique symbol;
 declare const phantomValueType: unique symbol;
@@ -621,19 +629,62 @@ export type IsJoinableByPath<H, TCurrentPath extends ScopePath> =
 // SCOPE TYPES — ENTRY, BRANCH HANDLES
 // =============================================================================
 
-export type EntryResult<E> = E extends AwaitableEntry<infer T>
-  ? T
-  : E extends (...args: any[]) => infer R
-    ? Awaited<R>
-    : never;
+export type EntryResult<E> = E extends AwaitableEntry<infer T> ? T : never;
 
 /**
- * A scope entry can be an unstarted awaitable entry or a closure that creates
- * one from a path-specialized branch context.
+ * A scope entry is an unstarted typed workflow entry. Inline branch closures are
+ * intentionally not accepted; isolated branches are declared up front and
+ * instantiated through `ctx.branches`.
  */
-export type ScopeEntry<Tctx, T = unknown> =
-  | AwaitableEntry<T>
-  | ((ctx: Tctx) => AwaitableEntry<T> | PromiseLike<T> | T);
+export type ScopeEntry<T = unknown> = AwaitableEntry<T>;
+
+export type ScopeEntryPropertyStructure =
+  | ScopeEntry
+  | readonly ScopeEntry[]
+  | ReadonlyMap<PropertyKey, ScopeEntry>;
+
+export type ScopeEntryStructure = {
+  readonly [key: string]: ScopeEntryPropertyStructure;
+};
+
+type InvalidScopeEntryStructure = [
+  "Scope input must be a top-level object whose properties are typed entries, arrays/tuples of entries, or maps of entries",
+];
+
+type ScopeEntryPropertyValidation<E> =
+  E extends AwaitableEntry<any>
+    ? []
+    : E extends readonly (infer V)[]
+      ? V extends AwaitableEntry<any>
+        ? []
+        : InvalidScopeEntryStructure
+      : E extends ReadonlyMap<any, infer V>
+      ? V extends AwaitableEntry<any>
+        ? []
+        : InvalidScopeEntryStructure
+      : InvalidScopeEntryStructure;
+
+type ScopeEntryValidation<E> =
+  E extends (...args: any[]) => any
+    ? InvalidScopeEntryStructure
+    : E extends AwaitableEntry<any> | readonly unknown[] | ReadonlyMap<any, any>
+      ? InvalidScopeEntryStructure
+      : E extends object
+        ? {
+            [K in keyof E]: ScopeEntryPropertyValidation<E[K]>;
+          }[keyof E] extends []
+          ? []
+          : InvalidScopeEntryStructure
+        : InvalidScopeEntryStructure;
+
+type TupleIndexKeys<T extends readonly unknown[]> = Exclude<
+  keyof T,
+  keyof readonly unknown[]
+>;
+
+type TupleIndex<K> = K extends `${infer N extends number}` ? N : never;
+
+type TupleIndexes<T extends readonly unknown[]> = TupleIndex<TupleIndexKeys<T>>;
 
 /**
  * A handle to a running scope branch.
@@ -667,10 +718,49 @@ export interface BranchHandle<
   TRoot extends RootScope = RootScope,
 > extends BranchEntry<T, TScopePath, TRoot> {}
 
+export type BranchInstanceStatus =
+  | "pending"
+  | "running"
+  | "complete"
+  | "failed"
+  | "halted"
+  | "skipped";
+
 export type DefinedBranchResult<T, TErrors extends BranchErrorMode> =
   | { ok: true; result: T }
   | { ok: false; status: "failed"; error: unknown }
   | { ok: false; status: "skipped" };
+
+type EntrySuccessFromValue<T> =
+  [Extract<T, { ok: true; result: any }>] extends [never]
+    ? T
+    : Extract<T, { ok: true; result: any }> extends { ok: true; result: infer R }
+      ? R
+      : never;
+
+export type ScopeSuccessResults<E> =
+  E extends AwaitableEntry<infer T>
+    ? EntrySuccessFromValue<T>
+    : E extends readonly unknown[]
+      ? { [K in keyof E]: ScopeSuccessResults<E[K]> }
+      : E extends ReadonlyMap<infer K, infer V>
+        ? ReadonlyMap<K, ScopeSuccessResults<V>>
+        : E extends object
+          ? { [K in keyof E]: ScopeSuccessResults<E[K]> }
+          : never;
+
+export type PartialScopeSuccessResults<E> =
+  E extends AwaitableEntry<infer T>
+    ? EntrySuccessFromValue<T>
+    : E extends readonly unknown[]
+      ? ReadonlyArray<
+          E extends readonly (infer V)[] ? PartialScopeSuccessResults<V> : never
+        >
+      : E extends ReadonlyMap<infer K, infer V>
+        ? ReadonlyMap<K, PartialScopeSuccessResults<V>>
+        : E extends object
+          ? { readonly [K in keyof E]?: PartialScopeSuccessResults<E[K]> }
+          : never;
 
 type InferBranchArgsInput<B> = B extends BranchDefinition<
   infer TArgs,
@@ -722,24 +812,58 @@ export interface BranchAccessor<
  * @typeParam TRoot      - The root context.
  */
 export type ScopeHandles<
-  E extends Record<string, ScopeEntry<any>>,
+  E,
   TScopePath extends ScopePath,
   TRoot extends RootScope,
-> = {
-  [K in keyof E]: BranchEntry<EntryResult<E[K]>, TScopePath, TRoot>;
-};
+> =
+  E extends AwaitableEntry<infer T>
+    ? BranchEntry<T, TScopePath, TRoot>
+    : E extends readonly unknown[]
+      ? { readonly [K in keyof E]: ScopeHandles<E[K], TScopePath, TRoot> }
+      : E extends ReadonlyMap<infer K, infer V>
+        ? ReadonlyMap<K, ScopeHandles<V, TScopePath, TRoot>>
+        : E extends object
+          ? { readonly [K in keyof E]: ScopeHandles<E[K], TScopePath, TRoot> }
+          : never;
 
 /**
  * Result type for `ctx.first()` — a discriminated union of `{ key, result }` pairs
  * for the first branch to complete.
  *
- * @typeParam E - Record of branch closures.
+ * @typeParam E - Generalized entry structure.
  */
-export type FirstResult<
-  E extends Record<string, ScopeEntry<any>>,
-> = {
-  [K in keyof E]: { key: K; result: EntryResult<E[K]> };
-}[keyof E];
+export type MatchEvent<TKey extends PropertyKey, TResult> = {
+  key: TKey;
+  result: TResult;
+};
+
+type TupleResultUnion<E extends readonly unknown[]> = {
+  [K in TupleIndexKeys<E>]: ScopeSuccessResults<E[K]>;
+}[TupleIndexKeys<E>];
+
+type MatchEventForProperty<TKey extends PropertyKey, TValue> =
+  TValue extends AwaitableEntry<infer T>
+    ? MatchEvent<TKey, EntrySuccessFromValue<T>>
+    : TValue extends readonly unknown[]
+      ? number extends TValue["length"]
+        ? MatchEvent<
+            TKey,
+            TValue extends readonly (infer V)[] ? ScopeSuccessResults<V> : never
+          > & { index: number }
+        : MatchEvent<TKey, TupleResultUnion<TValue>> & {
+            index: TupleIndexes<TValue>;
+          }
+      : TValue extends ReadonlyMap<infer K extends PropertyKey, infer V>
+        ? MatchEvent<TKey, ScopeSuccessResults<V>> & { mapKey: K }
+        : never;
+
+export type MatchEvents<E> = E extends object
+  ? {
+      [K in keyof E & PropertyKey]: MatchEventForProperty<K, E[K]>;
+    }[keyof E & PropertyKey]
+  : never;
+
+export type FirstResult<E> = MatchEvents<E>;
 
 // =============================================================================
 // SELECT / LISTEN — HANDLE TYPES
@@ -1771,9 +1895,12 @@ export interface CompensationContext<
   join<H extends BranchEntry<any, any, CompensationRoot>>(
     handle: H,
     ..._check: IsJoinableByPath<H, TScopePath>
-  ): H extends AwaitableEntry<infer T>
-    ? Promise<T>
-    : Promise<never>;
+  ): Promise<JoinResult<H>>;
+  join<H extends BranchEntry<any, any, CompensationRoot>>(
+    handle: H,
+    opts: JoinOptions,
+    ..._check: IsJoinableByPath<H, TScopePath>
+  ): Promise<JoinResult<H> | JoinTimeoutResult>;
 
   // ---------------------------------------------------------------------------
   // scope — structured concurrency in compensation (closure-based)
@@ -1795,24 +1922,7 @@ export interface CompensationContext<
    */
   scope<
     Name extends string,
-    E extends Record<
-      string,
-      ScopeEntry<
-        CompensationContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TRequests,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
-        >
-      >
-    >,
+    E,
     R,
   >(
     name: ScopeNameArg<TScopePath, Name>,
@@ -1837,6 +1947,7 @@ export interface CompensationContext<
         CompensationRoot
       >,
     ) => Promise<R>,
+    ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<R>;
 
   /**
@@ -1845,28 +1956,10 @@ export interface CompensationContext<
    * Each entry is `(ctx: CompensationContext<...>) => Promise<T>`.
    * Resolve: `await ctx.all(entries).resolve(ctx)`.
    */
-  all<
-    E extends Record<
-      string,
-      ScopeEntry<
-        CompensationContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TRequests,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          any
-        >
-      >
-    >,
-  >(
+  all<E>(
     entries: E,
-  ): AwaitableEntry<{ [K in keyof E]: EntryResult<E[K]> }>;
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<ScopeSuccessResults<E>>;
 
   /**
    * Run all entries concurrently and return the first to complete.
@@ -1877,28 +1970,27 @@ export interface CompensationContext<
    *
    * If all branches fail, the scope fails unless `.failure(cb)` is provided.
    */
-  first<
-    E extends Record<
-      string,
-      ScopeEntry<
-        CompensationContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TRequests,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          any
-        >
-      >
-    >
-  >(
+  first<E>(
     entries: E,
+    ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<FirstResult<E>>;
+
+  atLeast<E>(
+    count: number,
+    entries: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<ScopeSuccessResults<E>>;
+
+  atMost<E>(
+    count: number,
+    entries: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<PartialScopeSuccessResults<E>>;
+
+  best<E>(
+    entries: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<PartialScopeSuccessResults<E>>;
 
   // ---------------------------------------------------------------------------
   // listen — channel-only multiplexed waiting (all contexts)
@@ -2083,9 +2175,12 @@ export interface WorkflowContext<
   join<H extends BranchEntry<any, any, ExecutionRoot>>(
     handle: H,
     ..._check: IsJoinableByPath<H, TScopePath>
-  ): H extends AwaitableEntry<infer T>
-    ? Promise<T>
-    : Promise<never>;
+  ): Promise<JoinResult<H>>;
+  join<H extends BranchEntry<any, any, ExecutionRoot>>(
+    handle: H,
+    opts: JoinOptions,
+    ..._check: IsJoinableByPath<H, TScopePath>
+  ): Promise<JoinResult<H> | JoinTimeoutResult>;
 
   /**
    * Create a cron-like schedule handle for recurring execution.
@@ -2120,24 +2215,7 @@ export interface WorkflowContext<
    */
   scope<
     Name extends string,
-    E extends Record<
-      string,
-      ScopeEntry<
-        WorkflowContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TRequests,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
-        >
-      >
-    >,
+    E,
     R,
   >(
     name: ScopeNameArg<TScopePath, Name>,
@@ -2162,6 +2240,7 @@ export interface WorkflowContext<
         ExecutionRoot
       >,
     ) => Promise<R>,
+    ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<R>;
 
   /**
@@ -2170,28 +2249,10 @@ export interface WorkflowContext<
    * Each entry is `(ctx: WorkflowContext<...>) => Promise<T>`.
    * Resolve: `await ctx.all(entries).resolve(ctx)`.
    */
-  all<
-    E extends Record<
-      string,
-      ScopeEntry<
-        WorkflowContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TRequests,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          any
-        >
-      >
-    >,
-  >(
+  all<E>(
     entries: E,
-  ): AwaitableEntry<{ [K in keyof E]: EntryResult<E[K]> }>;
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<ScopeSuccessResults<E>>;
 
   /**
    * Run all entries concurrently and return the first to complete.
@@ -2202,28 +2263,27 @@ export interface WorkflowContext<
    *
    * If all branches fail, the scope fails unless `.failure(cb)` is provided.
    */
-  first<
-    E extends Record<
-      string,
-      ScopeEntry<
-        WorkflowContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TRequests,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          any
-        >
-      >
-    >,
-  >(
+  first<E>(
     entries: E,
+    ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<FirstResult<E>>;
+
+  atLeast<E>(
+    count: number,
+    entries: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<ScopeSuccessResults<E>>;
+
+  atMost<E>(
+    count: number,
+    entries: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<PartialScopeSuccessResults<E>>;
+
+  best<E>(
+    entries: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<PartialScopeSuccessResults<E>>;
 
   // ---------------------------------------------------------------------------
   // listen — channel-only multiplexed waiting (all contexts)
@@ -2326,30 +2386,16 @@ export interface WorkflowConcurrencyContext<
   join<H extends BranchEntry<any, any, ExecutionRoot>>(
     handle: H,
     ..._check: IsJoinableByPath<H, TScopePath>
-  ): H extends AwaitableEntry<infer T>
-    ? Promise<T>
-    : Promise<never>;
+  ): Promise<JoinResult<H>>;
+  join<H extends BranchEntry<any, any, ExecutionRoot>>(
+    handle: H,
+    opts: JoinOptions,
+    ..._check: IsJoinableByPath<H, TScopePath>
+  ): Promise<JoinResult<H> | JoinTimeoutResult>;
 
   scope<
     Name extends string,
-    E extends Record<
-      string,
-      ScopeEntry<
-        WorkflowContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TRequests,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
-        >
-      >
-    >,
+    E,
     R,
   >(
     name: ScopeNameArg<TScopePath, Name>,
@@ -2374,6 +2420,7 @@ export interface WorkflowConcurrencyContext<
         ExecutionRoot
       >,
     ) => Promise<R>,
+    ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<R>;
 
   /**
@@ -2382,28 +2429,10 @@ export interface WorkflowConcurrencyContext<
    * Each entry is `(ctx: WorkflowContext<...>) => Promise<T>`.
    * Resolve: `await ctx.all(entries).resolve(ctx)`.
    */
-  all<
-    E extends Record<
-      string,
-      ScopeEntry<
-        WorkflowContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TRequests,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          any
-        >
-      >
-    >,
-  >(
+  all<E>(
     entries: E,
-  ): AwaitableEntry<{ [K in keyof E]: EntryResult<E[K]> }>;
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<ScopeSuccessResults<E>>;
 
   /**
    * Run all entries concurrently and return the first to complete.
@@ -2413,28 +2442,27 @@ export interface WorkflowConcurrencyContext<
    *
    * If all branches fail, the scope fails unless `.failure(cb)` is provided.
    */
-  first<
-    E extends Record<
-      string,
-      ScopeEntry<
-        WorkflowContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TRequests,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          any
-        >
-      >
-    >,
-  >(
+  first<E>(
     entries: E,
+    ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<FirstResult<E>>;
+
+  atLeast<E>(
+    count: number,
+    entries: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<ScopeSuccessResults<E>>;
+
+  atMost<E>(
+    count: number,
+    entries: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<PartialScopeSuccessResults<E>>;
+
+  best<E>(
+    entries: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<PartialScopeSuccessResults<E>>;
 
   /**
    * Create a listener for concurrent channel waiting.
@@ -2453,49 +2481,10 @@ export interface WorkflowConcurrencyContext<
    * Iterate over a selection, yielding `{ key, result }` for each event.
    * Branch failures auto-terminate the workflow.
    */
-  match<M extends Record<string, ScopeSelectableHandle>>(
-    sel: Selection<M>,
-  ): AsyncIterable<SelectDataKeyedUnion<M>>;
-
-  /**
-   * Iterate over a selection with a default failure handler.
-   * Failures on keys without an explicit handler call `onFailure`.
-   */
-  match<
-    M extends Record<string, ScopeSelectableHandle>,
-    DF extends (info: ScopeFailureInfo<TSteps, TChildWorkflows>) => any,
-  >(
-    sel: Selection<M>,
-    onFailure: DF,
-  ): AsyncIterable<
-    MatchReturn<M, Record<never, never>, Awaited<ReturnType<DF>>>
-  >;
-
-  /**
-   * Iterate over a selection with per-key handlers.
-   * Unhandled keys yield data unchanged (identity) on complete; failure auto-terminates.
-   */
-  match<
-    M extends Record<string, ScopeSelectableHandle>,
-    H extends MatchHandlers<M>,
-  >(
-    sel: Selection<M>,
-    handlers: H,
-  ): AsyncIterable<MatchReturn<M, H>>;
-
-  /**
-   * Iterate over a selection with per-key handlers and a default failure handler.
-   * `onFailure` applies to keys without an explicit `failure` handler.
-   */
-  match<
-    M extends Record<string, ScopeSelectableHandle>,
-    H extends MatchHandlers<M>,
-    DF extends (info: ScopeFailureInfo<TSteps, TChildWorkflows>) => any,
-  >(
-    sel: Selection<M>,
-    handlers: H,
-    onFailure: DF,
-  ): AsyncIterable<MatchReturn<M, H, Awaited<ReturnType<DF>>>>;
+  match<E>(
+    handles: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AsyncIterable<MatchEvents<E>>;
 }
 
 // =============================================================================
@@ -2550,30 +2539,16 @@ export interface CompensationConcurrencyContext<
   join<H extends BranchEntry<any, any, CompensationRoot>>(
     handle: H,
     ..._check: IsJoinableByPath<H, TScopePath>
-  ): H extends AwaitableEntry<infer T>
-    ? Promise<T>
-    : Promise<never>;
+  ): Promise<JoinResult<H>>;
+  join<H extends BranchEntry<any, any, CompensationRoot>>(
+    handle: H,
+    opts: JoinOptions,
+    ..._check: IsJoinableByPath<H, TScopePath>
+  ): Promise<JoinResult<H> | JoinTimeoutResult>;
 
   scope<
     Name extends string,
-    E extends Record<
-      string,
-      ScopeEntry<
-        CompensationContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TRequests,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
-        >
-      >
-    >,
+    E,
     R,
   >(
     name: ScopeNameArg<TScopePath, Name>,
@@ -2598,6 +2573,7 @@ export interface CompensationConcurrencyContext<
         CompensationRoot
       >,
     ) => Promise<R>,
+    ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<R>;
 
   /**
@@ -2606,28 +2582,10 @@ export interface CompensationConcurrencyContext<
    * Each entry is `(ctx: CompensationContext<...>) => Promise<T>`.
    * Resolve: `await ctx.all(entries).resolve(ctx)`.
    */
-  all<
-    E extends Record<
-      string,
-      ScopeEntry<
-        CompensationContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TRequests,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          any
-        >
-      >
-    >,
-  >(
+  all<E>(
     entries: E,
-  ): AwaitableEntry<{ [K in keyof E]: EntryResult<E[K]> }>;
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<ScopeSuccessResults<E>>;
 
   /**
    * Run all entries concurrently and return the first to complete.
@@ -2637,28 +2595,27 @@ export interface CompensationConcurrencyContext<
    *
    * If all branches fail, the scope fails unless `.failure(cb)` is provided.
    */
-  first<
-    E extends Record<
-      string,
-      ScopeEntry<
-        CompensationContext<
-          TState,
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TRequests,
-          TChildWorkflows,
-          TForeignWorkflows,
-          TPatches,
-          TRng,
-          any
-        >
-      >
-    >
-  >(
+  first<E>(
     entries: E,
+    ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<FirstResult<E>>;
+
+  atLeast<E>(
+    count: number,
+    entries: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<ScopeSuccessResults<E>>;
+
+  atMost<E>(
+    count: number,
+    entries: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<PartialScopeSuccessResults<E>>;
+
+  best<E>(
+    entries: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<PartialScopeSuccessResults<E>>;
 
   /**
    * Create a listener for concurrent channel waiting.
@@ -2677,46 +2634,10 @@ export interface CompensationConcurrencyContext<
    * Iterate over a compensation selection, yielding `{ key, result }` for each event.
    * Branch failures auto-terminate the compensation scope.
    */
-  match<M extends Record<string, ScopeSelectableHandle>>(
-    sel: CompensationSelection<M>,
-  ): AsyncIterable<SelectDataKeyedUnion<M>>;
-
-  /**
-   * Iterate over a compensation selection with a default failure handler.
-   */
-  match<
-    M extends Record<string, ScopeSelectableHandle>,
-    DF extends (info: ScopeFailureInfo<TSteps, TChildWorkflows>) => any,
-  >(
-    sel: CompensationSelection<M>,
-    onFailure: DF,
-  ): AsyncIterable<
-    MatchReturn<M, Record<never, never>, Awaited<ReturnType<DF>>>
-  >;
-
-  /**
-   * Iterate over a compensation selection with per-key handlers.
-   */
-  match<
-    M extends Record<string, ScopeSelectableHandle>,
-    H extends MatchHandlers<M>,
-  >(
-    sel: CompensationSelection<M>,
-    handlers: H,
-  ): AsyncIterable<MatchReturn<M, H>>;
-
-  /**
-   * Iterate over a compensation selection with per-key handlers and a default failure handler.
-   */
-  match<
-    M extends Record<string, ScopeSelectableHandle>,
-    H extends MatchHandlers<M>,
-    DF extends (info: ScopeFailureInfo<TSteps, TChildWorkflows>) => any,
-  >(
-    sel: CompensationSelection<M>,
-    handlers: H,
-    onFailure: DF,
-  ): AsyncIterable<MatchReturn<M, H, Awaited<ReturnType<DF>>>>;
+  match<E>(
+    handles: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AsyncIterable<MatchEvents<E>>;
 }
 
 // =============================================================================

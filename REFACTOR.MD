@@ -1045,7 +1045,7 @@ Direct `await` starts and observes an entry. A scope starts entries under struct
 
 ### Scope input structure
 
-Scope input is an object whose leaves may be entries, arrays/tuples of entries, or maps of entries. The body receives the same structure with leaves replaced by handles.
+Scope input is always a top-level object. Each top-level property may be a single entry, an array/tuple of entries, or a map of entries. The body receives the same top-level object structure with entries replaced by handles.
 
 ```typescript
 await ctx.scope(
@@ -1086,17 +1086,17 @@ The scope body remains an inline callback because it is orchestration code in th
 
 ### `ctx.match`
 
-`ctx.match` streams completions from object, array, and map structures. For arrays, events carry the array index. For maps, events carry the map key. For top-level objects, events carry the top-level object key.
+`ctx.match` streams completions from the top-level object structure. Events are keyed by the top-level object property. If that property is an array/tuple, the event also carries `index`; if it is a map, the event also carries `mapKey`.
 
 ```typescript
 for await (const event of ctx.match(handles)) {
   if (event.key === "quotes") {
     event.index;
-    event.val;
+    event.result;
   }
   if (event.key === "children") {
     event.mapKey;
-    event.val;
+    event.result;
   }
 }
 ```
@@ -1105,7 +1105,7 @@ for await (const event of ctx.match(handles)) {
 
 ### Convenience scope methods
 
-`ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.best` accept the same generalized input structure as `ctx.scope`. They return directly awaitable results and have no `.failure(cb)` builder.
+`ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.best` accept the same top-level object input structure as `ctx.scope`. They return directly awaitable results and have no `.failure(cb)` builder.
 
 `ctx.first` eagerly promotes compensation for entries it leaves unconsumed according to each entry's semantics. `ctx.atMost` and `ctx.best` return whatever completed and do not have failure cases. `ctx.atLeast` and `ctx.all` return discriminated union failures when their quorum/all requirements cannot be met.
 
@@ -2640,8 +2640,8 @@ defineStep({
 | `ctx.queues.X.enqueue(payload, opts?)`                              | Sync buffered operation.                                                                           |
 | `ctx.topics.X.publish(payload, opts?)`                              | Sync buffered operation.                                                                           |
 | `ctx.attributes.X.set(value)`                                       | Sync buffered operation.                                                                           |
-| `ctx.scope(name, entries, body)`                                    | Directly awaitable. Entries can be objects, arrays/tuples, and maps.                               |
-| `ctx.match(handles)`                                                | Async iterable of keyed/indexed/map-keyed completions. No handler form.                            |
+| `ctx.scope(name, entries, body)`                                    | Directly awaitable. Input is a top-level object whose properties can be entries, arrays/tuples, or maps. |
+| `ctx.match(handles)`                                                | Async iterable keyed by top-level object properties; arrays add `index`, maps add `mapKey`. No handler form. |
 | `ctx.join(handle, opts?)`                                           | Observes one handle; optional timeout only times out observation.                                  |
 | `ctx.all` / `ctx.first` / `ctx.atLeast` / `ctx.atMost` / `ctx.best` | Directly awaitable structured-concurrency helpers over generalized entries.                        |
 
@@ -2720,10 +2720,10 @@ Removed context APIs:
 
 #### Structured concurrency
 
-- `ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.best` accept generalized entries.
-- Scope input supports entries, arrays/tuples, and maps.
+- `ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.best` accept a top-level object input.
+- Scope input properties support single entries, arrays/tuples of entries, and maps of entries.
 - `ctx.join(handle, { timeout })` is a non-cancelling observation timeout.
-- `ctx.match` understands object, array, and map structure.
+- `ctx.match` yields top-level object keys, with `index` for array/tuple properties and `mapKey` for map properties.
 
 #### Attempts and serializable args
 
