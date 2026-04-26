@@ -36,7 +36,6 @@ import type {
   WorkflowTerminationReason,
   ExplicitError,
   ErrorValue,
-  Failure,
 } from "./results";
 
 
@@ -216,8 +215,27 @@ export type ErrorFactories<TErrors extends ErrorDefinitions> = {
 };
 
 export interface BranchContext<
+  TSteps extends StepDefinitions = Record<string, never>,
+  TRequests extends RequestDefinitions = Record<string, never>,
   TErrors extends BranchErrorMode = Record<string, never>,
 > {
+  readonly steps: {
+    [K in keyof TSteps]: TSteps[K] extends StepDefinition<
+      infer TArgs,
+      infer TResultSchema,
+      any
+    >
+      ? StepAccessor<TArgs, StandardSchemaV1.InferOutput<TResultSchema>>
+      : never;
+  };
+  readonly requests: {
+    [K in keyof TRequests]: TRequests[K] extends RequestDefinition<
+      infer TPayload,
+      infer TResponseSchema
+    >
+      ? RequestAccessor<TPayload, StandardSchemaV1.InferOutput<TResponseSchema>>
+      : never;
+  };
   readonly errors: ErrorFactories<ExplicitBranchErrorDefinitions<TErrors>>;
 }
 
@@ -649,31 +667,43 @@ export interface BranchHandle<
   TRoot extends RootScope = RootScope,
 > extends BranchEntry<T, TScopePath, TRoot> {}
 
-type EmptyObject<T> = keyof T extends never ? true : false;
-
 export type DefinedBranchResult<T, TErrors extends BranchErrorMode> =
-  TErrors extends "any"
-    ? { ok: true; result: T } | { ok: false; error: Failure }
-    : TErrors extends ErrorDefinitions
-      ? EmptyObject<TErrors> extends true
-        ? T
-        : { ok: true; result: T } | { ok: false; error: ErrorValue<TErrors> }
-      : T;
+  | { ok: true; result: T }
+  | { ok: false; status: "failed"; error: unknown }
+  | { ok: false; status: "skipped" };
 
-type InferBranchArgsInput<B> = B extends BranchDefinition<infer TArgs, any, any>
+type InferBranchArgsInput<B> = B extends BranchDefinition<
+  infer TArgs,
+  any,
+  any,
+  any,
+  any
+>
   ? SchemaInvocationInput<TArgs>
   : never;
 
-type InferBranchResult<B> = B extends BranchDefinition<any, infer TResult, any>
+type InferBranchResult<B> = B extends BranchDefinition<
+  any,
+  infer TResult,
+  any,
+  any,
+  any
+>
   ? StandardSchemaV1.InferOutput<TResult>
   : never;
 
-type InferBranchErrors<B> = B extends BranchDefinition<any, any, infer TErrors>
+type InferBranchErrors<B> = B extends BranchDefinition<
+  any,
+  any,
+  any,
+  any,
+  infer TErrors
+>
   ? TErrors
   : Record<string, never>;
 
 export interface BranchAccessor<
-  B extends BranchDefinition<any, any, any>,
+  B extends BranchDefinition<any, any, any, any, any>,
   TScopePath extends ScopePath,
   TRoot extends RootScope,
 > {
@@ -1569,9 +1599,6 @@ export interface BaseContext<
   /** Unique internal workflow instance identifier (not the idempotency key). */
   readonly workflowId: string;
 
-  /** Mutable workflow state (replayed on recovery) */
-  readonly state: TState;
-
   /** Replay-aware logger */
   readonly logger: WorkflowLogger;
 
@@ -1680,7 +1707,8 @@ export interface CompensationContext<
   readonly steps: {
     [K in keyof TSteps]: TSteps[K] extends StepDefinition<
       infer TArgs,
-      infer TResultSchema
+      infer TResultSchema,
+      any
     >
       ? StepAccessor<
           TArgs,
@@ -1974,7 +2002,8 @@ export interface WorkflowContext<
   readonly steps: {
     [K in keyof TSteps]: TSteps[K] extends StepDefinition<
       infer TArgs,
-      infer TResultSchema
+      infer TResultSchema,
+      any
     >
       ? StepAccessor<TArgs, StandardSchemaV1.InferOutput<TResultSchema>>
       : never;

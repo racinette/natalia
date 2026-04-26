@@ -1,6 +1,7 @@
 import type { StandardSchemaV1 } from "./types/standard-schema";
 import type {
   StepDefinition,
+  StepCompensationDefinition,
   BranchDefinition,
   RequestDefinition,
   QueueDefinition,
@@ -120,10 +121,44 @@ const noopUnsubscribe = (): void => undefined;
 export function defineStep<
   TArgsSchema extends JsonSchemaConstraint,
   TResultSchema extends JsonSchemaConstraint,
+  TCompensationSteps extends StepDefinitions = Record<string, never>,
+  TCompensationRequests extends RequestDefinitions = Record<string, never>,
+  TCompensationResultSchema extends JsonSchemaConstraint | undefined = undefined,
 >(config: {
   name: string;
   args: TArgsSchema;
   result: TResultSchema;
+  compensation: StepCompensationDefinition<
+    TArgsSchema,
+    TResultSchema,
+    TCompensationSteps,
+    TCompensationRequests,
+    TCompensationResultSchema
+  >;
+  execute: (
+    context: { signal: AbortSignal },
+    args: StandardSchemaV1.InferOutput<TArgsSchema>,
+  ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
+  retryPolicy?: RetryPolicyOptions;
+}): StepDefinition<
+  TArgsSchema,
+  TResultSchema,
+  StepCompensationDefinition<
+    TArgsSchema,
+    TResultSchema,
+    TCompensationSteps,
+    TCompensationRequests,
+    TCompensationResultSchema
+  >
+>;
+export function defineStep<
+  TArgsSchema extends JsonSchemaConstraint,
+  TResultSchema extends JsonSchemaConstraint,
+>(config: {
+  name: string;
+  args: TArgsSchema;
+  result: TResultSchema;
+  compensation?: undefined;
   execute: (
     context: { signal: AbortSignal },
     args: StandardSchemaV1.InferOutput<TArgsSchema>,
@@ -134,9 +169,10 @@ export function defineStep(config: {
   name: string;
   args: JsonSchemaConstraint;
   result: JsonSchemaConstraint;
+  compensation?: StepCompensationDefinition<any, any, any, any, any>;
   execute: (context: { signal: AbortSignal }, args: unknown) => Promise<unknown>;
   retryPolicy?: RetryPolicyOptions;
-}): StepDefinition<any, any> {
+}): StepDefinition<any, any, any> {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Step name must be a non-empty string");
   }
@@ -149,6 +185,24 @@ export function defineStep(config: {
   if (!config.args || !("~standard" in config.args)) {
     throw new Error("Step args must be a standard schema");
   }
+  if (config.compensation !== undefined) {
+    if (
+      typeof config.compensation !== "object" ||
+      config.compensation === null ||
+      Array.isArray(config.compensation)
+    ) {
+      throw new Error("Step compensation must be an object");
+    }
+    if (typeof config.compensation.undo !== "function") {
+      throw new Error("Step compensation undo must be a function");
+    }
+    if (
+      config.compensation.result !== undefined &&
+      !isStandardSchema(config.compensation.result)
+    ) {
+      throw new Error("Step compensation result must be a standard schema");
+    }
+  }
 
   return {
     name: config.name,
@@ -156,7 +210,8 @@ export function defineStep(config: {
     args: config.args,
     result: config.result,
     retryPolicy: config.retryPolicy,
-  };
+    compensation: config.compensation,
+  } as StepDefinition<any, any, any>;
 }
 
 // =============================================================================
@@ -393,24 +448,33 @@ export function defineWorkflowHeader<
 export function defineBranch<
   TArgsSchema extends JsonSchemaConstraint,
   TResultSchema extends JsonSchemaConstraint,
+  TSteps extends StepDefinitions = Record<string, never>,
+  TRequests extends RequestDefinitions = Record<string, never>,
   TErrors extends BranchErrorMode = Record<string, never>,
 >(config: {
   name: string;
   args: TArgsSchema;
   result: TResultSchema;
+  steps?: TSteps;
+  requests?: TRequests;
   errors?: TErrors;
   execute: (
-    ctx: import("./types").BranchContext<TErrors>,
+    ctx: import("./types").BranchContext<TSteps, TRequests, TErrors>,
     args: StandardSchemaV1.InferOutput<TArgsSchema>,
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
-}): BranchDefinition<TArgsSchema, TResultSchema, TErrors>;
+}): BranchDefinition<TArgsSchema, TResultSchema, TSteps, TRequests, TErrors>;
 export function defineBranch(config: {
   name: string;
   args: JsonSchemaConstraint;
   result: JsonSchemaConstraint;
+  steps?: StepDefinitions;
+  requests?: RequestDefinitions;
   errors?: BranchErrorMode;
-  execute: (ctx: import("./types").BranchContext<any>, args: unknown) => Promise<unknown>;
-}): BranchDefinition<any, any, any> {
+  execute: (
+    ctx: import("./types").BranchContext<any, any, any>,
+    args: unknown,
+  ) => Promise<unknown>;
+}): BranchDefinition<any, any, any, any, any> {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Branch name must be a non-empty string");
   }
@@ -423,6 +487,32 @@ export function defineBranch(config: {
   if (typeof config.execute !== "function") {
     throw new Error("Branch execute must be a function");
   }
+  if (config.steps !== undefined) {
+    if (typeof config.steps !== "object" || Array.isArray(config.steps)) {
+      throw new Error("Branch steps must be an object");
+    }
+    for (const [name, step] of Object.entries(config.steps)) {
+      if (!step || typeof step !== "object") {
+        throw new Error(`Branch step '${name}' must be a valid step definition`);
+      }
+      if (typeof step.execute !== "function") {
+        throw new Error(`Branch step '${name}' must have an execute function`);
+      }
+    }
+  }
+  if (config.requests !== undefined) {
+    if (typeof config.requests !== "object" || Array.isArray(config.requests)) {
+      throw new Error("Branch requests must be an object");
+    }
+    for (const [name, request] of Object.entries(config.requests)) {
+      if (!request || typeof request !== "object") {
+        throw new Error(`Branch request '${name}' must be a valid request definition`);
+      }
+      if (!request.name || typeof request.name !== "string") {
+        throw new Error(`Branch request '${name}' must have a name`);
+      }
+    }
+  }
   if (
     config.errors !== undefined &&
     config.errors !== "any" &&
@@ -431,7 +521,7 @@ export function defineBranch(config: {
     validateErrorDefinitions(config.errors, "branch errors");
   }
 
-  return config as BranchDefinition<any, any, any>;
+  return config as BranchDefinition<any, any, any, any, any>;
 }
 
 // =============================================================================

@@ -942,7 +942,7 @@ interface RequestAccessor<TPayload, TResponse> {
 Each isolated unit of work gets a context whose syntax reflects what the unit is allowed to see.
 
 - Workflow `execute` sees workflow primitives, workflow branches, workflow steps, and workflow `errors`.
-- Branch `execute` sees the workflow primitive/dependency surface, but its `ctx.errors` comes from that branch definition.
+- Branch `execute` sees only the primitives and dependencies declared on that branch definition; its `ctx.errors` comes from that branch definition.
 - Compensation `undo` sees only primitives and dependencies declared on the step's `compensation` field; it has no workflow `ctx.errors`.
 - Compensation branches see compensation-block primitives/dependencies and their own local branch `ctx.errors`.
 
@@ -973,7 +973,7 @@ All scopes must be named. Branches are no longer inline async closures passed to
 
 ### Branch definitions
 
-Branches are predefined on `defineWorkflow.branches` and on `defineStep.compensation.branches`. Each branch has `args`, `result`, `errors`, and `execute`.
+Branches are predefined on `defineWorkflow.branches` and on `defineStep.compensation.branches`. Each branch has `args`, `result`, optional local dependencies such as `steps` and `requests`, optional local `errors`, and `execute`.
 
 ```typescript
 defineWorkflow({
@@ -988,6 +988,7 @@ defineWorkflow({
     flightBooking: {
       args: z.object({ destination: z.string(), customerId: z.string() }),
       result: z.object({ confirmationId: z.string() }),
+      steps: { bookFlight },
       errors: "any",
       execute: async (ctx, args) => {
         const booking = await ctx.steps.bookFlight(

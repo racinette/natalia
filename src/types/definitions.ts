@@ -125,10 +125,13 @@ export type DeadlineOptions =
  * Use your own application logger (console.log, Winston, Pino, etc.) inside
  * step implementations — workflow-level logging is separate via ctx.logger.
  */
-export interface StepDefinition<
+export type StepDefinition<
   TArgsSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TResultSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
-> {
+  TCompensation extends
+    | StepCompensationDefinition<TArgsSchema, TResultSchema, any, any, any>
+    | undefined = undefined,
+> = {
   readonly name: string;
   /**
    * Execute function — must return z.input<schema>.
@@ -144,12 +147,56 @@ export interface StepDefinition<
   readonly result: TResultSchema;
   /** Default retry policy */
   readonly retryPolicy?: RetryPolicyOptions;
+} & ([TCompensation] extends [undefined]
+  ? {}
+  : {
+      /** Isolated compensation block definition for this step. */
+      readonly compensation: TCompensation;
+    });
+
+/**
+ * Information from the forward step invocation visible to its compensation block.
+ */
+export interface StepCompensationInfo<TResult> {
+  readonly result: TResult | undefined;
+}
+
+/**
+ * Step-local compensation block definition.
+ */
+export interface StepCompensationDefinition<
+  TArgsSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+  TForwardResultSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+  TSteps extends StepDefinitions = Record<string, never>,
+  TRequests extends RequestDefinitions = Record<string, never>,
+  TResultSchema extends JsonSchemaConstraint | undefined = undefined,
+> {
+  readonly steps?: TSteps;
+  readonly requests?: TRequests;
+  readonly result?: TResultSchema;
+  readonly undo: (
+    ctx: CompensationContext<
+      undefined,
+      Record<string, never>,
+      Record<string, never>,
+      Record<string, never>,
+      TSteps,
+      TRequests
+    >,
+    args: StandardSchemaV1.InferOutput<TArgsSchema>,
+    info: StepCompensationInfo<StandardSchemaV1.InferOutput<TForwardResultSchema>>,
+  ) => Promise<
+    | void
+    | (TResultSchema extends JsonSchemaConstraint
+        ? StandardSchemaV1.InferInput<TResultSchema>
+        : void)
+  >;
 }
 
 /**
  * Map of step definitions.
  */
-export type StepDefinitions = Record<string, StepDefinition<any, any>>;
+export type StepDefinitions = Record<string, StepDefinition<any, any, any>>;
 
 // =============================================================================
 // REQUEST DEFINITION
@@ -328,6 +375,8 @@ export type WorkflowDefinitions = Record<string, AnyWorkflowHeader>;
 export interface BranchDefinition<
   TArgsSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TResultSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+  TSteps extends StepDefinitions = Record<string, never>,
+  TRequests extends RequestDefinitions = Record<string, never>,
   TErrors extends BranchErrorMode = Record<string, never>,
 > {
   readonly name: string;
@@ -335,11 +384,15 @@ export interface BranchDefinition<
   readonly args: TArgsSchema;
   /** Result schema for encoding/decoding. */
   readonly result: TResultSchema;
+  /** Step dependencies visible to this branch. */
+  readonly steps?: TSteps;
+  /** Request dependencies visible to this branch. */
+  readonly requests?: TRequests;
   /** Branch-local business error mode. */
   readonly errors?: TErrors;
   /** Execute function for this branch definition. */
   readonly execute: (
-    context: BranchContext<TErrors>,
+    context: BranchContext<TSteps, TRequests, TErrors>,
     args: StandardSchemaV1.InferOutput<TArgsSchema>,
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
 }
@@ -347,7 +400,7 @@ export interface BranchDefinition<
 /**
  * Map of branch definitions.
  */
-export type BranchDefinitions = Record<string, BranchDefinition<any, any, any>>;
+export type BranchDefinitions = Record<string, BranchDefinition<any, any, any, any, any>>;
 
 /**
  * Any workflow definition shape.
