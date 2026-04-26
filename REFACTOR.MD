@@ -99,7 +99,7 @@ A workflow has one execution tree. Step compensation does not share that tree as
 The VEL executes all branches within a scope until every branch is blocked, then **batches** all accumulated step records into a single transaction before dispatching any side-effecting work. The order in which concurrent branches are interleaved within a batch round is an implementation detail — workflow logic must never rely on it.
 
 1. **Non-concurrent code** executes as-is. Sequential operations within a single branch need no scheduling.
-2. **Creating an entry** through `ctx.steps.X(args, opts?)`, `ctx.requests.X(payload, opts?)`, `ctx.childWorkflows.X(startOpts, opts?)`, or `ctx.branches.X(args)` creates a typed, unstarted entry. It does not by itself start independent work.
+2. **Creating an entry** through `ctx.steps.X(args, opts?)`, `ctx.requests.X(payload, opts?)`, `ctx.childWorkflows.X(startOpts, opts?)`, or `ctx.branches.X(args, opts?)` creates a typed, unstarted entry. It does not by itself start independent work.
 3. **Direct `await`** starts and observes an entry immediately in the current branch.
 4. **Entering a scope** starts the provided entries under structured-concurrency ownership. The scope body is treated as a parent-context orchestration body with a synthetic key (`MAIN_BRANCH`). Concurrent branches are the named entries passed to the scope.
 5. **Branch identity** is encoded as a `readonly BranchPathItem[]` key path representing the full nested scope lineage. Each item is `{ scope: string; branch: string | typeof MAIN_BRANCH }`, where `MAIN_BRANCH` is a module-level `unique symbol` export. For a scope `"A"` with branches `"foo"` and `"bar"`:
@@ -769,6 +769,7 @@ await ctx.steps.bookFlight(args);
 await ctx.steps.bookFlight(args, { timeout: 30 });
 await ctx.childWorkflows.processOrder(startOpts, { timeout: 120 });
 await ctx.requests.humanReview(payload, { priority: 1, timeout: 3600 });
+await ctx.branches.quote({ provider: "alpha" }, { timeout: 60 });
 ```
 
 Calls are not eager native `Promise`s. They are entries that can be directly awaited or passed to named structured-ownership helpers: `ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atMost`, `ctx.atLeast`, or `ctx.some`.
@@ -1076,7 +1077,7 @@ The scope body remains an inline callback because it is orchestration code in th
 
 ### `ctx.join`
 
-`ctx.join(handle)` observes one leaf handle and returns the handle's full flattened outcome. Plain step and request entries return their success payloads directly. Branches and attached child workflows return their declared workflow-facing result unions, such as `{ ok: true; result: T } | { ok: false; status: "failed"; error: unknown }`.
+`ctx.join(handle)` observes one leaf handle and returns the handle's full flattened outcome. Plain step and request entries return their success payloads directly. Branches and attached child workflows return their declared workflow-facing result unions, such as `{ ok: true; result: T } | { ok: false; status: "failed"; error: unknown }`. When a branch is called with `{ timeout }`, its workflow-facing result union also includes `{ ok: false; status: "timeout" }`.
 
 If a halted branch is externally skipped with an operator-supplied result, workflow code observes that value as a normal successful branch result. `skipped` is retained as an external branch-instance status, not as a workflow-facing `join` outcome.
 
@@ -2641,7 +2642,7 @@ defineStep({
 | `ctx.steps.X(args, opts?)`                                                                                                                                   | Returns an awaitable entry. No builder chain. Timeout via `{ timeout }`.                                                                                     |
 | `ctx.requests.X(payload, opts?)`                                                                                                                             | Returns an awaitable entry. Priority and timeout via options.                                                                                                |
 | `ctx.childWorkflows.X(startOpts, opts?)`                                                                                                                     | Attached child workflow entry; always returns success/failure union, timeout adds timeout variant.                                                           |
-| `ctx.branches.X(args)`                                                                                                                                       | Creates an unstarted branch entry from a predefined branch.                                                                                                  |
+| `ctx.branches.X(args, opts?)`                                                                                                                                | Creates an unstarted branch entry from a predefined branch. Timeout via `{ timeout }` adds a timeout variant to that branch's result union.                  |
 | `ctx.errors.X(message, details?)`                                                                                                                            | Factory functions for the current definition level's declared errors.                                                                                        |
 | `ctx.queues.X.enqueue(payload, opts?)`                                                                                                                       | Sync buffered operation.                                                                                                                                     |
 | `ctx.topics.X.publish(payload, opts?)`                                                                                                                       | Sync buffered operation.                                                                                                                                     |

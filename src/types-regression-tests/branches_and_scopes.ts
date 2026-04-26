@@ -230,6 +230,7 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
       | { ok: true; result: { approved: boolean } }
       | TimeoutFailure;
     type ChildTimedJoinResult = ChildJoinResult | TimeoutFailure;
+    type BranchTimedJoinResult = BranchQuoteJoinResult | TimeoutFailure;
     type MixedEntryJoinResult =
       | { normalized: string }
       | { approved: boolean }
@@ -281,12 +282,16 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
       | { key: "request"; value: { approved: boolean } }
       | { key: "timedRequest"; value: { approved: boolean } }
       | { key: "child"; value: { ok: boolean } }
-      | { key: "timedChild"; value: { ok: boolean } };
+      | { key: "timedChild"; value: { ok: boolean } }
+      | { key: "branch"; value: { provider: string; price: number } }
+      | { key: "timedBranch"; value: { provider: string; price: number } };
     type IndividualEntryKeyedFailure =
       | { key: "timedStep"; error: TimeoutFailure }
       | { key: "timedRequest"; error: TimeoutFailure }
       | { key: "child"; error: ChildFailure }
-      | { key: "timedChild"; error: ChildFailure | TimeoutFailure };
+      | { key: "timedChild"; error: ChildFailure | TimeoutFailure }
+      | { key: "branch"; error: BranchFailure }
+      | { key: "timedBranch"; error: BranchFailure | TimeoutFailure };
 
     const scopedIndividualEntries = await ctx.scope(
       "IndividualEntryScope",
@@ -304,6 +309,11 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
         child: ctx.childWorkflows.followUp({ args: { orderId: args.orderId } }),
         timedChild: ctx.childWorkflows.followUp(
           { args: { orderId: args.orderId } },
+          { timeout: 5 },
+        ),
+        branch: ctx.branches.quote({ provider: "individual-branch" }),
+        timedBranch: ctx.branches.quote(
+          { provider: "individual-timed-branch" },
           { timeout: 5 },
         ),
       },
@@ -368,6 +378,26 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
           >
         >;
 
+        const branchResult = await scopeCtx.join(entries.branch);
+        type _IndividualBranchJoin = Assert<
+          IsEqual<typeof branchResult, BranchQuoteJoinResult>
+        >;
+
+        const timedBranchResult = await scopeCtx.join(entries.timedBranch);
+        type _IndividualTimedBranchJoin = Assert<
+          IsEqual<typeof timedBranchResult, BranchTimedJoinResult>
+        >;
+
+        const observedTimedBranch = await scopeCtx.join(entries.timedBranch, {
+          timeout: 5,
+        });
+        type _IndividualTimedBranchObservedJoin = Assert<
+          IsEqual<
+            typeof observedTimedBranch,
+            BranchTimedJoinResult | JoinTimeoutFailure
+          >
+        >;
+
         for await (const event of scopeCtx.match(entries)) {
           type _IndividualEntryMatch = Assert<
             IsEqual<
@@ -378,6 +408,8 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
               | MatchEvent<"timedRequest", { approved: boolean }>
               | MatchEvent<"child", { ok: boolean }>
               | MatchEvent<"timedChild", { ok: boolean }>
+              | MatchEvent<"branch", { provider: string; price: number }>
+              | MatchEvent<"timedBranch", { provider: string; price: number }>
             >
           >;
           break;
@@ -403,6 +435,11 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
         { args: { orderId: args.orderId } },
         { timeout: 5 },
       ),
+      branch: ctx.branches.quote({ provider: "individual-all-branch" }),
+      timedBranch: ctx.branches.quote(
+        { provider: "individual-all-timed-branch" },
+        { timeout: 5 },
+      ),
     });
     type IndividualAllSuccess = Extract<typeof individualAll, { ok: true }>["result"];
     type IndividualAllError = Extract<typeof individualAll, { ok: false }>["error"];
@@ -416,6 +453,8 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
           timedRequest: { approved: boolean };
           child: { ok: boolean };
           timedChild: { ok: boolean };
+          branch: { provider: string; price: number };
+          timedBranch: { provider: string; price: number };
         }
       >
     >;
@@ -447,6 +486,11 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
       child: ctx.childWorkflows.followUp({ args: { orderId: args.orderId } }),
       timedChild: ctx.childWorkflows.followUp(
         { args: { orderId: args.orderId } },
+        { timeout: 5 },
+      ),
+      branch: ctx.branches.quote({ provider: "individual-at-least-branch" }),
+      timedBranch: ctx.branches.quote(
+        { provider: "individual-at-least-timed-branch" },
         { timeout: 5 },
       ),
     });
@@ -484,6 +528,11 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
       child: ctx.childWorkflows.followUp({ args: { orderId: args.orderId } }),
       timedChild: ctx.childWorkflows.followUp(
         { args: { orderId: args.orderId } },
+        { timeout: 5 },
+      ),
+      branch: ctx.branches.quote({ provider: "individual-some-branch" }),
+      timedBranch: ctx.branches.quote(
+        { provider: "individual-some-timed-branch" },
         { timeout: 5 },
       ),
     });

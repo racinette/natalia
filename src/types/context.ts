@@ -722,6 +722,12 @@ export type DefinedBranchResult<T, TErrors extends BranchErrorMode> =
   | { ok: true; result: T }
   | { ok: false; status: "failed"; error: unknown };
 
+export interface BranchCallOptions {}
+
+export interface BranchTimeoutCallOptions extends BranchCallOptions {
+  readonly timeout: StepBoundary;
+}
+
 type EntrySuccessFromValue<T> = [
   Extract<T, { ok: true; result: any }>,
 ] extends [never]
@@ -875,6 +881,25 @@ export interface BranchAccessor<
 > {
   (
     args: InferBranchArgsInput<B>,
+  ): BranchEntry<
+    DefinedBranchResult<InferBranchResult<B>, InferBranchErrors<B>>,
+    TScopePath,
+    TRoot
+  >;
+
+  (
+    args: InferBranchArgsInput<B>,
+    opts: BranchTimeoutCallOptions,
+  ): BranchEntry<
+    | DefinedBranchResult<InferBranchResult<B>, InferBranchErrors<B>>
+    | { ok: false; status: "timeout" },
+    TScopePath,
+    TRoot
+  >;
+
+  (
+    args: InferBranchArgsInput<B>,
+    opts: BranchCallOptions,
   ): BranchEntry<
     DefinedBranchResult<InferBranchResult<B>, InferBranchErrors<B>>,
     TScopePath,
