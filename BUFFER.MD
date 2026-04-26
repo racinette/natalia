@@ -38,60 +38,80 @@ async execute(ctx, args) {
 The canonical "before" for branches:
 
 ```typescript
-await ctx.scope("booking", {
-  flight: async (ctx) => {
-    // Same problem: `args`, `counter`, any mutable binding from the parent
-    // scope is freely accessible. Two branches can race on shared state.
-    return await ctx.steps.bookFlight(args.destination).resolve(ctx);
-  },
-  hotel: async (ctx) => {
-    return await ctx.steps.bookHotel(args).resolve(ctx);
-  },
-}, async (ctx, handles) => { /* ... */ }).resolve(ctx);
+await ctx
+  .scope(
+    "booking",
+    {
+      flight: async (ctx) => {
+        // Same problem: `args`, `counter`, any mutable binding from the parent
+        // scope is freely accessible. Two branches can race on shared state.
+        return await ctx.steps.bookFlight(args.destination).resolve(ctx);
+      },
+      hotel: async (ctx) => {
+        return await ctx.steps.bookHotel(args).resolve(ctx);
+      },
+    },
+    async (ctx, handles) => {
+      /* ... */
+    },
+  )
+  .resolve(ctx);
 ```
 
 The reformation begins from one observation: **the syntactic shape of isolated units of work must reflect their semantic isolation**. Once that is taken seriously, a chain of follow-on simplifications becomes available — for compensation (§2–§13) because much of the prior surface existed to paper over the closure problem, and for branches (§15) because the inline-callback model was the only thing preventing a unified error model and true per-invocation observability.
 
 ## 2. Compensation Becomes a Property of the Operation
 
-Compensation stops being a separate first-class entity and becomes a **property** of the operation it undoes. A step *is or is not* compensable. A request *is or is not* compensable. There is no longer a `compensations` registry on the workflow, no longer a `.compensate(...)` builder method on call sites, no longer `ctx.registerCompensation(...)` or `ctx.compensateEagerly(...)` APIs. The compensation logic for a step lives inside that step's definition; the same applies to requests via a `compensation: true` flag on the request definition plus a separately-registered `client.registerRequestCompensationHandler(...)`.
+Compensation stops being a separate first-class entity and becomes a **property** of the operation it undoes. A step _is or is not_ compensable. A request _is or is not_ compensable. There is no longer a `compensations` registry on the workflow, no longer a `.compensate(...)` builder method on call sites, no longer `ctx.registerCompensation(...)` or `ctx.compensateEagerly(...)` APIs. The compensation logic for a step lives inside that step's definition; the same applies to requests via a `compensation: true` flag on the request definition plus a separately-registered `client.registerRequestCompensationHandler(...)`.
 
 The motivating intuition: **a single action has a single way to revert itself**. Allowing the call site to attach an arbitrary compensation per invocation invites two kinds of bugs — one call site forgets to attach the compensation (forgotten undo), or different call sites attach different compensations (inconsistent undo). Tying compensation to the step's definition closes both gaps. It also kills the structural-compatibility-of-schemas problem an earlier iteration of this discussion struggled with: there are no two schemas to reconcile, only one — the step's own.
 
 ### Type sketch
 
 ```typescript
-interface CompensableStepDefinition<TArgs, TResult, TCompPrim, TCompDeps, TCompResult = void> {
+interface CompensableStepDefinition<
+  TArgs,
+  TResult,
+  TCompPrim,
+  TCompDeps,
+  TCompResult = void,
+> {
   name: string;
-  args: TArgs;                        // JsonSchemaConstraint
-  result: TResult;                    // JsonSchemaConstraint
+  args: TArgs; // JsonSchemaConstraint
+  result: TResult; // JsonSchemaConstraint
   execute: (
     ctx: { signal: AbortSignal },
     args: InferOutput<TArgs>,
   ) => Promise<InferInput<TResult>>;
   retryPolicy?: RetryPolicyOptions;
-  compensation: StepCompensation<TArgs, TResult, TCompPrim, TCompDeps, TCompResult>;
+  compensation: StepCompensation<
+    TArgs,
+    TResult,
+    TCompPrim,
+    TCompDeps,
+    TCompResult
+  >;
 }
 
 interface StepCompensation<TArgs, TResult, TPrim, TDeps, TCompResult> {
   // Per-instance primitives — each invocation gets its own private set.
-  channels?:   { [name: string]: JsonSchemaConstraint };
-  streams?:    { [name: string]: JsonSchemaConstraint };
-  events?:     { [name: string]: true };
+  channels?: { [name: string]: JsonSchemaConstraint };
+  streams?: { [name: string]: JsonSchemaConstraint };
+  events?: { [name: string]: true };
   attributes?: { [name: string]: JsonSchemaConstraint };
 
   // Declared dependencies — namespaces filtered by IsStepCompensable / IsRequestCompensable (see §9).
-  steps?:          { [name: string]: NonCompensableStepDefinition };
-  requests?:       { [name: string]: NonCompensableRequestDefinition };
-  queues?:         { [name: string]: QueueDefinition };
-  topics?:         { [name: string]: TopicDefinition };
+  steps?: { [name: string]: NonCompensableStepDefinition };
+  requests?: { [name: string]: NonCompensableRequestDefinition };
+  queues?: { [name: string]: QueueDefinition };
+  topics?: { [name: string]: TopicDefinition };
   childWorkflows?: { [name: string]: WorkflowDefinition };
 
   // Optional outcome schema. Default: void.
   result?: TCompResult;
 
   undo: (
-    ctx:  CompensationContext<TPrim, TDeps>,
+    ctx: CompensationContext<TPrim, TDeps>,
     args: InferOutput<TArgs>,
     info: CompensationInfo<InferOutput<TResult>>,
   ) => Promise<InferInput<TCompResult>>;
@@ -108,9 +128,13 @@ The signature `undo(ctx, args, info)` separates the two distinct things compensa
 ```typescript
 const bookHotel = defineStep({
   name: "bookHotel",
-  args: z.object({ /* ... */ }),
+  args: z.object({
+    /* ... */
+  }),
   result: z.object({ confirmationId: z.string() }),
-  execute: async ({ signal }, args) => { /* ... */ },
+  execute: async ({ signal }, args) => {
+    /* ... */
+  },
 });
 
 await ctx.steps
@@ -134,16 +158,18 @@ const cancelHotelStep = defineStep({
   name: "cancelHotelStep",
   args: z.object({ confirmationId: z.string() }),
   result: z.void(),
-  execute: async ({ signal }, args) => { /* ... */ },
+  execute: async ({ signal }, args) => {
+    /* ... */
+  },
 });
 
 const bookHotel = defineStep({
   name: "bookHotel",
   args: z.object({
     firstName: z.string(),
-    lastName:  z.string(),
-    checkIn:   z.string(),
-    checkOut:  z.string(),
+    lastName: z.string(),
+    checkIn: z.string(),
+    checkOut: z.string(),
   }),
   result: z.object({ confirmationId: z.string() }),
   execute: async ({ signal }, args) => {
@@ -175,15 +201,21 @@ await ctx.steps.bookHotel(args);
 
 ## 3. The Compensation Outcome Doctrine
 
-The `info` parameter to `undo` describes the engine's view of *what happened to the forward step*. It is independent of `args`, which is always present.
+The `info` parameter to `undo` describes the engine's view of _what happened to the forward step_. It is independent of `args`, which is always present.
 
 ```typescript
 type CompensationInfo<TResult> =
-  | { readonly status: "completed";  readonly result: TResult;
-      readonly attempts: AttemptAccessor }
-  | { readonly status: "timed_out";  readonly reason: "attempts_exhausted" | "deadline";
-      readonly attempts: AttemptAccessor }
-  | { readonly status: "terminated", readonly attempts: AttemptAccessor };
+  | {
+      readonly status: "completed";
+      readonly result: TResult;
+      readonly attempts: AttemptAccessor;
+    }
+  | {
+      readonly status: "timed_out";
+      readonly reason: "attempts_exhausted" | "deadline";
+      readonly attempts: AttemptAccessor;
+    }
+  | { readonly status: "terminated"; readonly attempts: AttemptAccessor };
 ```
 
 A critical correction over the prior iteration of this document: **`timed_out` and `terminated` do not mean "no work was done."** They mean "the engine never observed completion." Whether the side effect actually occurred is a separate, often unknowable, question.
@@ -204,27 +236,29 @@ interface AttemptAccessor {
 
 The `terminated` status means that while the step was running, the workflow was killed.
 
-If a step has never been attempted to be executed (the engine hasn't had the chance to), **the compensation won't run**. 
+If a step has never been attempted to be executed (the engine hasn't had the chance to), **the compensation won't run**.
 
 ### Expanded example — completed shorthand + timed-out lookup
 
-Now the example uses the `findHotelReservation` lookup *only* on the path where it is genuinely needed: the timed-out branch where we don't have a `confirmationId` and at least one attempt may have succeeded silently.
+Now the example uses the `findHotelReservation` lookup _only_ on the path where it is genuinely needed: the timed-out branch where we don't have a `confirmationId` and at least one attempt may have succeeded silently.
 
 ```typescript
 const findHotelReservation = defineStep({
   name: "findHotelReservation",
   args: z.object({
     firstName: z.string(),
-    lastName:  z.string(),
-    checkIn:   z.string(),
-    checkOut:  z.string(),
+    lastName: z.string(),
+    checkIn: z.string(),
+    checkOut: z.string(),
   }),
   result: z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("unique"), confirmationId: z.string() }),
     z.object({ kind: z.literal("ambiguous"), candidates: z.array(z.string()) }),
     z.object({ kind: z.literal("not-found") }),
   ]),
-  execute: async ({ signal }, args) => { /* ... */ },
+  execute: async ({ signal }, args) => {
+    /* ... */
+  },
 });
 
 const bookHotel = defineStep({
@@ -249,8 +283,8 @@ const bookHotel = defineStep({
         timeout: { maxAttempts: 5 },
       });
 
-      if (!found.ok) return;  // lookup itself timed out — escalate elsewhere.
-      if (found.result.kind === "not-found") return;  // genuinely no booking exists.
+      if (!found.ok) return; // lookup itself timed out — escalate elsewhere.
+      if (found.result.kind === "not-found") return; // genuinely no booking exists.
 
       if (found.result.kind === "unique") {
         await ctx.steps.cancelHotelStep({
@@ -268,13 +302,13 @@ const bookHotel = defineStep({
 
 ## 4. Compensation Block Instances as First-Class Entities
 
-While compensation is *defined* as part of a step, each *invocation* of compensation produces a distinct, durable, externally-observable **compensation block instance**. The instance is the entity. It has its own per-instance primitive state — channels, streams, events, attributes declared on the step's `compensation` field. Two invocations of `bookHotel` produce two compensation block instances when their compensations run, each with its own private state, each addressable independently, each settling independently.
+While compensation is _defined_ as part of a step, each _invocation_ of compensation produces a distinct, durable, externally-observable **compensation block instance**. The instance is the entity. It has its own per-instance primitive state — channels, streams, events, attributes declared on the step's `compensation` field. Two invocations of `bookHotel` produce two compensation block instances when their compensations run, each with its own private state, each addressable independently, each settling independently.
 
 This per-instance materialisation is what makes the model honest. Without it, the "isolation" of compensation is only nominal — two invocations of the same compensation would share state and we would be back where we started. With it, every undo is a self-contained durable object. There is no shared scratch space between two cancellations of two different hotels; if they need to coordinate, they must do so via global primitives (queues, topics, requests), which forces the coordination to be explicit and typed.
 
 ### Before
 
-Compensation primitives in `NEW_PRIMITIVES.MD` today are workflow-level. Channels declared on `defineWorkflow.compensation` are shared among *all* compensation closures that ever run. The current example demonstrates the limitation directly:
+Compensation primitives in `NEW_PRIMITIVES.MD` today are workflow-level. Channels declared on `defineWorkflow.compensation` are shared among _all_ compensation closures that ever run. The current example demonstrates the limitation directly:
 
 ```typescript
 defineWorkflow({
@@ -305,7 +339,7 @@ The "uncertain timed-out" path needs human input when an automatic lookup is amb
 
 - `attributes.lookupSummary` — the latest assessment of "what we know so far," readable by the dashboard.
 - `streams.audit` — an appendable log the operator can follow.
-- `requests.operatorResolution` — a one-shot request to an operator for a binding decision on *this instance* specifically. Modeled as a request rather than a channel: the operator sends exactly one response, and the request primitive's handler/manual-resolution semantics fit naturally (the operator dashboard resolves it via `client.requests.operatorResolution.resolve(...)`).
+- `requests.operatorResolution` — a one-shot request to an operator for a binding decision on _this instance_ specifically. Modeled as a request rather than a channel: the operator sends exactly one response, and the request primitive's handler/manual-resolution semantics fit naturally (the operator dashboard resolves it via `client.requests.operatorResolution.resolve(...)`).
 - `events.compensationSettled` — fires once, the moment this instance reaches a terminal outcome; external observers can `wait` on it.
 
 ```typescript
@@ -333,7 +367,10 @@ const bookHotel = defineStep({
         z.object({ kind: z.literal("waiting") }),
         z.object({ kind: z.literal("found"), confirmationId: z.string() }),
         z.object({ kind: z.literal("not-found") }),
-        z.object({ kind: z.literal("ambiguous"), candidates: z.array(z.string()) }),
+        z.object({
+          kind: z.literal("ambiguous"),
+          candidates: z.array(z.string()),
+        }),
       ]),
     },
     streams: {
@@ -358,16 +395,23 @@ const bookHotel = defineStep({
         return value;
       };
 
-      ctx.streams.audit.write({ msg: `undo started (${info.status})`, ts: ctx.timestamp });
+      ctx.streams.audit.write({
+        msg: `undo started (${info.status})`,
+        ts: ctx.timestamp,
+      });
 
       if (info.status === "completed") {
         ctx.attributes.lookupSummary.set({
-          kind: "found", confirmationId: info.result.confirmationId,
+          kind: "found",
+          confirmationId: info.result.confirmationId,
         });
         await ctx.steps.cancelHotelStep({
           confirmationId: info.result.confirmationId,
         });
-        return settle({ kind: "compensated", confirmationId: info.result.confirmationId });
+        return settle({
+          kind: "compensated",
+          confirmationId: info.result.confirmationId,
+        });
       }
 
       // info.status === "timed_out" or "terminated" — uncertain.
@@ -382,7 +426,9 @@ const bookHotel = defineStep({
       if (!found.ok || found.result.kind === "not-found") {
         ctx.attributes.lookupSummary.set({ kind: "not-found" });
         ctx.streams.audit.write({
-          msg: !found.ok ? "lookup timed out, treating as not-found" : "no reservation found",
+          msg: !found.ok
+            ? "lookup timed out, treating as not-found"
+            : "no reservation found",
           ts: ctx.timestamp,
         });
         return settle({ kind: "verified-no-op" });
@@ -391,7 +437,8 @@ const bookHotel = defineStep({
       if (found.result.kind === "unique") {
         // Unambiguous match — cancel directly, no operator needed.
         ctx.attributes.lookupSummary.set({
-          kind: "found", confirmationId: found.result.confirmationId,
+          kind: "found",
+          confirmationId: found.result.confirmationId,
         });
         ctx.streams.audit.write({
           msg: `found reservation ${found.result.confirmationId}, cancelling`,
@@ -400,13 +447,17 @@ const bookHotel = defineStep({
         await ctx.steps.cancelHotelStep({
           confirmationId: found.result.confirmationId,
         });
-        return settle({ kind: "compensated", confirmationId: found.result.confirmationId });
+        return settle({
+          kind: "compensated",
+          confirmationId: found.result.confirmationId,
+        });
       }
 
       // Ambiguous: multiple candidates match the guest details.
       // This is the only path where we need human intervention.
       ctx.attributes.lookupSummary.set({
-        kind: "ambiguous", candidates: found.result.candidates,
+        kind: "ambiguous",
+        candidates: found.result.candidates,
       });
       ctx.streams.audit.write({
         msg: `ambiguous: ${found.result.candidates.length} candidates, requesting operator resolution`,
@@ -421,14 +472,20 @@ const bookHotel = defineStep({
 
       if (decision.action === "confirm-no-booking") {
         ctx.attributes.lookupSummary.set({ kind: "not-found" });
-        return settle({ kind: "operator-resolved", action: "confirm-no-booking" });
+        return settle({
+          kind: "operator-resolved",
+          action: "confirm-no-booking",
+        });
       }
 
       await ctx.steps.cancelHotelStep({
         confirmationId: decision.confirmationId,
       });
 
-      return settle({ kind: "compensated", confirmationId: decision.confirmationId });
+      return settle({
+        kind: "compensated",
+        confirmationId: decision.confirmationId,
+      });
     },
   },
 });
@@ -444,11 +501,16 @@ External callers need to address compensation block instances. The model deliber
 
 ```typescript
 type CompensationBlockStatus =
-  "pending" | "running" | "completed" | "halted" | "skipped";
+  | "pending"
+  | "running"
+  | "completed"
+  | "halted"
+  | "skipped";
 
 declare const InstanceIdBrand: unique symbol;
-type CompensationBlockInstanceId =
-  string & { readonly [InstanceIdBrand]: "compensation_block" };
+type CompensationBlockInstanceId = string & {
+  readonly [InstanceIdBrand]: "compensation_block";
+};
 
 // All operations that reach the database return a discriminated result.
 // "Nothing throws." Absence, singleton, ambiguity are explicit.
@@ -458,12 +520,19 @@ type FindUniqueResult<T> =
   | { readonly status: "ambiguous"; readonly count: number };
 
 interface CompensationBlockNamespace<TArgs, TResult, TPrim> {
-  findUnique(query: (q: SearchQuery<{ args: TArgs; metadata: BlockMetadata }>) => SearchQueryNode):
-    CompensationBlockUniqueHandle<TArgs, TResult, TPrim>;
-  findUnique(id: CompensationBlockInstanceId):
-    CompensationBlockUniqueHandle<TArgs, TResult, TPrim>;
-  findMany(query: (q: SearchQuery<{ args: TArgs; metadata: BlockMetadata }>) => SearchQueryNode):
-    CompensationBlockSubsetHandle<TArgs, TResult, TPrim>;
+  findUnique(
+    query: (
+      q: SearchQuery<{ args: TArgs; metadata: BlockMetadata }>,
+    ) => SearchQueryNode,
+  ): CompensationBlockUniqueHandle<TArgs, TResult, TPrim>;
+  findUnique(
+    id: CompensationBlockInstanceId,
+  ): CompensationBlockUniqueHandle<TArgs, TResult, TPrim>;
+  findMany(
+    query: (
+      q: SearchQuery<{ args: TArgs; metadata: BlockMetadata }>,
+    ) => SearchQueryNode,
+  ): CompensationBlockSubsetHandle<TArgs, TResult, TPrim>;
 }
 ```
 
@@ -472,29 +541,39 @@ The unique handle exposes per-instance reads (only meaningful over a single row)
 ```typescript
 interface CompensationBlockUniqueHandle<TArgs, TResult, TPrim> {
   status(): Promise<FindUniqueResult<CompensationBlockStatus>>;
-  result(): Promise<FindUniqueResult<TResult | null>>;  // null while not yet completed/skipped
-  args():   Promise<FindUniqueResult<TArgs>>;
+  result(): Promise<FindUniqueResult<TResult | null>>; // null while not yet completed/skipped
+  args(): Promise<FindUniqueResult<TArgs>>;
   // When a result schema is declared, skip() requires a result value (audit metadata).
   // When no result schema is declared (void), skip() takes no arguments.
-  skip(...args: TResult extends void
-    ? []
-    : [result: InferInput<TResult>]
+  skip(
+    ...args: TResult extends void ? [] : [result: InferInput<TResult>]
   ): Promise<
     | FindUniqueResult<{ skipped: true }>
-    | { readonly status: "already_terminal";
-        readonly current: "completed" | "skipped" }
+    | {
+        readonly status: "already_terminal";
+        readonly current: "completed" | "skipped";
+      }
   >;
 
   attributes: {
     [K in keyof TPrim["attributes"]]: {
       // Identical shape to handle.attributes.X.get / getNowait from Part 13,
       // wrapped in FindUniqueResult to express absence/ambiguity at the row level.
-      get(opts: { afterVersion?: number; signal?: AbortSignal }):
-        Promise<FindUniqueResult<{ value: InferOutput<TPrim["attributes"][K]>; version: number }
-                              | { status: "never" }>>;
-      getNowait():
-        Promise<FindUniqueResult<{ value: InferOutput<TPrim["attributes"][K]>; version: number }
-                              | { status: "not_set" }>>;
+      get(opts: {
+        afterVersion?: number;
+        signal?: AbortSignal;
+      }): Promise<
+        FindUniqueResult<
+          | { value: InferOutput<TPrim["attributes"][K]>; version: number }
+          | { status: "never" }
+        >
+      >;
+      getNowait(): Promise<
+        FindUniqueResult<
+          | { value: InferOutput<TPrim["attributes"][K]>; version: number }
+          | { status: "not_set" }
+        >
+      >;
     };
   };
 
@@ -504,30 +583,51 @@ interface CompensationBlockUniqueHandle<TArgs, TResult, TPrim> {
       // read: blocking random-access at a specific offset.
       // readNowait: non-blocking random-access at a specific offset.
       // iterator: sequential iteration starting/ending at given offsets.
-      read(offset: number, opts?: { signal?: AbortSignal }):
-        Promise<FindUniqueResult<StreamReadResult<InferOutput<TPrim["streams"][K]>>>>;
-      readNowait(offset: number):
-        Promise<FindUniqueResult<StreamReadResult<InferOutput<TPrim["streams"][K]>>>>;
-      iterator(startOffset?: number, endOffset?: number):
-        FindUniqueResult<StreamIteratorHandleExternal<InferOutput<TPrim["streams"][K]>>>;
+      read(
+        offset: number,
+        opts?: { signal?: AbortSignal },
+      ): Promise<
+        FindUniqueResult<StreamReadResult<InferOutput<TPrim["streams"][K]>>>
+      >;
+      readNowait(
+        offset: number,
+      ): Promise<
+        FindUniqueResult<StreamReadResult<InferOutput<TPrim["streams"][K]>>>
+      >;
+      iterator(
+        startOffset?: number,
+        endOffset?: number,
+      ): FindUniqueResult<
+        StreamIteratorHandleExternal<InferOutput<TPrim["streams"][K]>>
+      >;
     };
   };
 
   events: {
     [K in keyof TPrim["events"]]: {
       // Matches the existing external event handle: wait (blocking) + isSet (non-blocking).
-      wait(opts?: { signal?: AbortSignal }):
-        Promise<FindUniqueResult<{ ok: true; status: "set" } | { ok: false; status: "never" }>>;
-      isSet():
-        Promise<FindUniqueResult<{ ok: true; status: "set" } | { ok: false; status: "not_set" }
-                              | { ok: false; status: "never" }>>;
+      wait(opts?: {
+        signal?: AbortSignal;
+      }): Promise<
+        FindUniqueResult<
+          { ok: true; status: "set" } | { ok: false; status: "never" }
+        >
+      >;
+      isSet(): Promise<
+        FindUniqueResult<
+          | { ok: true; status: "set" }
+          | { ok: false; status: "not_set" }
+          | { ok: false; status: "never" }
+        >
+      >;
     };
   };
 
   channels: {
     [K in keyof TPrim["channels"]]: {
-      send(payload: InferInput<TPrim["channels"][K]>):
-        Promise<FindUniqueResult<{ delivered: true }>>;
+      send(
+        payload: InferInput<TPrim["channels"][K]>,
+      ): Promise<FindUniqueResult<{ delivered: true }>>;
     };
   };
 }
@@ -546,16 +646,16 @@ interface CompensationBlockSubsetHandle<TArgs, TResult, TPrim> {
     }[];
     cursor: string | null;
   }>;
-  skip(...args: TResult extends void
-    ? []
-    : [result: InferInput<TResult>]
+  skip(
+    ...args: TResult extends void ? [] : [result: InferInput<TResult>]
   ): Promise<{ affected: number }>;
 
   channels: {
     [K in keyof TPrim["channels"]]: {
       // Fan-out INSERT — one channel_message row per matched instance.
-      send(payload: InferInput<TPrim["channels"][K]>):
-        Promise<{ affected: number }>;
+      send(
+        payload: InferInput<TPrim["channels"][K]>,
+      ): Promise<{ affected: number }>;
     };
   };
 }
@@ -568,7 +668,7 @@ Forcing the caller to commit to a single instance for reads is intentional. It p
 ```typescript
 // Dashboard polling — check how far the compensation has gotten.
 const summary = await workflowInstance.compensations.bookHotel
-  .findUnique(q => q.args.firstName.eq("Bob"))
+  .findUnique((q) => q.args.firstName.eq("Bob"))
   .attributes.lookupSummary.getNowait();
 // → { status: "unique"; value: { value: { kind: "ambiguous"; candidates: [...] }; version: 4 } }
 //   { status: "missing" }
@@ -576,16 +676,17 @@ const summary = await workflowInstance.compensations.bookHotel
 
 // Wait for Bob's hotel compensation to settle.
 await workflowInstance.compensations.bookHotel
-  .findUnique(q => q.args.firstName.eq("Bob"))
+  .findUnique((q) => q.args.firstName.eq("Bob"))
   .events.compensationSettled.wait({ signal });
 // → { status: "unique"; value: { ok: true; status: "set" } }
 //   { status: "unique"; value: { ok: false; status: "never" } }
 //   { status: "missing" }
 
 // "Skip every halted hotel-cancellation across this workflow."
-const halted = workflowInstance.compensations.bookHotel
-  .findMany(q => q.metadata.status.eq("halted"));
-await halted.skip();   // → { affected: 7 }
+const halted = workflowInstance.compensations.bookHotel.findMany((q) =>
+  q.metadata.status.eq("halted"),
+);
+await halted.skip(); // → { affected: 7 }
 ```
 
 ## 6. Failure Semantics: Return, Don't Throw
@@ -644,10 +745,12 @@ The Part 3 halt model forks. Execution halts remain unskippable. Compensation ha
 // One stuck cancellation among many.
 // When the step's compensation declares a result schema, skip() requires a result value —
 // the operator records what happened so the audit trail is complete.
-const halted = workflowInstance.compensations.bookHotel
-  .findUnique(q => q.args.firstName.eq("Bob"));
+const halted = workflowInstance.compensations.bookHotel.findUnique((q) =>
+  q.args.firstName.eq("Bob"),
+);
 const outcome = await halted.skip({
-  kind: "operator-resolved", action: "confirm-no-booking",
+  kind: "operator-resolved",
+  action: "confirm-no-booking",
 });
 // → { status: "unique"; value: { skipped: true } }
 //   { status: "missing" }
@@ -655,11 +758,13 @@ const outcome = await halted.skip({
 //   { status: "already_terminal"; current: "completed" | "skipped" }
 
 // Bulk skip — fan-out UPDATE. Same result written to every matched instance.
-const allStuck = workflowInstance.compensations.bookHotel
-  .findMany(q => q.metadata.status.eq("halted"));
+const allStuck = workflowInstance.compensations.bookHotel.findMany((q) =>
+  q.metadata.status.eq("halted"),
+);
 await allStuck.skip({
-  kind: "operator-resolved", action: "confirm-no-booking",
-});   // → { affected: number }
+  kind: "operator-resolved",
+  action: "confirm-no-booking",
+}); // → { affected: number }
 ```
 
 Implementation note (provisional): the Part 8 `halt` table likely splits into `workflow_halt` and `compensation_block_halt`, with the latter carrying a `skipped` status the former does not.
@@ -668,7 +773,7 @@ Implementation note (provisional): the Part 8 `halt` table likely splits into `w
 
 The two-VEL-per-workflow structure from Part 2 is preserved. There is one execution VEL and one compensation VEL per workflow. The compensation VEL still processes invocations as units of work in the established eager-FIFO + LIFO-unwind order. Mirror scopes still exist for unconsumed branches.
 
-What changes is the *unit*: each unit of work in the compensation VEL spawns a compensation block instance with its own per-instance state. The VEL runs that instance's `undo` callback; the instance settles; the VEL takes the next unit. Halts on one instance no longer block the VEL because the skip mechanism allows administrative progress.
+What changes is the _unit_: each unit of work in the compensation VEL spawns a compensation block instance with its own per-instance state. The VEL runs that instance's `undo` callback; the instance settles; the VEL takes the next unit. Halts on one instance no longer block the VEL because the skip mechanism allows administrative progress.
 
 Step-record evolution:
 
@@ -689,8 +794,8 @@ The `register_compensation` step type from Part 2 is replaced by `register_compe
 A step with a `compensation` field is a "compensable step." A request with `compensation: true` is a "compensable request." These are not separate type families; they are properties on the existing `StepDefinition` and `RequestDefinition` types, discoverable via type-level helpers:
 
 ```typescript
-type IsStepCompensable<S>    = S extends { compensation: object } ? true : false;
-type IsRequestCompensable<R> = R extends { compensation: true }   ? true : false;
+type IsStepCompensable<S> = S extends { compensation: object } ? true : false;
+type IsRequestCompensable<R> = R extends { compensation: true } ? true : false;
 ```
 
 The reason for the distinction: **compensable operations cannot be declared as dependencies of a compensation block**. Permitting a compensable step inside another step's `compensation.steps` would open the door to recursive compensation chains — compensation spawning compensation — which unravels the per-instance isolation that makes everything else clean. The library refuses to model it.
@@ -711,7 +816,7 @@ interface StepCompensation<TArgs, TResult, TPrim, TDeps, TCompResult> {
   // Attempting to pass a compensable step (one with its own `compensation` field)
   // or a compensable request (one with `compensation: true`) is a type error
   // at the defineStep call site.
-  steps?:    { [name: string]: NonCompensableStepDefinition };
+  steps?: { [name: string]: NonCompensableStepDefinition };
   requests?: { [name: string]: NonCompensableRequestDefinition };
 
   // ...
@@ -739,13 +844,13 @@ const bookHotel = defineStep({
 });
 ```
 
-This restriction does *not* apply to child workflows. Each child workflow has its own internal compensation lifecycle; spawning one from inside compensation is fine.
+This restriction does _not_ apply to child workflows. Each child workflow has its own internal compensation lifecycle; spawning one from inside compensation is fine.
 
 ## 10. Request Compensation: The Necessary Asymmetry
 
-Steps are author-side definitions. Requests are different: a request's handler is registered separately via `client.registerRequestHandler(definition, fn, options)` on a worker, and may have *no handler at all* if the request is intended to be resolved manually. This is the entire point of the request primitive's distinction from the step primitive (Part 11, "Use cases" 1–4).
+Steps are author-side definitions. Requests are different: a request's handler is registered separately via `client.registerRequestHandler(definition, fn, options)` on a worker, and may have _no handler at all_ if the request is intended to be resolved manually. This is the entire point of the request primitive's distinction from the step primitive (Part 11, "Use cases" 1–4).
 
-Request compensation inherits the asymmetry. The request's *definition* declares only the intent to be compensable (`compensation: true`); the actual undo logic, when it exists, is registered separately via `client.registerRequestCompensationHandler(definition, fn, options)`. And exactly as with the request itself, **it is acceptable for no compensation handler to exist** — the compensation invocation transitions to a manual-resolution state and an administrator resolves it from the admin panel. There is no engine-startup validation requiring a handler.
+Request compensation inherits the asymmetry. The request's _definition_ declares only the intent to be compensable (`compensation: true`); the actual undo logic, when it exists, is registered separately via `client.registerRequestCompensationHandler(definition, fn, options)`. And exactly as with the request itself, **it is acceptable for no compensation handler to exist** — the compensation invocation transitions to a manual-resolution state and an administrator resolves it from the admin panel. There is no engine-startup validation requiring a handler.
 
 ### Before
 
@@ -759,7 +864,9 @@ const refundCharge = defineRequest({
 await ctx.requests
   .refundCharge({ chargeId: "ch_1" })
   .timeout(60, () => null)
-  .compensate(async (ctx, result) => { /* closure with all the §1 problems */ })
+  .compensate(async (ctx, result) => {
+    /* closure with all the §1 problems */
+  })
   .resolve(ctx);
 ```
 
@@ -770,7 +877,7 @@ const refundCharge = defineRequest({
   name: "refundCharge",
   request: z.object({ chargeId: z.string() }),
   response: z.object({ refundId: z.string() }),
-  compensation: true,    // shorthand for `compensation: {}` (no result schema).
+  compensation: true, // shorthand for `compensation: {}` (no result schema).
 });
 ```
 
@@ -780,11 +887,17 @@ Modeled directly after `client.registerRequestHandler` (Part 11), with the same 
 
 ```typescript
 type RequestCompensationInfo<TResponse> =
-  | { readonly status: "completed";  readonly response: TResponse;
-      readonly attempts: AttemptAccessor }
-  | { readonly status: "timed_out";  readonly reason: "attempts_exhausted" | "deadline";
-      readonly attempts: AttemptAccessor }
-  | { readonly status: "terminated", attempts: AttemptAccessor };
+  | {
+      readonly status: "completed";
+      readonly response: TResponse;
+      readonly attempts: AttemptAccessor;
+    }
+  | {
+      readonly status: "timed_out";
+      readonly reason: "attempts_exhausted" | "deadline";
+      readonly attempts: AttemptAccessor;
+    }
+  | { readonly status: "terminated"; attempts: AttemptAccessor };
 
 declare function registerRequestCompensationHandler<TReq, TRes>(
   definition: RequestDefinition<TReq, TRes> & { compensation: true },
@@ -809,7 +922,11 @@ declare function registerRequestCompensationHandler<TReq, TRes>(
         payload: InferOutput<TReq>,
         info: RequestCompensationInfo<InferOutput<TRes>>,
       ) => Promise<void | typeof MANUAL>;
-      retryPolicy: { intervalMs: number; backoffRate?: number; maxIntervalMs?: number };
+      retryPolicy: {
+        intervalMs: number;
+        backoffRate?: number;
+        maxIntervalMs?: number;
+      };
     };
   },
 ): Unsubscribe;
@@ -833,15 +950,21 @@ client.registerRequestCompensationHandler(
 // 2. Handler resolves with manual fallback on exhaustion.
 client.registerRequestCompensationHandler(
   refundCharge,
-  async ({ signal }, payload, info) => { /* programmatic attempt */ },
+  async ({ signal }, payload, info) => {
+    /* programmatic attempt */
+  },
   {
     retryPolicy: { timeoutSeconds: 30, maxAttempts: 3, intervalSeconds: 10 },
     onExhausted: {
       callback: async ({ signal }, payload, info) => {
         await notifyOpsTeam(payload, info, { signal });
-        return MANUAL;   // an operator will mark it resolved from the admin panel.
+        return MANUAL; // an operator will mark it resolved from the admin panel.
       },
-      retryPolicy: { intervalMs: 5000, backoffRate: 1.5, maxIntervalMs: 60_000 },
+      retryPolicy: {
+        intervalMs: 5000,
+        backoffRate: 1.5,
+        maxIntervalMs: 60_000,
+      },
     },
   },
 );
@@ -896,13 +1019,20 @@ When a `result` schema is declared, the handler's return type becomes `InferInpu
 
 ```typescript
 declare function registerRequestCompensationHandler<TReq, TRes, TCompResult>(
-  definition: RequestDefinition<TReq, TRes> & { compensation: { result?: TCompResult } },
+  definition: RequestDefinition<TReq, TRes> & {
+    compensation: { result?: TCompResult };
+  },
   handler: (
     ctx: { signal: AbortSignal },
     payload: InferOutput<TReq>,
     info: RequestCompensationInfo<InferOutput<TRes>>,
-  ) => Promise<(TCompResult extends undefined ? void : InferInput<TCompResult>) | typeof MANUAL>,
-  options: { /* same as before */ },
+  ) => Promise<
+    | (TCompResult extends undefined ? void : InferInput<TCompResult>)
+    | typeof MANUAL
+  >,
+  options: {
+    /* same as before */
+  },
 ): Unsubscribe;
 ```
 
@@ -912,7 +1042,11 @@ Request compensation invocations have a reduced status set — no `halted` (no d
 
 ```typescript
 type RequestCompensationStatus =
-  "pending" | "running" | "completed" | "skipped" | "manual";
+  | "pending"
+  | "running"
+  | "completed"
+  | "skipped"
+  | "manual";
 ```
 
 - `pending` — registered, no handler has claimed it yet.
@@ -927,27 +1061,35 @@ Request compensation invocations are queryable via the same `findUnique` / `find
 
 ```typescript
 interface RequestCompensationNamespace<TPayload, TCompResult> {
-  findUnique(query: (q: SearchQuery<{ payload: TPayload; metadata: RequestCompBlockMetadata }>) => SearchQueryNode):
-    RequestCompensationUniqueHandle<TPayload, TCompResult>;
-  findUnique(id: RequestCompensationInstanceId):
-    RequestCompensationUniqueHandle<TPayload, TCompResult>;
-  findMany(query: (q: SearchQuery<{ payload: TPayload; metadata: RequestCompBlockMetadata }>) => SearchQueryNode):
-    RequestCompensationSubsetHandle<TPayload, TCompResult>;
+  findUnique(
+    query: (
+      q: SearchQuery<{ payload: TPayload; metadata: RequestCompBlockMetadata }>,
+    ) => SearchQueryNode,
+  ): RequestCompensationUniqueHandle<TPayload, TCompResult>;
+  findUnique(
+    id: RequestCompensationInstanceId,
+  ): RequestCompensationUniqueHandle<TPayload, TCompResult>;
+  findMany(
+    query: (
+      q: SearchQuery<{ payload: TPayload; metadata: RequestCompBlockMetadata }>,
+    ) => SearchQueryNode,
+  ): RequestCompensationSubsetHandle<TPayload, TCompResult>;
 }
 
 interface RequestCompensationUniqueHandle<TPayload, TCompResult> {
   status(): Promise<FindUniqueResult<RequestCompensationStatus>>;
-  result(): Promise<FindUniqueResult<TCompResult | null>>;  // null while not yet completed/skipped
+  result(): Promise<FindUniqueResult<TCompResult | null>>; // null while not yet completed/skipped
   payload(): Promise<FindUniqueResult<TPayload>>;
   info(): Promise<FindUniqueResult<RequestCompensationInfo<unknown>>>;
   attempts(): Promise<FindUniqueResult<AttemptAccessor>>;
-  skip(...args: TCompResult extends void
-    ? []
-    : [result: InferInput<TCompResult>]
+  skip(
+    ...args: TCompResult extends void ? [] : [result: InferInput<TCompResult>]
   ): Promise<
     | FindUniqueResult<{ skipped: true }>
-    | { readonly status: "already_terminal";
-        readonly current: "completed" | "skipped" }
+    | {
+        readonly status: "already_terminal";
+        readonly current: "completed" | "skipped";
+      }
   >;
 
   // No channels, streams, events, attributes — lightweight.
@@ -963,9 +1105,8 @@ interface RequestCompensationSubsetHandle<TPayload, TCompResult> {
     }[];
     cursor: string | null;
   }>;
-  skip(...args: TCompResult extends void
-    ? []
-    : [result: InferInput<TCompResult>]
+  skip(
+    ...args: TCompResult extends void ? [] : [result: InferInput<TCompResult>]
   ): Promise<{ affected: number }>;
 }
 ```
@@ -976,19 +1117,22 @@ interface RequestCompensationSubsetHandle<TPayload, TCompResult> {
 // Operator sees a stuck refund compensation in manual mode.
 // They processed it externally and want to record the outcome.
 await workflowInstance.requestCompensations.refundCharge
-  .findUnique(q => q.payload.chargeId.eq("ch_123"))
-  .skip({ kind: "operator-resolved", note: "Refund processed via partner portal" });
+  .findUnique((q) => q.payload.chargeId.eq("ch_123"))
+  .skip({
+    kind: "operator-resolved",
+    note: "Refund processed via partner portal",
+  });
 // → { status: "unique"; value: { skipped: true } }
 
 // Dashboard: check compensation status.
 const status = await workflowInstance.requestCompensations.refundCharge
-  .findUnique(q => q.payload.chargeId.eq("ch_123"))
+  .findUnique((q) => q.payload.chargeId.eq("ch_123"))
   .status();
 // → { status: "unique"; value: "manual" }
 
 // Bulk skip all manual refund compensations — same result written to every matched instance.
 await workflowInstance.requestCompensations.refundCharge
-  .findMany(q => q.metadata.status.eq("manual"))
+  .findMany((q) => q.metadata.status.eq("manual"))
   .skip({ kind: "operator-resolved", note: "Batch-resolved by ops team" });
 // → { affected: 3 }
 ```
@@ -1019,10 +1163,10 @@ RequestCall:  (.priority)? → (.timeout)? → (.compensate)? → (.complete)? �
 ### After
 
 ```typescript
-await ctx.steps.bookFlight(args)                           // → FlightBooking
-await ctx.steps.bookFlight(args, { timeout: 30 })          // → { ok, result } | { ok, status }
-await ctx.childWorkflows.order(startOpts)                  // → { ok, result } | { ok, status, error }
-await ctx.requests.humanReview(payload, { timeout: 3600 }) // → { ok, result } | { ok, status }
+await ctx.steps.bookFlight(args); // → FlightBooking
+await ctx.steps.bookFlight(args, { timeout: 30 }); // → { ok, result } | { ok, status }
+await ctx.childWorkflows.order(startOpts); // → { ok, result } | { ok, status, error }
+await ctx.requests.humanReview(payload, { timeout: 3600 }); // → { ok, result } | { ok, status }
 ```
 
 No builder. No `.resolve()`. No callbacks. See §16 for the full design.
@@ -1031,77 +1175,99 @@ No builder. No `.resolve()`. No callbacks. See §16 for the full design.
 
 ### Compensation
 
-| Surface | Before (`NEW_PRIMITIVES.MD` today) | After |
-| --- | --- | --- |
-| Compensation closure API | `.compensate(cb)`, `.compensate(name, cb)` on `StepCall`, `WorkflowCall`, `RequestCall` | Removed. Compensation lives in `defineStep.compensation` / `defineRequest.compensation: true \| { result }` |
-| Standalone registration | `ctx.registerCompensation(name, cb)`, `ctx.compensateEagerly(name, cb)` | Removed |
-| Workflow-level compensation primitives | `defineWorkflow.compensation: { terminalErrors }` | Removed. Per-instance primitives live on `defineStep.compensation` |
-| Compensation hooks | `beforeCompensate`, `afterCompensate` on `defineWorkflow` | Removed. Orchestration lives in the relevant compensable step's `undo` |
-| Compensation outcome (external aggregate) | `CompensationFailureInfo<T>`, `handle.compensation.wait()` | Removed. Per-instance reads via `findUnique(...).result()` and per-instance events |
-| Compensation outcome (internal callback) | `StepCompensationResult<TArgs, T>` (compensation closure's `result` parameter) | Replaced by `(ctx, args, info)` where `info: CompensationInfo<TResult>` |
-| Request compensation outcome | `RequestCompensationResult<TResponse>` (closure parameter) | Replaced by `(ctx, payload, info)` where `info: RequestCompensationInfo<TResponse>` |
-| Request "needs compensation" flag | (none — every `.compensate(...)` is per-call-site) | `defineRequest({ compensation: true \| { result } })` |
-| `state` primitive | `defineWorkflow.state`, `compensation.state`, `ctx.state` | Removed entirely. `const state = {}` in the body has the same semantics |
-| Step type families | Single `StepDefinition` | Same single type, with `IsStepCompensable<S>` helper for namespace filtering |
-| Halt skippability | Unskippable in both VELs (Part 3) | Unskippable in execution; skippable per-instance in compensation |
-| Builder `.compensate` fence | Hard ordering, post-fence methods → `never` | No fence. No chain. No builder. |
+| Surface                                   | Before (`NEW_PRIMITIVES.MD` today)                                                      | After                                                                                                       |
+| ----------------------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Compensation closure API                  | `.compensate(cb)`, `.compensate(name, cb)` on `StepCall`, `WorkflowCall`, `RequestCall` | Removed. Compensation lives in `defineStep.compensation` / `defineRequest.compensation: true \| { result }` |
+| Standalone registration                   | `ctx.registerCompensation(name, cb)`, `ctx.compensateEagerly(name, cb)`                 | Removed                                                                                                     |
+| Workflow-level compensation primitives    | `defineWorkflow.compensation: { terminalErrors }`                                       | Removed. Per-instance primitives live on `defineStep.compensation`                                          |
+| Compensation hooks                        | `beforeCompensate`, `afterCompensate` on `defineWorkflow`                               | Removed. Orchestration lives in the relevant compensable step's `undo`                                      |
+| Compensation outcome (external aggregate) | `CompensationFailureInfo<T>`, `handle.compensation.wait()`                              | Removed. Per-instance reads via `findUnique(...).result()` and per-instance events                          |
+| Compensation outcome (internal callback)  | `StepCompensationResult<TArgs, T>` (compensation closure's `result` parameter)          | Replaced by `(ctx, args, info)` where `info: CompensationInfo<TResult>`                                     |
+| Request compensation outcome              | `RequestCompensationResult<TResponse>` (closure parameter)                              | Replaced by `(ctx, payload, info)` where `info: RequestCompensationInfo<TResponse>`                         |
+| Request "needs compensation" flag         | (none — every `.compensate(...)` is per-call-site)                                      | `defineRequest({ compensation: true \| { result } })`                                                       |
+| `state` primitive                         | `defineWorkflow.state`, `compensation.state`, `ctx.state`                               | Removed entirely. `const state = {}` in the body has the same semantics                                     |
+| Step type families                        | Single `StepDefinition`                                                                 | Same single type, with `IsStepCompensable<S>` helper for namespace filtering                                |
+| Halt skippability                         | Unskippable in both VELs (Part 3)                                                       | Unskippable in execution; skippable per-instance in compensation                                            |
+| Builder `.compensate` fence               | Hard ordering, post-fence methods → `never`                                             | No fence. No chain. No builder.                                                                             |
 
 ### Builder chain and call types
 
-| Surface | Before (`NEW_PRIMITIVES.MD` today) | After |
-| --- | --- | --- |
-| `StepCall` interface | Builder chain: `.retry()`, `.timeout(boundary, cb)`, `.compensate(cb)`, `.complete(cb)`, `.resolve(ctx)` | Removed. `ctx.steps.X(args, opts?)` returns an awaitable step entry |
-| `WorkflowCall` interface | Builder chain: `.retry()`, `.timeout(boundary, cb)`, `.failure(cb)` (mandatory), `.compensate(cb)`, `.complete(cb)`, `.resolve(ctx)` | Removed. Attached `ctx.childWorkflows.X(startOpts, opts?)` returns an awaitable child-workflow entry |
-| `RequestCall` interface | Builder chain: `.priority(n)`, `.timeout(boundary, cb)`, `.compensate(cb)`, `.complete(cb)`, `.resolve(ctx)` | Removed. `ctx.requests.X(payload, opts?)` returns an awaitable request entry |
-| `ScopeCall` / `FirstCall` | `.failure(cb)`, `.resolve(ctx)` | Removed. `ctx.scope(...)`, `ctx.all(...)`, `ctx.first(...)` are directly awaitable |
-| `DurableHandle<T, TRoot>` | Base type for all call handles, phantom-branded with VEL marker | Removed entirely |
-| `AtomicResult<T>` | Restricted awaitable (no `.catch`/`.finally`) returned by `.resolve()` | Removed. Calls return awaitable entries with no builder surface |
-| `.resolve(ctx)` | Terminal method, required on every Tier 1 operation | Removed. The `await` is the terminal |
-| `.timeout(boundary, cb)` | Callback receives `(ctx, info)`, can do durable recovery | Removed. Timeout surfaces as `{ ok: false; status: "timeout" }` in the return union; recovery is sequential code |
-| `.failure(cb)` on `WorkflowCall` | Mandatory callback receives `(ctx, info)`, handles child workflow failure | Removed. Failure surfaces as `{ ok: false; status: "failed"; error }` in the return union |
+| Surface                                     | Before (`NEW_PRIMITIVES.MD` today)                                                                                                                       | After                                                                                                                                                                                                    |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `StepCall` interface                        | Builder chain: `.retry()`, `.timeout(boundary, cb)`, `.compensate(cb)`, `.complete(cb)`, `.resolve(ctx)`                                                 | Removed. `ctx.steps.X(args, opts?)` returns an awaitable step entry                                                                                                                                      |
+| `WorkflowCall` interface                    | Builder chain: `.retry()`, `.timeout(boundary, cb)`, `.failure(cb)` (mandatory), `.compensate(cb)`, `.complete(cb)`, `.resolve(ctx)`                     | Removed. Attached `ctx.childWorkflows.X(startOpts, opts?)` returns an awaitable child-workflow entry                                                                                                     |
+| `RequestCall` interface                     | Builder chain: `.priority(n)`, `.timeout(boundary, cb)`, `.compensate(cb)`, `.complete(cb)`, `.resolve(ctx)`                                             | Removed. `ctx.requests.X(payload, opts?)` returns an awaitable request entry                                                                                                                             |
+| `ScopeCall` / `FirstCall`                   | `.failure(cb)`, `.resolve(ctx)`                                                                                                                          | Removed. `ctx.scope(...)`, `ctx.all(...)`, `ctx.first(...)` are directly awaitable                                                                                                                       |
+| `DurableHandle<T, TRoot>`                   | Base type for all call handles, phantom-branded with VEL marker                                                                                          | Removed entirely                                                                                                                                                                                         |
+| `AtomicResult<T>`                           | Restricted awaitable (no `.catch`/`.finally`) returned by `.resolve()`                                                                                   | Removed. Calls return awaitable entries with no builder surface                                                                                                                                          |
+| `.resolve(ctx)`                             | Terminal method, required on every Tier 1 operation                                                                                                      | Removed. The `await` is the terminal                                                                                                                                                                     |
+| `.timeout(boundary, cb)`                    | Callback receives `(ctx, info)`, can do durable recovery                                                                                                 | Removed. Timeout surfaces as `{ ok: false; status: "timeout" }` in the return union; recovery is sequential code                                                                                         |
+| `.failure(cb)` on `WorkflowCall`            | Mandatory callback receives `(ctx, info)`, handles child workflow failure                                                                                | Removed. Failure surfaces as `{ ok: false; status: "failed"; error }` in the return union                                                                                                                |
 | Attached child workflow `terminated` result | Parent workflow can observe `{ ok: false; status: "terminated" }` for an attached child, implying the child can be terminated separately from the parent | Removed. Attached children share the parent's termination fate and are not separately terminable business objects. Only root workflows and detached children expose termination through external handles |
-| `.complete(cb)` | Pure transform `(data) => R` | Removed. Developer destructures the result directly |
-| `.retry(policy)` | Builder method | Moved to `{ retry: policy }` in options object |
-| `.priority(n)` | Builder method on `RequestCall` | Moved to `{ priority: n }` in options object |
-| `Called` type parameter | Bookkeeping for chain ordering | Removed entirely |
-| `TFail` / `TTimeout` type params | Threaded callback return types through the chain | Removed. The discriminated union return type replaces them |
+| `.complete(cb)`                             | Pure transform `(data) => R`                                                                                                                             | Removed. Developer destructures the result directly                                                                                                                                                      |
+| `.retry(policy)`                            | Builder method                                                                                                                                           | Moved to `{ retry: policy }` in options object                                                                                                                                                           |
+| `.priority(n)`                              | Builder method on `RequestCall`                                                                                                                          | Moved to `{ priority: n }` in options object                                                                                                                                                             |
+| `Called` type parameter                     | Bookkeeping for chain ordering                                                                                                                           | Removed entirely                                                                                                                                                                                         |
+| `TFail` / `TTimeout` type params            | Threaded callback return types through the chain                                                                                                         | Removed. The discriminated union return type replaces them                                                                                                                                               |
 
 ### Branches and errors
 
-| Surface | Before (`NEW_PRIMITIVES.MD` today) | After |
-| --- | --- | --- |
-| Inline branch closures | `ctx.scope("name", { foo: async (ctx) => { ... } }, body)` | Removed. Branches are pre-defined on `defineWorkflow.branches`. Call site: `ctx.branches.foo(args)` |
-| Inline branch forms | Four forms: function shorthand, object `"none"`, `"any"`, `"explicit"` | Removed. Error mode is part of the branch definition |
-| `terminalErrors` | `defineWorkflow.terminalErrors`, `ctx.terminalErrors.X(...)` | Renamed to `defineWorkflow.errors`, `ctx.errors.X(...)` |
-| `branchErrors` | Per-branch `errors:` field on inline object form, `ctx.branchErrors.X(...)` | Replaced. Branch `errors` declared at definition time, accessed via `ctx.errors.X(...)` inside the branch |
-| Two error namespaces | `ctx.terminalErrors` (workflow-wide) + `ctx.branchErrors` (branch-local) | Single `ctx.errors` at every level, contents determined by declaration site |
-| `ScopeCall.failure(cb)` | Handler for scope-body failures | Removed. Scope body follows the parent's error regime |
-| `ScopeEntry` type | `(ctx) => Promise<T>` — inline callback | Generalized unstarted entry from `ctx.branches.X(args)`, `ctx.steps.X(args)`, `ctx.requests.X(payload)`, or attached `ctx.childWorkflows.X(startOpts)` |
-| Branch observability | None — branches are opaque closures | `findUnique` / `findMany` / `skip` / `status` / `result` on workflow handle |
+| Surface                 | Before (`NEW_PRIMITIVES.MD` today)                                          | After                                                                                                                                                  |
+| ----------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Inline branch closures  | `ctx.scope("name", { foo: async (ctx) => { ... } }, body)`                  | Removed. Branches are pre-defined on `defineWorkflow.branches`. Call site: `ctx.branches.foo(args)`                                                    |
+| Inline branch forms     | Four forms: function shorthand, object `"none"`, `"any"`, `"explicit"`      | Removed. Error mode is part of the branch definition                                                                                                   |
+| `terminalErrors`        | `defineWorkflow.terminalErrors`, `ctx.terminalErrors.X(...)`                | Renamed to `defineWorkflow.errors`, `ctx.errors.X(...)`                                                                                                |
+| `branchErrors`          | Per-branch `errors:` field on inline object form, `ctx.branchErrors.X(...)` | Replaced. Branch `errors` declared at definition time, accessed via `ctx.errors.X(...)` inside the branch                                              |
+| Two error namespaces    | `ctx.terminalErrors` (workflow-wide) + `ctx.branchErrors` (branch-local)    | Single `ctx.errors` at every level, contents determined by declaration site                                                                            |
+| `ScopeCall.failure(cb)` | Handler for scope-body failures                                             | Removed. Scope body follows the parent's error regime                                                                                                  |
+| `ScopeEntry` type       | `(ctx) => Promise<T>` — inline callback                                     | Generalized unstarted entry from `ctx.branches.X(args)`, `ctx.steps.X(args)`, `ctx.requests.X(payload)`, or attached `ctx.childWorkflows.X(startOpts)` |
+| Branch observability    | None — branches are opaque closures                                         | `findUnique` / `findMany` / `skip` / `status` / `result` on workflow handle                                                                            |
 
 `defineWorkflow` simplifies sharply:
 
 ```typescript
 // Before
 defineWorkflow({
-  name, args,
-  channels, streams, events, attributes, queues, requests, topics,
+  name,
+  args,
+  channels,
+  streams,
+  events,
+  attributes,
+  queues,
+  requests,
+  topics,
   terminalErrors,
   compensation: { terminalErrors },
-  beforeCompensate: async ({ ctx, args }) => { /* ... */ },
-  afterCompensate:  async ({ ctx, args }) => { /* ... */ },
+  beforeCompensate: async ({ ctx, args }) => {
+    /* ... */
+  },
+  afterCompensate: async ({ ctx, args }) => {
+    /* ... */
+  },
   steps,
-  execute: async (ctx, args) => { /* ... */ },
+  execute: async (ctx, args) => {
+    /* ... */
+  },
 });
 
 // After
 defineWorkflow({
-  name, args,
-  channels, streams, events, attributes, queues, requests, topics,
-  errors,                         // renamed from terminalErrors
-  branches,                       // pre-defined branch definitions
-  steps,                          // each step may carry its own compensation
-  execute: async (ctx, args) => { /* ... */ },
+  name,
+  args,
+  channels,
+  streams,
+  events,
+  attributes,
+  queues,
+  requests,
+  topics,
+  errors, // renamed from terminalErrors
+  branches, // pre-defined branch definitions
+  steps, // each step may carry its own compensation
+  execute: async (ctx, args) => {
+    /* ... */
+  },
 });
 ```
 
@@ -1129,7 +1295,7 @@ Within compensation block instance tables, all instances of all step-compensatio
 
 Two halt tables (`workflow_halt`, `compensation_block_halt`) make the §7 skippability asymmetry structurally evident.
 
-The "unified tree model" framing of the current Part 8 needs revisiting: under the reformation the workflow has one execution tree and *N* compensation block instance trees. Mirror scopes for unconsumed branches still exist as structural-concurrency bundles, but each branch in a mirror scope corresponds to a separate compensation block instance with its own per-instance state.
+The "unified tree model" framing of the current Part 8 needs revisiting: under the reformation the workflow has one execution tree and _N_ compensation block instance trees. Mirror scopes for unconsumed branches still exist as structural-concurrency bundles, but each branch in a mirror scope corresponds to a separate compensation block instance with its own per-instance state.
 
 Implementation details below this level — exact column lists, indexes, foreign keys, retention semantics — are provisional and to be designed alongside the public API.
 
@@ -1142,28 +1308,36 @@ The compensation reformation (§1–§13) eliminated the closure problem for com
 Branches today are inline async callbacks passed to `ctx.scope`:
 
 ```typescript
-await ctx.scope("booking", {
-  flight: async (ctx) => {
-    const booking = await ctx.steps.bookFlight(args.destination).resolve(ctx);
-    //                                         ^^^^^^^^^^^^^^^^
-    // `args` is captured from the parent scope. Nothing prevents this closure from
-    // reading — or mutating — any variable in the parent's lexical scope.
-    return booking;
-  },
-  hotel: async (ctx) => {
-    const booking = await ctx.steps.bookHotel(args).resolve(ctx);
-    return booking;
-  },
-}, async (ctx, { flight, hotel }) => {
-  // scope body — orchestrates the handles
-}).resolve(ctx);
+await ctx
+  .scope(
+    "booking",
+    {
+      flight: async (ctx) => {
+        const booking = await ctx.steps
+          .bookFlight(args.destination)
+          .resolve(ctx);
+        //                                         ^^^^^^^^^^^^^^^^
+        // `args` is captured from the parent scope. Nothing prevents this closure from
+        // reading — or mutating — any variable in the parent's lexical scope.
+        return booking;
+      },
+      hotel: async (ctx) => {
+        const booking = await ctx.steps.bookHotel(args).resolve(ctx);
+        return booking;
+      },
+    },
+    async (ctx, { flight, hotel }) => {
+      // scope body — orchestrates the handles
+    },
+  )
+  .resolve(ctx);
 ```
 
 Three problems:
 
-1. **Shared mutable state.** Both `flight` and `hotel` can read and mutate `args`, `counter`, or any other variable in the enclosing scope. The VEL interleaves branches in a deterministic but implementation-defined order — relying on that order is a bug, and the language does nothing to prevent it. Today this is a discipline problem; with the closure visible at the call site, it *looks* like sequential code and developers treat it accordingly.
+1. **Shared mutable state.** Both `flight` and `hotel` can read and mutate `args`, `counter`, or any other variable in the enclosing scope. The VEL interleaves branches in a deterministic but implementation-defined order — relying on that order is a bug, and the language does nothing to prevent it. Today this is a discipline problem; with the closure visible at the call site, it _looks_ like sequential code and developers treat it accordingly.
 
-2. **No way to pass arguments without closures.** If we banned closure capture (a lint rule, a convention), branches would have no way to receive input. You cannot pass typed arguments to `async (ctx) => { ... }`. The closure *is* the argument-passing mechanism, and that is exactly the design flaw.
+2. **No way to pass arguments without closures.** If we banned closure capture (a lint rule, a convention), branches would have no way to receive input. You cannot pass typed arguments to `async (ctx) => { ... }`. The closure _is_ the argument-passing mechanism, and that is exactly the design flaw.
 
 3. **`terminalErrors` inside branches.** A branch can throw `ctx.terminalErrors.X(...)`, killing the entire workflow. A concurrent unit of work that is supposed to be independent of the workflow lifecycle has the power to terminate it unilaterally. This undermines the isolation that scopes are supposed to provide. `branchErrors` (Part 4, mode `"explicit"`) exist to capture branch-local failures, but `terminalErrors` bypass this entirely — they escape all scopes.
 
@@ -1202,6 +1376,7 @@ await ctx.scope("booking", {
 ```
 
 Two error namespaces exist on the context:
+
 - `ctx.terminalErrors` — workflow-wide, always available, escapes all scopes.
 - `ctx.branchErrors` — scoped to the current branch's declared `errors:` map (empty in modes `"none"` and `"any"`).
 
@@ -1217,7 +1392,7 @@ defineWorkflow({
     BookingFailed: z.object({ reason: z.string() }),
   },
 
-  steps: { bookFlight, bookHotel, /* ... */ },
+  steps: { bookFlight, bookHotel /* ... */ },
 
   branches: {
     flightBooking: {
@@ -1246,13 +1421,16 @@ defineWorkflow({
       },
       execute: async (ctx, args) => {
         const result = await ctx.steps.bookHotel({
-          city: args.city, guestName: args.guestName,
+          city: args.city,
+          guestName: args.guestName,
         });
         if (result.status === "sold-out") {
           throw ctx.errors.Sold("No rooms available");
         }
         if (result.status === "unavailable") {
-          throw ctx.errors.Unavailable("Temporarily unavailable", { until: result.retryAfter });
+          throw ctx.errors.Unavailable("Temporarily unavailable", {
+            until: result.retryAfter,
+          });
         }
         return { confirmationId: result.confirmationId };
       },
@@ -1262,38 +1440,42 @@ defineWorkflow({
   execute: async (ctx, args) => {
     // Scope body: sequential orchestration in the workflow's error regime.
     // ctx.errors here is the *workflow's* errors: { BookingFailed }.
-    const result = await ctx.scope("booking", {
-      flight: ctx.branches.flightBooking({
-        destination: args.destination,
-        customerId: args.customerId,
-      }),
-      hotel: ctx.branches.hotelBooking({
-        city: args.destination,
-        guestName: args.customerId,
-      }),
-    }, async (ctx, { flight, hotel }) => {
-      const flightResult = await ctx.join(flight);
-      // flightResult: { ok: true; res: { confirmationId: string } }
-      //             | { ok: false; err: Failure }
-      // (mode "any" — any throw is captured)
+    const result = await ctx.scope(
+      "booking",
+      {
+        flight: ctx.branches.flightBooking({
+          destination: args.destination,
+          customerId: args.customerId,
+        }),
+        hotel: ctx.branches.hotelBooking({
+          city: args.destination,
+          guestName: args.customerId,
+        }),
+      },
+      async (ctx, { flight, hotel }) => {
+        const flightResult = await ctx.join(flight);
+        // flightResult: { ok: true; res: { confirmationId: string } }
+        //             | { ok: false; err: Failure }
+        // (mode "any" — any throw is captured)
 
-      const hotelResult = await ctx.join(hotel);
-      // hotelResult: { ok: true; res: { confirmationId: string } }
-      //            | { ok: false; err: ErrorValue<{ Sold: true; Unavailable: ... }> }
-      // (mode "explicit" — only declared errors are captured)
+        const hotelResult = await ctx.join(hotel);
+        // hotelResult: { ok: true; res: { confirmationId: string } }
+        //            | { ok: false; err: ErrorValue<{ Sold: true; Unavailable: ... }> }
+        // (mode "explicit" — only declared errors are captured)
 
-      if (!flightResult.ok || !hotelResult.ok) {
-        // Deliberate decision to fail the workflow.
-        throw ctx.errors.BookingFailed("One or more bookings failed", {
-          reason: "branch failure",
-        });
-      }
+        if (!flightResult.ok || !hotelResult.ok) {
+          // Deliberate decision to fail the workflow.
+          throw ctx.errors.BookingFailed("One or more bookings failed", {
+            reason: "branch failure",
+          });
+        }
 
-      return {
-        flight: flightResult.res.confirmationId,
-        hotel: hotelResult.res.confirmationId,
-      };
-    });
+        return {
+          flight: flightResult.res.confirmationId,
+          hotel: hotelResult.res.confirmationId,
+        };
+      },
+    );
 
     return result;
   },
@@ -1306,10 +1488,10 @@ defineWorkflow({
 
 The two-namespace model (`ctx.terminalErrors` + `ctx.branchErrors`) is replaced by a single `errors` field at every level. The semantics are determined by the level at which `errors` is declared:
 
-| Level | `errors` declared at | Effect of throwing `ctx.errors.X(...)` |
-| --- | --- | --- |
-| Workflow | `defineWorkflow.errors` | Fails the workflow. Visible externally as `FailureInfo`. |
-| Branch | `defineWorkflow.branches.foo.errors` | Fails the branch. Captured at the parent consumption point. |
+| Level    | `errors` declared at                 | Effect of throwing `ctx.errors.X(...)`                      |
+| -------- | ------------------------------------ | ----------------------------------------------------------- |
+| Workflow | `defineWorkflow.errors`              | Fails the workflow. Visible externally as `FailureInfo`.    |
+| Branch   | `defineWorkflow.branches.foo.errors` | Fails the branch. Captured at the parent consumption point. |
 
 There is no cross-level access. A branch's `execute` callback receives a context whose `ctx.errors` contains only the branch's own declared errors — never the workflow's errors. A workflow body's `ctx.errors` contains only the workflow's errors — never any branch's errors. If the same error name appears at both levels, they are independent declarations with independent semantics.
 
@@ -1325,11 +1507,11 @@ if (!hotelResult.ok) {
 
 **2. The three modes are intrinsic to the branch definition.**
 
-| `errors` field on branch | Mode | `ctx.errors` inside `execute` | Failure at consumption point |
-| --- | --- | --- | --- |
-| omitted or `"none"` | `"none"` | empty (`Record<string, never>`) | Any throw halts the branch |
-| `"any"` | `"any"` | empty | Any throw → `Failure` record |
-| `{ Name: schema \| true }` | `"explicit"` | factories for declared keys | `ctx.errors.X(...)` → `ErrorValue<TBranchErrors>` |
+| `errors` field on branch   | Mode         | `ctx.errors` inside `execute`   | Failure at consumption point                      |
+| -------------------------- | ------------ | ------------------------------- | ------------------------------------------------- |
+| omitted or `"none"`        | `"none"`     | empty (`Record<string, never>`) | Any throw halts the branch                        |
+| `"any"`                    | `"any"`      | empty                           | Any throw → `Failure` record                      |
+| `{ Name: schema \| true }` | `"explicit"` | factories for declared keys     | `ctx.errors.X(...)` → `ErrorValue<TBranchErrors>` |
 
 The mode is fixed at definition time. The same branch always uses the same error contract regardless of where it is spawned.
 
@@ -1337,7 +1519,7 @@ The mode is fixed at definition time. The same branch always uses the same error
 
 A branch's `execute` callback receives a context with: `steps`, `requests`, `queues`, `topics`, `childWorkflows`, `channels`, `streams`, `events`, `attributes`, `branches`, `patches`, `rng` — everything the workflow context has. The only difference is `errors`: the branch sees its own `errors`, not the workflow's.
 
-A branch can spawn nested scopes with other branches (`ctx.scope("inner", { b: ctx.branches.bar(...) }, ...)`). The inner branch gets *its* own `errors` from *its* own definition. Nesting does not change any branch's error contract.
+A branch can spawn nested scopes with other branches (`ctx.scope("inner", { b: ctx.branches.bar(...) }, ...)`). The inner branch gets _its_ own `errors` from _its_ own definition. Nesting does not change any branch's error contract.
 
 **4. Primitive calls return typed, unstarted entries.**
 
@@ -1363,26 +1545,30 @@ Direct `await` remains the simple path: `await ctx.steps.bookFlight(args)` start
 The scope input is still an object at the top level, but each property can be a single entry, an array/tuple of entries, or a `Map` / `ReadonlyMap` of entries. The callback receives a structural copy where every leaf entry has become the corresponding handle:
 
 ```typescript
-await ctx.scope("parallel-lookups", {
-  array: [
-    ctx.steps.quoteHotel({ city: "Paris" }),
-    ctx.steps.quoteHotel({ city: "Rome" }),
-  ],
-  map: new Map([
-    ["bar1", ctx.childWorkflows.bar({ args: { n: 1 } })],
-    ["bar2", ctx.childWorkflows.bar({ args: { n: 2 } })],
-  ]),
-  baz1: ctx.branches.baz({ n: 1 }),
-  baz2: ctx.branches.baz({ n: 2 }),
-}, async (ctx, { array, map, baz1, baz2 }) => {
-  const firstQuote = await ctx.join(array[0]);
-  const bar1 = map.get("bar1");
-  if (bar1) await ctx.join(bar1);
+await ctx.scope(
+  "parallel-lookups",
+  {
+    array: [
+      ctx.steps.quoteHotel({ city: "Paris" }),
+      ctx.steps.quoteHotel({ city: "Rome" }),
+    ],
+    map: new Map([
+      ["bar1", ctx.childWorkflows.bar({ args: { n: 1 } })],
+      ["bar2", ctx.childWorkflows.bar({ args: { n: 2 } })],
+    ]),
+    baz1: ctx.branches.baz({ n: 1 }),
+    baz2: ctx.branches.baz({ n: 2 }),
+  },
+  async (ctx, { array, map, baz1, baz2 }) => {
+    const firstQuote = await ctx.join(array[0]);
+    const bar1 = map.get("bar1");
+    if (bar1) await ctx.join(bar1);
 
-  const b1 = await ctx.join(baz1);
-  const b2 = await ctx.join(baz2);
-  return { firstQuote, b1, b2 };
-});
+    const b1 = await ctx.join(baz1);
+    const b2 = await ctx.join(baz2);
+    return { firstQuote, b1, b2 };
+  },
+);
 ```
 
 Literal tuples preserve their positions when TypeScript can infer them. Dynamic arrays become arrays of the corresponding handle union. Maps preserve their key type and map each value to the matching handle type.
@@ -1395,22 +1581,22 @@ type ScopeInputValue =
 
 type ScopeInput = Record<string, ScopeInputValue>;
 
-type ScopeHandles<T> =
-  T extends ConcurrentEntry ? ScopeHandleOf<T> :
-  T extends readonly unknown[] ? (
-    number extends T["length"]
+type ScopeHandles<T> = T extends ConcurrentEntry
+  ? ScopeHandleOf<T>
+  : T extends readonly unknown[]
+    ? number extends T["length"]
       ? readonly ScopeHandles<T[number]>[]
       : { readonly [K in keyof T]: ScopeHandles<T[K]> }
-  ) :
-  T extends ReadonlyMap<infer K, infer V> ? ReadonlyMap<K, ScopeHandles<V>> :
-  never;
+    : T extends ReadonlyMap<infer K, infer V>
+      ? ReadonlyMap<K, ScopeHandles<V>>
+      : never;
 ```
 
 The same branch, step, request, or attached child workflow definition can be invoked multiple times with different args in the same scope. Each entry becomes an independent concurrent instance.
 
 **6. The scope body remains an inline callback.**
 
-The scope body is orchestration code. It is sequential relative to the parent context. It receives a concurrency-narrowed context with `match`, `join`, and `select` for consuming handles. Its `ctx.errors` is the *parent's* errors (the workflow's errors in a top-level scope, or the enclosing branch's errors in a nested scope). The scope body can throw recognized errors just as if the code were written directly in the parent's body — because semantically, it is.
+The scope body is orchestration code. It is sequential relative to the parent context. It receives a concurrency-narrowed context with `match`, `join`, and `select` for consuming handles. Its `ctx.errors` is the _parent's_ errors (the workflow's errors in a top-level scope, or the enclosing branch's errors in a nested scope). The scope body can throw recognized errors just as if the code were written directly in the parent's body — because semantically, it is.
 
 The scope no longer has its own error mode. There is no `ScopeCall.failure(cb)`. The scope body either returns a value, throws a recognized parent-level error (which propagates), or throws something unrecognized (which halts the parent, following the parent's halt rules).
 
@@ -1419,25 +1605,28 @@ The scope no longer has its own error mode. There is no `ScopeCall.failure(cb)`.
 `ctx.join(handle)` waits for a single leaf handle and returns the handle's typed result. `join` does not accept arrays or maps directly; the caller chooses the element they want and joins that handle. This keeps the type surface simple and makes the business decision explicit.
 
 ```typescript
-const quotes = await ctx.scope("quotes", {
-  hotels: [
-    ctx.steps.quoteHotel({ city: "Paris" }),
-    ctx.steps.quoteHotel({ city: "Rome" }),
-  ],
-}, async (ctx, { hotels }) => {
-  const paris = await ctx.join(hotels[0]);
-  const rome = await ctx.join(hotels[1], { timeout: 10 });
-  return { paris, rome };
-});
+const quotes = await ctx.scope(
+  "quotes",
+  {
+    hotels: [
+      ctx.steps.quoteHotel({ city: "Paris" }),
+      ctx.steps.quoteHotel({ city: "Rome" }),
+    ],
+  },
+  async (ctx, { hotels }) => {
+    const paris = await ctx.join(hotels[0]);
+    const rome = await ctx.join(hotels[1], { timeout: 10 });
+    return { paris, rome };
+  },
+);
 ```
 
 `ctx.join(handle, { timeout })` is an observation timeout. It races the wait, not the underlying work. If the timeout wins, the join returns `{ ok: false; status: "timeout" }`, but the handle is not cancelled, rejected, terminated, or marked failed. The concurrent operation continues under the scope, and the same handle may be joined again later.
 
 ```typescript
-type JoinResult<THandle, TOpts> =
-  TOpts extends { timeout: StepBoundary }
-    ? JoinValue<THandle> | { ok: false; status: "timeout" }
-    : JoinValue<THandle>;
+type JoinResult<THandle, TOpts> = TOpts extends { timeout: StepBoundary }
+  ? JoinValue<THandle> | { ok: false; status: "timeout" }
+  : JoinValue<THandle>;
 ```
 
 This is intentionally distinct from an operation-level timeout passed to `ctx.steps.foo(args, { timeout })`, `ctx.requests.foo(payload, { timeout })`, or `ctx.childWorkflows.foo(startOpts, { timeout })`. Operation-level timeout is part of the entry's result. Join timeout is only a timeout on this particular observation.
@@ -1449,46 +1638,50 @@ This is intentionally distinct from an operation-level timeout passed to `ctx.st
 For arrays, events carry the array index. For maps, events carry the map key. For top-level objects that contain collections, the event also carries the top-level object key:
 
 ```typescript
-await ctx.scope("fanout", {
-  array: [
-    ctx.steps.foo(1),
-    ctx.steps.foo(2),
-    ctx.steps.foo(3),
-  ],
-  map: new Map([
-    ["bar1", ctx.childWorkflows.bar({ args: { n: 1 } })],
-    ["bar2", ctx.childWorkflows.bar({ args: { n: 2 } })],
-  ]),
-  baz1: ctx.branches.baz(1),
-  baz2: ctx.branches.baz(2),
-}, async (ctx, handles) => {
-  for await (const event of ctx.match(handles)) {
-    if (event.key === "array") {
-      event.index; // 0 | 1 | 2 for a tuple, number for a dynamic array
-      event.val;
+await ctx.scope(
+  "fanout",
+  {
+    array: [ctx.steps.foo(1), ctx.steps.foo(2), ctx.steps.foo(3)],
+    map: new Map([
+      ["bar1", ctx.childWorkflows.bar({ args: { n: 1 } })],
+      ["bar2", ctx.childWorkflows.bar({ args: { n: 2 } })],
+    ]),
+    baz1: ctx.branches.baz(1),
+    baz2: ctx.branches.baz(2),
+  },
+  async (ctx, handles) => {
+    for await (const event of ctx.match(handles)) {
+      if (event.key === "array") {
+        event.index; // 0 | 1 | 2 for a tuple, number for a dynamic array
+        event.val;
+      }
+      if (event.key === "map") {
+        event.mapKey; // "bar1" | "bar2" when inferred, otherwise the map key type
+        event.val;
+      }
+      if (event.key === "baz1" || event.key === "baz2") {
+        event.val;
+      }
     }
-    if (event.key === "map") {
-      event.mapKey; // "bar1" | "bar2" when inferred, otherwise the map key type
-      event.val;
-    }
-    if (event.key === "baz1" || event.key === "baz2") {
-      event.val;
-    }
-  }
-});
+  },
+);
 ```
 
 The type sketch is recursive:
 
 ```typescript
 type MatchEvent<T> =
-  T extends ScopeHandle<any> ? { val: JoinValue<T> } :
-  T extends readonly (infer U)[] ? MatchEvent<U> & { index: number } :
-  T extends ReadonlyMap<infer K, infer V> ? MatchEvent<V> & { mapKey: K } :
-  T extends Record<string, any> ? {
-    [K in keyof T]: MatchEvent<T[K]> & { key: K }
-  }[keyof T] :
-  never;
+  T extends ScopeHandle<any>
+    ? { val: JoinValue<T> }
+    : T extends readonly (infer U)[]
+      ? MatchEvent<U> & { index: number }
+      : T extends ReadonlyMap<infer K, infer V>
+        ? MatchEvent<V> & { mapKey: K }
+        : T extends Record<string, any>
+          ? {
+              [K in keyof T]: MatchEvent<T[K]> & { key: K };
+            }[keyof T]
+          : never;
 ```
 
 **9. Convenience methods accept generalized entries.**
@@ -1498,8 +1691,11 @@ All structured concurrency methods work with the generalized input shape:
 ```typescript
 // ctx.all — wait for all entries
 const results = await ctx.all("booking", {
-  flight: ctx.branches.flightBooking({ destination: "Paris", customerId: "c1" }),
-  hotel:  ctx.steps.bookHotel({ city: "Paris", guestName: "Alice" }),
+  flight: ctx.branches.flightBooking({
+    destination: "Paris",
+    customerId: "c1",
+  }),
+  hotel: ctx.steps.bookHotel({ city: "Paris", guestName: "Alice" }),
 });
 // results: { flight: { ok, res } | { ok, err }, hotel: HotelBooking }
 
@@ -1511,10 +1707,14 @@ const winner = await ctx.first("fastest-hotel", {
   ],
 });
 // winner: { ok: true; res: { key: "quotes"; index: number; value: ... } }
-//       | { ok: false; err: { errorCode: "NoEntryCompleted"; ... } }
+//       | { ok: false; err: { code: "NoEntryCompleted"; ... } }
 
 // ctx.match — streaming consumption
-const sel = ctx.select({ flight, hotel, cancel: ctx.channels.cancel.receive() });
+const sel = ctx.select({
+  flight,
+  hotel,
+  cancel: ctx.channels.cancel.receive(),
+});
 for await (const { key, val } of ctx.match(sel)) {
   // channels still work as match sources — unchanged.
 }
@@ -1529,32 +1729,38 @@ Every branch invocation is persisted with serializable args and result. The same
 ```typescript
 // External handle:
 const branchInfo = await workflowInstance.branches.hotelBooking
-  .findUnique(q => q.args.city.eq("Paris"))
+  .findUnique((q) => q.args.city.eq("Paris"))
   .status();
 // → { status: "unique"; value: "running" }
 
 await workflowInstance.branches.hotelBooking
-  .findUnique(q => q.args.city.eq("Paris"))
+  .findUnique((q) => q.args.city.eq("Paris"))
   .result();
 // → { status: "unique"; value: { confirmationId: "rsv_abc" } }
 //   { status: "unique"; value: null }  // not yet completed
 
 // Skip a halted branch (same pattern as compensation blocks):
 await workflowInstance.branches.hotelBooking
-  .findUnique(q => q.args.city.eq("Paris"))
+  .findUnique((q) => q.args.city.eq("Paris"))
   .skip({ confirmationId: "manual-resolution" });
 
 // List all running hotel booking branches:
-const running = await workflowInstance.branches.hotelBooking
-  .findMany(q => q.metadata.status.eq("running"));
-await running.count();  // → 3
+const running = await workflowInstance.branches.hotelBooking.findMany((q) =>
+  q.metadata.status.eq("running"),
+);
+await running.count(); // → 3
 ```
 
 The status set for branches:
 
 ```typescript
 type BranchStatus =
-  "pending" | "running" | "completed" | "failed" | "halted" | "skipped";
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "halted"
+  | "skipped";
 ```
 
 - `pending` — registered in the scope, not yet started.
@@ -1604,13 +1810,13 @@ const bookHotel = defineStep({
 
 ### What changes in `NEW_PRIMITIVES.MD`
 
-| Part | Change |
-| --- | --- |
-| Part 1 (VEL) | Branch entries are no longer inline closures — they reference pre-defined branches via `ctx.branches.X(args)`. The VEL mechanics (interleaving, blocking, scope entry/exit) are unchanged. |
-| Part 4 (Error model) | `terminalErrors` renamed to `errors` on `defineWorkflow`. `branchErrors` removed as a concept — branches have their own `errors` at definition time. The two-namespace model (`ctx.terminalErrors` + `ctx.branchErrors`) collapses to a single `ctx.errors` whose contents depend on the current level. Per-context throw rules simplify: workflow body throws workflow `errors`; branch body throws branch `errors`; no cross-level access. |
+| Part                            | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Part 1 (VEL)                    | Branch entries are no longer inline closures — they reference pre-defined branches via `ctx.branches.X(args)`. The VEL mechanics (interleaving, blocking, scope entry/exit) are unchanged.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Part 4 (Error model)            | `terminalErrors` renamed to `errors` on `defineWorkflow`. `branchErrors` removed as a concept — branches have their own `errors` at definition time. The two-namespace model (`ctx.terminalErrors` + `ctx.branchErrors`) collapses to a single `ctx.errors` whose contents depend on the current level. Per-context throw rules simplify: workflow body throws workflow `errors`; branch body throws branch `errors`; no cross-level access.                                                                                                                                                                                                                                         |
 | Part 7 (Scopes and consumption) | The four inline branch forms (function shorthand, object with `"none"`, `"any"`, `"explicit"`) are removed. Branches are always pre-defined references, and `ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, `ctx.best` accept generalized unstarted entries from branches, steps, requests, and attached child workflows. Scope inputs may contain single entries, arrays/tuples, and maps. `ScopeCall.failure(cb)` is removed — the scope body follows the parent's error regime. `ctx.join` observes one leaf handle at a time and supports non-cancelling observation timeouts; `ctx.match` streams keyed/indexed/map-keyed completions from structured inputs. |
-| Part 8 (Database) | Branch invocations gain their own rows with serialized args and results. The parallel-table pattern (§13) applies to branches as it does to compensation blocks. |
-| Summary tables | `defineWorkflow` gains `branches` field. `branchErrors` removed from context. `terminalErrors` renamed to `errors`. `ScopeCall.failure(cb)` removed. `ScopeEntry` type changes from callback to generalized unstarted entries with structural handle mapping. |
+| Part 8 (Database)               | Branch invocations gain their own rows with serialized args and results. The parallel-table pattern (§13) applies to branches as it does to compensation blocks.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Summary tables                  | `defineWorkflow` gains `branches` field. `branchErrors` removed from context. `terminalErrors` renamed to `errors`. `ScopeCall.failure(cb)` removed. `ScopeEntry` type changes from callback to generalized unstarted entries with structural handle mapping.                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 ## 16. The Builder Chain Disappears
 
@@ -1651,7 +1857,7 @@ const booking = await ctx.steps.bookFlight(args);
 
 // With timeout — may not succeed. Returns discriminated union.
 const booking = await ctx.steps.bookFlight(args, {
-  timeout: 30,                                    // seconds
+  timeout: 30, // seconds
 });
 // booking: { ok: true; result: FlightBooking }
 //        | { ok: false; status: "timeout" }
@@ -1708,19 +1914,23 @@ const decision = await ctx.requests.humanReview(payload, {
 
 ```typescript
 // ctx.scope — returns whatever the scope body returns.
-const result = await ctx.scope("booking", {
-  flight: ctx.branches.flightBooking({ destination: "Paris" }),
-  hotel:  ctx.branches.hotelBooking({ city: "Paris" }),
-}, async (ctx, { flight, hotel }) => {
-  const f = await ctx.join(flight);
-  const h = await ctx.join(hotel);
-  return { flight: f, hotel: h };
-});
+const result = await ctx.scope(
+  "booking",
+  {
+    flight: ctx.branches.flightBooking({ destination: "Paris" }),
+    hotel: ctx.branches.hotelBooking({ city: "Paris" }),
+  },
+  async (ctx, { flight, hotel }) => {
+    const f = await ctx.join(flight);
+    const h = await ctx.join(hotel);
+    return { flight: f, hotel: h };
+  },
+);
 
 // ctx.all, ctx.first, etc. — same pattern.
 const results = await ctx.all("booking", {
   flight: ctx.branches.flightBooking({ destination: "Paris" }),
-  hotel:  ctx.branches.hotelBooking({ city: "Paris" }),
+  hotel: ctx.branches.hotelBooking({ city: "Paris" }),
 });
 ```
 
@@ -1848,14 +2058,14 @@ type RequestEntry<TAwaited> = AwaitableEntry<TAwaited>;
 
 ### What changes in `NEW_PRIMITIVES.MD`
 
-| Part | Change |
-| --- | --- |
-| Part 1 (VEL) | Tier 1 operations no longer expose a two-phase builder API. The call creates a typed entry; direct `await` is a single expression, while scopes can start the same entry under structural ownership. The engine internally still buffers `start_step` + `await_promise`, but the public API has no `.resolve(ctx)`. The "Tier 1 await" row (`.resolve(ctx)`) is removed from the step types table. |
-| Part 2 (Compensation) | `.compensate()` builder references are already gone (§2). The eager promotion mechanism still works — when a timeout fires on a step call, the engine promotes the registered compensation instance. The trigger is now "the step call returned `{ ok: false; status: "timeout" }`" rather than "the `.timeout(cb)` callback was entered." |
-| Part 4 (Error model) | The `.timeout(cb)` / `.failure(cb)` callback rows in the per-context throw rules table are removed — there are no callbacks to throw from. Engine-level events (step timeout, child workflow failure) surface as discriminated union return values, not as callbacks. The developer handles them in sequential code, where the enclosing context's error regime applies naturally. |
-| Part 5 (Chain ordering) | **Removed entirely.** The chain ordering section, the `Called` type parameter, the `StepCall`/`WorkflowCall`/`RequestCall` interfaces, the `DurableHandle` base type, the `AtomicResult` type — all removed. Replaced by the call-time options + discriminated union return described in this section. Attached child workflow `terminated` results are also removed as a semantic correction: attached children are not independently terminable from their parent. |
-| Part 12 (Step timeout unification) | `maxAttempts` moves into the `timeout` field of the options object (via `StepBoundary`). The concept is the same; only the syntax changes. |
-| Summary tables | `StepCall`, `WorkflowCall`, `RequestCall`, `ScopeCall`, `FirstCall` removed. The old `DurableHandle` and `AtomicResult` hierarchy is removed. `.resolve(ctx)` removed from all examples. `ctx.steps.X(args, opts?)` / attached `ctx.childWorkflows.X(startOpts, opts?)` / `ctx.requests.X(payload, opts?)` are the new entry-producing call signatures. Attached child workflow results no longer include `terminated`; detached child workflows remain externally terminable root workflow instances. |
+| Part                               | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Part 1 (VEL)                       | Tier 1 operations no longer expose a two-phase builder API. The call creates a typed entry; direct `await` is a single expression, while scopes can start the same entry under structural ownership. The engine internally still buffers `start_step` + `await_promise`, but the public API has no `.resolve(ctx)`. The "Tier 1 await" row (`.resolve(ctx)`) is removed from the step types table.                                                                                                     |
+| Part 2 (Compensation)              | `.compensate()` builder references are already gone (§2). The eager promotion mechanism still works — when a timeout fires on a step call, the engine promotes the registered compensation instance. The trigger is now "the step call returned `{ ok: false; status: "timeout" }`" rather than "the `.timeout(cb)` callback was entered."                                                                                                                                                             |
+| Part 4 (Error model)               | The `.timeout(cb)` / `.failure(cb)` callback rows in the per-context throw rules table are removed — there are no callbacks to throw from. Engine-level events (step timeout, child workflow failure) surface as discriminated union return values, not as callbacks. The developer handles them in sequential code, where the enclosing context's error regime applies naturally.                                                                                                                     |
+| Part 5 (Chain ordering)            | **Removed entirely.** The chain ordering section, the `Called` type parameter, the `StepCall`/`WorkflowCall`/`RequestCall` interfaces, the `DurableHandle` base type, the `AtomicResult` type — all removed. Replaced by the call-time options + discriminated union return described in this section. Attached child workflow `terminated` results are also removed as a semantic correction: attached children are not independently terminable from their parent.                                   |
+| Part 12 (Step timeout unification) | `maxAttempts` moves into the `timeout` field of the options object (via `StepBoundary`). The concept is the same; only the syntax changes.                                                                                                                                                                                                                                                                                                                                                             |
+| Summary tables                     | `StepCall`, `WorkflowCall`, `RequestCall`, `ScopeCall`, `FirstCall` removed. The old `DurableHandle` and `AtomicResult` hierarchy is removed. `.resolve(ctx)` removed from all examples. `ctx.steps.X(args, opts?)` / attached `ctx.childWorkflows.X(startOpts, opts?)` / `ctx.requests.X(payload, opts?)` are the new entry-producing call signatures. Attached child workflow results no longer include `terminated`; detached child workflows remain externally terminable root workflow instances. |
 
 ## 14. The full sequence
 

@@ -771,7 +771,7 @@ await ctx.childWorkflows.processOrder(startOpts, { timeout: 120 });
 await ctx.requests.humanReview(payload, { priority: 1, timeout: 3600 });
 ```
 
-Calls are not eager native `Promise`s. They are entries that can be directly awaited or passed to named structured-ownership helpers: `ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atMost`, `ctx.atLeast`, or `ctx.best`.
+Calls are not eager native `Promise`s. They are entries that can be directly awaited or passed to named structured-ownership helpers: `ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atMost`, `ctx.atLeast`, or `ctx.some`.
 
 ### RetryPolicyOptions
 
@@ -902,9 +902,7 @@ interface ChildWorkflowAccessor<W extends AnyWorkflowHeader> {
     | { ok: false; status: "failed"; error: ErrorValue<InferWorkflowErrors<W>> }
     | { ok: false; status: "timeout" }
   >;
-  startDetached(
-    opts: DetachedStartOptions<W>,
-  ): ForeignWorkflowHandle<W>;
+  startDetached(opts: DetachedStartOptions<W>): ForeignWorkflowHandle<W>;
 }
 
 interface RequestAccessor<TPayload, TResponse> {
@@ -1078,15 +1076,11 @@ The scope body remains an inline callback because it is orchestration code in th
 
 ### `ctx.join`
 
-`ctx.join(handle)` observes one leaf handle and returns the handle's typed value. For branches:
-
-- mode `"none"` returns bare `T` or halts if the branch threw unexpectedly;
-- mode `"any"` returns `{ ok: true; res: T } | { ok: false; err: Failure }`;
-- explicit mode returns `{ ok: true; res: T } | { ok: false; err: ErrorValue<TBranchErrors> }`.
+`ctx.join(handle)` observes one leaf handle and returns the handle's full flattened outcome. Plain step and request entries return their success payloads directly. Branches and attached child workflows return their declared workflow-facing result unions, such as `{ ok: true; result: T } | { ok: false; status: "failed"; error: unknown }`.
 
 If a halted branch is externally skipped with an operator-supplied result, workflow code observes that value as a normal successful branch result. `skipped` is retained as an external branch-instance status, not as a workflow-facing `join` outcome.
 
-`ctx.join(handle, { timeout })` is an observation timeout. It races this wait only; it does not cancel, terminate, fail, or compensate the underlying work. The same handle can be joined again later.
+`ctx.join(handle, { timeout })` is an observation timeout. It races this wait only; it does not cancel, terminate, fail, or compensate the underlying work. The same handle can be joined again later. If observation times out, `join` adds `{ ok: false; status: "join_timeout" }`, separate from an entry's own operation timeout result.
 
 ### `ctx.match`
 
@@ -1109,9 +1103,15 @@ for await (const event of ctx.match(handles)) {
 
 ### Convenience scope methods
 
-`ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.best` accept an explicit scope name followed by the same top-level object input structure as `ctx.scope`. They return directly awaitable results and have no `.failure(cb)` builder.
+`ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.some` accept an explicit scope name followed by the same top-level object input structure as `ctx.scope`. They return directly awaitable results and have no `.failure(cb)` builder.
 
-`ctx.first` eagerly promotes compensation for entries it leaves unconsumed according to each entry's semantics. `ctx.atMost` and `ctx.best` return whatever completed and do not have failure cases. `ctx.atLeast` and `ctx.all` return discriminated union failures when their quorum/all requirements cannot be met.
+| Method                          | Strategy                                                                 | Success result                                                  | Failure error                                                                                                                            |
+| ------------------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `ctx.all(name, entries)`        | Wait for every entry to succeed.                                         | `ScopeSuccessResults<E>` preserving the input object structure. | `{ code: "SomeBranchesFailed"; message; details: { failures: KeyedFailure<E>[]; completed: KeyedSuccess<E>[] } }`                        |
+| `ctx.first(name, entries)`      | Return the first successful entry; compensate entries left unconsumed.   | `KeyedSuccess<E>`                                               | `{ code: "NoBranchCompleted"; message; details: { failures: KeyedFailure<E>[] } }`                                                       |
+| `ctx.atLeast(name, n, entries)` | Wait until at least `n` entries succeed.                                 | `KeyedSuccess<E>[]` with length at least `n`.                   | `{ code: "QuorumNotMet"; message; details: { required: number; got: number; failures: KeyedFailure<E>[]; completed: KeyedSuccess<E>[] } }` |
+| `ctx.atMost(name, n, entries)`  | Return up to `n` successful entries; compensate entries left unconsumed. | `KeyedSuccess<E>[]` with length at most `n`.                    | No failure case.                                                                                                                         |
+| `ctx.some(name, entries)`       | Return as many successful entries as possible.                           | `KeyedSuccess<E>[]`, possibly empty.                            | No failure case.                                                                                                                         |
 
 ### Branch query surface
 
@@ -2636,20 +2636,20 @@ defineStep({
 
 ### Context changes
 
-| Change                                                              | Details                                                                                            |
-| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `ctx.steps.X(args, opts?)`                                          | Returns an awaitable entry. No builder chain. Timeout via `{ timeout }`.                           |
-| `ctx.requests.X(payload, opts?)`                                    | Returns an awaitable entry. Priority and timeout via options.                                      |
-| `ctx.childWorkflows.X(startOpts, opts?)`                            | Attached child workflow entry; always returns success/failure union, timeout adds timeout variant. |
-| `ctx.branches.X(args)`                                              | Creates an unstarted branch entry from a predefined branch.                                        |
-| `ctx.errors.X(message, details?)`                                   | Factory functions for the current definition level's declared errors.                              |
-| `ctx.queues.X.enqueue(payload, opts?)`                              | Sync buffered operation.                                                                           |
-| `ctx.topics.X.publish(payload, opts?)`                              | Sync buffered operation.                                                                           |
-| `ctx.attributes.X.set(value)`                                       | Sync buffered operation.                                                                           |
-| `ctx.scope(name, entries, body)`                                    | Directly awaitable. Input is a top-level object whose properties can be entries, arrays/tuples, or maps. |
-| `ctx.match(handles)`                                                | Async iterable keyed by top-level object properties; arrays add `index`, maps add `mapKey`. No handler form. |
-| `ctx.join(handle, opts?)`                                           | Observes one handle; optional timeout only times out observation.                                  |
-| `ctx.all(name, entries)` / `ctx.first(name, entries)` / `ctx.atLeast(name, count, entries)` / `ctx.atMost(name, count, entries)` / `ctx.best(name, entries)` | Directly awaitable named structured-concurrency helpers over generalized entries. |
+| Change                                                                                                                                                       | Details                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ctx.steps.X(args, opts?)`                                                                                                                                   | Returns an awaitable entry. No builder chain. Timeout via `{ timeout }`.                                                                                     |
+| `ctx.requests.X(payload, opts?)`                                                                                                                             | Returns an awaitable entry. Priority and timeout via options.                                                                                                |
+| `ctx.childWorkflows.X(startOpts, opts?)`                                                                                                                     | Attached child workflow entry; always returns success/failure union, timeout adds timeout variant.                                                           |
+| `ctx.branches.X(args)`                                                                                                                                       | Creates an unstarted branch entry from a predefined branch.                                                                                                  |
+| `ctx.errors.X(message, details?)`                                                                                                                            | Factory functions for the current definition level's declared errors.                                                                                        |
+| `ctx.queues.X.enqueue(payload, opts?)`                                                                                                                       | Sync buffered operation.                                                                                                                                     |
+| `ctx.topics.X.publish(payload, opts?)`                                                                                                                       | Sync buffered operation.                                                                                                                                     |
+| `ctx.attributes.X.set(value)`                                                                                                                                | Sync buffered operation.                                                                                                                                     |
+| `ctx.scope(name, entries, body)`                                                                                                                             | Directly awaitable. Input is a top-level object whose properties can be entries, arrays/tuples, or maps.                                                     |
+| `ctx.match(handles)`                                                                                                                                         | Async iterable keyed by top-level object properties; arrays add `index`, maps add `mapKey`. No handler form.                                                 |
+| `ctx.join(handle, opts?)`                                                                                                                                    | Observes one handle; optional timeout only times out observation.                                                                                            |
+| `ctx.all(name, entries)` / `ctx.first(name, entries)` / `ctx.atLeast(name, count, entries)` / `ctx.atMost(name, count, entries)` / `ctx.some(name, entries)` | Directly awaitable named structured-concurrency helpers over generalized entries. Success-oriented; helpers that can fail return helper-level `code` errors. |
 
 Removed context APIs:
 
@@ -2726,7 +2726,7 @@ Removed context APIs:
 
 #### Structured concurrency
 
-- `ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.best` are named scopes and accept a top-level object input.
+- `ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.some` are named scopes and accept a top-level object input.
 - Scope input properties support single entries, arrays/tuples of entries, and maps of entries.
 - `ctx.join(handle, { timeout })` is a non-cancelling observation timeout.
 - `ctx.match` yields top-level object keys, with `index` for array/tuple properties and `mapKey` for map properties.

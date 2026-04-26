@@ -17,11 +17,12 @@ Move structured concurrency to predefined, isolated branch definitions and gener
 - `ctx.scope(name, entries, body)` is directly awaitable.
 - Scope input is always a top-level object whose properties can be single entries, tuples/arrays of entries, or maps of entries.
 - Step entries, request entries, attached child workflow entries, and branch entries are valid scope entries; detached child workflow starts are buffered operations and are not scope entries.
-- `ctx.join(handle, opts?)` observes one branch and can time out without cancelling the branch.
+- `ctx.join(handle, opts?)` observes one handle and can time out without cancelling the underlying work; observation timeouts use the separate `join_timeout` status.
 - Externally skipped branch instances are observed by workflow code as successful results; `skipped` is an external query status, not a workflow-facing join outcome.
 - `ctx.match(handles)` is an async iterable keyed by top-level object properties; tuple/array properties add `index`, and map properties add `mapKey`.
 - Handler forms on `ctx.match` are removed; failure recovery happens in normal code.
-- Convenience APIs exist for `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.best`; each takes an explicit scope name as its first argument.
+- Convenience APIs exist for `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.some`; each takes an explicit scope name as its first argument.
+- Convenience APIs are success-oriented. `ctx.all` returns `{ ok: true, result }` preserving the input object shape, or `{ ok: false, error }` with `code: "SomeBranchesFailed"`. `ctx.first` and `ctx.atLeast` return flat keyed success arrays/results, or helper-level `code` failures (`"NoBranchCompleted"` / `"QuorumNotMet"`). `ctx.atMost` and `ctx.some` return flat keyed success arrays and have no failure cases.
 - Branch instances are externally queryable and can report `complete`, `failed`, `running`, `halted`, or `skipped` as appropriate.
 
 ## Affected Areas
@@ -34,4 +35,4 @@ Move structured concurrency to predefined, isolated branch definitions and gener
 
 ## Acceptance Contract
 
-The paired file `refactor/07_branches_and_scopes.ts` verifies branch definition inference, top-level object scope input, tuple/map property entries, named convenience scopes, detached child workflow exclusion, `join` and `match` result shapes, removed inline branch closures, and failure/status unions.
+The paired file `refactor/07_branches_and_scopes.ts` verifies branch definition inference, top-level object scope input, tuple/map property entries, named convenience scopes, flat convenience helper result/error shapes, detached child workflow exclusion, `join` and `match` result shapes, removed inline branch closures, and failure/status unions.

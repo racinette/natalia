@@ -9,6 +9,7 @@
 9. real cron-like workflows. I feel like outside
    - see sketch below.
 10. search result completeness.
+11. do we need a branch timeout?
 
 I guess if I do all of this the public API will be feature complete.
 

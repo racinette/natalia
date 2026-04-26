@@ -389,7 +389,10 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
 
     const individualAll = await ctx.all("IndividualEntryAll", {
       step: ctx.steps.normalize({ orderId: args.orderId }),
-      timedStep: ctx.steps.normalize({ orderId: args.orderId }, { timeout: 5 }),
+      timedStep: ctx.steps.normalize(
+        { orderId: args.orderId },
+        { timeout: 5 },
+      ),
       request: ctx.requests.approval({ orderId: args.orderId }),
       timedRequest: ctx.requests.approval(
         { orderId: args.orderId },
@@ -401,14 +404,8 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
         { timeout: 5 },
       ),
     });
-    type IndividualAllSuccess = Extract<
-      typeof individualAll,
-      { ok: true }
-    >["result"];
-    type IndividualAllError = Extract<
-      typeof individualAll,
-      { ok: false }
-    >["error"];
+    type IndividualAllSuccess = Extract<typeof individualAll, { ok: true }>["result"];
+    type IndividualAllError = Extract<typeof individualAll, { ok: false }>["error"];
     type _IndividualAllSuccess = Assert<
       IsEqual<
         IndividualAllSuccess,
@@ -438,7 +435,10 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
 
     const individualAtLeast = await ctx.atLeast("IndividualEntryAtLeast", 3, {
       step: ctx.steps.normalize({ orderId: args.orderId }),
-      timedStep: ctx.steps.normalize({ orderId: args.orderId }, { timeout: 5 }),
+      timedStep: ctx.steps.normalize(
+        { orderId: args.orderId },
+        { timeout: 5 },
+      ),
       request: ctx.requests.approval({ orderId: args.orderId }),
       timedRequest: ctx.requests.approval(
         { orderId: args.orderId },
@@ -472,7 +472,10 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
 
     const individualSome = await ctx.some("IndividualEntrySome", {
       step: ctx.steps.normalize({ orderId: args.orderId }),
-      timedStep: ctx.steps.normalize({ orderId: args.orderId }, { timeout: 5 }),
+      timedStep: ctx.steps.normalize(
+        { orderId: args.orderId },
+        { timeout: 5 },
+      ),
       request: ctx.requests.approval({ orderId: args.orderId }),
       timedRequest: ctx.requests.approval(
         { orderId: args.orderId },

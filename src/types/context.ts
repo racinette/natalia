@@ -38,8 +38,6 @@ import type {
   ErrorValue,
 } from "./results";
 
-
-
 // =============================================================================
 // FAILURE INFO TYPES
 // =============================================================================
@@ -177,14 +175,13 @@ export type StepBoundary =
 
 type JsonScalarInput = Extract<JsonInput, string | number | boolean | null>;
 
-type SerializedInputFromOutput<T> =
-  T extends Date
-    ? string | number
-    : T extends readonly (infer U)[]
-      ? readonly SerializedInputFromOutput<U>[]
-      : T extends object
-        ? { [K in keyof T]: SerializedInputFromOutput<T[K]> }
-        : Extract<T, JsonInput>;
+type SerializedInputFromOutput<T> = T extends Date
+  ? string | number
+  : T extends readonly (infer U)[]
+    ? readonly SerializedInputFromOutput<U>[]
+    : T extends object
+      ? { [K in keyof T]: SerializedInputFromOutput<T[K]> }
+      : Extract<T, JsonInput>;
 
 type SchemaInvocationInput<TSchema extends StandardSchemaV1> =
   unknown extends StandardSchemaV1.InferInput<TSchema>
@@ -239,10 +236,7 @@ export interface BranchContext<
   readonly errors: ErrorFactories<ExplicitBranchErrorDefinitions<TErrors>>;
 }
 
-export interface StepAccessor<
-  TArgsSchema extends StandardSchemaV1,
-  TResult,
-> {
+export interface StepAccessor<TArgsSchema extends StandardSchemaV1, TResult> {
   (args: SchemaInvocationInput<TArgsSchema>): StepEntry<TResult>;
   (
     args: SchemaInvocationInput<TArgsSchema>,
@@ -262,7 +256,7 @@ export interface JoinOptions {
   readonly timeout: StepBoundary;
 }
 
-export type JoinTimeoutResult = { ok: false; status: "timeout" };
+export type JoinTimeoutResult = { ok: false; status: "join_timeout" };
 
 export type JoinResult<H> = H extends AwaitableEntry<infer T> ? T : never;
 
@@ -313,10 +307,7 @@ export interface CompensationResolver {
   readonly [compensationResolverBrand]: true;
 }
 
-export interface DurableHandle<
-  T,
-  TRoot extends RootScope = RootScope,
-> {
+export interface DurableHandle<T, TRoot extends RootScope = RootScope> {
   /** @internal Brand discriminator — do not access at runtime. */
   readonly [durableHandleBrand]: true;
   /** @internal Root context discriminator — do not access at runtime. */
@@ -487,9 +478,7 @@ export interface ChannelHandle<T> extends AsyncIterable<T> {
    * Use this when you need to distinguish a timed-out poll from a real `undefined`
    * message value.
    */
-  receiveNowait<TDefault>(
-    defaultValue: TDefault,
-  ): AtomicResult<T | TDefault>;
+  receiveNowait<TDefault>(defaultValue: TDefault): AtomicResult<T | TDefault>;
 
   /**
    * Async iteration over channel messages.
@@ -663,27 +652,26 @@ type ScopeEntryPropertyValidation<E> =
         ? []
         : InvalidScopeEntryStructure
       : E extends ReadonlyMap<any, infer V>
-      ? V extends AwaitableEntry<any>
-        ? []
-        : InvalidScopeEntryStructure
-      : InvalidScopeEntryStructure;
-
-type ScopeEntryValidation<E> =
-  E extends (...args: any[]) => any
-    ? InvalidScopeEntryStructure
-    : E extends AwaitableEntry<any> | readonly unknown[] | ReadonlyMap<any, any>
-      ? InvalidScopeEntryStructure
-      : E extends object
-        ? {
-            [K in keyof E]: ScopeEntryPropertyValidation<E[K]>;
-          }[keyof E] extends []
+        ? V extends AwaitableEntry<any>
           ? []
           : InvalidScopeEntryStructure
         : InvalidScopeEntryStructure;
 
+type ScopeEntryValidation<E> = E extends (...args: any[]) => any
+  ? InvalidScopeEntryStructure
+  : E extends AwaitableEntry<any> | readonly unknown[] | ReadonlyMap<any, any>
+    ? InvalidScopeEntryStructure
+    : E extends object
+      ? {
+          [K in keyof E]: ScopeEntryPropertyValidation<E[K]>;
+        }[keyof E] extends []
+        ? []
+        : InvalidScopeEntryStructure
+      : InvalidScopeEntryStructure;
+
 type TupleIndexKeys<T extends readonly unknown[]> = Exclude<
   keyof T,
-  keyof readonly unknown[]
+  keyof (readonly unknown[])
 >;
 
 type TupleIndex<K> = K extends `${infer N extends number}` ? N : never;
@@ -734,12 +722,13 @@ export type DefinedBranchResult<T, TErrors extends BranchErrorMode> =
   | { ok: true; result: T }
   | { ok: false; status: "failed"; error: unknown };
 
-type EntrySuccessFromValue<T> =
-  [Extract<T, { ok: true; result: any }>] extends [never]
-    ? T
-    : Extract<T, { ok: true; result: any }> extends { ok: true; result: infer R }
-      ? R
-      : never;
+type EntrySuccessFromValue<T> = [
+  Extract<T, { ok: true; result: any }>,
+] extends [never]
+  ? T
+  : Extract<T, { ok: true; result: any }> extends { ok: true; result: infer R }
+    ? R
+    : never;
 
 export type ScopeSuccessResults<E> =
   E extends AwaitableEntry<infer T>
@@ -752,55 +741,141 @@ export type ScopeSuccessResults<E> =
           ? { [K in keyof E]: ScopeSuccessResults<E[K]> }
           : never;
 
-export type PartialScopeSuccessResults<E> =
-  E extends AwaitableEntry<infer T>
-    ? EntrySuccessFromValue<T>
-    : E extends readonly unknown[]
-      ? ReadonlyArray<
-          E extends readonly (infer V)[] ? PartialScopeSuccessResults<V> : never
-        >
-      : E extends ReadonlyMap<infer K, infer V>
-        ? ReadonlyMap<K, PartialScopeSuccessResults<V>>
-        : E extends object
-          ? { readonly [K in keyof E]?: PartialScopeSuccessResults<E[K]> }
-          : never;
+type EntryFailureFromValue<T> = Extract<T, { ok: false }>;
 
-type InferBranchArgsInput<B> = B extends BranchDefinition<
-  infer TArgs,
-  any,
-  any,
-  any,
-  any
->
-  ? SchemaInvocationInput<TArgs>
+type TupleSuccessUnion<E extends readonly unknown[]> = {
+  [K in TupleIndexKeys<E>]: ScopeSuccessResults<E[K]>;
+}[TupleIndexKeys<E>];
+
+type TupleKeyedSuccess<
+  TKey extends PropertyKey,
+  E extends readonly unknown[],
+> = {
+  [K in TupleIndexKeys<E>]: {
+    key: TKey;
+    index: TupleIndex<K>;
+    value: ScopeSuccessResults<E[K]>;
+  };
+}[TupleIndexKeys<E>];
+
+type TupleKeyedFailure<
+  TKey extends PropertyKey,
+  E extends readonly unknown[],
+> = {
+  [K in TupleIndexKeys<E>]: E[K] extends AwaitableEntry<infer T>
+    ? EntryFailureFromValue<T> extends never
+      ? never
+      : { key: TKey; index: TupleIndex<K>; error: EntryFailureFromValue<T> }
+    : never;
+}[TupleIndexKeys<E>];
+
+type KeyedSuccessForProperty<TKey extends PropertyKey, TValue> =
+  TValue extends AwaitableEntry<any>
+    ? { key: TKey; value: ScopeSuccessResults<TValue> }
+    : TValue extends readonly unknown[]
+      ? number extends TValue["length"]
+        ? {
+            key: TKey;
+            index: number;
+            value: TValue extends readonly (infer V)[]
+              ? ScopeSuccessResults<V>
+              : never;
+          }
+        : TupleKeyedSuccess<TKey, TValue>
+      : TValue extends ReadonlyMap<infer K extends PropertyKey, infer V>
+        ? { key: TKey; mapKey: K; value: ScopeSuccessResults<V> }
+        : never;
+
+type KeyedFailureForProperty<TKey extends PropertyKey, TValue> =
+  TValue extends AwaitableEntry<infer T>
+    ? EntryFailureFromValue<T> extends never
+      ? never
+      : { key: TKey; error: EntryFailureFromValue<T> }
+    : TValue extends readonly unknown[]
+      ? TupleKeyedFailure<TKey, TValue> extends never
+        ? never
+        : number extends TValue["length"]
+          ? {
+              key: TKey;
+              index: number;
+              error: TValue extends readonly (infer V)[]
+                ? V extends AwaitableEntry<infer T>
+                  ? EntryFailureFromValue<T>
+                  : never
+                : never;
+            }
+          : TupleKeyedFailure<TKey, TValue>
+      : TValue extends ReadonlyMap<infer K extends PropertyKey, infer V>
+        ? V extends AwaitableEntry<infer T>
+          ? EntryFailureFromValue<T> extends never
+            ? never
+            : { key: TKey; mapKey: K; error: EntryFailureFromValue<T> }
+          : never
+        : never;
+
+export type KeyedSuccess<E> = E extends object
+  ? {
+      [K in keyof E & PropertyKey]: KeyedSuccessForProperty<K, E[K]>;
+    }[keyof E & PropertyKey]
   : never;
 
-type InferBranchResult<B> = B extends BranchDefinition<
-  any,
-  infer TResult,
-  any,
-  any,
-  any
->
-  ? StandardSchemaV1.InferOutput<TResult>
+export type KeyedFailure<E> = E extends object
+  ? {
+      [K in keyof E & PropertyKey]: KeyedFailureForProperty<K, E[K]>;
+    }[keyof E & PropertyKey]
   : never;
 
-type InferBranchErrors<B> = B extends BranchDefinition<
-  any,
-  any,
-  any,
-  any,
-  infer TErrors
->
-  ? TErrors
-  : Record<string, never>;
+export interface SomeBranchesFailed<E> {
+  readonly code: "SomeBranchesFailed";
+  readonly message: string;
+  readonly details: {
+    readonly failures: KeyedFailure<E>[];
+    readonly completed: KeyedSuccess<E>[];
+  };
+}
+
+export interface NoBranchCompleted<E> {
+  readonly code: "NoBranchCompleted";
+  readonly message: string;
+  readonly details: {
+    readonly failures: KeyedFailure<E>[];
+  };
+}
+
+export interface QuorumNotMet<E> {
+  readonly code: "QuorumNotMet";
+  readonly message: string;
+  readonly details: {
+    readonly required: number;
+    readonly got: number;
+    readonly failures: KeyedFailure<E>[];
+    readonly completed: KeyedSuccess<E>[];
+  };
+}
+
+type InferBranchArgsInput<B> =
+  B extends BranchDefinition<infer TArgs, any, any, any, any>
+    ? SchemaInvocationInput<TArgs>
+    : never;
+
+type InferBranchResult<B> =
+  B extends BranchDefinition<any, infer TResult, any, any, any>
+    ? StandardSchemaV1.InferOutput<TResult>
+    : never;
+
+type InferBranchErrors<B> =
+  B extends BranchDefinition<any, any, any, any, infer TErrors>
+    ? TErrors
+    : Record<string, never>;
 
 export interface BranchAccessor<
   B extends BranchDefinition<any, any, any, any, any>,
   TScopePath extends ScopePath,
   TRoot extends RootScope,
 > {
-  (args: InferBranchArgsInput<B>): BranchEntry<
+  (
+    args: InferBranchArgsInput<B>,
+  ): BranchEntry<
     DefinedBranchResult<InferBranchResult<B>, InferBranchErrors<B>>,
     TScopePath,
     TRoot
@@ -866,7 +941,7 @@ export type MatchEvents<E> = E extends object
     }[keyof E & PropertyKey]
   : never;
 
-export type FirstResult<E> = MatchEvents<E>;
+export type FirstResult<E> = KeyedSuccess<E>;
 
 // =============================================================================
 // SELECT / LISTEN — HANDLE TYPES
@@ -925,9 +1000,7 @@ type RestrictSelectableHandleToPath<H, TCurrentPath extends ScopePath> =
  */
 export type HandleSelectEvent<K extends string, H> =
   H extends BranchEntry<infer T>
-    ?
-        | { key: K; status: "complete"; data: T }
-        | { key: K; status: "failed" }
+    ? { key: K; status: "complete"; data: T } | { key: K; status: "failed" }
     : H extends ChannelHandle<infer T>
       ? { key: K; data: T }
       : H extends ChannelReceiveCall<infer T>
@@ -1326,9 +1399,7 @@ export interface ForeignWorkflowHandle<
    */
   readonly channels: {
     [K in keyof TChannels]: {
-      send(
-        data: StandardSchemaV1.InferInput<TChannels[K]>,
-      ): AtomicResult<void>;
+      send(data: StandardSchemaV1.InferInput<TChannels[K]>): AtomicResult<void>;
     };
   };
 }
@@ -1485,8 +1556,7 @@ export interface ChildWorkflowCallOptions {
   readonly retry?: RetryPolicyOptions;
 }
 
-export interface ChildWorkflowTimeoutCallOptions
-  extends ChildWorkflowCallOptions {
+export interface ChildWorkflowTimeoutCallOptions extends ChildWorkflowCallOptions {
   readonly timeout: StepBoundary;
 }
 
@@ -1825,7 +1895,9 @@ export interface CompensationContext<
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
   TScopePath extends ScopePath = [],
-> extends BaseContext<TState, TChannels, TStreams, TEvents, TPatches, TRng>,
+>
+  extends
+    BaseContext<TState, TChannels, TStreams, TEvents, TPatches, TRng>,
     CompensationResolver {
   /**
    * Steps for durable operations.
@@ -1924,11 +1996,7 @@ export interface CompensationContext<
    *
    * Use `.failure(cb)` to handle scope failures after unwinding.
    */
-  scope<
-    Name extends string,
-    E,
-    R,
-  >(
+  scope<Name extends string, E, R>(
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     callback: (
@@ -1964,7 +2032,10 @@ export interface CompensationContext<
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<ScopeSuccessResults<E>>;
+  ): AwaitableEntry<
+    | { ok: true; result: ScopeSuccessResults<E> }
+    | { ok: false; error: SomeBranchesFailed<E> }
+  >;
 
   /**
    * Run all entries concurrently and return the first to complete.
@@ -1979,27 +2050,33 @@ export interface CompensationContext<
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<FirstResult<E>>;
+  ): AwaitableEntry<
+    | { ok: true; result: FirstResult<E> }
+    | { ok: false; error: NoBranchCompleted<E> }
+  >;
 
   atLeast<Name extends string, E>(
     name: ScopeNameArg<TScopePath, Name>,
     count: number,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<ScopeSuccessResults<E>>;
+  ): AwaitableEntry<
+    | { ok: true; result: KeyedSuccess<E>[] }
+    | { ok: false; error: QuorumNotMet<E> }
+  >;
 
   atMost<Name extends string, E>(
     name: ScopeNameArg<TScopePath, Name>,
     count: number,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<PartialScopeSuccessResults<E>>;
+  ): AwaitableEntry<KeyedSuccess<E>[]>;
 
-  best<Name extends string, E>(
+  some<Name extends string, E>(
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<PartialScopeSuccessResults<E>>;
+  ): AwaitableEntry<KeyedSuccess<E>[]>;
 
   // ---------------------------------------------------------------------------
   // listen — channel-only multiplexed waiting (all contexts)
@@ -2093,7 +2170,9 @@ export interface WorkflowContext<
   TScopePath extends ScopePath = [],
   TErrors extends ErrorDefinitions = Record<string, never>,
   TBranches extends BranchDefinitions = Record<string, never>,
-> extends BaseContext<TState, TChannels, TStreams, TEvents, TPatches, TRng>,
+>
+  extends
+    BaseContext<TState, TChannels, TStreams, TEvents, TPatches, TRng>,
     ExecutionResolver {
   /**
    * Steps for durable operations.
@@ -2161,7 +2240,11 @@ export interface WorkflowContext<
 
   /** Predefined workflow branch accessors. */
   readonly branches: {
-    [K in keyof TBranches]: BranchAccessor<TBranches[K], TScopePath, ExecutionRoot>;
+    [K in keyof TBranches]: BranchAccessor<
+      TBranches[K],
+      TScopePath,
+      ExecutionRoot
+    >;
   };
 
   // ---------------------------------------------------------------------------
@@ -2222,11 +2305,7 @@ export interface WorkflowContext<
    *
    * Use `.failure(cb)` to handle scope failures after unwinding.
    */
-  scope<
-    Name extends string,
-    E,
-    R,
-  >(
+  scope<Name extends string, E, R>(
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     callback: (
@@ -2262,7 +2341,10 @@ export interface WorkflowContext<
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<ScopeSuccessResults<E>>;
+  ): AwaitableEntry<
+    | { ok: true; result: ScopeSuccessResults<E> }
+    | { ok: false; error: SomeBranchesFailed<E> }
+  >;
 
   /**
    * Run all entries concurrently and return the first to complete.
@@ -2277,27 +2359,33 @@ export interface WorkflowContext<
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<FirstResult<E>>;
+  ): AwaitableEntry<
+    | { ok: true; result: FirstResult<E> }
+    | { ok: false; error: NoBranchCompleted<E> }
+  >;
 
   atLeast<Name extends string, E>(
     name: ScopeNameArg<TScopePath, Name>,
     count: number,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<ScopeSuccessResults<E>>;
+  ): AwaitableEntry<
+    | { ok: true; result: KeyedSuccess<E>[] }
+    | { ok: false; error: QuorumNotMet<E> }
+  >;
 
   atMost<Name extends string, E>(
     name: ScopeNameArg<TScopePath, Name>,
     count: number,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<PartialScopeSuccessResults<E>>;
+  ): AwaitableEntry<KeyedSuccess<E>[]>;
 
-  best<Name extends string, E>(
+  some<Name extends string, E>(
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<PartialScopeSuccessResults<E>>;
+  ): AwaitableEntry<KeyedSuccess<E>[]>;
 
   // ---------------------------------------------------------------------------
   // listen — channel-only multiplexed waiting (all contexts)
@@ -2369,24 +2457,26 @@ export interface WorkflowConcurrencyContext<
   TScopePath extends ScopePath = [],
   TErrors extends ErrorDefinitions = Record<string, never>,
   TBranches extends BranchDefinitions = Record<string, never>,
-> extends Omit<
-  WorkflowContext<
-    TState,
-    TChannels,
-    TStreams,
-    TEvents,
-    TSteps,
-    TRequests,
-    TChildWorkflows,
-    TForeignWorkflows,
-    TPatches,
-    TRng,
-    TScopePath,
-    TErrors,
-    TBranches
-  >,
-  "scope" | "listen" | "join"
->,
+>
+  extends
+    Omit<
+      WorkflowContext<
+        TState,
+        TChannels,
+        TStreams,
+        TEvents,
+        TSteps,
+        TRequests,
+        TChildWorkflows,
+        TForeignWorkflows,
+        TPatches,
+        TRng,
+        TScopePath,
+        TErrors,
+        TBranches
+      >,
+      "scope" | "listen" | "join"
+    >,
     ExecutionResolver {
   /**
    * Resolve a branch handle created in this scope or an ancestor scope.
@@ -2407,11 +2497,7 @@ export interface WorkflowConcurrencyContext<
     ..._check: IsJoinableByPath<H, TScopePath>
   ): Promise<JoinResult<H> | JoinTimeoutResult>;
 
-  scope<
-    Name extends string,
-    E,
-    R,
-  >(
+  scope<Name extends string, E, R>(
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     callback: (
@@ -2447,7 +2533,10 @@ export interface WorkflowConcurrencyContext<
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<ScopeSuccessResults<E>>;
+  ): AwaitableEntry<
+    | { ok: true; result: ScopeSuccessResults<E> }
+    | { ok: false; error: SomeBranchesFailed<E> }
+  >;
 
   /**
    * Run all entries concurrently and return the first to complete.
@@ -2461,27 +2550,33 @@ export interface WorkflowConcurrencyContext<
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<FirstResult<E>>;
+  ): AwaitableEntry<
+    | { ok: true; result: FirstResult<E> }
+    | { ok: false; error: NoBranchCompleted<E> }
+  >;
 
   atLeast<Name extends string, E>(
     name: ScopeNameArg<TScopePath, Name>,
     count: number,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<ScopeSuccessResults<E>>;
+  ): AwaitableEntry<
+    | { ok: true; result: KeyedSuccess<E>[] }
+    | { ok: false; error: QuorumNotMet<E> }
+  >;
 
   atMost<Name extends string, E>(
     name: ScopeNameArg<TScopePath, Name>,
     count: number,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<PartialScopeSuccessResults<E>>;
+  ): AwaitableEntry<KeyedSuccess<E>[]>;
 
-  best<Name extends string, E>(
+  some<Name extends string, E>(
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<PartialScopeSuccessResults<E>>;
+  ): AwaitableEntry<KeyedSuccess<E>[]>;
 
   /**
    * Create a listener for concurrent channel waiting.
@@ -2530,22 +2625,24 @@ export interface CompensationConcurrencyContext<
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
   TScopePath extends ScopePath = [],
-> extends Omit<
-  CompensationContext<
-    TState,
-    TChannels,
-    TStreams,
-    TEvents,
-    TSteps,
-    TRequests,
-    TChildWorkflows,
-    TForeignWorkflows,
-    TPatches,
-    TRng,
-    TScopePath
-  >,
-  "scope" | "listen" | "join"
->,
+>
+  extends
+    Omit<
+      CompensationContext<
+        TState,
+        TChannels,
+        TStreams,
+        TEvents,
+        TSteps,
+        TRequests,
+        TChildWorkflows,
+        TForeignWorkflows,
+        TPatches,
+        TRng,
+        TScopePath
+      >,
+      "scope" | "listen" | "join"
+    >,
     CompensationResolver {
   /**
    * Resolve a branch handle created in this scope or an ancestor scope.
@@ -2565,11 +2662,7 @@ export interface CompensationConcurrencyContext<
     ..._check: IsJoinableByPath<H, TScopePath>
   ): Promise<JoinResult<H> | JoinTimeoutResult>;
 
-  scope<
-    Name extends string,
-    E,
-    R,
-  >(
+  scope<Name extends string, E, R>(
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     callback: (
@@ -2605,7 +2698,10 @@ export interface CompensationConcurrencyContext<
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<ScopeSuccessResults<E>>;
+  ): AwaitableEntry<
+    | { ok: true; result: ScopeSuccessResults<E> }
+    | { ok: false; error: SomeBranchesFailed<E> }
+  >;
 
   /**
    * Run all entries concurrently and return the first to complete.
@@ -2619,27 +2715,33 @@ export interface CompensationConcurrencyContext<
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<FirstResult<E>>;
+  ): AwaitableEntry<
+    | { ok: true; result: FirstResult<E> }
+    | { ok: false; error: NoBranchCompleted<E> }
+  >;
 
   atLeast<Name extends string, E>(
     name: ScopeNameArg<TScopePath, Name>,
     count: number,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<ScopeSuccessResults<E>>;
+  ): AwaitableEntry<
+    | { ok: true; result: KeyedSuccess<E>[] }
+    | { ok: false; error: QuorumNotMet<E> }
+  >;
 
   atMost<Name extends string, E>(
     name: ScopeNameArg<TScopePath, Name>,
     count: number,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<PartialScopeSuccessResults<E>>;
+  ): AwaitableEntry<KeyedSuccess<E>[]>;
 
-  best<Name extends string, E>(
+  some<Name extends string, E>(
     name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
-  ): AwaitableEntry<PartialScopeSuccessResults<E>>;
+  ): AwaitableEntry<KeyedSuccess<E>[]>;
 
   /**
    * Create a listener for concurrent channel waiting.
