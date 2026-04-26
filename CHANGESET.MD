@@ -1,17 +1,14 @@
 ## Main points
 
 3. OTel integration. nuff said, needs exploratory analysis first.
-7. client vs engine: different connection sources. does client accept a pool in the constructor? or does every client method accept a pool? how to make it generic over the type of the backend?
-8. a way to pause a workflow.
-10. forking a workflow from a specific place in time. essentially this forces us to introduce an api to introspect a workflow and its steps as well as scopes. Why? because forking doesn't really work that nicely in case of concurrent branches - and it's an open question of how this is supposed to really work. 
-13. client should have the ability to rollback any workflow. this means that they should be able to send a sigint / sigterm, in case the workflow is alive and wait for the workflow to compensate. OR if the workflow is complete, they should be able to revert its effects nonetheless by simply forcing the rollback to happen.
-18. we need a new primitive, a "stream aggregator" - i dunno what to call it. Basically it sits atop of some stream and aggregates the incoming messages into a "denormalized" json. It's an amalgamation of a consumer and a workflow with the workflow creating the initial state (if needed) and the consumer picking up the new pieces of data to modify on top of the thing. It should be able to start from some offset (a callback returning an offset after the consumer rights have been acquired). What would also be interesting is adding these kinds of stream aggregators dynamically. Maybe this is semantically close to an infinitely running workflow that updates an attribute. This could solve the entire issue. But we'd need a continue-as-new if we let it run infinitely and prevent it from growing infinitely large. However, this would only be possible if we let workflows consume the topics, which is a questionable capability, since it's globally stateful. workflow-as-an-object seems like a concept similar to distributed objects in restate. for now I cannot find a compelling use-case. however, the streams are effectively a way to collect some event stream into a single logical unit, so maybe this is actually what really is needed.
-19. real cron-like workflows. I feel like outside 
-    - see sketch below.
-20. search result completeness.
-21. force the compensation context to explicitly handle `.failure` and `.timeout`. This HAS to be forced before a `.resolve` can happen. Currently we leak errors into workflow compensation logic: this is really bad design, as we can force the dev to follow the API strictly by encoding the constraint into the types themselves.
-22. add timeout to .join
-23. remove terminated from in-workflow results of a childWorkflow. make attached children interminable. if they were terminable, this would become a part of business logic - and it never should. termination isn't something business logic expects to happen: it's stupid business logic, if it does.
+4. client vs engine: different connection sources. does client accept a pool in the constructor? or does every client method accept a pool? how to make it generic over the type of the backend?
+5. a way to pause a workflow.
+6. forking a workflow from a specific place in time. essentially this forces us to introduce an api to introspect a workflow and its steps as well as scopes. Why? because forking doesn't really work that nicely in case of concurrent branches - and it's an open question of how this is supposed to really work.
+7. client should have the ability to rollback any workflow. this means that they should be able to send a sigint / sigterm, in case the workflow is alive and wait for the workflow to compensate. OR if the workflow is complete, they should be able to revert its effects nonetheless by simply forcing the rollback to happen.
+8. we need a new primitive, a "stream aggregator" - i dunno what to call it. Basically it sits atop of some stream and aggregates the incoming messages into a "denormalized" json. It's an amalgamation of a consumer and a workflow with the workflow creating the initial state (if needed) and the consumer picking up the new pieces of data to modify on top of the thing. It should be able to start from some offset (a callback returning an offset after the consumer rights have been acquired). What would also be interesting is adding these kinds of stream aggregators dynamically. Maybe this is semantically close to an infinitely running workflow that updates an attribute. This could solve the entire issue. But we'd need a continue-as-new if we let it run infinitely and prevent it from growing infinitely large. However, this would only be possible if we let workflows consume the topics, which is a questionable capability, since it's globally stateful. workflow-as-an-object seems like a concept similar to distributed objects in restate. for now I cannot find a compelling use-case. however, the streams are effectively a way to collect some event stream into a single logical unit, so maybe this is actually what really is needed.
+9. real cron-like workflows. I feel like outside
+   - see sketch below.
+10. search result completeness.
 
 I guess if I do all of this the public API will be feature complete.
 
@@ -48,7 +45,13 @@ interface WorkflowSearchItem<TMeta = unknown> {
   } | null;
 
   /** Whether compensation has run / is running / hasn't started. */
-  readonly compensationStatus: "pending" | "running" | "complete" | "failed" | "not_applicable" | null;
+  readonly compensationStatus:
+    | "pending"
+    | "running"
+    | "complete"
+    | "failed"
+    | "not_applicable"
+    | null;
 
   /** Deadline if set. */
   readonly deadlineAt: Date | null;
@@ -56,6 +59,7 @@ interface WorkflowSearchItem<TMeta = unknown> {
 ```
 
 Key decisions:
+
 - Terminal timestamps are mutually exclusive (one is set based on status), but all are present for uniform access.
 - `error` uses the existing `WorkflowFailureInfo` discriminated union — no new types.
 - `haltInfo` is minimal: which step halted and the captured error. Full halt inspection (stacktrace, step args) requires hitting the workflow handle.
@@ -66,13 +70,11 @@ Key decisions:
 
 Default sort should be `createdAt DESC` (newest first). Sortable fields: `createdAt`, `completedAt`, `status`. Custom sort via the existing `SearchQuery` builder.
 
-
-
 ---
 
 ## 19. Cron workflow starts (external scheduling)
 
-`ctx.schedule()` handles recurring work *within* a running workflow. But the common need is "start a new instance of `OrderCleanup` every day at midnight" — recurring workflow *creation* at the engine level.
+`ctx.schedule()` handles recurring work _within_ a running workflow. But the common need is "start a new instance of `OrderCleanup` every day at midnight" — recurring workflow _creation_ at the engine level.
 
 ### Proposed API
 
@@ -81,10 +83,10 @@ Default sort should be `createdAt DESC` (newest first). Sortable fields: `create
 const scheduleHandle = await client.schedules.create({
   name: "nightly-cleanup",
   workflow: orderCleanup,
-  expression: "0 0 * * *",       // standard cron
-  timezone: "America/New_York",   // optional, default UTC
-  args: { daysToKeep: 30 },       // workflow args (InferInput)
-  metadata: { team: "ops" },      // optional metadata
+  expression: "0 0 * * *", // standard cron
+  timezone: "America/New_York", // optional, default UTC
+  args: { daysToKeep: 30 }, // workflow args (InferInput)
+  metadata: { team: "ops" }, // optional metadata
   // idempotencyKey is auto-derived: `schedule:{name}:{tick_timestamp}`
   // guarantees exactly one workflow per scheduled tick
 });

@@ -1006,7 +1006,7 @@ const result = await ctx.requests.refundCharge(
 
 ## 11. The Builder Chain Disappears — Overview
 
-With `.compensate(...)` removed (§2), `ScopeCall.failure(cb)` removed (§15), and context isolation eliminating the need for `.resolve(ctx)` as a VEL proof, the builder chain has no remaining reason to exist. §16 develops the full replacement: call-time options with discriminated union returns. The entire `DurableHandle` / `AtomicResult` / `StepCall` / `WorkflowCall` / `RequestCall` / `ScopeCall` / `FirstCall` type hierarchy is removed.
+With `.compensate(...)` removed (§2), `ScopeCall.failure(cb)` removed (§15), and context isolation eliminating the need for `.resolve(ctx)` as a VEL proof, the builder chain has no remaining reason to exist. §16 develops the full replacement: call-time options with discriminated union returns. The old `DurableHandle` / `AtomicResult` / `StepCall` / `WorkflowCall` / `RequestCall` / `ScopeCall` / `FirstCall` type hierarchy is removed; operation calls now return lightweight awaitable entries that can also be started by a scope.
 
 ### Before
 
@@ -1050,15 +1050,16 @@ No builder. No `.resolve()`. No callbacks. See §16 for the full design.
 
 | Surface | Before (`NEW_PRIMITIVES.MD` today) | After |
 | --- | --- | --- |
-| `StepCall` interface | Builder chain: `.retry()`, `.timeout(boundary, cb)`, `.compensate(cb)`, `.complete(cb)`, `.resolve(ctx)` | Removed. `ctx.steps.X(args, opts?)` returns a `Promise` directly |
-| `WorkflowCall` interface | Builder chain: `.retry()`, `.timeout(boundary, cb)`, `.failure(cb)` (mandatory), `.compensate(cb)`, `.complete(cb)`, `.resolve(ctx)` | Removed. `ctx.childWorkflows.X(startOpts, opts?)` returns a `Promise` directly |
-| `RequestCall` interface | Builder chain: `.priority(n)`, `.timeout(boundary, cb)`, `.compensate(cb)`, `.complete(cb)`, `.resolve(ctx)` | Removed. `ctx.requests.X(payload, opts?)` returns a `Promise` directly |
-| `ScopeCall` / `FirstCall` | `.failure(cb)`, `.resolve(ctx)` | Removed. `ctx.scope(...)`, `ctx.all(...)`, `ctx.first(...)` return `Promise` directly |
+| `StepCall` interface | Builder chain: `.retry()`, `.timeout(boundary, cb)`, `.compensate(cb)`, `.complete(cb)`, `.resolve(ctx)` | Removed. `ctx.steps.X(args, opts?)` returns an awaitable step entry |
+| `WorkflowCall` interface | Builder chain: `.retry()`, `.timeout(boundary, cb)`, `.failure(cb)` (mandatory), `.compensate(cb)`, `.complete(cb)`, `.resolve(ctx)` | Removed. Attached `ctx.childWorkflows.X(startOpts, opts?)` returns an awaitable child-workflow entry |
+| `RequestCall` interface | Builder chain: `.priority(n)`, `.timeout(boundary, cb)`, `.compensate(cb)`, `.complete(cb)`, `.resolve(ctx)` | Removed. `ctx.requests.X(payload, opts?)` returns an awaitable request entry |
+| `ScopeCall` / `FirstCall` | `.failure(cb)`, `.resolve(ctx)` | Removed. `ctx.scope(...)`, `ctx.all(...)`, `ctx.first(...)` are directly awaitable |
 | `DurableHandle<T, TRoot>` | Base type for all call handles, phantom-branded with VEL marker | Removed entirely |
-| `AtomicResult<T>` | Restricted awaitable (no `.catch`/`.finally`) returned by `.resolve()` | Removed. Calls return standard `Promise<T>` |
+| `AtomicResult<T>` | Restricted awaitable (no `.catch`/`.finally`) returned by `.resolve()` | Removed. Calls return awaitable entries with no builder surface |
 | `.resolve(ctx)` | Terminal method, required on every Tier 1 operation | Removed. The `await` is the terminal |
 | `.timeout(boundary, cb)` | Callback receives `(ctx, info)`, can do durable recovery | Removed. Timeout surfaces as `{ ok: false; status: "timeout" }` in the return union; recovery is sequential code |
 | `.failure(cb)` on `WorkflowCall` | Mandatory callback receives `(ctx, info)`, handles child workflow failure | Removed. Failure surfaces as `{ ok: false; status: "failed"; error }` in the return union |
+| Attached child workflow `terminated` result | Parent workflow can observe `{ ok: false; status: "terminated" }` for an attached child, implying the child can be terminated separately from the parent | Removed. Attached children share the parent's termination fate and are not separately terminable business objects. Only root workflows and detached children expose termination through external handles |
 | `.complete(cb)` | Pure transform `(data) => R` | Removed. Developer destructures the result directly |
 | `.retry(policy)` | Builder method | Moved to `{ retry: policy }` in options object |
 | `.priority(n)` | Builder method on `RequestCall` | Moved to `{ priority: n }` in options object |
@@ -1075,7 +1076,7 @@ No builder. No `.resolve()`. No callbacks. See §16 for the full design.
 | `branchErrors` | Per-branch `errors:` field on inline object form, `ctx.branchErrors.X(...)` | Replaced. Branch `errors` declared at definition time, accessed via `ctx.errors.X(...)` inside the branch |
 | Two error namespaces | `ctx.terminalErrors` (workflow-wide) + `ctx.branchErrors` (branch-local) | Single `ctx.errors` at every level, contents determined by declaration site |
 | `ScopeCall.failure(cb)` | Handler for scope-body failures | Removed. Scope body follows the parent's error regime |
-| `ScopeEntry` type | `(ctx) => Promise<T>` — inline callback | `BranchEntry<T, TErrors>` — opaque wrapper from `ctx.branches.X(args)` |
+| `ScopeEntry` type | `(ctx) => Promise<T>` — inline callback | Generalized unstarted entry from `ctx.branches.X(args)`, `ctx.steps.X(args)`, `ctx.requests.X(payload)`, or attached `ctx.childWorkflows.X(startOpts)` |
 | Branch observability | None — branches are opaque closures | `findUnique` / `findMany` / `skip` / `status` / `result` on workflow handle |
 
 `defineWorkflow` simplifies sharply:
@@ -1132,7 +1133,7 @@ The "unified tree model" framing of the current Part 8 needs revisiting: under t
 
 Implementation details below this level — exact column lists, indexes, foreign keys, retention semantics — are provisional and to be designed alongside the public API.
 
-## 15. Branch Isolation
+## 15. Branch Isolation and Scope Entries
 
 The compensation reformation (§1–§13) eliminated the closure problem for compensation. Branches are the last remaining primitive where inline closures couple semantically independent code paths to one another.
 
@@ -1338,55 +1339,179 @@ A branch's `execute` callback receives a context with: `steps`, `requests`, `que
 
 A branch can spawn nested scopes with other branches (`ctx.scope("inner", { b: ctx.branches.bar(...) }, ...)`). The inner branch gets *its* own `errors` from *its* own definition. Nesting does not change any branch's error contract.
 
-**4. `ctx.branches.foo(args)` returns a typed entry.**
+**4. Primitive calls return typed, unstarted entries.**
 
-The invocation serializes the args and returns an opaque entry carrying the branch definition, the serialized args, and the type information for the result and error mode:
+`ctx.branches.foo(args)` is one member of a broader family: branches, steps, requests, and attached child workflows all produce typed entries. The entry carries the definition identity, serialized input, call options, result type, and failure contract. It does not start merely because it was constructed.
 
 ```typescript
-// The generics carry:
-// - T: the result type (InferOutput<TResult>)
-// - TErrors: the error contract ("none" | "any" | { Name: schema })
-// The scope and convenience methods extract these to produce correctly typed handles.
-type BranchEntry<T, TErrors> = /* opaque — engine internal */;
+type BranchEntry<T, TErrors> = /* opaque branch entry */;
+type StepEntry<T> = /* opaque step entry */;
+type RequestEntry<T> = /* opaque request entry */;
+type AttachedChildWorkflowEntry<T, TErrors> = /* opaque child-workflow entry */;
+
+type ConcurrentEntry =
+  | BranchEntry<any, any>
+  | StepEntry<any>
+  | RequestEntry<any>
+  | AttachedChildWorkflowEntry<any, any>;
 ```
 
-The scope accepts `Record<string, BranchEntry<any, any>>` as entries. The same branch definition can be invoked multiple times with different args in the same scope:
+Direct `await` remains the simple path: `await ctx.steps.bookFlight(args)` starts and observes that entry immediately. A scope starts the same kind of entry under structural-concurrency ownership and gives the scope body handles for later consumption.
+
+**5. Scope inputs preserve structure.**
+
+The scope input is still an object at the top level, but each property can be a single entry, an array/tuple of entries, or a `Map` / `ReadonlyMap` of entries. The callback receives a structural copy where every leaf entry has become the corresponding handle:
 
 ```typescript
 await ctx.scope("parallel-lookups", {
-  paris: ctx.branches.hotelBooking({ city: "Paris", guestName: "Alice" }),
-  rome:  ctx.branches.hotelBooking({ city: "Rome",  guestName: "Alice" }),
-  tokyo: ctx.branches.hotelBooking({ city: "Tokyo", guestName: "Alice" }),
-}, async (ctx, { paris, rome, tokyo }) => {
-  // Three independent instances of the same branch definition.
+  array: [
+    ctx.steps.quoteHotel({ city: "Paris" }),
+    ctx.steps.quoteHotel({ city: "Rome" }),
+  ],
+  map: new Map([
+    ["bar1", ctx.childWorkflows.bar({ args: { n: 1 } })],
+    ["bar2", ctx.childWorkflows.bar({ args: { n: 2 } })],
+  ]),
+  baz1: ctx.branches.baz({ n: 1 }),
+  baz2: ctx.branches.baz({ n: 2 }),
+}, async (ctx, { array, map, baz1, baz2 }) => {
+  const firstQuote = await ctx.join(array[0]);
+  const bar1 = map.get("bar1");
+  if (bar1) await ctx.join(bar1);
+
+  const b1 = await ctx.join(baz1);
+  const b2 = await ctx.join(baz2);
+  return { firstQuote, b1, b2 };
 });
 ```
 
-**5. The scope body remains an inline callback.**
+Literal tuples preserve their positions when TypeScript can infer them. Dynamic arrays become arrays of the corresponding handle union. Maps preserve their key type and map each value to the matching handle type.
 
-The scope body is orchestration code. It is sequential relative to the parent context. It receives a concurrency-narrowed context with `match`, `join`, `select` for consuming branch handles. Its `ctx.errors` is the *parent's* errors (the workflow's errors in a top-level scope, or the enclosing branch's errors in a nested scope). The scope body can throw recognized errors just as if the code were written directly in the parent's body — because semantically, it is.
+```typescript
+type ScopeInputValue =
+  | ConcurrentEntry
+  | readonly ScopeInputValue[]
+  | ReadonlyMap<unknown, ScopeInputValue>;
+
+type ScopeInput = Record<string, ScopeInputValue>;
+
+type ScopeHandles<T> =
+  T extends ConcurrentEntry ? ScopeHandleOf<T> :
+  T extends readonly unknown[] ? (
+    number extends T["length"]
+      ? readonly ScopeHandles<T[number]>[]
+      : { readonly [K in keyof T]: ScopeHandles<T[K]> }
+  ) :
+  T extends ReadonlyMap<infer K, infer V> ? ReadonlyMap<K, ScopeHandles<V>> :
+  never;
+```
+
+The same branch, step, request, or attached child workflow definition can be invoked multiple times with different args in the same scope. Each entry becomes an independent concurrent instance.
+
+**6. The scope body remains an inline callback.**
+
+The scope body is orchestration code. It is sequential relative to the parent context. It receives a concurrency-narrowed context with `match`, `join`, and `select` for consuming handles. Its `ctx.errors` is the *parent's* errors (the workflow's errors in a top-level scope, or the enclosing branch's errors in a nested scope). The scope body can throw recognized errors just as if the code were written directly in the parent's body — because semantically, it is.
 
 The scope no longer has its own error mode. There is no `ScopeCall.failure(cb)`. The scope body either returns a value, throws a recognized parent-level error (which propagates), or throws something unrecognized (which halts the parent, following the parent's halt rules).
 
-**6. Convenience methods accept branch entries.**
+**7. `join` observes one handle at a time.**
 
-All structured concurrency methods work with the new entry type:
+`ctx.join(handle)` waits for a single leaf handle and returns the handle's typed result. `join` does not accept arrays or maps directly; the caller chooses the element they want and joins that handle. This keeps the type surface simple and makes the business decision explicit.
 
 ```typescript
-// ctx.all — wait for all branches
+const quotes = await ctx.scope("quotes", {
+  hotels: [
+    ctx.steps.quoteHotel({ city: "Paris" }),
+    ctx.steps.quoteHotel({ city: "Rome" }),
+  ],
+}, async (ctx, { hotels }) => {
+  const paris = await ctx.join(hotels[0]);
+  const rome = await ctx.join(hotels[1], { timeout: 10 });
+  return { paris, rome };
+});
+```
+
+`ctx.join(handle, { timeout })` is an observation timeout. It races the wait, not the underlying work. If the timeout wins, the join returns `{ ok: false; status: "timeout" }`, but the handle is not cancelled, rejected, terminated, or marked failed. The concurrent operation continues under the scope, and the same handle may be joined again later.
+
+```typescript
+type JoinResult<THandle, TOpts> =
+  TOpts extends { timeout: StepBoundary }
+    ? JoinValue<THandle> | { ok: false; status: "timeout" }
+    : JoinValue<THandle>;
+```
+
+This is intentionally distinct from an operation-level timeout passed to `ctx.steps.foo(args, { timeout })`, `ctx.requests.foo(payload, { timeout })`, or `ctx.childWorkflows.foo(startOpts, { timeout })`. Operation-level timeout is part of the entry's result. Join timeout is only a timeout on this particular observation.
+
+**8. `match` understands object, array, and map structure.**
+
+`ctx.match` is the collection-oriented consumer. It can stream completions from the handles returned by a scope body, or from a `ctx.select(...)` expression that mixes scope handles with other matchable sources such as channels.
+
+For arrays, events carry the array index. For maps, events carry the map key. For top-level objects that contain collections, the event also carries the top-level object key:
+
+```typescript
+await ctx.scope("fanout", {
+  array: [
+    ctx.steps.foo(1),
+    ctx.steps.foo(2),
+    ctx.steps.foo(3),
+  ],
+  map: new Map([
+    ["bar1", ctx.childWorkflows.bar({ args: { n: 1 } })],
+    ["bar2", ctx.childWorkflows.bar({ args: { n: 2 } })],
+  ]),
+  baz1: ctx.branches.baz(1),
+  baz2: ctx.branches.baz(2),
+}, async (ctx, handles) => {
+  for await (const event of ctx.match(handles)) {
+    if (event.key === "array") {
+      event.index; // 0 | 1 | 2 for a tuple, number for a dynamic array
+      event.val;
+    }
+    if (event.key === "map") {
+      event.mapKey; // "bar1" | "bar2" when inferred, otherwise the map key type
+      event.val;
+    }
+    if (event.key === "baz1" || event.key === "baz2") {
+      event.val;
+    }
+  }
+});
+```
+
+The type sketch is recursive:
+
+```typescript
+type MatchEvent<T> =
+  T extends ScopeHandle<any> ? { val: JoinValue<T> } :
+  T extends readonly (infer U)[] ? MatchEvent<U> & { index: number } :
+  T extends ReadonlyMap<infer K, infer V> ? MatchEvent<V> & { mapKey: K } :
+  T extends Record<string, any> ? {
+    [K in keyof T]: MatchEvent<T[K]> & { key: K }
+  }[keyof T] :
+  never;
+```
+
+**9. Convenience methods accept generalized entries.**
+
+All structured concurrency methods work with the generalized input shape:
+
+```typescript
+// ctx.all — wait for all entries
 const results = await ctx.all("booking", {
   flight: ctx.branches.flightBooking({ destination: "Paris", customerId: "c1" }),
-  hotel:  ctx.branches.hotelBooking({ city: "Paris", guestName: "Alice" }),
+  hotel:  ctx.steps.bookHotel({ city: "Paris", guestName: "Alice" }),
 });
-// results: { flight: { ok, res } | { ok, err }, hotel: { ok, res } | { ok, err } }
+// results: { flight: { ok, res } | { ok, err }, hotel: HotelBooking }
 
-// ctx.first — first to complete, rest compensated
+// ctx.first — first to complete, rest compensated or abandoned according to entry semantics
 const winner = await ctx.first("fastest-hotel", {
-  paris: ctx.branches.hotelBooking({ city: "Paris", guestName: "Alice" }),
-  rome:  ctx.branches.hotelBooking({ city: "Rome",  guestName: "Alice" }),
+  quotes: [
+    ctx.steps.quoteHotel({ city: "Paris" }),
+    ctx.steps.quoteHotel({ city: "Rome" }),
+  ],
 });
-// winner: { ok: true; res: { key: "paris" | "rome"; value: ... } }
-//       | { ok: false; err: { errorCode: "NoBranchCompleted"; ... } }
+// winner: { ok: true; res: { key: "quotes"; index: number; value: ... } }
+//       | { ok: false; err: { errorCode: "NoEntryCompleted"; ... } }
 
 // ctx.match — streaming consumption
 const sel = ctx.select({ flight, hotel, cancel: ctx.channels.cancel.receive() });
@@ -1395,9 +1520,9 @@ for await (const { key, val } of ctx.match(sel)) {
 }
 ```
 
-Note: `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, `ctx.best` no longer have a `.failure(cb)` method. `ScopeCall.failure(cb)` is removed entirely. The error information is in the return value, determined by each branch's error mode.
+Note: `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, `ctx.best` no longer have a `.failure(cb)` method. `ScopeCall.failure(cb)` is removed entirely. Error information is in the return value, determined by the entry kind: branch error mode for branches, declared child errors for attached child workflows, timeout options for steps and requests.
 
-**7. Branch invocations are queryable entities.**
+**10. Branch invocations are queryable entities.**
 
 Every branch invocation is persisted with serializable args and result. The same `findUnique` / `findMany` query surface that exists for compensation block instances (§5) and request compensations (§10) applies to branches:
 
@@ -1439,7 +1564,7 @@ type BranchStatus =
 - `halted` — `execute` threw an unrecognized error (mode `"none"` or `"explicit"`) or hit a replay divergence.
 - `skipped` — an operator skipped the branch via the external API.
 
-**8. Same syntax applies to compensation blocks.**
+**11. Same syntax applies to compensation blocks.**
 
 Branches declared on `defineStep.compensation.branches` are available inside the `undo` callback as `ctx.branches`. They share the compensation block's declared dependencies (steps, requests, queues, topics, childWorkflows) and per-instance primitives (channels, streams, events, attributes).
 
@@ -1483,9 +1608,9 @@ const bookHotel = defineStep({
 | --- | --- |
 | Part 1 (VEL) | Branch entries are no longer inline closures — they reference pre-defined branches via `ctx.branches.X(args)`. The VEL mechanics (interleaving, blocking, scope entry/exit) are unchanged. |
 | Part 4 (Error model) | `terminalErrors` renamed to `errors` on `defineWorkflow`. `branchErrors` removed as a concept — branches have their own `errors` at definition time. The two-namespace model (`ctx.terminalErrors` + `ctx.branchErrors`) collapses to a single `ctx.errors` whose contents depend on the current level. Per-context throw rules simplify: workflow body throws workflow `errors`; branch body throws branch `errors`; no cross-level access. |
-| Part 7 (Scopes and consumption) | The four inline branch forms (function shorthand, object with `"none"`, `"any"`, `"explicit"`) are removed. Branches are always pre-defined references. `ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, `ctx.best` accept `Record<string, BranchEntry>` instead of `Record<string, (ctx) => Promise<T>>`. `ScopeCall.failure(cb)` is removed — the scope body follows the parent's error regime. `ctx.match` and `ctx.join` continue to work with branch handles; the `val` shape is determined by the branch definition's error mode. |
+| Part 7 (Scopes and consumption) | The four inline branch forms (function shorthand, object with `"none"`, `"any"`, `"explicit"`) are removed. Branches are always pre-defined references, and `ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, `ctx.best` accept generalized unstarted entries from branches, steps, requests, and attached child workflows. Scope inputs may contain single entries, arrays/tuples, and maps. `ScopeCall.failure(cb)` is removed — the scope body follows the parent's error regime. `ctx.join` observes one leaf handle at a time and supports non-cancelling observation timeouts; `ctx.match` streams keyed/indexed/map-keyed completions from structured inputs. |
 | Part 8 (Database) | Branch invocations gain their own rows with serialized args and results. The parallel-table pattern (§13) applies to branches as it does to compensation blocks. |
-| Summary tables | `defineWorkflow` gains `branches` field. `branchErrors` removed from context. `terminalErrors` renamed to `errors`. `ScopeCall.failure(cb)` removed. `ScopeEntry` type changes from callback to `BranchEntry`. |
+| Summary tables | `defineWorkflow` gains `branches` field. `branchErrors` removed from context. `terminalErrors` renamed to `errors`. `ScopeCall.failure(cb)` removed. `ScopeEntry` type changes from callback to generalized unstarted entries with structural handle mapping. |
 
 ## 16. The Builder Chain Disappears
 
@@ -1501,7 +1626,7 @@ The builder chain existed to solve two problems:
 
 Problem (1) is eliminated by context isolation (§15). Every `execute` callback — whether on a workflow, a branch, or a compensation `undo` — receives its own isolated context. There is no scenario where a handle could be resolved in the wrong VEL, because the code that created the handle only has access to the correct context.
 
-Problem (2) remains, but the builder pattern is not the only way to solve it. A **second argument** (an options object) on the call itself is simpler, more readable, and eliminates the entire `DurableHandle` / `AtomicResult` / `StepCall` / `WorkflowCall` / `RequestCall` type hierarchy.
+Problem (2) remains, but the builder pattern is not the only way to solve it. A **second argument** (an options object) on the call itself is simpler and more readable. The old `DurableHandle` / `AtomicResult` / `StepCall` / `WorkflowCall` / `RequestCall` hierarchy is replaced by small awaitable entries with no builder methods.
 
 ### Before — `NEW_PRIMITIVES.MD` Part 5
 
@@ -1515,7 +1640,7 @@ With the `Called` type parameter tracking which methods have been called, `TFail
 
 ### After — call-time options with discriminated union returns
 
-The builder chain is replaced by an optional second argument on the call. The return type is a discriminated union shaped by the options provided. No callbacks — the developer handles all outcomes in sequential code where `ctx` is naturally available.
+The builder chain is replaced by an optional second argument on the call. Calls return lightweight awaitable entries, not eager native `Promise`s. Awaiting the entry starts and observes it immediately; passing the same entry into `ctx.scope`, `ctx.all`, `ctx.first`, or another structured-concurrency primitive lets that primitive start it under structural ownership. The awaited value is shaped by the options provided. No callbacks — the developer handles all outcomes in sequential code where `ctx` is naturally available.
 
 **Steps:**
 
@@ -1543,11 +1668,10 @@ const booking = await ctx.steps.bookFlight(args, {
 **Child workflows:**
 
 ```typescript
-// Child workflows always return a discriminated union — failure is always possible.
+// Attached child workflows always return a discriminated union — failure is always possible.
 const order = await ctx.childWorkflows.processOrder(startOpts);
 // order: { ok: true; result: OrderResult }
 //      | { ok: false; status: "failed"; error: ErrorValue<TChildErrors> }
-//      | { ok: false; status: "terminated" }
 
 // With timeout — adds one more variant.
 const order = await ctx.childWorkflows.processOrder(startOpts, {
@@ -1555,7 +1679,6 @@ const order = await ctx.childWorkflows.processOrder(startOpts, {
 });
 // order: { ok: true; result: OrderResult }
 //      | { ok: false; status: "failed"; error: ErrorValue<TChildErrors> }
-//      | { ok: false; status: "terminated" }
 //      | { ok: false; status: "timeout" }
 
 // With retry override.
@@ -1624,97 +1747,115 @@ type StepBoundary =
 { timeout: { maxAttempts: 10, seconds: 60 } }
 ```
 
-**3. Child workflows always return a discriminated union.**
+**3. Attached child workflows always return a discriminated union.**
 
-A child can always fail (throw its declared `errors`) or be terminated. These are not opt-in outcomes — they're structural. The type system forces the developer to handle them by making the return a union. `if (order.ok)` narrows to the success branch; `if (!order.ok)` forces examination of `status`. This replaces the mandatory `.failure(cb)` from NEW_PRIMITIVES.MD Part 5 — the guarantee ("you must handle child failure") is preserved, but the mechanism is a return type rather than a mandatory callback.
+An attached child can always fail by throwing its declared `errors`. That is structural, not opt-in, so the type system forces the developer to handle it by making the awaited value a union. `if (order.ok)` narrows to the success branch; `if (!order.ok)` forces examination of `status`. This replaces the mandatory `.failure(cb)` from NEW_PRIMITIVES.MD Part 5 — the guarantee ("you must handle child failure") is preserved, but the mechanism is a return type rather than a mandatory callback.
 
-**4. `retry` is a plain options field.**
+**4. Attached child workflows are not separately terminable.**
+
+This is a semantic refactor point, not just a type simplification. The old shape treated `{ ok: false; status: "terminated" }` as a possible in-workflow result for an attached child, which implied that an attached child could be killed independently from its parent and that the parent should contain business logic for that case. That implication is wrong.
+
+An attached child is part of the parent's structured execution tree. It may complete, fail through its declared child errors, or be left unobserved by a non-cancelling `join` timeout. It is not a separately terminable root. If the parent workflow is externally terminated, the engine tears down the whole attached subtree as part of the parent lifecycle; the parent does not resume and receive a child-level `terminated` value to branch on.
+
+Termination remains available only at root boundaries: root workflow handles, and detached child workflow handles because detached children are root workflow instances started from another workflow. Inside workflow business logic, attached-child termination is deliberately absent from the result union.
+
+**5. `retry` is a plain options field.**
 
 It accepts the same `RetryPolicyOptions` as before (minus `maxAttempts`, which is part of `timeout`'s `StepBoundary`). It's configuration, not behavior.
 
-**5. `priority` on requests is a plain options field.**
+**6. `priority` on requests is a plain options field.**
 
 No change in semantics — just moves from `.priority(n)` to `{ priority: n }`.
 
-**6. `.complete()` disappears.**
+**7. `.complete()` disappears.**
 
 The `.complete(r => r.confirmationId)` transform was syntactic sugar for destructuring after the `await`. Without it: `const { result: { confirmationId } } = await ctx.steps.bookHotel(args, { timeout: 30 });` or simply `const booking = await ctx.steps.bookHotel(args); const id = booking.confirmationId;`.
 
-**7. `.resolve()` disappears.**
+**8. `.resolve()` disappears.**
 
-There is no terminal method. The call itself is `await`-able. The options object replaces both the builder chain and the terminal. The entire `DurableHandle`, `AtomicResult`, `StepCall`, `WorkflowCall`, `RequestCall`, `ScopeCall`, `FirstCall` type hierarchy is gone.
+There is no terminal method. The call itself is `await`-able. The options object replaces both the builder chain and the terminal. The entire old `DurableHandle`, `AtomicResult`, `StepCall`, `WorkflowCall`, `RequestCall`, `ScopeCall`, `FirstCall` type hierarchy is gone. The replacement entries are smaller: they carry operation identity and types, have no configuration methods, and can be consumed either by direct `await` or by a scope.
 
 ### Type sketches
 
 ```typescript
+type AwaitableEntry<TAwaited> = PromiseLike<TAwaited> & {
+  readonly __nataliaEntry?: unique symbol;
+};
+
 // Step call — overloaded on whether options are provided and whether timeout is set.
 interface StepAccessor<TArgs, TResult> {
   // No options → always succeeds → returns T.
-  (args: InferInput<TArgs>): Promise<InferOutput<TResult>>;
+  (args: InferInput<TArgs>): StepEntry<InferOutput<TResult>>;
 
   // Options without timeout → always succeeds → returns T.
-  (args: InferInput<TArgs>, opts: { retry?: RetryPolicyOptions }): Promise<InferOutput<TResult>>;
+  (args: InferInput<TArgs>, opts: { retry?: RetryPolicyOptions }):
+    StepEntry<InferOutput<TResult>>;
 
   // Options with timeout → may not succeed → returns discriminated union.
   (args: InferInput<TArgs>, opts: {
     retry?: RetryPolicyOptions;
     timeout: StepBoundary;
-  }): Promise<
+  }): StepEntry<
     | { ok: true;  result: InferOutput<TResult> }
     | { ok: false; status: "timeout" }
   >;
 }
 
-// Child workflow call — always returns discriminated union.
+type StepEntry<TAwaited> = AwaitableEntry<TAwaited>;
+
+// Attached child workflow call — always returns discriminated union.
 interface ChildWorkflowAccessor<W extends AnyWorkflowHeader> {
   // No call options.
-  (startOpts: AttachedChildWorkflowStartOptions<W>): Promise<
+  (startOpts: AttachedChildWorkflowStartOptions<W>): AttachedChildWorkflowEntry<
     | { ok: true;  result: InferWorkflowResult<W> }
     | { ok: false; status: "failed"; error: ErrorValue<InferWorkflowErrors<W>> }
-    | { ok: false; status: "terminated" }
   >;
 
   // With call options (timeout adds a variant).
   (startOpts: AttachedChildWorkflowStartOptions<W>, opts: {
     retry?: RetryPolicyOptions;
     timeout: StepBoundary;
-  }): Promise<
+  }): AttachedChildWorkflowEntry<
     | { ok: true;  result: InferWorkflowResult<W> }
     | { ok: false; status: "failed"; error: ErrorValue<InferWorkflowErrors<W>> }
-    | { ok: false; status: "terminated" }
     | { ok: false; status: "timeout" }
   >;
 
-  // Detached start — unchanged (already directly awaitable, no builder chain).
-  startDetached(opts: DetachedStartOptions<W>): AtomicResult<ForeignWorkflowHandle<...>>;
+  // Detached start — returns a handle to a root workflow instance.
+  startDetached(opts: DetachedStartOptions<W>):
+    PromiseLike<ForeignWorkflowHandle<...>>;
 }
+
+type AttachedChildWorkflowEntry<TAwaited> = AwaitableEntry<TAwaited>;
 
 // Request call.
 interface RequestAccessor<TPayload, TResponse> {
   // No options → waits forever → returns T.
-  (payload: InferInput<TPayload>): Promise<InferOutput<TResponse>>;
+  (payload: InferInput<TPayload>): RequestEntry<InferOutput<TResponse>>;
 
   // With options.
   (payload: InferInput<TPayload>, opts: {
     priority?: number;
     timeout: StepBoundary;
-  }): Promise<
+  }): RequestEntry<
     | { ok: true;  result: InferOutput<TResponse> }
     | { ok: false; status: "timeout" }
   >;
 }
+
+type RequestEntry<TAwaited> = AwaitableEntry<TAwaited>;
 ```
 
 ### What changes in `NEW_PRIMITIVES.MD`
 
 | Part | Change |
 | --- | --- |
-| Part 1 (VEL) | Tier 1 operations are no longer two-phase (start + await). The call itself is a single `await` expression. The engine internally still buffers `start_step` + `await_promise`, but the public API is a single async call. The "Tier 1 await" row (`.resolve(ctx)`) is removed from the step types table. |
+| Part 1 (VEL) | Tier 1 operations no longer expose a two-phase builder API. The call creates a typed entry; direct `await` is a single expression, while scopes can start the same entry under structural ownership. The engine internally still buffers `start_step` + `await_promise`, but the public API has no `.resolve(ctx)`. The "Tier 1 await" row (`.resolve(ctx)`) is removed from the step types table. |
 | Part 2 (Compensation) | `.compensate()` builder references are already gone (§2). The eager promotion mechanism still works — when a timeout fires on a step call, the engine promotes the registered compensation instance. The trigger is now "the step call returned `{ ok: false; status: "timeout" }`" rather than "the `.timeout(cb)` callback was entered." |
 | Part 4 (Error model) | The `.timeout(cb)` / `.failure(cb)` callback rows in the per-context throw rules table are removed — there are no callbacks to throw from. Engine-level events (step timeout, child workflow failure) surface as discriminated union return values, not as callbacks. The developer handles them in sequential code, where the enclosing context's error regime applies naturally. |
-| Part 5 (Chain ordering) | **Removed entirely.** The chain ordering section, the `Called` type parameter, the `StepCall`/`WorkflowCall`/`RequestCall` interfaces, the `DurableHandle` base type, the `AtomicResult` type — all removed. Replaced by the call-time options + discriminated union return described in this section. |
+| Part 5 (Chain ordering) | **Removed entirely.** The chain ordering section, the `Called` type parameter, the `StepCall`/`WorkflowCall`/`RequestCall` interfaces, the `DurableHandle` base type, the `AtomicResult` type — all removed. Replaced by the call-time options + discriminated union return described in this section. Attached child workflow `terminated` results are also removed as a semantic correction: attached children are not independently terminable from their parent. |
 | Part 12 (Step timeout unification) | `maxAttempts` moves into the `timeout` field of the options object (via `StepBoundary`). The concept is the same; only the syntax changes. |
-| Summary tables | `StepCall`, `WorkflowCall`, `RequestCall`, `ScopeCall`, `FirstCall` removed. `DurableHandle`, `AtomicResult` removed. `.resolve(ctx)` removed from all examples. `ctx.steps.X(args, opts?)` / `ctx.childWorkflows.X(startOpts, opts?)` / `ctx.requests.X(payload, opts?)` are the new call signatures. |
+| Summary tables | `StepCall`, `WorkflowCall`, `RequestCall`, `ScopeCall`, `FirstCall` removed. The old `DurableHandle` and `AtomicResult` hierarchy is removed. `.resolve(ctx)` removed from all examples. `ctx.steps.X(args, opts?)` / attached `ctx.childWorkflows.X(startOpts, opts?)` / `ctx.requests.X(payload, opts?)` are the new entry-producing call signatures. Attached child workflow results no longer include `terminated`; detached child workflows remain externally terminable root workflow instances. |
 
 ## 14. The full sequence
 
@@ -1732,5 +1873,5 @@ interface RequestAccessor<TPayload, TResponse> {
 - §11 The Builder Chain Disappears — Overview
 - §12 What Disappears
 - §13 Storage Shape and Why
-- §15 Branch Isolation (pre-defined branches, unified `errors`, queryable invocations, removal of `terminalErrors`/`branchErrors`/`ScopeCall.failure`)
-- §16 The Builder Chain Disappears (call-time options, discriminated union returns, removal of `StepCall`/`WorkflowCall`/`RequestCall`/`DurableHandle`/`AtomicResult`/`.resolve(ctx)`)
+- §15 Branch Isolation and Scope Entries (pre-defined branches, generalized unstarted entries for scopes, structural array/map inputs, `join` observation timeouts, collection-aware `match`, unified `errors`, queryable branch invocations)
+- §16 The Builder Chain Disappears (call-time options, lazy awaitable entries, discriminated union returns, attached children without `terminated`, detached children as externally terminable roots, removal of `StepCall`/`WorkflowCall`/`RequestCall`/`DurableHandle`/`AtomicResult`/`.resolve(ctx)`)
