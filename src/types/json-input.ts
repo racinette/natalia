@@ -23,10 +23,13 @@ export type JsonInputObject = {
 };
 
 /**
- * Generic persisted-schema constraint: input must be JSON-like (or void).
+ * Generic persisted-schema constraint.
+ *
+ * Some schema libraries model coercion inputs as `unknown`; call sites narrow
+ * writes separately to serializable values where the public API can infer them.
  */
 export type JsonSchemaConstraint = StandardSchemaV1<
-  JsonInput | void | undefined,
+  unknown,
   unknown
 >;
 

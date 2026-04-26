@@ -52,37 +52,38 @@ import type {
  *
  * const bookFlight = defineStep({
  *   name: 'bookFlight',
- *   execute: async ({ signal }, destination: string, customerId: string) => {
+ *   args: z.object({ destination: z.string(), customerId: z.string() }),
+ *   result: FlightBookingResult,
+ *   execute: async ({ signal }, args) => {
  *     const res = await fetch('https://api.flights.com/book', {
  *       method: 'POST',
- *       body: JSON.stringify({ destination, customerId }),
+ *       body: JSON.stringify(args),
  *       signal,
  *     });
  *     return res.json();
  *   },
- *   schema: FlightBookingResult,
  *   retryPolicy: { maxAttempts: 3, intervalSeconds: 2 },
  * });
  *
- * // Compensation step — used in .compensate() callbacks
  * const cancelFlight = defineStep({
  *   name: 'cancelFlight',
- *   execute: async ({ signal }, destination: string, customerId: string) => {
+ *   args: z.object({ destination: z.string(), customerId: z.string() }),
+ *   result: z.object({ ok: z.boolean() }),
+ *   execute: async ({ signal }, args) => {
  *     await fetch('https://api.flights.com/cancel-by-route', {
  *       method: 'POST',
- *       body: JSON.stringify({ destination, customerId }),
+ *       body: JSON.stringify(args),
  *       signal,
  *     });
  *     return { ok: true };
  *   },
- *   schema: z.object({ ok: z.boolean() }),
  *   retryPolicy: { maxAttempts: 20, intervalSeconds: 5 },
  * });
  * ```
  */
 export function defineStep<
   TArgsSchema extends JsonSchemaConstraint,
-  TResultSchema extends JsonSchemaConstraint = any,
+  TResultSchema extends JsonSchemaConstraint,
 >(config: {
   name: string;
   args: TArgsSchema;
@@ -92,25 +93,12 @@ export function defineStep<
     args: StandardSchemaV1.InferOutput<TArgsSchema>,
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
   retryPolicy?: RetryPolicyOptions;
-}): StepDefinition<StandardSchemaV1.InferInput<TArgsSchema>, TResultSchema>;
-export function defineStep<
-  TArgs extends unknown[],
-  TResultSchema extends JsonSchemaConstraint = any,
->(config: {
-  name: string;
-  execute: (
-    context: { signal: AbortSignal },
-    ...args: TArgs
-  ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
-  schema: TResultSchema;
-  retryPolicy?: RetryPolicyOptions;
-}): StepDefinition<TArgs, TResultSchema>;
+}): StepDefinition<TArgsSchema, TResultSchema>;
 export function defineStep(config: {
   name: string;
-  args?: JsonSchemaConstraint;
-  result?: JsonSchemaConstraint;
-  execute: (context: { signal: AbortSignal }, ...args: any[]) => Promise<unknown>;
-  schema?: JsonSchemaConstraint;
+  args: JsonSchemaConstraint;
+  result: JsonSchemaConstraint;
+  execute: (context: { signal: AbortSignal }, args: unknown) => Promise<unknown>;
   retryPolicy?: RetryPolicyOptions;
 }): StepDefinition<any, any> {
   if (!config.name || typeof config.name !== "string") {
@@ -119,14 +107,10 @@ export function defineStep(config: {
   if (typeof config.execute !== "function") {
     throw new Error("Step execute must be a function");
   }
-  const resultSchema = config.result ?? config.schema;
-  if (!resultSchema || !("~standard" in resultSchema)) {
-    throw new Error("Step schema must be a standard schema");
+  if (!config.result || !("~standard" in config.result)) {
+    throw new Error("Step result must be a standard schema");
   }
-  if (
-    config.args !== undefined &&
-    (!config.args || !("~standard" in config.args))
-  ) {
+  if (!config.args || !("~standard" in config.args)) {
     throw new Error("Step args must be a standard schema");
   }
 
@@ -134,8 +118,7 @@ export function defineStep(config: {
     name: config.name,
     execute: config.execute,
     args: config.args,
-    result: resultSchema,
-    schema: resultSchema,
+    result: config.result,
     retryPolicy: config.retryPolicy,
   };
 }

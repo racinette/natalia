@@ -142,17 +142,6 @@ export { WorkflowEngine, type WorkflowEngineConfig } from "./engine";
 // Public API - Client
 export { createWorkflowClient } from "./client";
 
-// Public API - Migrations
-export {
-  runMigrations,
-  getCurrentVersion,
-  MigrationError,
-  MigrationRaceError,
-  MigrationChecksumMismatchError,
-  type Migration,
-  type MigrationResult,
-} from "./migrations/runner";
-
 // Public API - Errors (for catch blocks)
 export {
   WorkflowError,

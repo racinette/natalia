@@ -16,6 +16,7 @@ import type {
   RetentionSetter,
   WorkflowInvocationBaseOptions,
 } from "./definitions";
+import type { JsonInput } from "./json-input";
 import type {
   StepCompensationResult,
   CompensationStepResult,
@@ -61,7 +62,9 @@ export type ScopeStepFailures<TSteps extends StepDefinitions> = {
   [K in keyof TSteps & string]: {
     readonly kind: "step";
     readonly name: K;
-    readonly args: TSteps[K] extends StepDefinition<infer A, any> ? A : never;
+    readonly args: TSteps[K] extends StepDefinition<infer A, any>
+      ? StandardSchemaV1.InferOutput<A>
+      : never;
     readonly info: StepFailureInfo;
   };
 }[keyof TSteps & string];
@@ -156,15 +159,43 @@ export type StepBoundary =
   | { seconds: number; maxAttempts?: number }
   | { deadline: Date; maxAttempts?: number };
 
-type StepInvocationArgs<TArgs> = TArgs extends readonly unknown[]
-  ? TArgs
-  : [args: TArgs];
+type JsonScalarInput = Extract<JsonInput, string | number | boolean | null>;
 
-export interface StepAccessor<TArgs, TResult> {
-  (...args: StepInvocationArgs<TArgs>): StepEntry<TResult>;
-  (...args: [...StepInvocationArgs<TArgs>, opts: StepCallOptions]): StepEntry<
-    TResult
-  >;
+type SerializedInputFromOutput<T> =
+  T extends Date
+    ? string | number
+    : T extends readonly (infer U)[]
+      ? readonly SerializedInputFromOutput<U>[]
+      : T extends object
+        ? { [K in keyof T]: SerializedInputFromOutput<T[K]> }
+        : Extract<T, JsonInput>;
+
+type StepInvocationInput<TArgsSchema extends StandardSchemaV1> =
+  unknown extends StandardSchemaV1.InferInput<TArgsSchema>
+    ? SerializedInputFromOutput<StandardSchemaV1.InferOutput<TArgsSchema>>
+    : StandardSchemaV1.InferInput<TArgsSchema> extends infer TInput
+      ? TInput extends object
+        ? {
+            [K in keyof TInput]: unknown extends TInput[K]
+              ? StandardSchemaV1.InferOutput<TArgsSchema> extends infer TOutputMap
+                ? K extends keyof TOutputMap
+                  ? SerializedInputFromOutput<TOutputMap[K]>
+                  : JsonScalarInput
+                : never
+              : TInput[K];
+          }
+        : TInput
+      : never;
+
+export interface StepAccessor<
+  TArgsSchema extends StandardSchemaV1,
+  TResult,
+> {
+  (args: StepInvocationInput<TArgsSchema>): StepEntry<TResult>;
+  (
+    args: StepInvocationInput<TArgsSchema>,
+    opts: StepCallOptions,
+  ): StepEntry<TResult>;
 }
 
 declare const durableHandleBrand: unique symbol;
