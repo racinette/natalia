@@ -1,5 +1,5 @@
 import type { StandardSchemaV1 } from "./standard-schema";
-import type { CompensationContext, WorkflowContext } from "./context";
+import type { BranchContext, CompensationContext, WorkflowContext } from "./context";
 import type { AtomicResult } from "./context";
 import type {
   JsonInput,
@@ -179,9 +179,35 @@ export interface RequestDefinition<
 export type RequestDefinitions = Record<string, RequestDefinition<any, any>>;
 
 /**
+ * A declared business error. `true` marks an error code with no details payload;
+ * schema values validate and decode the details payload for that code.
+ */
+export type ErrorDefinition = JsonSchemaConstraint | true;
+
+/**
+ * Map of declared local business errors.
+ */
+export type ErrorDefinitions = Record<string, ErrorDefinition>;
+
+/**
  * Map of declared workflow business errors.
  */
-export type WorkflowErrorDefinitions = Record<string, JsonSchemaConstraint>;
+export type WorkflowErrorDefinitions = ErrorDefinitions;
+
+/**
+ * Branch-local error mode.
+ *
+ * - omitted / `"none"`: the branch has no declared business failures
+ * - `"any"`: ordinary thrown values are captured as `Failure`
+ * - map: only local `ctx.errors.X(...)` throws become typed business failures
+ */
+export type BranchErrorMode = ErrorDefinitions | "any" | "none";
+
+/**
+ * The explicit error map visible on a branch context.
+ */
+export type ExplicitBranchErrorDefinitions<TErrors extends BranchErrorMode> =
+  TErrors extends ErrorDefinitions ? TErrors : Record<string, never>;
 
 /**
  * Map of workflow definitions for child/foreign workflow references.
@@ -192,10 +218,41 @@ export type WorkflowErrorDefinitions = Record<string, JsonSchemaConstraint>;
 export type WorkflowDefinitions = Record<string, AnyWorkflowHeader>;
 
 /**
+ * Branch definition — created via defineBranch().
+ *
+ * Branches are reusable, named units of concurrent workflow work with
+ * serializable args, serializable result, and local business errors.
+ */
+export interface BranchDefinition<
+  TArgsSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+  TResultSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+  TErrors extends BranchErrorMode = Record<string, never>,
+> {
+  readonly name: string;
+  /** Argument schema for observable, serializable branch input. */
+  readonly args: TArgsSchema;
+  /** Result schema for encoding/decoding. */
+  readonly result: TResultSchema;
+  /** Branch-local business error mode. */
+  readonly errors?: TErrors;
+  /** Execute function for this branch definition. */
+  readonly execute: (
+    context: BranchContext<TErrors>,
+    args: StandardSchemaV1.InferOutput<TArgsSchema>,
+  ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
+}
+
+/**
+ * Map of branch definitions.
+ */
+export type BranchDefinitions = Record<string, BranchDefinition<any, any, any>>;
+
+/**
  * Any workflow definition shape.
  * Useful for avoiding repeated `WorkflowDefinition<any, ...>` constraints.
  */
 export type AnyWorkflowDefinition = WorkflowDefinition<
+  any,
   any,
   any,
   any,
@@ -241,6 +298,7 @@ export interface PublicWorkflowHeader<
     void,
     void
   >,
+  TErrors extends WorkflowErrorDefinitions = Record<string, never>,
 > {
   readonly name: string;
   readonly channels?: TChannels;
@@ -249,12 +307,14 @@ export interface PublicWorkflowHeader<
   readonly args?: TArgs;
   readonly metadata?: TMetadata;
   readonly result?: TResult;
+  readonly errors?: TErrors;
 }
 
 /**
  * Any public workflow descriptor shape.
  */
 export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
+  any,
   any,
   any,
   any,
@@ -463,6 +523,7 @@ export interface WorkflowDefinition<
   TRequests extends RequestDefinitions,
   TChildWorkflows extends WorkflowDefinitions,
   TForeignWorkflows extends WorkflowDefinitions,
+  TBranches extends BranchDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<
     void,
     void
@@ -484,7 +545,8 @@ export interface WorkflowDefinition<
     TEvents,
     TArgs,
     TMetadata,
-    TResultSchema
+    TResultSchema,
+    TErrors
   > {
   /** Unique workflow name */
   readonly name: string;
@@ -512,6 +574,9 @@ export interface WorkflowDefinition<
 
   /** Foreign workflow definitions (for ctx.foreignWorkflows) */
   readonly foreignWorkflows?: TForeignWorkflows;
+
+  /** Predefined branch definitions (for ctx.branches) */
+  readonly branches?: TBranches;
 
   /**
    * Patch definitions for safe workflow evolution.
@@ -632,7 +697,10 @@ export interface WorkflowDefinition<
           TChildWorkflows,
           TForeignWorkflows,
           TPatches,
-          TRng
+          TRng,
+          [],
+          TErrors,
+          TBranches
         >;
         args: StandardSchemaV1.InferOutput<TArgs>;
         result: StandardSchemaV1.InferOutput<TResultSchema>;
@@ -670,7 +738,10 @@ export interface WorkflowDefinition<
       TChildWorkflows,
       TForeignWorkflows,
       TPatches,
-      TRng
+      TRng,
+      [],
+      TErrors,
+      TBranches
     >,
     args: StandardSchemaV1.InferOutput<TArgs>,
   ): Promise<StandardSchemaV1.InferInput<TResultSchema>>;

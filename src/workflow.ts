@@ -1,12 +1,14 @@
 import type { StandardSchemaV1 } from "./types/standard-schema";
 import type {
   StepDefinition,
+  BranchDefinition,
   RequestDefinition,
   RetryPolicyOptions,
   ChannelDefinitions,
   StreamDefinitions,
   EventDefinitions,
   StepDefinitions,
+  BranchDefinitions,
   RequestDefinitions,
   WorkflowDefinitions,
   WorkflowDefinition,
@@ -18,7 +20,32 @@ import type {
   PatchDefinitions,
   RngDefinitions,
   WorkflowErrorDefinitions,
+  BranchErrorMode,
 } from "./types";
+
+function isStandardSchema(value: unknown): value is JsonSchemaConstraint {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    "~standard" in value
+  );
+}
+
+function validateErrorDefinitions(
+  errors: unknown,
+  label: string,
+): asserts errors is Record<string, JsonSchemaConstraint | true> {
+  if (typeof errors !== "object" || errors === null || Array.isArray(errors)) {
+    throw new Error(`${label} must be an object`);
+  }
+  for (const [name, definition] of Object.entries(errors)) {
+    if (definition !== true && !isStandardSchema(definition)) {
+      throw new Error(
+        `${label.slice(0, -1)} '${name}' must be true or a standard schema`,
+      );
+    }
+  }
+}
 
 // =============================================================================
 // DEFINE STEP
@@ -270,16 +297,61 @@ export function defineWorkflowHeader<
     }
   }
   if (config.errors !== undefined) {
-    if (typeof config.errors !== "object" || Array.isArray(config.errors)) {
-      throw new Error("errors must be an object");
-    }
-    for (const [name, schema] of Object.entries(config.errors)) {
-      if (!schema || typeof schema !== "object" || !("~standard" in schema)) {
-        throw new Error(`Error '${name}' must have a standard schema`);
-      }
-    }
+    validateErrorDefinitions(config.errors, "errors");
   }
   return config as WorkflowHeader<TChannels, TArgs, TMetadata, TResult, TErrors>;
+}
+
+// =============================================================================
+// DEFINE BRANCH
+// =============================================================================
+
+/**
+ * Define a reusable workflow branch with serializable args/result and local
+ * business errors.
+ */
+export function defineBranch<
+  TArgsSchema extends JsonSchemaConstraint,
+  TResultSchema extends JsonSchemaConstraint,
+  TErrors extends BranchErrorMode = Record<string, never>,
+>(config: {
+  name: string;
+  args: TArgsSchema;
+  result: TResultSchema;
+  errors?: TErrors;
+  execute: (
+    ctx: import("./types").BranchContext<TErrors>,
+    args: StandardSchemaV1.InferOutput<TArgsSchema>,
+  ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
+}): BranchDefinition<TArgsSchema, TResultSchema, TErrors>;
+export function defineBranch(config: {
+  name: string;
+  args: JsonSchemaConstraint;
+  result: JsonSchemaConstraint;
+  errors?: BranchErrorMode;
+  execute: (ctx: import("./types").BranchContext<any>, args: unknown) => Promise<unknown>;
+}): BranchDefinition<any, any, any> {
+  if (!config.name || typeof config.name !== "string") {
+    throw new Error("Branch name must be a non-empty string");
+  }
+  if (!isStandardSchema(config.args)) {
+    throw new Error("Branch args must be a standard schema");
+  }
+  if (!isStandardSchema(config.result)) {
+    throw new Error("Branch result must be a standard schema");
+  }
+  if (typeof config.execute !== "function") {
+    throw new Error("Branch execute must be a function");
+  }
+  if (
+    config.errors !== undefined &&
+    config.errors !== "any" &&
+    config.errors !== "none"
+  ) {
+    validateErrorDefinitions(config.errors, "branch errors");
+  }
+
+  return config as BranchDefinition<any, any, any>;
 }
 
 // =============================================================================
@@ -358,6 +430,7 @@ export function defineWorkflow<
   TRequests extends RequestDefinitions = Record<string, never>,
   TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
   TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TBranches extends BranchDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<void, void>,
@@ -374,6 +447,7 @@ export function defineWorkflow<
   requests?: TRequests;
   childWorkflows?: TChildWorkflows;
   foreignWorkflows?: TForeignWorkflows;
+  branches?: TBranches;
   patches?: TPatches;
   rng?: TRng;
   result?: TResultSchema;
@@ -432,7 +506,10 @@ export function defineWorkflow<
             TChildWorkflows,
             TForeignWorkflows,
             TPatches,
-            TRng
+            TRng,
+            [],
+            TErrors,
+            TBranches
           >;
           args: StandardSchemaV1.InferOutput<TArgs>;
           result: StandardSchemaV1.InferOutput<TResultSchema>;
@@ -465,7 +542,10 @@ export function defineWorkflow<
       TChildWorkflows,
       TForeignWorkflows,
       TPatches,
-      TRng
+      TRng,
+      [],
+      TErrors,
+      TBranches
     >,
     args: StandardSchemaV1.InferOutput<TArgs>,
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
@@ -478,6 +558,7 @@ export function defineWorkflow<
   TRequests,
   TChildWorkflows,
   TForeignWorkflows,
+  TBranches,
   TResultSchema,
   TArgs,
   TMetadata,
@@ -623,6 +704,31 @@ export function defineWorkflow<
     }
   }
 
+  // Validate branches
+  const branches = config.branches ?? ({} as TBranches);
+  if (config.branches !== undefined) {
+    if (typeof config.branches !== "object" || Array.isArray(config.branches)) {
+      throw new Error("branches must be an object");
+    }
+    for (const [name, branch] of Object.entries(config.branches)) {
+      if (!branch || typeof branch !== "object") {
+        throw new Error(`Branch '${name}' must be a valid branch definition`);
+      }
+      if (!branch.name || typeof branch.name !== "string") {
+        throw new Error(`Branch '${name}' must have a name`);
+      }
+      if (!isStandardSchema(branch.args)) {
+        throw new Error(`Branch '${name}' must have a standard args schema`);
+      }
+      if (!isStandardSchema(branch.result)) {
+        throw new Error(`Branch '${name}' must have a standard result schema`);
+      }
+      if (typeof branch.execute !== "function") {
+        throw new Error(`Branch '${name}' must have an execute function`);
+      }
+    }
+  }
+
   // Validate execute
   if (typeof config.execute !== "function") {
     throw new Error("execute must be a function");
@@ -653,14 +759,7 @@ export function defineWorkflow<
   // Validate errors if provided
   const errors = config.errors ?? ({} as TErrors);
   if (config.errors !== undefined) {
-    if (typeof config.errors !== "object" || Array.isArray(config.errors)) {
-      throw new Error("errors must be an object");
-    }
-    for (const [name, schema] of Object.entries(config.errors)) {
-      if (!schema || typeof schema !== "object" || !("~standard" in schema)) {
-        throw new Error(`Error '${name}' must have a standard schema`);
-      }
-    }
+    validateErrorDefinitions(config.errors, "errors");
   }
 
   // Validate patches if provided
@@ -757,6 +856,7 @@ export function defineWorkflow<
     requests,
     childWorkflows,
     foreignWorkflows,
+    branches,
     errors,
     patches,
     rng,
@@ -769,6 +869,7 @@ export function defineWorkflow<
     TRequests,
     TChildWorkflows,
     TForeignWorkflows,
+    TBranches,
     TResultSchema,
     TArgs,
     TMetadata,

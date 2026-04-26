@@ -10,12 +10,17 @@ import type {
   RequestDefinition,
   RequestDefinitions,
   WorkflowDefinitions,
+  BranchDefinition,
+  BranchDefinitions,
   AnyWorkflowHeader,
   PatchAccessor,
   RngAccessors,
   RetryPolicyOptions,
   RetentionSetter,
   WorkflowInvocationBaseOptions,
+  ErrorDefinitions,
+  BranchErrorMode,
+  ExplicitBranchErrorDefinitions,
 } from "./definitions";
 import type { JsonInput } from "./json-input";
 import type {
@@ -29,6 +34,9 @@ import type {
   StepErrorAccessor,
   WorkflowExecutionError,
   WorkflowTerminationReason,
+  ExplicitError,
+  ErrorValue,
+  Failure,
 } from "./results";
 
 
@@ -195,6 +203,23 @@ type SchemaInvocationInput<TSchema extends StandardSchemaV1> =
           }
         : TInput
       : never;
+
+export type ErrorFactories<TErrors extends ErrorDefinitions> = {
+  [K in keyof TErrors & string]: TErrors[K] extends true
+    ? (message: string) => ExplicitError<K, undefined>
+    : TErrors[K] extends StandardSchemaV1<unknown, unknown>
+      ? (
+          message: string,
+          details: SchemaInvocationInput<TErrors[K]>,
+        ) => ExplicitError<K, StandardSchemaV1.InferOutput<TErrors[K]>>
+      : never;
+};
+
+export interface BranchContext<
+  TErrors extends BranchErrorMode = Record<string, never>,
+> {
+  readonly errors: ErrorFactories<ExplicitBranchErrorDefinitions<TErrors>>;
+}
 
 export interface StepAccessor<
   TArgsSchema extends StandardSchemaV1,
@@ -623,6 +648,41 @@ export interface BranchHandle<
   TScopePath extends ScopePath = ScopePath,
   TRoot extends RootScope = RootScope,
 > extends BranchEntry<T, TScopePath, TRoot> {}
+
+type EmptyObject<T> = keyof T extends never ? true : false;
+
+export type DefinedBranchResult<T, TErrors extends BranchErrorMode> =
+  TErrors extends "any"
+    ? { ok: true; result: T } | { ok: false; error: Failure }
+    : TErrors extends ErrorDefinitions
+      ? EmptyObject<TErrors> extends true
+        ? T
+        : { ok: true; result: T } | { ok: false; error: ErrorValue<TErrors> }
+      : T;
+
+type InferBranchArgsInput<B> = B extends BranchDefinition<infer TArgs, any, any>
+  ? SchemaInvocationInput<TArgs>
+  : never;
+
+type InferBranchResult<B> = B extends BranchDefinition<any, infer TResult, any>
+  ? StandardSchemaV1.InferOutput<TResult>
+  : never;
+
+type InferBranchErrors<B> = B extends BranchDefinition<any, any, infer TErrors>
+  ? TErrors
+  : Record<string, never>;
+
+export interface BranchAccessor<
+  B extends BranchDefinition<any, any, any>,
+  TScopePath extends ScopePath,
+  TRoot extends RootScope,
+> {
+  (args: InferBranchArgsInput<B>): BranchEntry<
+    DefinedBranchResult<InferBranchResult<B>, InferBranchErrors<B>>,
+    TScopePath,
+    TRoot
+  >;
+}
 
 /**
  * Maps closure entries to their corresponding branch handle types.
@@ -1311,20 +1371,33 @@ export interface ChildWorkflowAccessor<
 > {
   (
     options: AttachedChildWorkflowStartOptions<W>,
-  ): WorkflowEntry<AttachedChildWorkflowResult<InferWorkflowResult<W>>>;
+  ): WorkflowEntry<
+    AttachedChildWorkflowResult<
+      InferWorkflowResult<W>,
+      ErrorValue<InferWorkflowErrors<W>>
+    >
+  >;
 
   (
     options: AttachedChildWorkflowStartOptions<W>,
     opts: ChildWorkflowTimeoutCallOptions,
   ): WorkflowEntry<
-    | AttachedChildWorkflowResult<InferWorkflowResult<W>>
+    | AttachedChildWorkflowResult<
+        InferWorkflowResult<W>,
+        ErrorValue<InferWorkflowErrors<W>>
+      >
     | { ok: false; status: "timeout" }
   >;
 
   (
     options: AttachedChildWorkflowStartOptions<W>,
     opts: ChildWorkflowCallOptions,
-  ): WorkflowEntry<AttachedChildWorkflowResult<InferWorkflowResult<W>>>;
+  ): WorkflowEntry<
+    AttachedChildWorkflowResult<
+      InferWorkflowResult<W>,
+      ErrorValue<InferWorkflowErrors<W>>
+    >
+  >;
 
   /**
    * Start this child workflow in detached mode.
@@ -1340,9 +1413,9 @@ export interface ChildWorkflowAccessor<
   ): AwaitableEntry<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
 }
 
-export type AttachedChildWorkflowResult<T> =
+export type AttachedChildWorkflowResult<T, TError = unknown> =
   | { ok: true; result: T }
-  | { ok: false; status: "failed"; error: unknown };
+  | { ok: false; status: "failed"; error: TError };
 
 export interface RequestCallOptions {
   readonly priority?: number;
@@ -1889,6 +1962,8 @@ export interface WorkflowContext<
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
   TScopePath extends ScopePath = [],
+  TErrors extends ErrorDefinitions = Record<string, never>,
+  TBranches extends BranchDefinitions = Record<string, never>,
 > extends BaseContext<TState, TChannels, TStreams, TEvents, TPatches, TRng>,
     ExecutionResolver {
   /**
@@ -1949,6 +2024,14 @@ export interface WorkflowContext<
     [K in keyof TForeignWorkflows]: ForeignWorkflowAccessor<
       TForeignWorkflows[K]
     >;
+  };
+
+  /** Workflow-local business error factories. */
+  readonly errors: ErrorFactories<TErrors>;
+
+  /** Predefined workflow branch accessors. */
+  readonly branches: {
+    [K in keyof TBranches]: BranchAccessor<TBranches[K], TScopePath, ExecutionRoot>;
   };
 
   // ---------------------------------------------------------------------------
@@ -2181,6 +2264,8 @@ export interface WorkflowConcurrencyContext<
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
   TScopePath extends ScopePath = [],
+  TErrors extends ErrorDefinitions = Record<string, never>,
+  TBranches extends BranchDefinitions = Record<string, never>,
 > extends Omit<
   WorkflowContext<
     TState,
@@ -2193,7 +2278,9 @@ export interface WorkflowConcurrencyContext<
     TForeignWorkflows,
     TPatches,
     TRng,
-    TScopePath
+    TScopePath,
+    TErrors,
+    TBranches
   >,
   "scope" | "listen" | "join"
 >,
@@ -2650,3 +2737,9 @@ type InferWorkflowMetadataInput<W> = W extends {
     ? StandardSchemaV1.InferInput<TMetadataSchema>
     : void
   : void;
+
+type InferWorkflowErrors<W> = W extends { errors?: infer TErrors }
+  ? TErrors extends ErrorDefinitions
+    ? TErrors
+    : Record<string, never>
+  : Record<string, never>;

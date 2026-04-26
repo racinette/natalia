@@ -29,7 +29,7 @@ The changes are organized into two categories:
 7. **Context isolation** — isolated units of work receive only their declared args, dependencies, primitives, and local `errors`
 8. **Predefined branches and structured-concurrency consumption** — branches move from inline closures to definition-scoped entries with serializable args and queryable instances
 9. **Database schema** — workflow execution tree plus queryable branch invocations, compensation block instance trees, and parallel primitive tables
-10. `**idempotencyKeyFactory`** — derive idempotency keys from workflow args, make `idempotencyKey` required
+10. `**idempotencyKeyFactory`\*\* — derive idempotency keys from workflow args, make `idempotencyKey` required
 11. **Serializable step arguments** — `args` schema on `defineStep`, single object arg pattern, full observability
 
 ---
@@ -50,14 +50,12 @@ What is needed is a primitive where a workflow can post a typed request into a s
 
 ### Why existing primitives do not cover these cases
 
-
 | Need                             | Why existing primitives fall short                                                                                                                             |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Global work queue                | Channels are instance-bound; you must know the target. No competing-consumer semantics exist.                                                                  |
 | Delegated typed request-response | Steps require the workflow author to own the implementation. Foreign workflow channels require knowing the target instance and cannot return a typed response. |
 | Global ordered event log         | Streams are per-instance. No multi-producer, multi-consumer, offset-tracked log exists.                                                                        |
 | Observable current value         | Streams retain full history (expensive). Events are write-once flags with no value. Nothing models "current state" with change notification.                   |
-
 
 ### Why isolation drives the redesign
 
@@ -87,7 +85,7 @@ The Virtual Event Loop is the core mechanism for deterministic, replayable concu
 
 The execution tree is built from four primitives:
 
-- `**branch`** — a sequential execution path. Root branches have no parent scope (`scope_id IS NULL`) and serve as VEL entry points.
+- `**branch`\*\* — a sequential execution path. Root branches have no parent scope (`scope_id IS NULL`) and serve as VEL entry points.
 - `**scope**` — a structured concurrency boundary. Created by an `execute_scope` step.
 - `**step**` — an engine-level operation within a branch. The replayable durable execution action.
 - `**promise**` — a resolution token for blocking steps. Until resolved (successfully or with failure), the step does not complete.
@@ -105,20 +103,24 @@ The VEL executes all branches within a scope until every branch is blocked, then
 3. **Direct `await`** starts and observes an entry immediately in the current branch.
 4. **Entering a scope** starts the provided entries under structured-concurrency ownership. The scope body is treated as a parent-context orchestration body with a synthetic key (`MAIN_BRANCH`). Concurrent branches are the named entries passed to the scope.
 5. **Branch identity** is encoded as a `readonly BranchPathItem[]` key path representing the full nested scope lineage. Each item is `{ scope: string; branch: string | typeof MAIN_BRANCH }`, where `MAIN_BRANCH` is a module-level `unique symbol` export. For a scope `"A"` with branches `"foo"` and `"bar"`:
-  ```typescript
-   declare const MAIN_BRANCH: unique symbol;
 
-   [{ scope: "A", branch: MAIN_BRANCH }][{ scope: "A", branch: "bar" }][ // ← scope body
-     { scope: "A", branch: "foo" }
-   ];
-  ```
+```typescript
+declare const MAIN_BRANCH: unique symbol;
+
+[{ scope: "A", branch: MAIN_BRANCH }][{ scope: "A", branch: "bar" }][ // ← scope body
+  { scope: "A", branch: "foo" }
+];
+```
+
 6. **Branch execution.** Each branch executes until it reaches a blocking point (Tier 1 entry observation or Tier 2 await). The order in which the engine interleaves concurrent branches is an **implementation detail** and must not be relied upon. The only guarantee is that the interleaving is deterministic across replays — the same code produces the same step ordinals within each branch.
 7. **Buffered operations** are synchronous calls that do not trigger context switches. They buffer step records in memory without writing to the database. Stream writes, event sets, attribute sets, queue enqueues, topic publishes, foreign channel sends, compensation instance registration/promotion, and detached workflow starts execute inline within the current branch and do not yield.
 8. **Tier 2 operations** (`channel.receive`, `sleep`) block on external resolution. The engine buffers a step and promise record, then context-switches to the next branch.
 9. **Tier 1 operations** (steps, child workflows, requests) internally still require two-phase execution:
-  - **Start phase**: buffer a `start_step` / `start_child_workflow` / `send_request` step record and a promise. Context-switch. The actual work is NOT started yet.
-  - **Await phase**: buffer an `await_promise` step referencing the created promise. Context-switch.
-   The public API no longer exposes this as `.resolve(ctx)`. The awaited entry is the terminal surface.
+
+- **Start phase**: buffer a `start_step` / `start_child_workflow` / `send_request` step record and a promise. Context-switch. The actual work is NOT started yet.
+- **Await phase**: buffer an `await_promise` step referencing the created promise. Context-switch.
+  The public API no longer exposes this as `.resolve(ctx)`. The awaited entry is the terminal surface.
+
 10. **Awaitable reads** (`channel.receiveNowait`, `patch`) require database state to make a decision. These trigger a **flush**: the accumulated buffer is committed in a batch transaction, then the read is executed against the committed state. The branch continues with the result.
 11. **Batch commit.** When all branches are blocked, the engine commits the entire accumulated buffer of step records in a **single transaction**. Only after the commit does the engine start the actual side-effecting work: step coroutines, child workflow dispatches, request dispatches. This batching ensures atomicity (the batch fully commits or doesn't) and efficiency (fewer DB round-trips).
 12. **Promise resolution fetch.** All branches are blocked and all work has been dispatched. Fetch resolved promises from the database. Each promise records a `sequence_no` on resolution, assigned from a Postgres sequence protected by a per-VEL advisory lock. This ensures deterministic ordering: no two promises from the same VEL can resolve with the same or out-of-order sequence numbers.
@@ -131,7 +133,6 @@ The VEL executes all branches within a scope until every branch is blocked, then
 
 ### Buffered vs awaitable operations
 
-
 | Category                  | Operations                                                                                                                                                                                   | Behavior                                                                                                      |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | **Buffered**              | `stream.write`, `event.set`, `attribute.set`, `queue.enqueue`, `topic.publish`, `channel.send` (foreign), `register_compensation_instance`, `promote_compensation_instance`, `startDetached` | Synchronous. Buffers step record in memory. No context switch.                                                |
@@ -139,7 +140,6 @@ The VEL executes all branches within a scope until every branch is blocked, then
 | **Tier 1 entry**          | `steps.X(...)`, `childWorkflows.X(...)`, `requests.X(...)`, `branches.X(...)`                                                                                                                | Creates a typed entry. Direct `await` starts and observes it; scopes can start it under structural ownership. |
 | **Internal Tier 1 await** | observing a Tier 1 entry                                                                                                                                                                     | Buffers `await_promise`. Context-switches. Public `.resolve(ctx)` is removed.                                 |
 | **Awaitable read**        | `channel.receiveNowait`, `patch`                                                                                                                                                             | Triggers buffer flush. Reads from committed state. No context switch.                                         |
-
 
 ### Nested scopes
 
@@ -208,7 +208,6 @@ Both VELs are created at workflow start time. The compensation VEL may remain em
 
 ### Step types
 
-
 | Type                             | Category       | Creates promise | Has `promise_id` | Context switch |
 | -------------------------------- | -------------- | --------------- | ---------------- | -------------- |
 | `start_step`                     | Tier 1 (start) | yes             | no               | yes            |
@@ -231,8 +230,7 @@ Both VELs are created at workflow start time. The compensation VEL may remain em
 | `topic_publish`                  | buffered       | no              | no               | no             |
 | `start_detached`                 | buffered       | no              | no               | no             |
 
-
-Every real await point produces a promise, and the `await_promise` step references it via `promise_id`. The promise already knows its origin (via `promise.step_id` → the `start_`* step). The await step just says "I'm parked here until this promise resolves." This correctly models multi-branch sharing: two branches awaiting the same step's result both record `await_promise` pointing to the same `promise_id`.
+Every real await point produces a promise, and the `await_promise` step references it via `promise_id`. The promise already knows its origin (via `promise.step_id` → the `start_`\* step). The await step just says "I'm parked here until this promise resolves." This correctly models multi-branch sharing: two branches awaiting the same step's result both record `await_promise` pointing to the same `promise_id`.
 
 Buffered operations are synchronous calls in the public API — they do not return promises and are not `await`ed. They buffer step records in memory, which are committed in the next batch transaction. Awaitable reads (`receiveNowait`, `patch`) trigger a flush of the buffer before reading from committed state.
 
@@ -559,7 +557,6 @@ Branches are also isolated invocations with serializable args and results. A hal
 
 Whether a thrown value fails or halts depends on the local definition's error mode. The error model in Part 4 introduces a single local `errors` namespace and three branch modes (`"none"`, `"any"`, `"explicit"`).
 
-
 | Surrounding context                            | Throw recognized as failure                                                  | Anything else                     |
 | ---------------------------------------------- | ---------------------------------------------------------------------------- | --------------------------------- |
 | Workflow `execute` body                        | `ctx.errors.X(...)` from `defineWorkflow.errors`                             | execution halt                    |
@@ -569,7 +566,6 @@ Whether a thrown value fails or halts depends on the local definition's error mo
 | Branch with explicit `errors` map              | `ctx.errors.X(...)` for the branch's declared keys                           | branch halt                       |
 | Step/request timeout or child workflow failure | return-value union from the awaited entry                                    | no throw machinery involved       |
 | Compensation `undo`                            | no `ctx.errors`; return typed outcomes                                       | compensation block halt           |
-
 
 There is no cross-level error access. A branch cannot throw the workflow's declared errors because those factories are not present on its context.
 
@@ -593,12 +589,10 @@ The refactor separates three concerns:
 
 Every definition level that can intentionally fail declares a local `errors` map and receives a local `ctx.errors` namespace.
 
-
 | Level    | Declaration                                                                           | Effect of `ctx.errors.X(...)`                                |
 | -------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
 | Workflow | `defineWorkflow.errors`                                                               | Fails the workflow. Visible externally as `FailureInfo`.     |
 | Branch   | `defineWorkflow.branches.foo.errors` or `defineStep.compensation.branches.foo.errors` | Fails that branch. Captured at the parent consumption point. |
-
 
 There is no cross-level access. A branch cannot see the workflow's errors. A workflow body cannot see branch errors. If the same error name appears at both levels, they are independent declarations. This is a new typed failure surface; it is not a rename of an existing current API field.
 
@@ -634,13 +628,11 @@ type BranchErrors =
   | { [name: string]: JsonSchemaConstraint | true };
 ```
 
-
 | `errors` field      | Mode     | `ctx.errors` inside branch  | Consumption point                                  |
 | ------------------- | -------- | --------------------------- | -------------------------------------------------- |
 | omitted or `"none"` | none     | empty                       | unexpected throws halt the branch                  |
 | `"any"`             | any      | empty                       | any ordinary throw becomes `Failure`               |
 | explicit map        | explicit | factories for declared keys | declared throws become `ErrorValue<TBranchErrors>` |
-
 
 ```typescript
 branches: {
@@ -677,14 +669,14 @@ The workflow decides whether a branch failure should fail the whole workflow by 
 
 ```typescript
 class ExplicitError extends Error {
-  readonly errorCode: string;
+  readonly code: string;
   readonly details: unknown;
 }
 
 type ErrorValue<TErrors> = {
   [K in keyof TErrors & string]: {
     readonly type: "ExplicitError";
-    readonly errorCode: K;
+    readonly code: K;
     readonly message: string;
     readonly details: TErrors[K] extends true
       ? undefined
@@ -717,7 +709,6 @@ interface Attempt extends Failure {
 
 ### Per-context throw rules
 
-
 | Context                     | Recognized failure throws                                   | Anything else                   |
 | --------------------------- | ----------------------------------------------------------- | ------------------------------- |
 | Workflow `execute` body     | `ctx.errors.X(...)` from workflow errors                    | execution halt                  |
@@ -728,13 +719,12 @@ interface Attempt extends Failure {
 | Compensation `undo`         | none; typed return values model outcomes                    | compensation block halt         |
 | Compensation branch         | same branch modes as execution branches                     | compensation block branch halt  |
 
-
 ### External caller usage
 
 ```typescript
 const result = await client.workflows.order.execute({ ... });
 if (!result.ok && result.status === "failed") {
-  switch (result.error.errorCode) {
+  switch (result.error.code) {
     case "OrderInvalid":
       result.error.details.orderId;
       break;
@@ -748,7 +738,7 @@ if (!result.ok && result.status === "failed") {
 }
 ```
 
-There is no outer discriminant for error categories. The external caller discriminates on `errorCode` directly.
+There is no outer discriminant for error categories. The external caller discriminates on `code` directly.
 
 ### Compensation error model
 
@@ -931,7 +921,6 @@ interface RequestAccessor<TPayload, TResponse> {
 
 ### What disappears
 
-
 | Surface                                         | Replacement                                                                        |
 | ----------------------------------------------- | ---------------------------------------------------------------------------------- |
 | `.resolve(ctx)`                                 | direct `await` or structured-concurrency consumption                               |
@@ -943,7 +932,6 @@ interface RequestAccessor<TPayload, TResponse> {
 | `.compensate(cb)`                               | `defineStep.compensation` or `defineRequest.compensation`                          |
 | `DurableHandle` / `AtomicResult`                | small opaque awaitable entries                                                     |
 | `Called`, `TFail`, `TTimeout` chain bookkeeping | overloads based on options                                                         |
-
 
 ---
 
@@ -962,7 +950,6 @@ Each isolated unit of work gets a context whose syntax reflects what the unit is
 
 Compensation block primitive state is declared on the compensable step and materialized per invocation. The current workflow-wide compensation hooks and ad hoc `addCompensation` registration do not survive as public API surfaces.
 
-
 | Primitive        | Workflow execution              | Step compensation block                    |
 | ---------------- | ------------------------------- | ------------------------------------------ |
 | `ctx.channels`   | workflow instance channels      | compensation block instance channels       |
@@ -971,7 +958,6 @@ Compensation block primitive state is declared on the compensable step and mater
 | `ctx.attributes` | workflow instance attributes    | compensation block instance attributes     |
 | `ctx.branches`   | `defineWorkflow.branches`       | `defineStep.compensation.branches`         |
 | `ctx.errors`     | workflow or branch-local errors | branch-local errors only; absent in `undo` |
-
 
 The execution VEL cannot read or write compensation block primitives, and a compensation block cannot read or write workflow primitives unless coordination is exposed through an explicit global primitive such as a request, topic, queue, or child workflow.
 
@@ -1395,18 +1381,16 @@ Equality comparisons (`eq`, `ne`, `in`, `notIn`) remain available for all scalar
 
 **Sorting** follows the same rule: only fields with a homogeneous comparable type can appear in `sort` clauses. `MetaSortablePath` is now `MetaComparablePath` (was `MetaAnyPath`).
 
-
 | Field type          | Equality (`eq`/`ne`/`in`/`notIn`)      | Range (`gt`/`gte`/`lt`/`lte`) | Sort |
-| ------------------- | -------------------------------------- | ----------------------------- | ---- |
+| ------------------- | -------------------------------------- | ----------------------------- | ---- | --- |
 | `string`            | yes                                    | yes                           | yes  |
 | `number`            | yes                                    | yes                           | yes  |
 | `boolean`           | yes                                    | no                            | no   |
 | `null`              | yes                                    | no                            | no   |
-| `string | null`     | yes                                    | no                            | no   |
-| `string | number`   | yes                                    | no                            | no   |
-| `string | object`   | yes                                    | no                            | no   |
+| `string             | null`                                  | yes                           | no   | no  |
+| `string             | number`                                | yes                           | no   | no  |
+| `string             | object`                                | yes                           | no   | no  |
 | `readonly string[]` | `contains`/`containsAny`/`containsAll` | no                            | no   |
-
 
 ---
 
@@ -1538,7 +1522,7 @@ const unsubscribe = dl.listen(
 );
 ```
 
-`**DeadLetterHandle<TMessage>` methods:** `list`, `count`, `redrive`, `redriveAll`, `discard`, `discardAll`, `listen`.
+`**DeadLetterHandle<TMessage>` methods:\*\* `list`, `count`, `redrive`, `redriveAll`, `discard`, `discardAll`, `listen`.
 
 **Redrive TTL behavior:** On redrive, `status` resets to `pending`, `attempt_count` resets to zero, `priority` is preserved. If `ttl` provided, `expires_at = NOW() + ttl`; if `ttl: null`, never expires; if omitted, `defaultTTL` re-applied.
 
@@ -2059,7 +2043,7 @@ Each row comes back with `affected_consumers: { "analyticsConsumer": true, "bill
 - `registration.onRegistered` — called when the consumer successfully acquires the advisory lock and becomes active. Useful for logging, metrics, readiness probes. Purely runtime notification.
 - `registration.onError` — called when a registration attempt fails (e.g., advisory lock conflict). Purely runtime notification.
 
-`**neverExpire` option:**
+`**neverExpire` option:\*\*
 
 When `neverExpire: true`, the topic's retention purge will not delete records that this consumer has not yet processed. The consumer's offset is guaranteed to always point to valid records — the `offsetExpired` event can never fire.
 
@@ -2083,12 +2067,10 @@ When record processing exhausts its `retryPolicy.maxAttempts` or (when `neverExp
 
 **Defaults when `onConsumeError` is omitted:**
 
-
 | Event type          | Default behavior |
 | ------------------- | ---------------- |
 | `attemptsExhausted` | `"halt"`         |
 | `offsetExpired`     | `"skip"`         |
-
 
 `"halt"` for exhausted attempts is the safe default — it prevents silently dropping messages that may need attention. `"skip"` for expired offsets is the only viable option — the records are gone.
 
@@ -2139,7 +2121,7 @@ const unregister = client.registerBatchTopicConsumer(
 );
 ```
 
-`**TopicRecord` type:**
+`**TopicRecord` type:\*\*
 
 ```typescript
 interface TopicRecord<TPayload, TMetadata> {
@@ -2153,14 +2135,12 @@ Both the single-record consumer and the batch consumer receive records of this s
 
 **Batch options:**
 
-
 | Setting             | Required | Default     | Purpose                                                                                                                                                                                              |
 | ------------------- | -------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `maxRecords`        | yes      | —           | Upper bound on batch size. Maps to SQL `LIMIT`. Controls memory and handler timeout budget.                                                                                                          |
 | `intervalSeconds`   | yes      | —           | Polling frequency. Every N seconds, query for available records.                                                                                                                                     |
 | `minRecords`        | no       | `1`         | Minimum records to trigger the handler. If fewer are available, skip this tick.                                                                                                                      |
 | `flushAfterSeconds` | no       | `undefined` | Force-invoke even below `minRecords` if this duration has elapsed since the last successful handler invocation. Prevents indefinite stalling on low-throughput topics with a `minRecords` threshold. |
-
 
 **Polling loop:**
 
@@ -2299,13 +2279,13 @@ When a `Date` is provided, the receive blocks until a message arrives or the abs
 
 **Rename `StepErrorAccessor` → `AttemptAccessor`:** shared interface for lazy access to per-attempt records across steps, queue dead-lettered messages, topic consumer failures, and request handler failures.
 
-**Introduce `Failure` (base) and `Attempt extends Failure` (with `attempt: number`).** The previous single `StepExecutionError` type leaked the step origin into a type shared across all attempt-bearing contexts and conflated *captured throws with no retry context* (what a mode-`"any"` branch surfaces — a single throw, no attempt number) with *captured throws inside a retried operation* (what a step / queue handler / request handler / topic consumer surfaces — one record per attempt with a 1-indexed number). Splitting into `Failure` (the base) and `Attempt extends Failure` (the retried-operation extension) makes both contexts type-correct without losing field reuse.
+**Introduce `Failure` (base) and `Attempt extends Failure` (with `attempt: number`).** The previous single `StepExecutionError` type leaked the step origin into a type shared across all attempt-bearing contexts and conflated _captured throws with no retry context_ (what a mode-`"any"` branch surfaces — a single throw, no attempt number) with _captured throws inside a retried operation_ (what a step / queue handler / request handler / topic consumer surfaces — one record per attempt with a 1-indexed number). Splitting into `Failure` (the base) and `Attempt extends Failure` (the retried-operation extension) makes both contexts type-correct without losing field reuse.
 
 **Introduce `AttemptError` class:** a throwable `Error` subclass that handlers can use to attach structured, JSON-serializable details to failures. When the engine catches an `AttemptError`, it persists `type`, `message`, and `details` directly. When it catches a plain `Error`, it extracts `message` and `constructor.name`. When it catches any other thrown value, it best-efforts `String(thrown)` for the message. This means all error fields on `Failure` (and therefore `Attempt`) are nullable — JavaScript's `throw` can throw anything, including values with no message, no type, and no details.
 
 **Unify attempt record shape:** all attempt-bearing subsystems (steps, queue handlers, topic consumers, request handlers) share the same DB column pattern: `attempt`, `error_message`, `error_type`, `error_details`, `started_at`, `failed_at`. Error columns are nullable (a thrown `undefined` or an abruptly terminated attempt has no error info). The public type reflects this with `startedAt` and `failedAt` (both `Date`), replacing the old single `timestamp` field. This captures duration — useful for diagnosing slow failures vs immediate crashes.
 
-`**count` property → `count()` async method:** consistent with the fully lazy interface.
+`**count` property → `count()` async method:\*\* consistent with the fully lazy interface.
 
 **Compensation attempt access:** `CompensationInfo` exposes `.attempts` on observed forward outcomes so undo logic can inspect retry history when a timeout or termination leaves side effects uncertain.
 
@@ -2332,15 +2312,13 @@ class AttemptError extends Error {
 
 The same rules apply to producing both `Failure` records (for any throw captured by a mode-`"any"` branch — see Part 4) and `Attempt` records (for steps, queue handlers, request handlers, topic consumers — one row per attempt). The only difference between the two contexts is that `Attempt` adds the `attempt: number` (1-indexed) on top of the `Failure` shape.
 
-
-| Thrown value             | `type`                                                                                           | `message`        | `details`                |
-| ------------------------ | ------------------------------------------------------------------------------------------------ | ---------------- | ------------------------ |
-| `AttemptError` instance  | `.type`                                                                                          | `.message`       | `.details`               |
-| `ExplicitError` instance | `"ExplicitError"` (or `null` for non-`AttemptError` `Error` subclasses, depending on serializer) | `.message`       | `{ errorCode, details }` |
-| `Error` instance         | `.constructor.name`                                                                              | `.message`       | `null`                   |
-| `string`                 | `null`                                                                                           | the string       | `null`                   |
-| anything else            | `null`                                                                                           | `String(thrown)` | `null`                   |
-
+| Thrown value             | `type`                                                                                           | `message`        | `details`           |
+| ------------------------ | ------------------------------------------------------------------------------------------------ | ---------------- | ------------------- |
+| `AttemptError` instance  | `.type`                                                                                          | `.message`       | `.details`          |
+| `ExplicitError` instance | `"ExplicitError"` (or `null` for non-`AttemptError` `Error` subclasses, depending on serializer) | `.message`       | `{ code, details }` |
+| `Error` instance         | `.constructor.name`                                                                              | `.message`       | `null`              |
+| `string`                 | `null`                                                                                           | the string       | `null`              |
+| anything else            | `null`                                                                                           | `String(thrown)` | `null`              |
 
 ### `Failure` (base record — captured single throw)
 
@@ -2432,13 +2410,11 @@ client.registerTopicConsumer(auditTopic, "analyticsConsumer", async ({ signal },
 
 **Distinction from regular exceptions:**
 
-
 | Thrown value         | Queue behavior                                         | Topic behavior                                         |
 | -------------------- | ------------------------------------------------------ | ------------------------------------------------------ |
 | Regular `Error`      | Retry per `retryPolicy`                                | Retry per `retryPolicy`                                |
 | `UnrecoverableError` | Dead-letter immediately                                | `onConsumeError("attemptsExhausted")` immediately      |
 | `AttemptError`       | Retry per `retryPolicy` (structured details persisted) | Retry per `retryPolicy` (structured details persisted) |
-
 
 `UnrecoverableError` is NOT applicable to request handlers — use `return MANUAL` instead. Requests have a fundamentally different exhaustion semantic (manual mode vs dead-letter).
 
@@ -2653,7 +2629,6 @@ defineStep({
 
 ### Context changes
 
-
 | Change                                                              | Details                                                                                            |
 | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `ctx.steps.X(args, opts?)`                                          | Returns an awaitable entry. No builder chain. Timeout via `{ timeout }`.                           |
@@ -2668,7 +2643,6 @@ defineStep({
 | `ctx.match(handles)`                                                | Async iterable of keyed/indexed/map-keyed completions. No handler form.                            |
 | `ctx.join(handle, opts?)`                                           | Observes one handle; optional timeout only times out observation.                                  |
 | `ctx.all` / `ctx.first` / `ctx.atLeast` / `ctx.atMost` / `ctx.best` | Directly awaitable structured-concurrency helpers over generalized entries.                        |
-
 
 Removed context APIs:
 

@@ -20,6 +20,7 @@ import type {
   ExecutionResultExternal,
   CompensationResultExternal,
   WorkflowResult,
+  ErrorValue,
   ExternalWaitOptions,
 } from "./results";
 import type {
@@ -29,6 +30,7 @@ import type {
   InferWorkflowEvents,
   InferWorkflowArgsInput,
   InferWorkflowMetadataInput,
+  InferWorkflowErrors,
 } from "./helpers";
 import type {
   SearchMetadataFromInput,
@@ -101,7 +103,7 @@ export interface PhaseLifecycleEventsExternal {
 /**
  * Execution phase accessors on an external workflow handle.
  */
-export interface ExecutionHandleExternal<TResult> {
+export interface ExecutionHandleExternal<TResult, TError = unknown> {
   /**
    * Execution phase lifecycle.
    */
@@ -110,7 +112,7 @@ export interface ExecutionHandleExternal<TResult> {
   /**
    * Wait for execution phase terminal outcome and return typed result payload.
    */
-  wait(options?: ExternalWaitOptions): Promise<ExecutionResultExternal<TResult>>;
+  wait(options?: ExternalWaitOptions): Promise<ExecutionResultExternal<TResult, TError>>;
 }
 
 /**
@@ -192,6 +194,7 @@ export interface StreamReaderAccessorExternal<T> extends AsyncIterable<T> {
  */
 export interface WorkflowHandleExternal<
   TResult,
+  TError,
   TChannels extends ChannelDefinitions,
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
@@ -226,7 +229,7 @@ export interface WorkflowHandleExternal<
   };
 
   /** Execution phase accessors. */
-  readonly execution: ExecutionHandleExternal<TResult>;
+  readonly execution: ExecutionHandleExternal<TResult, TError>;
   /** Compensation phase accessors. */
   readonly compensation: CompensationHandleExternal;
 
@@ -282,6 +285,7 @@ export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader> {
   ): Promise<
     WorkflowHandleExternal<
       InferWorkflowResult<W>,
+      ErrorValue<InferWorkflowErrors<W>>,
       InferWorkflowChannels<W>,
       InferWorkflowStreams<W>,
       InferWorkflowEvents<W>
@@ -297,7 +301,12 @@ export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader> {
       InferWorkflowArgsInput<W>,
       InferWorkflowMetadataInput<W>
     >,
-  ): Promise<WorkflowResult<InferWorkflowResult<W>>>;
+  ): Promise<
+    WorkflowResult<
+      InferWorkflowResult<W>,
+      ErrorValue<InferWorkflowErrors<W>>
+    >
+  >;
 
   /**
    * Get an external handle to an existing workflow instance.
@@ -306,6 +315,7 @@ export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader> {
     idempotencyKey: string,
   ): WorkflowHandleExternal<
     InferWorkflowResult<W>,
+    ErrorValue<InferWorkflowErrors<W>>,
     InferWorkflowChannels<W>,
     InferWorkflowStreams<W>,
     InferWorkflowEvents<W>

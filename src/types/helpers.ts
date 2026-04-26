@@ -4,6 +4,7 @@ import type {
   ChannelDefinitions,
   StreamDefinitions,
   EventDefinitions,
+  ErrorDefinitions,
 } from "./definitions";
 
 // =============================================================================
@@ -82,11 +83,21 @@ export type InferWorkflowMetadataInput<W> = W extends {
   : void;
 
 /**
+ * Extract declared workflow business errors.
+ */
+export type InferWorkflowErrors<W> = W extends { errors?: infer TErrors }
+  ? TErrors extends ErrorDefinitions
+    ? TErrors
+    : Record<string, never>
+  : Record<string, never>;
+
+/**
  * Extract state type from workflow definition.
  */
 export type InferWorkflowState<W> =
   W extends WorkflowDefinition<
     infer TState,
+    any,
     any,
     any,
     any,

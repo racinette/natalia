@@ -1,6 +1,68 @@
+import type { JsonInput } from "./json-input";
+import type { StandardSchemaV1 } from "./standard-schema";
+
 // =============================================================================
 // ERROR TYPES
 // =============================================================================
+
+/**
+ * Throwable business error created by `ctx.errors.X(...)`.
+ *
+ * The engine recognizes these only against the local definition's declared
+ * error map and serializes them as `ErrorValue<TErrorDefinitions>`.
+ */
+export class ExplicitError<
+  TCode extends string = string,
+  TDetails = unknown,
+> extends Error {
+  readonly code: TCode;
+  readonly details: TDetails;
+
+  constructor(code: TCode, message: string, details: TDetails) {
+    super(message);
+    this.name = "ExplicitError";
+    this.code = code;
+    this.details = details;
+  }
+}
+
+/**
+ * Serializable representation of a declared business error.
+ */
+export type ErrorValue<TErrors> = {
+  [K in keyof TErrors & string]: {
+    readonly code: K;
+    readonly message: string;
+    readonly details: TErrors[K] extends true
+      ? undefined
+      : TErrors[K] extends StandardSchemaV1<unknown, unknown>
+        ? StandardSchemaV1.InferOutput<TErrors[K]>
+        : never;
+  };
+}[keyof TErrors & string];
+
+/**
+ * Workflow failure surface visible to external callers.
+ */
+export type FailureInfo<TWorkflowErrors> = ErrorValue<TWorkflowErrors>;
+
+/**
+ * Base captured-throw record for non-explicit failures.
+ */
+export interface Failure {
+  readonly startedAt: Date;
+  readonly failedAt: Date;
+  readonly message: string | null;
+  readonly type: string | null;
+  readonly details: JsonInput | undefined;
+}
+
+/**
+ * Retried operations extend `Failure` with an attempt number.
+ */
+export interface Attempt extends Failure {
+  readonly attempt: number;
+}
 
 /**
  * Serializable error object for a single step attempt.
@@ -117,9 +179,9 @@ export type ChildWorkflowCompensationResult<T> =
  * Retains full discriminated union with `ok` field — engine callers need
  * explicit outcome handling.
  */
-export type WorkflowResult<T> =
+export type WorkflowResult<T, TError = WorkflowExecutionError> =
   | { ok: true; status: "complete"; data: T }
-  | { ok: false; status: "failed"; error: WorkflowExecutionError }
+  | { ok: false; status: "failed"; error: TError }
   | {
       ok: false;
       status: "terminated";
@@ -129,9 +191,9 @@ export type WorkflowResult<T> =
 /**
  * Result of waiting for execution phase terminal outcome (engine level).
  */
-export type ExecutionResultExternal<TResult> =
+export type ExecutionResultExternal<TResult, TError = WorkflowExecutionError> =
   | { ok: true; status: "complete"; data: TResult }
-  | { ok: false; status: "failed"; error: WorkflowExecutionError }
+  | { ok: false; status: "failed"; error: TError }
   | {
       ok: false;
       status: "terminated";
