@@ -18,8 +18,8 @@
  * `scheduleHandle.sleep()`, `lifecycleEvent.wait()`.
  * Can be `await`-ed directly OR passed as a scope entry to `ctx.scope()` / `ctx.all()`.
  *
- * **Tier 3 — Directly awaitable, NOT a scope entry (`AtomicResult<T>`):**
- * Atomic operations synchronous at the engine level:
+ * **Tier 3 — Atomic/buffered, NOT a scope entry:**
+ * Atomic reads/writes and buffered starts synchronous at the engine level:
  * `ctx.streams.X.write()`, `ctx.events.X.set()`, `ctx.patches.X`,
  * `foreignHandle.channels.X.send()`, `ctx.channels.X.receiveNowait()`,
  * `ctx.childWorkflows.X.startDetached()`, `lifecycleEvent.get()`.
@@ -106,8 +106,8 @@
  * - Child workflows: ctx.childWorkflows.* — structured invocation (WorkflowCall<T> opaque handle).
  *     Supports .compensate(), .failure(), .complete() in result mode.
  *     Resolve via: `await ctx.childWorkflows.myWorkflow(opts).complete(cb).resolve(ctx)`.
- *     Use `.startDetached(opts)` for fire-and-forget start — returns `AtomicResult<ForeignWorkflowHandle>`,
- *     directly awaitable: `const handle = await ctx.childWorkflows.myWorkflow.startDetached(opts)`.
+ *     Use `.startDetached(opts)` for fire-and-forget start — returns `ForeignWorkflowHandle`
+ *     synchronously: `const handle = ctx.childWorkflows.myWorkflow.startDetached(opts)`.
  * - Foreign workflows: ctx.foreignWorkflows.* — message-only handles to existing instances.
  *     Only channels.send() is available — no lifecycle coupling.
  *     Directly awaitable: `await existing.channels.nudge.send(msg)`.

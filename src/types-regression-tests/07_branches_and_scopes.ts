@@ -28,9 +28,21 @@ const fraudBranch = defineBranch({
   },
 });
 
+const followUpWorkflow = defineWorkflow({
+  name: "branchesAndScopesFollowUp",
+  args: z.object({ orderId: z.string() }),
+  result: z.object({ ok: z.boolean() }),
+  async execute(_ctx, _args) {
+    return { ok: true };
+  },
+});
+
 export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
   name: "branchesAndScopesAcceptance",
   args: z.object({ orderId: z.string() }),
+  childWorkflows: {
+    followUp: followUpWorkflow,
+  },
   branches: {
     quote: quoteBranch,
     fraud: fraudBranch,
@@ -44,6 +56,12 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
     ctx.branches.quote({ provider: 123 });
     // @ts-expect-error inline branch closures are no longer scope entries
     await ctx.scope("InlineRejected", { bad: async () => ({ ok: true }) }, async () => undefined);
+
+    const detached = ctx.childWorkflows.followUp.startDetached({
+      args: { orderId: args.orderId },
+    });
+    // @ts-expect-error detached child workflow starts are buffered operations, not scope entries
+    await ctx.scope("DetachedRejected", { detached }, async () => undefined);
 
     const scopedObject = await ctx.scope(
       "ObjectScope",

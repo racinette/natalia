@@ -904,7 +904,7 @@ interface ChildWorkflowAccessor<W extends AnyWorkflowHeader> {
   >;
   startDetached(
     opts: DetachedStartOptions<W>,
-  ): PromiseLike<ForeignWorkflowHandle<W>>;
+  ): ForeignWorkflowHandle<W>;
 }
 
 interface RequestAccessor<TPayload, TResponse> {
@@ -1042,6 +1042,8 @@ type ConcurrentEntry =
 ```
 
 Direct `await` starts and observes an entry. A scope starts entries under structural ownership and passes handles to the body.
+
+Detached child workflow starts are not entries. `startDetached` is a buffered synchronous operation that returns a foreign workflow handle immediately and cannot be passed to structured-concurrency scopes.
 
 ### Scope input structure
 
@@ -2451,7 +2453,7 @@ const handle = await client.workflows.order.start({
   args: { destination: "Paris", customerId: "cust-123" },
 });
 
-await ctx.childWorkflows.followUp.startDetached({
+ctx.childWorkflows.followUp.startDetached({
   idempotencyKey: "follow-up-next-day",
   delaySeconds: 86400,
   args: { parentId: ctx.instanceId },

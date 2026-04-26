@@ -636,7 +636,11 @@ export type EntryResult<E> = E extends AwaitableEntry<infer T> ? T : never;
  * intentionally not accepted; isolated branches are declared up front and
  * instantiated through `ctx.branches`.
  */
-export type ScopeEntry<T = unknown> = AwaitableEntry<T>;
+export type ScopeEntry<T = unknown> =
+  | StepEntry<T>
+  | RequestEntry<T>
+  | WorkflowEntry<T>
+  | BranchEntry<T, any, any>;
 
 export type ScopeEntryPropertyStructure =
   | ScopeEntry
@@ -1559,11 +1563,12 @@ export interface ChildWorkflowAccessor<
    * lifecycle is not managed. Returns a `ForeignWorkflowHandle` for fire-and-forget
    * channel messaging.
    *
-   * This is an atomic, synchronous-at-engine-level operation — directly awaitable.
+   * This is a buffered, synchronous-at-engine-level operation. It does not
+   * create an awaitable scope entry and does not yield.
    */
   startDetached(
     options: DetachedStartOptions<W>,
-  ): AwaitableEntry<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
+  ): ForeignWorkflowHandle<InferWorkflowChannels<W>>;
 }
 
 export type AttachedChildWorkflowResult<T, TError = unknown> =

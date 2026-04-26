@@ -60,14 +60,14 @@ export const scheduledDeliveryAcceptanceWorkflow = defineWorkflow({
       >
     >;
 
-    await ctx.childWorkflows.followUp.startDetached({
+    ctx.childWorkflows.followUp.startDetached({
       idempotencyKey: "follow-up-detached",
       args: { parentId: "parent-2" },
       scheduledAt: new Date("2027-01-01T00:00:00.000Z"),
     });
 
     // @ts-expect-error child workflow schedule accepts one scheduling mode
-    await ctx.childWorkflows.followUp.startDetached({
+    ctx.childWorkflows.followUp.startDetached({
       idempotencyKey: "bad-schedule",
       args: { parentId: "parent-3" },
       delaySeconds: 10,

@@ -80,12 +80,12 @@ const parentWorkflow = defineWorkflow({
       args: { orderId: "o-4", requestedAt: "2027-01-01T00:00:00.000Z" },
     });
 
-    await ctx.childWorkflows.withFactory.startDetached({
+    ctx.childWorkflows.withFactory.startDetached({
       args: { orderId: "o-5", requestedAt: "2027-01-01T00:00:00.000Z" },
     });
 
     // @ts-expect-error detached child without factory requires idempotencyKey
-    await ctx.childWorkflows.withoutFactory.startDetached({
+    ctx.childWorkflows.withoutFactory.startDetached({
       args: { orderId: "o-6", requestedAt: "2027-01-01T00:00:00.000Z" },
     });
 
