@@ -147,7 +147,12 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
       },
     );
 
-    const all = await ctx.all({
+    // @ts-expect-error convenience scopes must be named
+    await ctx.all({
+      quote: ctx.branches.quote({ provider: "unnamed-all" }),
+    });
+
+    const all = await ctx.all("AllQuotes", {
       quote: ctx.branches.quote({ provider: "all" }),
       fraud: ctx.branches.fraud({ orderId: args.orderId }),
     });
@@ -161,7 +166,7 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
       >
     >;
 
-    const first = await ctx.first({
+    const first = await ctx.first("FirstQuote", {
       quote: ctx.branches.quote({ provider: "first" }),
       fraud: ctx.branches.fraud({ orderId: args.orderId }),
     });
@@ -173,15 +178,15 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
       >
     >;
 
-    await ctx.atLeast(1, {
+    await ctx.atLeast("AtLeastQuotes", 1, {
       quote: ctx.branches.quote({ provider: "atLeast" }),
       fraud: ctx.branches.fraud({ orderId: args.orderId }),
     });
-    await ctx.atMost(1, {
+    await ctx.atMost("AtMostQuotes", 1, {
       quote: ctx.branches.quote({ provider: "atMost" }),
       fraud: ctx.branches.fraud({ orderId: args.orderId }),
     });
-    await ctx.best({
+    await ctx.best("BestQuote", {
       quote: ctx.branches.quote({ provider: "best" }),
       fraud: ctx.branches.fraud({ orderId: args.orderId }),
     });

@@ -1953,9 +1953,10 @@ export interface CompensationContext<
    * Run all entries concurrently and return all resolved values.
    *
    * Each entry is `(ctx: CompensationContext<...>) => Promise<T>`.
-   * Resolve: `await ctx.all(entries).resolve(ctx)`.
+   * Resolve: `await ctx.all("Name", entries).resolve(ctx)`.
    */
-  all<E>(
+  all<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<ScopeSuccessResults<E>>;
@@ -1964,29 +1965,33 @@ export interface CompensationContext<
    * Run all entries concurrently and return the first to complete.
    *
    * Each entry is `(ctx: CompensationContext<...>) => Promise<T>`.
-   * Resolve: `await ctx.first(entries).resolve(ctx)`.
+   * Resolve: `await ctx.first("Name", entries).resolve(ctx)`.
    * Returns `{ key, result }` discriminated union.
    *
    * If all branches fail, the scope fails unless `.failure(cb)` is provided.
    */
-  first<E>(
+  first<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<FirstResult<E>>;
 
-  atLeast<E>(
+  atLeast<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     count: number,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<ScopeSuccessResults<E>>;
 
-  atMost<E>(
+  atMost<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     count: number,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<PartialScopeSuccessResults<E>>;
 
-  best<E>(
+  best<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<PartialScopeSuccessResults<E>>;
@@ -2246,9 +2251,10 @@ export interface WorkflowContext<
    * Run all entries concurrently and return all resolved values.
    *
    * Each entry is `(ctx: WorkflowContext<...>) => Promise<T>`.
-   * Resolve: `await ctx.all(entries).resolve(ctx)`.
+   * Resolve: `await ctx.all("Name", entries).resolve(ctx)`.
    */
-  all<E>(
+  all<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<ScopeSuccessResults<E>>;
@@ -2257,29 +2263,33 @@ export interface WorkflowContext<
    * Run all entries concurrently and return the first to complete.
    *
    * Each entry is `(ctx: WorkflowContext<...>) => Promise<T>`.
-   * Resolve: `await ctx.first(entries).resolve(ctx)`.
+   * Resolve: `await ctx.first("Name", entries).resolve(ctx)`.
    * Returns `{ key, result }` discriminated union.
    *
    * If all branches fail, the scope fails unless `.failure(cb)` is provided.
    */
-  first<E>(
+  first<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<FirstResult<E>>;
 
-  atLeast<E>(
+  atLeast<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     count: number,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<ScopeSuccessResults<E>>;
 
-  atMost<E>(
+  atMost<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     count: number,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<PartialScopeSuccessResults<E>>;
 
-  best<E>(
+  best<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<PartialScopeSuccessResults<E>>;
@@ -2426,9 +2436,10 @@ export interface WorkflowConcurrencyContext<
    * Run all entries concurrently and return all resolved values.
    *
    * Each entry is `(ctx: WorkflowContext<...>) => Promise<T>`.
-   * Resolve: `await ctx.all(entries).resolve(ctx)`.
+   * Resolve: `await ctx.all("Name", entries).resolve(ctx)`.
    */
-  all<E>(
+  all<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<ScopeSuccessResults<E>>;
@@ -2436,29 +2447,33 @@ export interface WorkflowConcurrencyContext<
   /**
    * Run all entries concurrently and return the first to complete.
    *
-   * Resolve: `await ctx.first(entries).resolve(ctx)`.
+   * Resolve: `await ctx.first("Name", entries).resolve(ctx)`.
    * Returns `{ key, result }` discriminated union.
    *
    * If all branches fail, the scope fails unless `.failure(cb)` is provided.
    */
-  first<E>(
+  first<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<FirstResult<E>>;
 
-  atLeast<E>(
+  atLeast<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     count: number,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<ScopeSuccessResults<E>>;
 
-  atMost<E>(
+  atMost<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     count: number,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<PartialScopeSuccessResults<E>>;
 
-  best<E>(
+  best<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<PartialScopeSuccessResults<E>>;
@@ -2579,9 +2594,10 @@ export interface CompensationConcurrencyContext<
    * Run all entries concurrently and return all resolved values.
    *
    * Each entry is `(ctx: CompensationContext<...>) => Promise<T>`.
-   * Resolve: `await ctx.all(entries).resolve(ctx)`.
+   * Resolve: `await ctx.all("Name", entries).resolve(ctx)`.
    */
-  all<E>(
+  all<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<ScopeSuccessResults<E>>;
@@ -2589,29 +2605,33 @@ export interface CompensationConcurrencyContext<
   /**
    * Run all entries concurrently and return the first to complete.
    *
-   * Resolve: `await ctx.first(entries).resolve(ctx)`.
+   * Resolve: `await ctx.first("Name", entries).resolve(ctx)`.
    * Returns `{ key, result }` discriminated union.
    *
    * If all branches fail, the scope fails unless `.failure(cb)` is provided.
    */
-  first<E>(
+  first<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<FirstResult<E>>;
 
-  atLeast<E>(
+  atLeast<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     count: number,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<ScopeSuccessResults<E>>;
 
-  atMost<E>(
+  atMost<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     count: number,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<PartialScopeSuccessResults<E>>;
 
-  best<E>(
+  best<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
     entries: E,
     ..._check: ScopeEntryValidation<E>
   ): AwaitableEntry<PartialScopeSuccessResults<E>>;

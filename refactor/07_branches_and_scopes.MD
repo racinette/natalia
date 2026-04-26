@@ -20,7 +20,7 @@ Move structured concurrency to predefined, isolated branch definitions and gener
 - Externally skipped branch instances are observed by workflow code as successful results; `skipped` is an external query status, not a workflow-facing join outcome.
 - `ctx.match(handles)` is an async iterable keyed by top-level object properties; tuple/array properties add `index`, and map properties add `mapKey`.
 - Handler forms on `ctx.match` are removed; failure recovery happens in normal code.
-- Convenience APIs exist for `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.best`.
+- Convenience APIs exist for `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.best`; each takes an explicit scope name as its first argument.
 - Branch instances are externally queryable and can report `complete`, `failed`, `running`, `halted`, or `skipped` as appropriate.
 
 ## Affected Areas
@@ -33,4 +33,4 @@ Move structured concurrency to predefined, isolated branch definitions and gener
 
 ## Acceptance Contract
 
-The paired file `refactor/07_branches_and_scopes.ts` verifies branch definition inference, top-level object scope input, tuple/map property entries, `join` and `match` result shapes, removed inline branch closures, and failure/status unions.
+The paired file `refactor/07_branches_and_scopes.ts` verifies branch definition inference, top-level object scope input, tuple/map property entries, named convenience scopes, `join` and `match` result shapes, removed inline branch closures, and failure/status unions.

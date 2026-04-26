@@ -51,7 +51,7 @@
  *     Each `ctx` is a path-specialized base context (WorkflowContext or CompensationContext)
  *     with scope path `AppendBranchKey<AppendScopeName<ParentPath, Name>, K>`.
  *     This enables compile-time tracking of which branches created which nested scope handles.
- *     Fan-out: use `ctx.all({...}).resolve(ctx)` inside closures.
+ *     Fan-out: use `ctx.all("Name", {...}).resolve(ctx)` inside closures.
  *     scope() returns ScopeCall<R, never, TSteps, TChildWorkflows, Root>.
  *     Resolve: `await ctx.scope("Name", entries, callback).resolve(ctx)`
  *
@@ -95,13 +95,13 @@
  *     Handler forms for BranchHandle keys: plain function | { complete, failure } | { complete } | { failure }.
  *     Channel inputs: ChannelHandle = streaming; ChannelReceiveCall = one-shot.
  *
- * - all: `ctx.all(entries)` for "run all and collect results".
+ * - all: `ctx.all(name, entries)` for "run all and collect results".
  *     Entries are closure-only: each is `(ctx) => Promise<T>`.
- *     Resolve: `await ctx.all(entries).resolve(ctx)`.
+ *     Resolve: `await ctx.all("Name", entries).resolve(ctx)`.
  *
- * - first: `ctx.first(entries)` for "run all, return the first to complete".
+ * - first: `ctx.first(name, entries)` for "run all, return the first to complete".
  *     Entries are closure-only. Returns `FirstCall<FirstResult<E>, E>`.
- *     Resolve: `await ctx.first(entries).resolve(ctx)` → `{ key: K; result: T }`.
+ *     Resolve: `await ctx.first("Name", entries).resolve(ctx)` → `{ key: K; result: T }`.
  *
  * - Child workflows: ctx.childWorkflows.* — structured invocation (WorkflowCall<T> opaque handle).
  *     Supports .compensate(), .failure(), .complete() in result mode.

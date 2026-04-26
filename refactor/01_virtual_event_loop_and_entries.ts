@@ -87,7 +87,7 @@ export const virtualEventLoopEntriesAcceptanceWorkflow = defineWorkflow({
 
     type _ScopeResult = Assert<IsEqual<typeof scoped, string>>;
 
-    const allResults = await ctx.all({
+    const allResults = await ctx.all("AllNormalizeEntries", {
       direct: ctx.steps.normalizeEntryStep({ value: "direct" }),
       closure: async () => ctx.steps.normalizeEntryStep({ value: "closure" }),
     });
@@ -95,7 +95,7 @@ export const virtualEventLoopEntriesAcceptanceWorkflow = defineWorkflow({
       IsEqual<typeof allResults.direct, { normalized: string }>
     >;
 
-    const firstResult = await ctx.first({
+    const firstResult = await ctx.first("FirstNormalizeEntry", {
       direct: ctx.steps.normalizeEntryStep({ value: "direct" }),
       closure: async () => ctx.steps.normalizeEntryStep({ value: "closure" }),
     });

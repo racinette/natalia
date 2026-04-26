@@ -771,7 +771,7 @@ await ctx.childWorkflows.processOrder(startOpts, { timeout: 120 });
 await ctx.requests.humanReview(payload, { priority: 1, timeout: 3600 });
 ```
 
-Calls are not eager native `Promise`s. They are entries that can be directly awaited or passed to `ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atMost`, `ctx.atLeast`, or `ctx.best` for structured ownership.
+Calls are not eager native `Promise`s. They are entries that can be directly awaited or passed to named structured-ownership helpers: `ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atMost`, `ctx.atLeast`, or `ctx.best`.
 
 ### RetryPolicyOptions
 
@@ -1107,7 +1107,7 @@ for await (const event of ctx.match(handles)) {
 
 ### Convenience scope methods
 
-`ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.best` accept the same top-level object input structure as `ctx.scope`. They return directly awaitable results and have no `.failure(cb)` builder.
+`ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.best` accept an explicit scope name followed by the same top-level object input structure as `ctx.scope`. They return directly awaitable results and have no `.failure(cb)` builder.
 
 `ctx.first` eagerly promotes compensation for entries it leaves unconsumed according to each entry's semantics. `ctx.atMost` and `ctx.best` return whatever completed and do not have failure cases. `ctx.atLeast` and `ctx.all` return discriminated union failures when their quorum/all requirements cannot be met.
 
@@ -2647,7 +2647,7 @@ defineStep({
 | `ctx.scope(name, entries, body)`                                    | Directly awaitable. Input is a top-level object whose properties can be entries, arrays/tuples, or maps. |
 | `ctx.match(handles)`                                                | Async iterable keyed by top-level object properties; arrays add `index`, maps add `mapKey`. No handler form. |
 | `ctx.join(handle, opts?)`                                           | Observes one handle; optional timeout only times out observation.                                  |
-| `ctx.all` / `ctx.first` / `ctx.atLeast` / `ctx.atMost` / `ctx.best` | Directly awaitable structured-concurrency helpers over generalized entries.                        |
+| `ctx.all(name, entries)` / `ctx.first(name, entries)` / `ctx.atLeast(name, count, entries)` / `ctx.atMost(name, count, entries)` / `ctx.best(name, entries)` | Directly awaitable named structured-concurrency helpers over generalized entries. |
 
 Removed context APIs:
 
@@ -2724,7 +2724,7 @@ Removed context APIs:
 
 #### Structured concurrency
 
-- `ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.best` accept a top-level object input.
+- `ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.best` are named scopes and accept a top-level object input.
 - Scope input properties support single entries, arrays/tuples of entries, and maps of entries.
 - `ctx.join(handle, { timeout })` is a non-cancelling observation timeout.
 - `ctx.match` yields top-level object keys, with `index` for array/tuple properties and `mapKey` for map properties.
