@@ -171,12 +171,114 @@ export interface RequestDefinition<
   readonly payload: TPayloadSchema;
   /** Response schema for encoding/decoding resolved request data. */
   readonly response: TResponseSchema;
+  registerHandler(
+    handler: (
+      context: RequestHandlerContext,
+      payload: StandardSchemaV1.InferOutput<TPayloadSchema>,
+    ) => Promise<StandardSchemaV1.InferInput<TResponseSchema>>,
+    options?: {
+      readonly retryPolicy?: HandlerRetryOptions;
+      readonly maxConcurrent?: number;
+    },
+  ): Unsubscribe;
 }
 
 /**
  * Map of request definitions.
  */
 export type RequestDefinitions = Record<string, RequestDefinition<any, any>>;
+
+/**
+ * Function returned by client/runtime handler registration APIs.
+ */
+export type Unsubscribe = () => void;
+
+/**
+ * Runtime context passed to external handlers.
+ */
+export interface HandlerContext {
+  readonly signal: AbortSignal;
+}
+
+/**
+ * Queue handler context.
+ */
+export interface QueueHandlerContext extends HandlerContext {}
+
+/**
+ * Request handler context.
+ */
+export interface RequestHandlerContext extends HandlerContext {}
+
+/**
+ * Topic consumer context.
+ */
+export interface TopicConsumerContext extends HandlerContext {}
+
+/**
+ * Options for external retried handlers.
+ */
+export interface HandlerRetryOptions extends RetryPolicyOptions {
+  readonly maxAttempts?: number;
+}
+
+/**
+ * Queue definition - created via defineQueue().
+ */
+export interface QueueDefinition<
+  TMessageSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+> {
+  readonly name: string;
+  /** Message schema for enqueued payloads and decoded handler messages. */
+  readonly message: TMessageSchema;
+  readonly ttlSeconds?: number;
+  registerHandler(
+    handler: (
+      context: QueueHandlerContext,
+      message: StandardSchemaV1.InferOutput<TMessageSchema>,
+    ) => Promise<void>,
+    options?: {
+      readonly retryPolicy?: HandlerRetryOptions;
+      readonly maxConcurrent?: number;
+    },
+  ): Unsubscribe;
+}
+
+/**
+ * Map of queue definitions.
+ */
+export type QueueDefinitions = Record<string, QueueDefinition<any>>;
+
+/**
+ * Topic definition - created via defineTopic().
+ */
+export interface TopicDefinition<
+  TRecordSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+  TMetadataSchema extends JsonSchemaConstraint | undefined = undefined,
+> {
+  readonly name: string;
+  /** Record schema for published payloads and decoded consumer records. */
+  readonly record: TRecordSchema;
+  /** Optional metadata schema attached to published records. */
+  readonly metadata?: TMetadataSchema;
+  readonly retentionSeconds?: number;
+  registerConsumer(
+    name: string,
+    handler: (
+      context: TopicConsumerContext,
+      record: StandardSchemaV1.InferOutput<TRecordSchema>,
+    ) => Promise<void>,
+    options?: {
+      readonly retryPolicy?: HandlerRetryOptions;
+      readonly neverExpire?: boolean;
+    },
+  ): Unsubscribe;
+}
+
+/**
+ * Map of topic definitions.
+ */
+export type TopicDefinitions = Record<string, TopicDefinition<any, any>>;
 
 /**
  * A declared business error. `true` marks an error code with no details payload;

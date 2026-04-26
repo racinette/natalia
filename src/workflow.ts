@@ -3,6 +3,8 @@ import type {
   StepDefinition,
   BranchDefinition,
   RequestDefinition,
+  QueueDefinition,
+  TopicDefinition,
   RetryPolicyOptions,
   ChannelDefinitions,
   StreamDefinitions,
@@ -22,6 +24,8 @@ import type {
   WorkflowErrorDefinitions,
   BranchErrorMode,
 } from "./types";
+
+export { AttemptError } from "./types/results";
 
 function isStandardSchema(value: unknown): value is JsonSchemaConstraint {
   return (
@@ -46,6 +50,8 @@ function validateErrorDefinitions(
     }
   }
 }
+
+const noopUnsubscribe = (): void => undefined;
 
 // =============================================================================
 // DEFINE STEP
@@ -187,6 +193,80 @@ export function defineRequest(config: {
     name: config.name,
     payload: config.payload,
     response: config.response,
+    registerHandler: () => noopUnsubscribe,
+  };
+}
+
+// =============================================================================
+// DEFINE QUEUE
+// =============================================================================
+
+/**
+ * Define a global durable queue.
+ */
+export function defineQueue<TMessageSchema extends JsonSchemaConstraint>(config: {
+  name: string;
+  message: TMessageSchema;
+  ttlSeconds?: number;
+}): QueueDefinition<TMessageSchema>;
+export function defineQueue(config: {
+  name: string;
+  message: JsonSchemaConstraint;
+  ttlSeconds?: number;
+}): QueueDefinition<any> {
+  if (!config.name || typeof config.name !== "string") {
+    throw new Error("Queue name must be a non-empty string");
+  }
+  if (!isStandardSchema(config.message)) {
+    throw new Error("Queue message must be a standard schema");
+  }
+
+  return {
+    name: config.name,
+    message: config.message,
+    ttlSeconds: config.ttlSeconds,
+    registerHandler: () => noopUnsubscribe,
+  };
+}
+
+// =============================================================================
+// DEFINE TOPIC
+// =============================================================================
+
+/**
+ * Define a global ordered topic.
+ */
+export function defineTopic<
+  TRecordSchema extends JsonSchemaConstraint,
+  TMetadataSchema extends JsonSchemaConstraint | undefined = undefined,
+>(config: {
+  name: string;
+  record: TRecordSchema;
+  metadata?: TMetadataSchema;
+  retentionSeconds?: number;
+}): TopicDefinition<TRecordSchema, TMetadataSchema>;
+export function defineTopic(config: {
+  name: string;
+  record: JsonSchemaConstraint;
+  metadata?: JsonSchemaConstraint;
+  retentionSeconds?: number;
+}): TopicDefinition<any, any> {
+  if (!config.name || typeof config.name !== "string") {
+    throw new Error("Topic name must be a non-empty string");
+  }
+  if (!isStandardSchema(config.record)) {
+    throw new Error("Topic record must be a standard schema");
+  }
+  if (config.metadata !== undefined && !isStandardSchema(config.metadata)) {
+    throw new Error("Topic metadata must be a standard schema");
+  }
+
+  return {
+    name: config.name,
+    record: config.record,
+    metadata: config.metadata,
+    retentionSeconds: config.retentionSeconds,
+    registerConsumer: () => noopUnsubscribe,
   };
 }
 

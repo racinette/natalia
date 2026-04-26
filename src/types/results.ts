@@ -65,37 +65,38 @@ export interface Attempt extends Failure {
 }
 
 /**
- * Serializable error object for a single step attempt.
- * Captures what went wrong on each retry attempt.
+ * Throwable error for structured, JSON-serializable attempt failure details.
  */
-export interface StepExecutionError {
-  /** Error message */
-  readonly message: string;
-  /** Error class name (e.g. "TypeError", "Error") */
-  readonly type: string;
-  /** 1-indexed attempt number */
-  readonly attempt: number;
-  /** Epoch milliseconds when the error occurred */
-  readonly timestamp: number;
-  /** Optional structured details */
-  readonly details?: Record<string, unknown>;
+export class AttemptError extends Error {
+  readonly type: string | null;
+  readonly details: JsonInput | undefined;
+
+  constructor(options: {
+    readonly type?: string | null;
+    readonly message?: string | null;
+    readonly details?: JsonInput;
+  } = {}) {
+    super(options.message ?? options.type ?? "AttemptError");
+    this.name = "AttemptError";
+    this.type = options.type ?? null;
+    this.details = options.details;
+  }
 }
 
 /**
- * Lazy, async-iterable accessor over a step's error history.
- * Provides access to errors from all retry attempts.
+ * Lazy, async-iterable accessor over a retried operation's attempt history.
  */
-export interface StepErrorAccessor {
-  /** Get the most recent error */
-  last(): Promise<StepExecutionError>;
-  /** Get all errors (ordered by attempt) */
-  all(): Promise<StepExecutionError[]>;
-  /** Async iterate over errors (oldest first) */
-  [Symbol.asyncIterator](): AsyncIterableIterator<StepExecutionError>;
-  /** Async iterate over errors (newest first) */
-  reverse(): AsyncIterable<StepExecutionError>;
-  /** Number of recorded errors */
-  readonly count: number;
+export interface AttemptAccessor {
+  /** Get the most recent failed attempt. */
+  last(): Promise<Attempt>;
+  /** Get all failed attempts, ordered by attempt. */
+  all(): Promise<Attempt[]>;
+  /** Get the number of recorded failed attempts. */
+  count(): Promise<number>;
+  /** Async iterate over attempts, oldest first. */
+  [Symbol.asyncIterator](): AsyncIterableIterator<Attempt>;
+  /** Async iterate over attempts, newest first. */
+  reverse(): AsyncIterable<Attempt>;
 }
 
 /**
@@ -134,13 +135,13 @@ export type WorkflowTerminationReason =
  * (e.g. the workflow failed and is compensating, then SIGTERM arrives).
  */
 export type StepCompensationResult<T> =
-  | { status: "complete"; data: T; errors: StepErrorAccessor }
+  | { status: "complete"; data: T; attempts: AttemptAccessor }
   | {
       status: "failed";
       reason: "attempts_exhausted" | "timeout";
-      errors: StepErrorAccessor;
+      attempts: AttemptAccessor;
     }
-  | { status: "terminated"; errors: StepErrorAccessor };
+  | { status: "terminated"; attempts: AttemptAccessor };
 
 /**
  * Result of executing a step inside CompensationContext.
@@ -152,12 +153,12 @@ export type StepCompensationResult<T> =
  * code never observes a "terminated" status.
  */
 export type CompensationStepResult<T> =
-  | { ok: true; status: "complete"; data: T; errors: StepErrorAccessor }
+  | { ok: true; status: "complete"; data: T; attempts: AttemptAccessor }
   | {
       ok: false;
       status: "failed";
       reason: "attempts_exhausted" | "timeout";
-      errors: StepErrorAccessor;
+      attempts: AttemptAccessor;
     };
 
 /**

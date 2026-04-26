@@ -35,10 +35,10 @@ type _AttemptFields = Assert<
   IsEqual<
     Pick<Attempt, "attempt" | "message" | "type" | "details">,
     {
-      attempt: number;
-      message: string | null;
-      type: string | null;
-      details: JsonInput | undefined;
+      readonly attempt: number;
+      readonly message: string | null;
+      readonly type: string | null;
+      readonly details: JsonInput | undefined;
     }
   >
 >;

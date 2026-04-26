@@ -31,7 +31,7 @@ import type {
   EventWaitResult,
   EventWaitResultNoTimeout,
   EventCheckResult,
-  StepErrorAccessor,
+  AttemptAccessor,
   WorkflowExecutionError,
   WorkflowTerminationReason,
   ExplicitError,
@@ -51,7 +51,7 @@ import type {
  */
 export interface StepFailureInfo {
   readonly reason: "attempts_exhausted" | "timeout";
-  readonly errors: StepErrorAccessor;
+  readonly attempts: AttemptAccessor;
 }
 
 /**
