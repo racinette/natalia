@@ -17,6 +17,7 @@ Move structured concurrency to predefined, isolated branch definitions and gener
 - `ctx.scope(name, entries, body)` is directly awaitable.
 - Scope input is always a top-level object whose properties can be single entries, tuples/arrays of entries, or maps of entries.
 - `ctx.join(handle, opts?)` observes one branch and can time out without cancelling the branch.
+- Externally skipped branch instances are observed by workflow code as successful results; `skipped` is an external query status, not a workflow-facing join outcome.
 - `ctx.match(handles)` is an async iterable keyed by top-level object properties; tuple/array properties add `index`, and map properties add `mapKey`.
 - Handler forms on `ctx.match` are removed; failure recovery happens in normal code.
 - Convenience APIs exist for `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.best`.

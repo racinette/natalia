@@ -1082,6 +1082,8 @@ The scope body remains an inline callback because it is orchestration code in th
 - mode `"any"` returns `{ ok: true; res: T } | { ok: false; err: Failure }`;
 - explicit mode returns `{ ok: true; res: T } | { ok: false; err: ErrorValue<TBranchErrors> }`.
 
+If a halted branch is externally skipped with an operator-supplied result, workflow code observes that value as a normal successful branch result. `skipped` is retained as an external branch-instance status, not as a workflow-facing `join` outcome.
+
 `ctx.join(handle, { timeout })` is an observation timeout. It races this wait only; it does not cancel, terminate, fail, or compensate the underlying work. The same handle can be joined again later.
 
 ### `ctx.match`
@@ -1122,6 +1124,8 @@ await workflowInstance.branches.hotelBooking
   .findUnique((q) => q.args.city.eq("Paris"))
   .skip({ confirmationId: "manual-resolution" });
 ```
+
+Skipped branch instances require a valid branch result and are replayed into the parent workflow as successful branch results.
 
 ```typescript
 type BranchStatus =

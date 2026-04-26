@@ -728,8 +728,7 @@ export type BranchInstanceStatus =
 
 export type DefinedBranchResult<T, TErrors extends BranchErrorMode> =
   | { ok: true; result: T }
-  | { ok: false; status: "failed"; error: unknown }
-  | { ok: false; status: "skipped" };
+  | { ok: false; status: "failed"; error: unknown };
 
 type EntrySuccessFromValue<T> =
   [Extract<T, { ok: true; result: any }>] extends [never]
