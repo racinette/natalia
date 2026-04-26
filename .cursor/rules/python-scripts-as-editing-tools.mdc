@@ -1,0 +1,9 @@
+---
+alwaysApply: true
+---
+
+Only use a Python script when the task is strictly deterministic (e.g., search-and-replace, pattern-based edits).
+
+If the change requires semantic or contextual understanding of the code or document, do not use a script—modify the file directly using appropriate file-editing tools.
+
+Using a script to locate relevant sections (e.g., via regex/grep) is acceptable, but actual modifications should not rely on it unless the transformation is fully mechanical.
