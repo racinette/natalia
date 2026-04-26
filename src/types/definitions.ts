@@ -134,7 +134,7 @@ export type RetryPolicyOptions = RetryPolicyBaseOptions & DeadlineOptions;
  * step implementations — workflow-level logging is separate via ctx.logger.
  */
 export interface StepDefinition<
-  TArgs extends unknown[] = unknown[],
+  TArgs = unknown,
   TResultSchema extends JsonSchemaConstraint = any,
 > {
   readonly name: string;
@@ -144,9 +144,13 @@ export interface StepDefinition<
    */
   readonly execute: (
     context: { signal: AbortSignal },
-    ...args: TArgs
+    ...args: TArgs extends readonly unknown[] ? TArgs : [TArgs]
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
-  /** Result schema for encoding/decoding */
+  /** Argument schema for observable, serializable step input. */
+  readonly args?: StandardSchemaV1<unknown, TArgs>;
+  /** Result schema for encoding/decoding. */
+  readonly result?: TResultSchema;
+  /** @internal Legacy alias retained while runtime storage still reads `schema`. */
   readonly schema: TResultSchema;
   /** Default retry policy */
   readonly retryPolicy?: RetryPolicyOptions;
@@ -155,7 +159,7 @@ export interface StepDefinition<
 /**
  * Map of step definitions.
  */
-export type StepDefinitions = Record<string, StepDefinition<any[], any>>;
+export type StepDefinitions = Record<string, StepDefinition<any, any>>;
 
 /**
  * Map of workflow definitions for child/foreign workflow references.

@@ -81,6 +81,19 @@ import type {
  * ```
  */
 export function defineStep<
+  TArgsSchema extends JsonSchemaConstraint,
+  TResultSchema extends JsonSchemaConstraint = any,
+>(config: {
+  name: string;
+  args: TArgsSchema;
+  result: TResultSchema;
+  execute: (
+    context: { signal: AbortSignal },
+    args: StandardSchemaV1.InferOutput<TArgsSchema>,
+  ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
+  retryPolicy?: RetryPolicyOptions;
+}): StepDefinition<StandardSchemaV1.InferInput<TArgsSchema>, TResultSchema>;
+export function defineStep<
   TArgs extends unknown[],
   TResultSchema extends JsonSchemaConstraint = any,
 >(config: {
@@ -91,21 +104,38 @@ export function defineStep<
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
   schema: TResultSchema;
   retryPolicy?: RetryPolicyOptions;
-}): StepDefinition<TArgs, TResultSchema> {
+}): StepDefinition<TArgs, TResultSchema>;
+export function defineStep(config: {
+  name: string;
+  args?: JsonSchemaConstraint;
+  result?: JsonSchemaConstraint;
+  execute: (context: { signal: AbortSignal }, ...args: any[]) => Promise<unknown>;
+  schema?: JsonSchemaConstraint;
+  retryPolicy?: RetryPolicyOptions;
+}): StepDefinition<any, any> {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Step name must be a non-empty string");
   }
   if (typeof config.execute !== "function") {
     throw new Error("Step execute must be a function");
   }
-  if (!config.schema || !("~standard" in config.schema)) {
+  const resultSchema = config.result ?? config.schema;
+  if (!resultSchema || !("~standard" in resultSchema)) {
     throw new Error("Step schema must be a standard schema");
+  }
+  if (
+    config.args !== undefined &&
+    (!config.args || !("~standard" in config.args))
+  ) {
+    throw new Error("Step args must be a standard schema");
   }
 
   return {
     name: config.name,
     execute: config.execute,
-    schema: config.schema,
+    args: config.args,
+    result: resultSchema,
+    schema: resultSchema,
     retryPolicy: config.retryPolicy,
   };
 }

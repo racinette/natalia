@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { defineStep, defineWorkflow } from "../workflow";
+import { MAIN_BRANCH } from "../types";
 import type {
   AwaitableEntry,
+  BranchPathItem,
   BranchEntry,
   StepEntry,
   WorkflowEntry,
-  MAIN_BRANCH,
 } from "../types";
 
 type Assert<T extends true> = T;
@@ -16,7 +17,14 @@ type IsEqual<A, B> =
     : false;
 type AwaitedEntry<T> = T extends PromiseLike<infer U> ? U : never;
 
-type _MainBranchExported = Assert<IsEqual<typeof MAIN_BRANCH, "MAIN_BRANCH">>;
+type _MainBranchExported = Assert<typeof MAIN_BRANCH extends symbol ? true : false>;
+type _MainBranchIsNotString = Assert<
+  IsEqual<typeof MAIN_BRANCH, "MAIN_BRANCH"> extends false ? true : false
+>;
+const _mainBranchPath = [
+  { scope: "EntryScope", branch: MAIN_BRANCH },
+] satisfies readonly BranchPathItem[];
+void _mainBranchPath;
 
 const EntryStepArgs = z.object({ value: z.string() });
 const EntryStepResult = z.object({ normalized: z.string() });
@@ -99,8 +107,9 @@ export const virtualEventLoopEntriesAcceptanceWorkflow = defineWorkflow({
       >
     >;
 
-    // @ts-expect-error awaitable entries are not native promises exposed to Promise.all
-    Promise.all([entry]);
+    type _EntryIsNotNativePromise = Assert<
+      typeof entry extends Promise<{ normalized: string }> ? false : true
+    >;
 
     return { normalized: `${result.normalized}:${scoped}` };
   },

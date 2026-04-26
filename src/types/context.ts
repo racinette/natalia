@@ -88,7 +88,7 @@ export type ScopeFailureInfo<
 
 // first() failure payload: one failure value per branch key.
 export type AllBranchesFailedInfo<
-  E extends Record<string, (ctx: any) => Promise<unknown>>,
+  E extends Record<string, ScopeEntry<any>>,
   TSteps extends StepDefinitions,
   TChildWorkflows extends WorkflowDefinitions,
 > = {
@@ -118,6 +118,54 @@ export type ExecutionRoot = typeof executionRoot;
 
 /** @internal Used as the `TRoot` type parameter on compensation-context handles. */
 export type CompensationRoot = typeof compensationRoot;
+
+export const MAIN_BRANCH: unique symbol = Symbol("MAIN_BRANCH") as any;
+
+export interface BranchPathItem {
+  readonly scope: string;
+  readonly branch: string | typeof MAIN_BRANCH;
+}
+
+declare const nataliaEntryBrand: unique symbol;
+declare const nataliaEntryValue: unique symbol;
+declare const stepEntryBrand: unique symbol;
+declare const workflowEntryBrand: unique symbol;
+
+export interface AwaitableEntry<T> extends PromiseLike<T> {
+  readonly [nataliaEntryBrand]: true;
+  readonly [nataliaEntryValue]?: T;
+}
+
+export interface StepEntry<T> extends AwaitableEntry<T> {
+  readonly [stepEntryBrand]: true;
+}
+
+export interface WorkflowEntry<T> extends AwaitableEntry<T> {
+  readonly [workflowEntryBrand]: true;
+}
+
+export interface StepCallOptions {
+  readonly retry?: RetryPolicyOptions;
+  readonly timeout?: StepBoundary;
+}
+
+export type StepBoundary =
+  | number
+  | Date
+  | { maxAttempts: number; seconds?: number }
+  | { seconds: number; maxAttempts?: number }
+  | { deadline: Date; maxAttempts?: number };
+
+type StepInvocationArgs<TArgs> = TArgs extends readonly unknown[]
+  ? TArgs
+  : [args: TArgs];
+
+export interface StepAccessor<TArgs, TResult> {
+  (...args: StepInvocationArgs<TArgs>): StepEntry<TResult>;
+  (...args: [...StepInvocationArgs<TArgs>, opts: StepCallOptions]): StepEntry<
+    TResult
+  >;
+}
 
 declare const durableHandleBrand: unique symbol;
 declare const rootScopeBrand: unique symbol;
@@ -470,7 +518,7 @@ export type ScopeNameArg<
  *   of the current scope path `TCurrentPath`, or to an error tuple otherwise.
  */
 export type IsJoinableByPath<H, TCurrentPath extends ScopePath> =
-  H extends BranchHandle<any, infer THandlePath, any>
+  H extends BranchEntry<any, infer THandlePath, any>
     ? IsPrefix<THandlePath, TCurrentPath> extends true
       ? []
       : [
@@ -482,18 +530,19 @@ export type IsJoinableByPath<H, TCurrentPath extends ScopePath> =
 // SCOPE TYPES — ENTRY, BRANCH HANDLES
 // =============================================================================
 
+export type EntryResult<E> = E extends AwaitableEntry<infer T>
+  ? T
+  : E extends (...args: any[]) => infer R
+    ? Awaited<R>
+    : never;
+
 /**
- * A scope entry — an async closure that receives a path-specialized base context
- * and runs on the virtual event loop.
- *
- * `Tctx` is instantiated by `context.ts` with the path-specialized
- * `WorkflowContext<..., AppendBranchKey<AppendScopeName<TScopePath, Name>, K>>`
- * or the compensation equivalent, so branch identity stays precise.
- *
- * @typeParam Tctx - The path-specialized context for this branch.
- * @typeParam T          - The resolved value type of the branch.
+ * A scope entry can be an unstarted awaitable entry or a closure that creates
+ * one from a path-specialized branch context.
  */
-export type ScopeEntry<Tctx, T = unknown> = (ctx: Tctx) => Promise<T>;
+export type ScopeEntry<Tctx, T = unknown> =
+  | AwaitableEntry<T>
+  | ((ctx: Tctx) => AwaitableEntry<T> | PromiseLike<T> | T);
 
 /**
  * A handle to a running scope branch.
@@ -510,14 +559,22 @@ export type ScopeEntry<Tctx, T = unknown> = (ctx: Tctx) => Promise<T>;
  */
 declare const scopePathBrand: unique symbol;
 
+export interface BranchEntry<
+  T,
+  TScopePath extends ScopePath = ScopePath,
+  TRoot extends RootScope = RootScope,
+> extends AwaitableEntry<T> {
+  /** @internal Type-level scope ownership brand. */
+  readonly [scopePathBrand]: TScopePath;
+  /** @internal Root context discriminator — do not access at runtime. */
+  readonly [rootScopeBrand]: TRoot;
+}
+
 export interface BranchHandle<
   T,
   TScopePath extends ScopePath = ScopePath,
   TRoot extends RootScope = RootScope,
-> extends DurableHandle<T, TRoot> {
-  /** @internal Type-level scope ownership brand. */
-  readonly [scopePathBrand]: TScopePath;
-}
+> extends BranchEntry<T, TScopePath, TRoot> {}
 
 /**
  * Maps closure entries to their corresponding branch handle types.
@@ -527,11 +584,11 @@ export interface BranchHandle<
  * @typeParam TRoot      - The root context.
  */
 export type ScopeHandles<
-  E extends Record<string, (ctx: any) => Promise<unknown>>,
+  E extends Record<string, ScopeEntry<any>>,
   TScopePath extends ScopePath,
   TRoot extends RootScope,
 > = {
-  [K in keyof E]: BranchHandle<Awaited<ReturnType<E[K]>>, TScopePath, TRoot>;
+  [K in keyof E]: BranchEntry<EntryResult<E[K]>, TScopePath, TRoot>;
 };
 
 /**
@@ -541,9 +598,9 @@ export type ScopeHandles<
  * @typeParam E - Record of branch closures.
  */
 export type FirstResult<
-  E extends Record<string, (ctx: any) => Promise<unknown>>,
+  E extends Record<string, ScopeEntry<any>>,
 > = {
-  [K in keyof E]: { key: K; result: Awaited<ReturnType<E[K]>> };
+  [K in keyof E]: { key: K; result: EntryResult<E[K]> };
 }[keyof E];
 
 // =============================================================================
@@ -562,7 +619,7 @@ export type FirstResult<
  *   The key is removed from `remaining` once the receive resolves.
  */
 export type ScopeSelectableHandle =
-  | BranchHandle<any>
+  | BranchEntry<any>
   | ChannelHandle<any>
   | ChannelReceiveCall<any>;
 
@@ -582,9 +639,9 @@ export type ScopeSelectableRecordForPath<
 };
 
 type RestrictSelectableHandleToPath<H, TCurrentPath extends ScopePath> =
-  H extends BranchHandle<infer T, infer THandlePath>
+  H extends BranchEntry<infer T, infer THandlePath>
     ? IsPrefix<THandlePath, TCurrentPath> extends true
-      ? BranchHandle<T, THandlePath>
+      ? BranchEntry<T, THandlePath>
       : never
     : H extends ChannelHandle<any> | ChannelReceiveCall<any>
       ? H
@@ -602,7 +659,7 @@ type RestrictSelectableHandleToPath<H, TCurrentPath extends ScopePath> =
  * - ChannelReceiveCall: `{ key, data: T }` (fires once — key removed from remaining)
  */
 export type HandleSelectEvent<K extends string, H> =
-  H extends BranchHandle<infer T>
+  H extends BranchEntry<infer T>
     ?
         | { key: K; status: "complete"; data: T }
         | { key: K; status: "failed" }
@@ -620,7 +677,7 @@ export type HandleSelectEvent<K extends string, H> =
  * - ChannelReceiveCall<T>: `T` directly (fires once)
  */
 export type HandleMatchData<H> =
-  H extends BranchHandle<infer T>
+  H extends BranchEntry<infer T>
     ? T
     : H extends ChannelHandle<infer T>
       ? T
@@ -639,7 +696,7 @@ export type SelectEvent<M extends Record<string, ScopeSelectableHandle>> = {
  * Extract the successful data type from any selectable handle.
  */
 type SelectHandleData<H> =
-  H extends BranchHandle<infer T>
+  H extends BranchEntry<infer T>
     ? T
     : H extends ChannelHandle<infer T>
       ? T
@@ -713,7 +770,7 @@ type HasExplicitFailure<H> = H extends { failure: (...args: any[]) => any }
  * (channels never fail).
  */
 export type MatchHandlerEntry<H extends ScopeSelectableHandle> =
-  H extends BranchHandle<any>
+  H extends BranchEntry<any>
     ?
         | ((data: HandleMatchData<H>) => any)
         | {
@@ -1117,7 +1174,7 @@ export interface ScopeCall<
 
 export interface FirstCall<
   T,
-  E extends Record<string, (ctx: any) => Promise<unknown>>,
+  E extends Record<string, ScopeEntry<any>>,
   TFail = never,
   TSteps extends StepDefinitions = StepDefinitions,
   TChildWorkflows extends WorkflowDefinitions = WorkflowDefinitions,
@@ -1198,7 +1255,7 @@ export interface ChildWorkflowAccessor<
 > {
   (
     options: AttachedChildWorkflowStartOptions<W>,
-  ): WorkflowCall<InferWorkflowResult<W>, never, false, Tctx>;
+  ): WorkflowEntry<InferWorkflowResult<W>>;
 
   /**
    * Start this child workflow in detached mode.
@@ -1211,7 +1268,7 @@ export interface ChildWorkflowAccessor<
    */
   startDetached(
     options: DetachedStartOptions<W>,
-  ): AtomicResult<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
+  ): AwaitableEntry<ForeignWorkflowHandle<InferWorkflowChannels<W>>>;
 }
 
 /**
@@ -1244,7 +1301,7 @@ export interface CompensationChildWorkflowAccessor<
 > {
   (
     options: CompensationChildWorkflowStartOptions<W>,
-  ): CompensationWorkflowCall<InferWorkflowResult<W>>;
+  ): WorkflowEntry<WorkflowResult<InferWorkflowResult<W>>>;
 }
 
 // =============================================================================
@@ -1455,9 +1512,10 @@ export interface CompensationContext<
       infer TArgs,
       infer TResultSchema
     >
-      ? (
-          ...args: TArgs
-        ) => CompensationStepCall<StandardSchemaV1.InferOutput<TResultSchema>>
+      ? StepAccessor<
+          TArgs,
+          CompensationStepResult<StandardSchemaV1.InferOutput<TResultSchema>>
+        >
       : never;
   };
 
@@ -1500,10 +1558,10 @@ export interface CompensationContext<
    * Use `handle.resolve(ctx)` for lazy (not-yet-running) handles such as steps,
    * child workflows, and `scope()`/`all()`/`first()` results.
    */
-  join<H extends DurableHandle<any, CompensationRoot>>(
+  join<H extends BranchEntry<any, any, CompensationRoot>>(
     handle: H,
     ..._check: IsJoinableByPath<H, TScopePath>
-  ): H extends DurableHandle<infer T, any>
+  ): H extends AwaitableEntry<infer T>
     ? Promise<T>
     : Promise<never>;
 
@@ -1529,8 +1587,8 @@ export interface CompensationContext<
     Name extends string,
     E extends Record<
       string,
-      (
-        ctx: CompensationContext<
+      ScopeEntry<
+        CompensationContext<
           TState,
           TChannels,
           TStreams,
@@ -1541,8 +1599,8 @@ export interface CompensationContext<
           TPatches,
           TRng,
           AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
-        >,
-      ) => Promise<unknown>
+        >
+      >
     >,
     R,
   >(
@@ -1567,7 +1625,7 @@ export interface CompensationContext<
         CompensationRoot
       >,
     ) => Promise<R>,
-  ): ScopeCall<R, never, TSteps, TChildWorkflows, CompensationRoot>;
+  ): AwaitableEntry<R>;
 
   /**
    * Run all entries concurrently and return all resolved values.
@@ -1578,8 +1636,8 @@ export interface CompensationContext<
   all<
     E extends Record<
       string,
-      (
-        ctx: CompensationContext<
+      ScopeEntry<
+        CompensationContext<
           TState,
           TChannels,
           TStreams,
@@ -1590,18 +1648,12 @@ export interface CompensationContext<
           TPatches,
           TRng,
           any
-        >,
-      ) => Promise<unknown>
+        >
+      >
     >,
   >(
     entries: E,
-  ): ScopeCall<
-    { [K in keyof E]: Awaited<ReturnType<E[K]>> },
-    never,
-    TSteps,
-    TChildWorkflows,
-    CompensationRoot
-  >;
+  ): AwaitableEntry<{ [K in keyof E]: EntryResult<E[K]> }>;
 
   /**
    * Run all entries concurrently and return the first to complete.
@@ -1615,8 +1667,8 @@ export interface CompensationContext<
   first<
     E extends Record<
       string,
-      (
-        ctx: CompensationContext<
+      ScopeEntry<
+        CompensationContext<
           TState,
           TChannels,
           TStreams,
@@ -1627,19 +1679,12 @@ export interface CompensationContext<
           TPatches,
           TRng,
           any
-        >,
-      ) => Promise<unknown>
+        >
+      >
     >
   >(
     entries: E,
-  ): FirstCall<
-    FirstResult<E>,
-    E,
-    never,
-    TSteps,
-    TChildWorkflows,
-    CompensationRoot
-  >;
+  ): AwaitableEntry<FirstResult<E>>;
 
   // ---------------------------------------------------------------------------
   // listen — channel-only multiplexed waiting (all contexts)
@@ -1740,24 +1785,7 @@ export interface WorkflowContext<
       infer TArgs,
       infer TResultSchema
     >
-      ? (
-          ...args: TArgs
-        ) => StepCall<
-          StandardSchemaV1.InferOutput<TResultSchema>,
-          never,
-          false,
-          CompensationContext<
-            TState,
-            TChannels,
-            TStreams,
-            TEvents,
-            TSteps,
-            TChildWorkflows,
-            TForeignWorkflows,
-            TPatches,
-            TRng
-          >
-        >
+      ? StepAccessor<TArgs, StandardSchemaV1.InferOutput<TResultSchema>>
       : never;
   };
 
@@ -1811,10 +1839,10 @@ export interface WorkflowContext<
    * Use `handle.resolve(ctx)` for lazy (not-yet-running) handles such as steps,
    * child workflows, and `scope()`/`all()`/`first()` results.
    */
-  join<H extends DurableHandle<any, ExecutionRoot>>(
+  join<H extends BranchEntry<any, any, ExecutionRoot>>(
     handle: H,
     ..._check: IsJoinableByPath<H, TScopePath>
-  ): H extends DurableHandle<infer T, any>
+  ): H extends AwaitableEntry<infer T>
     ? Promise<T>
     : Promise<never>;
 
@@ -1853,8 +1881,8 @@ export interface WorkflowContext<
     Name extends string,
     E extends Record<
       string,
-      (
-        ctx: WorkflowContext<
+      ScopeEntry<
+        WorkflowContext<
           TState,
           TChannels,
           TStreams,
@@ -1865,8 +1893,8 @@ export interface WorkflowContext<
           TPatches,
           TRng,
           AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
-        >,
-      ) => Promise<unknown>
+        >
+      >
     >,
     R,
   >(
@@ -1891,7 +1919,7 @@ export interface WorkflowContext<
         ExecutionRoot
       >,
     ) => Promise<R>,
-  ): ScopeCall<R, never, TSteps, TChildWorkflows, ExecutionRoot>;
+  ): AwaitableEntry<R>;
 
   /**
    * Run all entries concurrently and return all resolved values.
@@ -1902,8 +1930,8 @@ export interface WorkflowContext<
   all<
     E extends Record<
       string,
-      (
-        ctx: WorkflowContext<
+      ScopeEntry<
+        WorkflowContext<
           TState,
           TChannels,
           TStreams,
@@ -1914,18 +1942,12 @@ export interface WorkflowContext<
           TPatches,
           TRng,
           any
-        >,
-      ) => Promise<unknown>
+        >
+      >
     >,
   >(
     entries: E,
-  ): ScopeCall<
-    { [K in keyof E]: Awaited<ReturnType<E[K]>> },
-    never,
-    TSteps,
-    TChildWorkflows,
-    ExecutionRoot
-  >;
+  ): AwaitableEntry<{ [K in keyof E]: EntryResult<E[K]> }>;
 
   /**
    * Run all entries concurrently and return the first to complete.
@@ -1939,8 +1961,8 @@ export interface WorkflowContext<
   first<
     E extends Record<
       string,
-      (
-        ctx: WorkflowContext<
+      ScopeEntry<
+        WorkflowContext<
           TState,
           TChannels,
           TStreams,
@@ -1951,19 +1973,12 @@ export interface WorkflowContext<
           TPatches,
           TRng,
           any
-        >,
-      ) => Promise<unknown>
+        >
+      >
     >,
   >(
     entries: E,
-  ): FirstCall<
-    FirstResult<E>,
-    E,
-    never,
-    TSteps,
-    TChildWorkflows,
-    ExecutionRoot
-  >;
+  ): AwaitableEntry<FirstResult<E>>;
 
   // ---------------------------------------------------------------------------
   // listen — channel-only multiplexed waiting (all contexts)
@@ -2056,10 +2071,10 @@ export interface WorkflowConcurrencyContext<
    *
    * Use `handle.resolve(ctx)` for lazy (not-yet-running) handles like steps and child workflows.
    */
-  join<H extends DurableHandle<any, ExecutionRoot>>(
+  join<H extends BranchEntry<any, any, ExecutionRoot>>(
     handle: H,
     ..._check: IsJoinableByPath<H, TScopePath>
-  ): H extends DurableHandle<infer T, any>
+  ): H extends AwaitableEntry<infer T>
     ? Promise<T>
     : Promise<never>;
 
@@ -2067,8 +2082,8 @@ export interface WorkflowConcurrencyContext<
     Name extends string,
     E extends Record<
       string,
-      (
-        ctx: WorkflowContext<
+      ScopeEntry<
+        WorkflowContext<
           TState,
           TChannels,
           TStreams,
@@ -2079,8 +2094,8 @@ export interface WorkflowConcurrencyContext<
           TPatches,
           TRng,
           AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
-        >,
-      ) => Promise<unknown>
+        >
+      >
     >,
     R,
   >(
@@ -2105,7 +2120,7 @@ export interface WorkflowConcurrencyContext<
         ExecutionRoot
       >,
     ) => Promise<R>,
-  ): ScopeCall<R, never, TSteps, TChildWorkflows, ExecutionRoot>;
+  ): AwaitableEntry<R>;
 
   /**
    * Run all entries concurrently and return all resolved values.
@@ -2116,8 +2131,8 @@ export interface WorkflowConcurrencyContext<
   all<
     E extends Record<
       string,
-      (
-        ctx: WorkflowContext<
+      ScopeEntry<
+        WorkflowContext<
           TState,
           TChannels,
           TStreams,
@@ -2128,18 +2143,12 @@ export interface WorkflowConcurrencyContext<
           TPatches,
           TRng,
           any
-        >,
-      ) => Promise<unknown>
+        >
+      >
     >,
   >(
     entries: E,
-  ): ScopeCall<
-    { [K in keyof E]: Awaited<ReturnType<E[K]>> },
-    never,
-    TSteps,
-    TChildWorkflows,
-    ExecutionRoot
-  >;
+  ): AwaitableEntry<{ [K in keyof E]: EntryResult<E[K]> }>;
 
   /**
    * Run all entries concurrently and return the first to complete.
@@ -2152,8 +2161,8 @@ export interface WorkflowConcurrencyContext<
   first<
     E extends Record<
       string,
-      (
-        ctx: WorkflowContext<
+      ScopeEntry<
+        WorkflowContext<
           TState,
           TChannels,
           TStreams,
@@ -2164,19 +2173,12 @@ export interface WorkflowConcurrencyContext<
           TPatches,
           TRng,
           any
-        >,
-      ) => Promise<unknown>
+        >
+      >
     >,
   >(
     entries: E,
-  ): FirstCall<
-    FirstResult<E>,
-    E,
-    never,
-    TSteps,
-    TChildWorkflows,
-    ExecutionRoot
-  >;
+  ): AwaitableEntry<FirstResult<E>>;
 
   /**
    * Create a listener for concurrent channel waiting.
@@ -2287,10 +2289,10 @@ export interface CompensationConcurrencyContext<
    *
    * Use `handle.resolve(ctx)` for lazy (not-yet-running) handles.
    */
-  join<H extends DurableHandle<any, CompensationRoot>>(
+  join<H extends BranchEntry<any, any, CompensationRoot>>(
     handle: H,
     ..._check: IsJoinableByPath<H, TScopePath>
-  ): H extends DurableHandle<infer T, any>
+  ): H extends AwaitableEntry<infer T>
     ? Promise<T>
     : Promise<never>;
 
@@ -2298,8 +2300,8 @@ export interface CompensationConcurrencyContext<
     Name extends string,
     E extends Record<
       string,
-      (
-        ctx: CompensationContext<
+      ScopeEntry<
+        CompensationContext<
           TState,
           TChannels,
           TStreams,
@@ -2310,8 +2312,8 @@ export interface CompensationConcurrencyContext<
           TPatches,
           TRng,
           AppendBranchKey<AppendScopeName<TScopePath, Name>, string>
-        >,
-      ) => Promise<unknown>
+        >
+      >
     >,
     R,
   >(
@@ -2336,7 +2338,7 @@ export interface CompensationConcurrencyContext<
         CompensationRoot
       >,
     ) => Promise<R>,
-  ): ScopeCall<R, never, TSteps, TChildWorkflows, CompensationRoot>;
+  ): AwaitableEntry<R>;
 
   /**
    * Run all entries concurrently and return all resolved values.
@@ -2347,8 +2349,8 @@ export interface CompensationConcurrencyContext<
   all<
     E extends Record<
       string,
-      (
-        ctx: CompensationContext<
+      ScopeEntry<
+        CompensationContext<
           TState,
           TChannels,
           TStreams,
@@ -2359,18 +2361,12 @@ export interface CompensationConcurrencyContext<
           TPatches,
           TRng,
           any
-        >,
-      ) => Promise<unknown>
+        >
+      >
     >,
   >(
     entries: E,
-  ): ScopeCall<
-    { [K in keyof E]: Awaited<ReturnType<E[K]>> },
-    never,
-    TSteps,
-    TChildWorkflows,
-    CompensationRoot
-  >;
+  ): AwaitableEntry<{ [K in keyof E]: EntryResult<E[K]> }>;
 
   /**
    * Run all entries concurrently and return the first to complete.
@@ -2383,8 +2379,8 @@ export interface CompensationConcurrencyContext<
   first<
     E extends Record<
       string,
-      (
-        ctx: CompensationContext<
+      ScopeEntry<
+        CompensationContext<
           TState,
           TChannels,
           TStreams,
@@ -2395,19 +2391,12 @@ export interface CompensationConcurrencyContext<
           TPatches,
           TRng,
           any
-        >,
-      ) => Promise<unknown>
+        >
+      >
     >
   >(
     entries: E,
-  ): FirstCall<
-    FirstResult<E>,
-    E,
-    never,
-    TSteps,
-    TChildWorkflows,
-    CompensationRoot
-  >;
+  ): AwaitableEntry<FirstResult<E>>;
 
   /**
    * Create a listener for concurrent channel waiting.
