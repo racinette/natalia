@@ -3,7 +3,13 @@ import type {
   StepDefinition,
   StepCompensationDefinition,
   BranchDefinition,
+  NonCompensableStepDefinitions,
   RequestDefinition,
+  RequestCompensationConfig,
+  RequestCompensationDefinition,
+  RequestCompensationHandlerOptions,
+  RequestCompensationInfo,
+  NonCompensableRequestDefinitions,
   QueueDefinition,
   TopicDefinition,
   RetryPolicyOptions,
@@ -24,6 +30,7 @@ import type {
   RngDefinitions,
   WorkflowErrorDefinitions,
   BranchErrorMode,
+  Unsubscribe,
 } from "./types";
 
 export { AttemptError } from "./types/results";
@@ -53,6 +60,15 @@ function validateErrorDefinitions(
 }
 
 const noopUnsubscribe = (): void => undefined;
+
+export const MANUAL: unique symbol = Symbol("MANUAL") as any;
+
+type RequestCompensationHandlerResult<TCompensation> =
+  TCompensation extends { readonly result?: infer TResultSchema }
+    ? TResultSchema extends JsonSchemaConstraint
+      ? StandardSchemaV1.InferInput<TResultSchema>
+      : void
+    : void;
 
 // =============================================================================
 // DEFINE STEP
@@ -121,8 +137,8 @@ const noopUnsubscribe = (): void => undefined;
 export function defineStep<
   TArgsSchema extends JsonSchemaConstraint,
   TResultSchema extends JsonSchemaConstraint,
-  TCompensationSteps extends StepDefinitions = Record<string, never>,
-  TCompensationRequests extends RequestDefinitions = Record<string, never>,
+  TCompensationSteps extends NonCompensableStepDefinitions = Record<string, never>,
+  TCompensationRequests extends NonCompensableRequestDefinitions = Record<string, never>,
   TCompensationResultSchema extends JsonSchemaConstraint | undefined = undefined,
 >(config: {
   name: string;
@@ -224,6 +240,29 @@ export function defineStep(config: {
 export function defineRequest<
   TPayloadSchema extends JsonSchemaConstraint,
   TResponseSchema extends JsonSchemaConstraint,
+  TCompensationResultSchema extends JsonSchemaConstraint | undefined = undefined,
+>(config: {
+  name: string;
+  payload: TPayloadSchema;
+  response: TResponseSchema;
+  compensation: RequestCompensationConfig<TCompensationResultSchema>;
+}): RequestDefinition<
+  TPayloadSchema,
+  TResponseSchema,
+  RequestCompensationConfig<TCompensationResultSchema>
+>;
+export function defineRequest<
+  TPayloadSchema extends JsonSchemaConstraint,
+  TResponseSchema extends JsonSchemaConstraint,
+>(config: {
+  name: string;
+  payload: TPayloadSchema;
+  response: TResponseSchema;
+  compensation: true;
+}): RequestDefinition<TPayloadSchema, TResponseSchema, true>;
+export function defineRequest<
+  TPayloadSchema extends JsonSchemaConstraint,
+  TResponseSchema extends JsonSchemaConstraint,
 >(config: {
   name: string;
   payload: TPayloadSchema;
@@ -233,7 +272,8 @@ export function defineRequest(config: {
   name: string;
   payload: JsonSchemaConstraint;
   response: JsonSchemaConstraint;
-}): RequestDefinition<any, any> {
+  compensation?: RequestCompensationDefinition<any>;
+}): RequestDefinition<any, any, any> {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Request name must be a non-empty string");
   }
@@ -243,13 +283,61 @@ export function defineRequest(config: {
   if (!config.response || !("~standard" in config.response)) {
     throw new Error("Request response must be a standard schema");
   }
+  if (config.compensation !== undefined) {
+    if (config.compensation !== true) {
+      if (
+        typeof config.compensation !== "object" ||
+        config.compensation === null ||
+        Array.isArray(config.compensation)
+      ) {
+        throw new Error("Request compensation must be true or an object");
+      }
+      if (
+        config.compensation.result !== undefined &&
+        !isStandardSchema(config.compensation.result)
+      ) {
+        throw new Error("Request compensation result must be a standard schema");
+      }
+    }
+  }
 
   return {
     name: config.name,
     payload: config.payload,
     response: config.response,
+    compensation: config.compensation,
     registerHandler: () => noopUnsubscribe,
-  };
+  } as RequestDefinition<any, any, any>;
+}
+
+export function registerRequestCompensationHandler<
+  TPayloadSchema extends JsonSchemaConstraint,
+  TResponseSchema extends JsonSchemaConstraint,
+  TCompensation extends RequestCompensationDefinition<any>,
+>(
+  definition: RequestDefinition<TPayloadSchema, TResponseSchema, TCompensation>,
+  handler: (
+    ctx: { signal: AbortSignal },
+    payload: StandardSchemaV1.InferOutput<TPayloadSchema>,
+    info: RequestCompensationInfo<StandardSchemaV1.InferOutput<TResponseSchema>>,
+  ) => Promise<RequestCompensationHandlerResult<TCompensation> | typeof MANUAL>,
+  options: RequestCompensationHandlerOptions<
+    StandardSchemaV1.InferOutput<TPayloadSchema>,
+    StandardSchemaV1.InferOutput<TResponseSchema>,
+    RequestCompensationHandlerResult<TCompensation>,
+    typeof MANUAL
+  >,
+): Unsubscribe {
+  if (!("compensation" in definition)) {
+    throw new Error("Request compensation handler requires a compensable request");
+  }
+  if (typeof handler !== "function") {
+    throw new Error("Request compensation handler must be a function");
+  }
+  if (!options || typeof options !== "object" || !options.retryPolicy) {
+    throw new Error("Request compensation handler requires a retry policy");
+  }
+  return noopUnsubscribe;
 }
 
 // =============================================================================
@@ -632,36 +720,6 @@ export function defineWorkflow<
         terminated: number | null;
       };
   evictAfterSeconds?: number | null;
-  beforeCompensate?: (params: {
-    ctx: CompensationContext<
-      TState,
-      TChannels,
-      TStreams,
-      TEvents,
-      TSteps,
-      TRequests,
-      TChildWorkflows,
-      TForeignWorkflows,
-      TPatches,
-      TRng
-    >;
-    args: StandardSchemaV1.InferOutput<TArgs>;
-  }) => Promise<void>;
-  afterCompensate?: (params: {
-    ctx: CompensationContext<
-      TState,
-      TChannels,
-      TStreams,
-      TEvents,
-      TSteps,
-      TRequests,
-      TChildWorkflows,
-      TForeignWorkflows,
-      TPatches,
-      TRng
-    >;
-    args: StandardSchemaV1.InferOutput<TArgs>;
-  }) => Promise<void>;
   beforeSettle?: (
     params:
       | {
@@ -994,19 +1052,6 @@ export function defineWorkflow<
     }
   }
 
-  // Validate hooks if provided
-  if (
-    config.beforeCompensate !== undefined &&
-    typeof config.beforeCompensate !== "function"
-  ) {
-    throw new Error("beforeCompensate must be a function");
-  }
-  if (
-    config.afterCompensate !== undefined &&
-    typeof config.afterCompensate !== "function"
-  ) {
-    throw new Error("afterCompensate must be a function");
-  }
   if (
     config.beforeSettle !== undefined &&
     typeof config.beforeSettle !== "function"

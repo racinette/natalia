@@ -142,6 +142,8 @@ export {
   defineTopic,
   defineWorkflow,
   defineWorkflowHeader,
+  MANUAL,
+  registerRequestCompensationHandler,
 } from "./workflow";
 
 // Public API - Engine

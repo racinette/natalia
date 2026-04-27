@@ -228,7 +228,8 @@ export interface BranchContext<
   readonly requests: {
     [K in keyof TRequests]: TRequests[K] extends RequestDefinition<
       infer TPayload,
-      infer TResponseSchema
+      infer TResponseSchema,
+      any
     >
       ? RequestAccessor<TPayload, StandardSchemaV1.InferOutput<TResponseSchema>>
       : never;
@@ -1887,8 +1888,7 @@ export interface BaseContext<
 // =============================================================================
 
 /**
- * Context available inside compensation callbacks and hooks (beforeCompensate,
- * afterCompensate, and beforeSettle when status is failed/terminated).
+ * Context available inside compensation blocks and failed/terminated settle hooks.
  *
  * Key differences from WorkflowContext:
  * - Steps return `CompensationStepResult<T>` via `CompensationStepCall<T>` —
@@ -1935,10 +1935,7 @@ export interface CompensationContext<
       infer TResultSchema,
       any
     >
-      ? StepAccessor<
-          TArgs,
-          CompensationStepResult<StandardSchemaV1.InferOutput<TResultSchema>>
-        >
+      ? StepAccessor<TArgs, StandardSchemaV1.InferOutput<TResultSchema>>
       : never;
   };
 
@@ -1948,7 +1945,8 @@ export interface CompensationContext<
   readonly requests: {
     [K in keyof TRequests]: TRequests[K] extends RequestDefinition<
       infer TPayload,
-      infer TResponseSchema
+      infer TResponseSchema,
+      any
     >
       ? RequestAccessor<TPayload, StandardSchemaV1.InferOutput<TResponseSchema>>
       : never;
@@ -2119,36 +2117,6 @@ export interface CompensationContext<
   listen<M extends Record<string, ListenableHandle>>(handles: M): Listener<M>;
 }
 
-/**
- * Layer 3 compensation callback type (for addCompensation).
- * Receives CompensationContext — no step result, used for general-purpose cleanup.
- */
-export type CompensationCallback<
-  TState,
-  TChannels extends ChannelDefinitions,
-  TStreams extends StreamDefinitions,
-  TEvents extends EventDefinitions,
-  TSteps extends StepDefinitions,
-  TRequests extends RequestDefinitions = Record<string, never>,
-  TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
-  TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
-  TPatches extends PatchDefinitions = Record<string, never>,
-  TRng extends RngDefinitions = Record<string, never>,
-> = (
-  ctx: CompensationContext<
-    TState,
-    TChannels,
-    TStreams,
-    TEvents,
-    TSteps,
-    TRequests,
-    TChildWorkflows,
-    TForeignWorkflows,
-    TPatches,
-    TRng
-  >,
-) => Promise<void>;
-
 // =============================================================================
 // WORKFLOW CONTEXT
 // =============================================================================
@@ -2220,7 +2188,8 @@ export interface WorkflowContext<
   readonly requests: {
     [K in keyof TRequests]: TRequests[K] extends RequestDefinition<
       infer TPayload,
-      infer TResponseSchema
+      infer TResponseSchema,
+      any
     >
       ? RequestAccessor<TPayload, StandardSchemaV1.InferOutput<TResponseSchema>>
       : never;
@@ -2427,33 +2396,6 @@ export interface WorkflowContext<
    */
   listen<M extends Record<string, ListenableHandle>>(handles: M): Listener<M>;
 
-  // ---------------------------------------------------------------------------
-  // addCompensation — general purpose LIFO registration
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Register a general-purpose compensation callback on the LIFO stack.
-   *
-   * Compensations run in reverse registration order when the workflow fails.
-   * The callback receives a CompensationContext (no step result — use for
-   * non-step cleanup like sending channel messages, writing to streams, etc.).
-   *
-   * Not available on CompensationContext (no nesting).
-   */
-  addCompensation(
-    callback: CompensationCallback<
-      TState,
-      TChannels,
-      TStreams,
-      TEvents,
-      TSteps,
-      TRequests,
-      TChildWorkflows,
-      TForeignWorkflows,
-      TPatches,
-      TRng
-    >,
-  ): void;
 }
 
 // =============================================================================

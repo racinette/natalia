@@ -1,6 +1,7 @@
 import type { StandardSchemaV1 } from "./standard-schema";
 import type { BranchContext, CompensationContext, WorkflowContext } from "./context";
 import type { AtomicResult } from "./context";
+import type { AttemptAccessor } from "./results";
 import type {
   JsonInput,
   JsonSchemaConstraint,
@@ -154,12 +155,40 @@ export type StepDefinition<
       readonly compensation: TCompensation;
     });
 
-/**
- * Information from the forward step invocation visible to its compensation block.
- */
-export interface StepCompensationInfo<TResult> {
-  readonly result: TResult | undefined;
-}
+export type NonCompensableStepDefinition = StepDefinition<any, any, undefined> & {
+  readonly compensation?: never;
+};
+
+export type NonCompensableStepDefinitions = Record<
+  string,
+  NonCompensableStepDefinition
+>;
+
+export type CompensationInfo<TResult> =
+  | {
+      readonly status: "completed";
+      readonly result: TResult;
+      readonly attempts: AttemptAccessor;
+    }
+  | {
+      readonly status: "timed_out";
+      readonly reason: "attempts_exhausted" | "deadline";
+      readonly attempts: AttemptAccessor;
+    }
+  | { readonly status: "terminated"; readonly attempts: AttemptAccessor };
+
+export type RequestCompensationInfo<TResponse> =
+  | {
+      readonly status: "completed";
+      readonly response: TResponse;
+      readonly attempts: AttemptAccessor;
+    }
+  | {
+      readonly status: "timed_out";
+      readonly reason: "attempts_exhausted" | "deadline";
+      readonly attempts: AttemptAccessor;
+    }
+  | { readonly status: "terminated"; readonly attempts: AttemptAccessor };
 
 /**
  * Step-local compensation block definition.
@@ -167,8 +196,8 @@ export interface StepCompensationInfo<TResult> {
 export interface StepCompensationDefinition<
   TArgsSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TForwardResultSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
-  TSteps extends StepDefinitions = Record<string, never>,
-  TRequests extends RequestDefinitions = Record<string, never>,
+  TSteps extends NonCompensableStepDefinitions = Record<string, never>,
+  TRequests extends NonCompensableRequestDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint | undefined = undefined,
 > {
   readonly steps?: TSteps;
@@ -184,7 +213,7 @@ export interface StepCompensationDefinition<
       TRequests
     >,
     args: StandardSchemaV1.InferOutput<TArgsSchema>,
-    info: StepCompensationInfo<StandardSchemaV1.InferOutput<TForwardResultSchema>>,
+    info: CompensationInfo<StandardSchemaV1.InferOutput<TForwardResultSchema>>,
   ) => Promise<
     | void
     | (TResultSchema extends JsonSchemaConstraint
@@ -198,6 +227,59 @@ export interface StepCompensationDefinition<
  */
 export type StepDefinitions = Record<string, StepDefinition<any, any, any>>;
 
+export type CompensationBlockStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "halted"
+  | "skipped";
+
+export type FindUniqueResult<T> =
+  | { readonly status: "unique"; readonly value: T }
+  | { readonly status: "missing" }
+  | { readonly status: "ambiguous"; readonly count: number };
+
+type Simplify<T> = { [K in keyof T]: T[K] };
+
+type DistributeStatusResult<T> = T extends { status: infer TStatus }
+  ? TStatus extends PropertyKey
+    ? Simplify<Omit<T, "status"> & { status: TStatus }>
+    : T
+  : T;
+
+type StepCompensationResultSchema<TStep> =
+  TStep extends StepDefinition<any, any, infer TCompensation>
+    ? TCompensation extends StepCompensationDefinition<any, any, any, any, infer TResultSchema>
+      ? TResultSchema
+      : undefined
+    : undefined;
+
+export type CompensationBlockResult<
+  TStep extends StepDefinition<any, any, any>,
+> = StepCompensationResultSchema<TStep> extends JsonSchemaConstraint
+  ? DistributeStatusResult<
+      StandardSchemaV1.InferOutput<StepCompensationResultSchema<TStep>>
+    >
+  : void;
+
+type CompensationBlockStoredResult<TStep extends StepDefinition<any, any, any>> =
+  CompensationBlockResult<TStep> extends void
+    ? null
+    : CompensationBlockResult<TStep> | null;
+
+export interface CompensationBlockUniqueHandle<
+  TStep extends StepDefinition<any, any, any>,
+> {
+  status(): Promise<FindUniqueResult<CompensationBlockStatus>>;
+  result(): Promise<FindUniqueResult<CompensationBlockStoredResult<TStep>>>;
+}
+
+export interface CompensationBlockHandle<
+  TStep extends StepDefinition<any, any, any>,
+> {
+  findUnique(id: string): CompensationBlockUniqueHandle<TStep>;
+}
+
 // =============================================================================
 // REQUEST DEFINITION
 // =============================================================================
@@ -209,10 +291,23 @@ export type StepDefinitions = Record<string, StepDefinition<any, any, any>>;
  * manual resolution. Workflow code controls payload, priority, and observation
  * timeout at call time.
  */
-export interface RequestDefinition<
+export interface RequestCompensationConfig<
+  TResultSchema extends JsonSchemaConstraint | undefined = undefined,
+> {
+  readonly result?: TResultSchema;
+}
+
+export type RequestCompensationDefinition<
+  TResultSchema extends JsonSchemaConstraint | undefined = undefined,
+> = true | RequestCompensationConfig<TResultSchema>;
+
+export type RequestDefinition<
   TPayloadSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TResponseSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
-> {
+  TCompensation extends
+    | RequestCompensationDefinition<any>
+    | undefined = undefined,
+> = {
   readonly name: string;
   /** Payload schema for observable, serializable request input. */
   readonly payload: TPayloadSchema;
@@ -228,12 +323,29 @@ export interface RequestDefinition<
       readonly maxConcurrent?: number;
     },
   ): Unsubscribe;
-}
+} & ([TCompensation] extends [undefined]
+  ? {}
+  : {
+      readonly compensation: TCompensation;
+    });
+
+export type NonCompensableRequestDefinition = RequestDefinition<
+  any,
+  any,
+  undefined
+> & {
+  readonly compensation?: never;
+};
+
+export type NonCompensableRequestDefinitions = Record<
+  string,
+  NonCompensableRequestDefinition
+>;
 
 /**
  * Map of request definitions.
  */
-export type RequestDefinitions = Record<string, RequestDefinition<any, any>>;
+export type RequestDefinitions = Record<string, RequestDefinition<any, any, any>>;
 
 /**
  * Function returned by client/runtime handler registration APIs.
@@ -267,6 +379,34 @@ export interface TopicConsumerContext extends HandlerContext {}
  */
 export interface HandlerRetryOptions extends RetryPolicyOptions {
   readonly maxAttempts?: number;
+}
+
+export interface RequestCompensationRetryOptions extends HandlerRetryOptions {
+  readonly totalTimeoutSeconds?: number;
+}
+
+export interface RequestCompensationOnExhaustedRetryOptions {
+  readonly intervalMs: number;
+  readonly backoffRate?: number;
+  readonly maxIntervalMs?: number;
+}
+
+export interface RequestCompensationHandlerOptions<
+  TPayload = unknown,
+  TResponse = unknown,
+  TResult = void,
+  TManual = unknown,
+> {
+  readonly maxConcurrent?: number;
+  readonly retryPolicy: RequestCompensationRetryOptions;
+  readonly onExhausted?: {
+    readonly callback: (
+      ctx: { signal: AbortSignal },
+      payload: TPayload,
+      info: RequestCompensationInfo<TResponse>,
+    ) => Promise<TResult | TManual>;
+    readonly retryPolicy: RequestCompensationOnExhaustedRetryOptions;
+  };
 }
 
 /**
@@ -790,54 +930,13 @@ export interface WorkflowDefinition<
   readonly evictAfterSeconds?: number | null;
 
   /**
-   * Called before compensations run.
-   * Receives CompensationContext — has full structured concurrency capabilities.
-   */
-  readonly beforeCompensate?: (params: {
-    ctx: CompensationContext<
-      TState,
-      TChannels,
-      TStreams,
-      TEvents,
-      TSteps,
-      TRequests,
-      TChildWorkflows,
-      TForeignWorkflows,
-      TPatches,
-      TRng
-    >;
-    args: StandardSchemaV1.InferOutput<TArgs>;
-  }) => Promise<void>;
-
-  /**
-   * Called after all compensations have run.
-   * Receives CompensationContext — has full structured concurrency capabilities.
-   */
-  readonly afterCompensate?: (params: {
-    ctx: CompensationContext<
-      TState,
-      TChannels,
-      TStreams,
-      TEvents,
-      TSteps,
-      TRequests,
-      TChildWorkflows,
-      TForeignWorkflows,
-      TPatches,
-      TRng
-    >;
-    args: StandardSchemaV1.InferOutput<TArgs>;
-  }) => Promise<void>;
-
-  /**
    * Called once before final workflow status is settled.
    *
    * - `complete`: receives WorkflowContext + decoded result.
    * - `failed` / `terminated`: receives CompensationContext.
    *
    * If this hook throws on the complete path, the workflow transitions into
-   * failure flow (`beforeCompensate` -> LIFO compensations -> `afterCompensate`).
-   * The hook is single-shot and is not invoked a second time.
+   * failure flow. The hook is single-shot and is not invoked a second time.
    */
   readonly beforeSettle?: (params:
     | {
