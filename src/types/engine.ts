@@ -1,14 +1,8 @@
 import type { StandardSchemaV1 } from "./standard-schema";
-import type {
-  ChannelDefinitions,
-  StreamDefinitions,
-  EventDefinitions,
-  RetentionSetter,
-  WorkflowInvocationBaseOptions,
-  DeadlineOptions,
-  AnyPublicWorkflowHeader,
-  AnyWorkflowDefinition,
-} from "./definitions";
+import type { ChannelDefinitions, EventDefinitions, StreamDefinitions } from "./definitions/primitives";
+import type { DeadlineOptions, RetentionSetter, WorkflowInvocationBaseOptions } from "./definitions/policies";
+import type { AnyPublicWorkflowHeader } from "./definitions/workflow-headers";
+import type { AnyWorkflowDefinition } from "./definitions/workflow-definition";
 import type {
   ChannelSendResult,
   StreamReadResult,

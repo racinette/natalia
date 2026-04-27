@@ -1,11 +1,7 @@
 import type { StandardSchemaV1 } from "./standard-schema";
-import type {
-  WorkflowDefinition,
-  ChannelDefinitions,
-  StreamDefinitions,
-  EventDefinitions,
-  ErrorDefinitions,
-} from "./definitions";
+import type { ChannelDefinitions, EventDefinitions, StreamDefinitions } from "./definitions/primitives";
+import type { ErrorDefinitions } from "./definitions/errors";
+import type { WorkflowDefinition } from "./definitions/workflow-definition";
 
 // =============================================================================
 // TYPE HELPERS
