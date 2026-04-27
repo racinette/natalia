@@ -1,7 +1,6 @@
 import type { StandardSchemaV1 } from "./standard-schema";
 import type { ChannelDefinitions, EventDefinitions, StreamDefinitions } from "./definitions/primitives";
 import type { ErrorDefinitions } from "./definitions/errors";
-import type { WorkflowDefinition } from "./definitions/workflow-definition";
 
 // =============================================================================
 // TYPE HELPERS
@@ -87,26 +86,3 @@ export type InferWorkflowErrors<W> = W extends { errors?: infer TErrors }
     : Record<string, never>
   : Record<string, never>;
 
-/**
- * Extract state type from workflow definition.
- */
-export type InferWorkflowState<W> =
-  W extends WorkflowDefinition<
-    infer TState,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any
-  >
-    ? TState
-    : never;

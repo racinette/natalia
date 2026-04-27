@@ -5,7 +5,7 @@ import type { BranchDefinitions } from "./branches";
 import type { WorkflowErrorDefinitions } from "./errors";
 import type { PatchDefinitions, ChannelDefinitions, EventDefinitions, StreamDefinitions } from "./primitives";
 import type { RequestDefinitions } from "./requests";
-import type { RetentionSetter, StateFactory } from "./policies";
+import type { RetentionSetter } from "./policies";
 import type { RngDefinitions } from "./rng";
 import type { StepDefinitions } from "./steps";
 import type { PublicWorkflowHeader, WorkflowDefinitions } from "./workflow-headers";
@@ -15,7 +15,6 @@ import type { PublicWorkflowHeader, WorkflowDefinitions } from "./workflow-heade
  * Useful for avoiding repeated `WorkflowDefinition<any, ...>` constraints.
  */
 export type AnyWorkflowDefinition = WorkflowDefinition<
-  any,
   any,
   any,
   any,
@@ -54,7 +53,6 @@ export type AnyWorkflowDefinition = WorkflowDefinition<
  * `ctx.scope(name, ...)`. Collections (Array, Map) are supported for dynamic fan-out.
  */
 export interface WorkflowDefinition<
-  TState,
   TChannels extends ChannelDefinitions,
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
@@ -89,9 +87,6 @@ export interface WorkflowDefinition<
   > {
   /** Unique workflow name */
   readonly name: string;
-
-  /** State factory — provides initial state for each workflow instance */
-  readonly state?: StateFactory<TState>;
 
   /** Channel definitions */
   readonly channels?: TChannels;
@@ -186,7 +181,6 @@ export interface WorkflowDefinition<
     | {
         status: "complete";
         ctx: WorkflowContext<
-          TState,
           TChannels,
           TStreams,
           TEvents,
@@ -206,7 +200,6 @@ export interface WorkflowDefinition<
     | {
         status: "failed" | "terminated";
         ctx: CompensationContext<
-          TState,
           TChannels,
           TStreams,
           TEvents,
@@ -227,7 +220,6 @@ export interface WorkflowDefinition<
    */
   execute(
     ctx: WorkflowContext<
-      TState,
       TChannels,
       TStreams,
       TEvents,

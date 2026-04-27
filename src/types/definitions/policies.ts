@@ -54,15 +54,3 @@ export type WorkflowInvocationBaseOptions<TArgsInput, TMetadataInput> = {
 export type RetentionSetter<TStatus extends string> = {
   readonly [K in TStatus]?: number | null;
 };
-
-// =============================================================================
-// STATE FACTORY
-// =============================================================================
-
-/**
- * State factory type for a workflow.
- *
- * Provides the initial state for each workflow instance.
- * State is NOT persisted to the database — it is derived from replay.
- */
-export type StateFactory<TState> = () => TState;

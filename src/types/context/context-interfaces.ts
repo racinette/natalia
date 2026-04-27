@@ -62,7 +62,6 @@ export interface BranchContext<
  * Contains all primitives that are identical between the two contexts.
  */
 export interface BaseContext<
-  TState,
   TChannels extends ChannelDefinitions,
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
@@ -158,7 +157,6 @@ export interface BaseContext<
  *   instance with `AppendBranchKey<AppendScopeName<...>, K>`.
  */
 export interface CompensationContext<
-  TState,
   TChannels extends ChannelDefinitions,
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
@@ -171,7 +169,7 @@ export interface CompensationContext<
   TScopePath extends ScopePath = [],
 >
   extends
-    BaseContext<TState, TChannels, TStreams, TEvents, TPatches, TRng>,
+    BaseContext<TChannels, TStreams, TEvents, TPatches, TRng>,
     CompensationResolver {
   /**
    * Steps for durable operations.
@@ -273,7 +271,6 @@ export interface CompensationContext<
     entries: E,
     callback: (
       ctx: CompensationConcurrencyContext<
-        TState,
         TChannels,
         TStreams,
         TEvents,
@@ -399,7 +396,6 @@ export interface CompensationContext<
  *   instance with `AppendBranchKey<AppendScopeName<...>, K>`.
  */
 export interface WorkflowContext<
-  TState,
   TChannels extends ChannelDefinitions,
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
@@ -414,7 +410,7 @@ export interface WorkflowContext<
   TBranches extends BranchDefinitions = Record<string, never>,
 >
   extends
-    BaseContext<TState, TChannels, TStreams, TEvents, TPatches, TRng>,
+    BaseContext<TChannels, TStreams, TEvents, TPatches, TRng>,
     ExecutionResolver {
   /**
    * Steps for durable operations.
@@ -453,7 +449,6 @@ export interface WorkflowContext<
     [K in keyof TChildWorkflows]: ChildWorkflowAccessor<
       TChildWorkflows[K],
       CompensationContext<
-        TState,
         TChannels,
         TStreams,
         TEvents,
@@ -553,7 +548,6 @@ export interface WorkflowContext<
     entries: E,
     callback: (
       ctx: WorkflowConcurrencyContext<
-        TState,
         TChannels,
         TStreams,
         TEvents,
@@ -660,7 +654,6 @@ export interface WorkflowContext<
  * and `ctx.join()` for already-running `BranchHandle`s.
  */
 export interface WorkflowConcurrencyContext<
-  TState,
   TChannels extends ChannelDefinitions,
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
@@ -677,7 +670,6 @@ export interface WorkflowConcurrencyContext<
   extends
     Omit<
       WorkflowContext<
-        TState,
         TChannels,
         TStreams,
         TEvents,
@@ -718,7 +710,6 @@ export interface WorkflowConcurrencyContext<
     entries: E,
     callback: (
       ctx: WorkflowConcurrencyContext<
-        TState,
         TChannels,
         TStreams,
         TEvents,
@@ -830,7 +821,6 @@ export interface WorkflowConcurrencyContext<
  * and `ctx.join()` for already-running `BranchHandle`s.
  */
 export interface CompensationConcurrencyContext<
-  TState,
   TChannels extends ChannelDefinitions,
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
@@ -845,7 +835,6 @@ export interface CompensationConcurrencyContext<
   extends
     Omit<
       CompensationContext<
-        TState,
         TChannels,
         TStreams,
         TEvents,
@@ -883,7 +872,6 @@ export interface CompensationConcurrencyContext<
     entries: E,
     callback: (
       ctx: CompensationConcurrencyContext<
-        TState,
         TChannels,
         TStreams,
         TEvents,

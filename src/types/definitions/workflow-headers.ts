@@ -21,7 +21,7 @@ export type WorkflowDefinitions = Record<string, AnyWorkflowHeader>;
  * - terminal payload contract (`result`)
  *
  * This type intentionally excludes implementation details (`execute`, `steps`,
- * `state`, `rng`, hooks, etc.). Full `WorkflowDefinition` objects satisfy this
+ * `rng`, hooks, etc.). Full `WorkflowDefinition` objects satisfy this
  * shape structurally and can be used where only client contracts are needed.
  */
 export interface PublicWorkflowHeader<

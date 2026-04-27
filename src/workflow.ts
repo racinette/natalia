@@ -680,7 +680,6 @@ export function defineBranch(config: {
  * ```
  */
 export function defineWorkflow<
-  TState = undefined,
   TChannels extends ChannelDefinitions = Record<string, never>,
   TStreams extends StreamDefinitions = Record<string, never>,
   TEvents extends EventDefinitions = Record<string, never>,
@@ -697,7 +696,6 @@ export function defineWorkflow<
   TRng extends RngDefinitions = Record<string, never>,
 >(config: {
   name: string;
-  state?: () => TState;
   channels?: TChannels;
   streams?: TStreams;
   events?: TEvents;
@@ -725,7 +723,6 @@ export function defineWorkflow<
       | {
           status: "complete";
           ctx: WorkflowContext<
-            TState,
             TChannels,
             TStreams,
             TEvents,
@@ -745,7 +742,6 @@ export function defineWorkflow<
       | {
           status: "failed" | "terminated";
           ctx: CompensationContext<
-            TState,
             TChannels,
             TStreams,
             TEvents,
@@ -761,7 +757,6 @@ export function defineWorkflow<
   ) => Promise<void>;
   execute: (
     ctx: WorkflowContext<
-      TState,
       TChannels,
       TStreams,
       TEvents,
@@ -778,7 +773,6 @@ export function defineWorkflow<
     args: StandardSchemaV1.InferOutput<TArgs>,
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
 }): WorkflowDefinition<
-  TState,
   TChannels,
   TStreams,
   TEvents,
@@ -797,13 +791,6 @@ export function defineWorkflow<
   // Validate name
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Workflow name must be a non-empty string");
-  }
-
-  // Validate state if provided
-  if (config.state !== undefined) {
-    if (typeof config.state !== "function") {
-      throw new Error("state must be a factory function");
-    }
   }
 
   // Validate result schema if provided
@@ -1076,7 +1063,6 @@ export function defineWorkflow<
     patches,
     rng,
   } as WorkflowDefinition<
-    TState,
     TChannels,
     TStreams,
     TEvents,

@@ -255,6 +255,16 @@ const childWorkflow = defineWorkflow({
   },
 });
 
+const stateRejectedWorkflow = defineWorkflow({
+  name: "stateRejected",
+  result: z.object({ ok: z.boolean() }),
+  // @ts-expect-error workflow-level state factories are removed
+  state: () => ({ count: 0 }),
+  async execute() {
+    return { ok: true };
+  },
+});
+
 export const compensationModelAcceptanceWorkflow = defineWorkflow({
   name: "compensationModelAcceptance",
   steps: { chargeStep, auditStep },
@@ -317,3 +327,4 @@ async function inspectCompensationBlock(): Promise<void> {
 void unregisterApprovalCompensation;
 void unregisterManualReviewCompensation;
 void inspectCompensationBlock;
+void stateRejectedWorkflow;

@@ -96,7 +96,6 @@ export interface StepCompensationDefinition<
   readonly result?: TResultSchema;
   readonly undo: (
     ctx: CompensationContext<
-      undefined,
       Record<string, never>,
       Record<string, never>,
       Record<string, never>,
