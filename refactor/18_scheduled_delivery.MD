@@ -37,4 +37,4 @@ Introduce one shared scheduling option type for queue messages and workflow star
 
 ## Acceptance Contract
 
-The paired file `refactor/17_scheduled_delivery.ts` verifies mutual exclusion, root start options, child workflow attached/detached options, queue enqueue scheduling, and invalid deadline/schedule combinations where they are statically representable.
+The paired file `refactor/18_scheduled_delivery.ts` verifies mutual exclusion, root start options, child workflow attached/detached options, queue enqueue scheduling, and invalid deadline/schedule combinations where they are statically representable.

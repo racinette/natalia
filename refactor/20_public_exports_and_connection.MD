@@ -30,4 +30,4 @@ Finish the refactor by making the public barrel match the new API and exposing o
 
 ## Acceptance Contract
 
-The paired file `refactor/19_public_exports_and_connection.ts` verifies the final export set, absence of removed exports, and optional transaction/connection parameters on external APIs.
+The paired file `refactor/20_public_exports_and_connection.ts` verifies the final export set, absence of removed exports, and optional transaction/connection parameters on external APIs.

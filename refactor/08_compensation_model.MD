@@ -21,8 +21,7 @@ Move compensation from call-site builder chains to operation definitions and mak
 - Compensation reports expected outcomes by returning discriminated values, not by throwing declared compensation errors.
 - Compensation dependencies reject compensable steps and compensable requests to avoid recursive compensation chains.
 - `ctx.addCompensation`, workflow-level `beforeCompensate` / `afterCompensate`, and `.compensate(...)` call builders are removed.
-- Compensation block instances are queryable through grounded handles, not through stale in-memory closures.
-- No-result compensation blocks expose `null` through their result query surface.
+- Compensation block instances are queryable through grounded handles, not through stale in-memory closures. The handle/query surface itself is specified in `12_introspection`.
 
 ## Runtime Target
 
@@ -43,4 +42,4 @@ Move compensation from call-site builder chains to operation definitions and mak
 
 ## Acceptance Contract
 
-The paired file `refactor/08_compensation_model.ts` verifies definition-bound step compensation, request compensation declaration plus separate handler registration, typed step `undo` args/info, typed request compensation payload/info, outcome narrowing, `MANUAL` and `onExhausted.callback`, dependency isolation, rejection of compensable compensation dependencies, removed ad hoc/workflow/call-site compensation APIs, and grounded compensation block handle result types.
+The paired file `refactor/08_compensation_model.ts` verifies definition-bound step compensation, request compensation declaration plus separate handler registration, typed step `undo` args/info, typed request compensation payload/info, outcome narrowing, `MANUAL` and `onExhausted.callback`, dependency isolation, rejection of compensable compensation dependencies, and removed ad hoc/workflow/call-site compensation APIs. The grounded compensation block handle and its result/skip query surface are verified in `refactor/12_introspection.ts`.

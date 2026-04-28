@@ -39,4 +39,4 @@ Add observable workflow attributes and complete the non-blocking read surface fo
 
 ## Acceptance Contract
 
-The paired file `refactor/15_attributes_and_streams.ts` verifies attribute schemas, set/get/getNowait result shapes, stream `readNowait` overloads, and channel `receive(Date)` overloads.
+The paired file `refactor/16_attributes_and_streams.ts` verifies attribute schemas, set/get/getNowait result shapes, stream `readNowait` overloads, and channel `receive(Date)` overloads.

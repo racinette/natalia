@@ -39,4 +39,4 @@ Add global durable queues for workflow-produced work and client-registered handl
 
 ## Acceptance Contract
 
-The paired file `refactor/12_queues.ts` verifies definition inference, workflow enqueue typing, scheduling option exclusivity, handler typing, dead-letter query typing, and immediate-exhaustion behavior surface.
+The paired file `refactor/13_queues.ts` verifies definition inference, workflow enqueue typing, scheduling option exclusivity, handler typing, dead-letter query typing, and immediate-exhaustion behavior surface.

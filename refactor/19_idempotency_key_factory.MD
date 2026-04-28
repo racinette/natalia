@@ -35,4 +35,4 @@ Require meaningful workflow identity by default while allowing deterministic der
 
 ## Acceptance Contract
 
-The paired file `refactor/18_idempotency_key_factory.ts` verifies conditional start option typing, decoded factory args, explicit override, child workflow parity, and rejected missing keys for workflows without factories.
+The paired file `refactor/19_idempotency_key_factory.ts` verifies conditional start option typing, decoded factory args, explicit override, child workflow parity, and rejected missing keys for workflows without factories.

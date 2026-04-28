@@ -7,10 +7,7 @@ import {
   registerRequestCompensationHandler,
 } from "../workflow";
 import type {
-  CompensationBlockHandle,
-  CompensationBlockStatus,
   CompensationInfo,
-  FindUniqueResult,
   RequestCompensationInfo,
 } from "../types";
 
@@ -295,36 +292,12 @@ export const compensationModelAcceptanceWorkflow = defineWorkflow({
   },
 });
 
-declare const handle: CompensationBlockHandle<typeof chargeStep>;
-declare const noResultHandle: CompensationBlockHandle<typeof noResultCompensatedStep>;
-
-async function inspectCompensationBlock(): Promise<void> {
-  const block = handle.findUnique("block-1");
-  // @ts-expect-error findUnique is grounded by instance id, not stale selector objects
-  handle.findUnique({ id: "block-1" });
-
-  const status = await block.status();
-  type _Status = Assert<
-    IsEqual<typeof status, FindUniqueResult<CompensationBlockStatus>>
-  >;
-
-  const result = await block.result();
-  type _Result = Assert<
-    IsEqual<
-      typeof result,
-      FindUniqueResult<
-        | { status: "refunded"; refundId?: string }
-        | { status: "manual_review"; refundId?: string }
-        | null
-      >
-    >
-  >;
-
-  const noResult = await noResultHandle.findUnique("block-2").result();
-  type _NoResult = Assert<IsEqual<typeof noResult, FindUniqueResult<null>>>;
-}
+// Introspection over compensation block instances (status, result, args, skip,
+// findUnique by query, findMany, etc.) is verified in
+// `refactor/12_introspection.ts`.
 
 void unregisterApprovalCompensation;
 void unregisterManualReviewCompensation;
-void inspectCompensationBlock;
+void chargeStep;
+void noResultCompensatedStep;
 void stateRejectedWorkflow;

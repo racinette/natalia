@@ -36,4 +36,4 @@ Separate request manual-mode handoff from queue/topic unrecoverable input failur
 
 ## Acceptance Contract
 
-The paired file `refactor/16_handler_early_termination.ts` verifies legal and illegal early-termination surfaces and the distinction between `MANUAL`, `UnrecoverableError`, and `AttemptError`.
+The paired file `refactor/17_handler_early_termination.ts` verifies legal and illegal early-termination surfaces and the distinction between `MANUAL`, `UnrecoverableError`, and `AttemptError`.

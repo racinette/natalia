@@ -23,7 +23,7 @@ Move structured concurrency to predefined, isolated branch definitions and gener
 - Handler forms on `ctx.match` are removed; failure recovery happens in normal code.
 - Convenience APIs exist for `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.some`; each takes an explicit scope name as its first argument.
 - Convenience APIs are success-oriented. `ctx.all` returns `{ ok: true, result }` preserving the input object shape, or `{ ok: false, error }` with `code: "SomeBranchesFailed"`. `ctx.first` and `ctx.atLeast` return flat keyed success arrays/results, or helper-level `code` failures (`"NoBranchCompleted"` / `"QuorumNotMet"`). `ctx.atMost` and `ctx.some` return flat keyed success arrays and have no failure cases.
-- Branch instances are externally queryable and can report `complete`, `failed`, `running`, `halted`, or `skipped` as appropriate.
+- Branch instances are externally queryable and can report `complete`, `failed`, `running`, `halted`, or `skipped` as appropriate. The external query handle and its skip/result surface are specified in `12_introspection`.
 
 ## Affected Areas
 

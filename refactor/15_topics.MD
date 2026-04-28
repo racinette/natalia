@@ -39,4 +39,4 @@ Add global ordered topics with workflow publishing, named consumers, batch consu
 
 ## Acceptance Contract
 
-The paired file `refactor/14_topics.ts` verifies publish typing, consumer and batch consumer callback shapes, filter namespaces, `TopicRecord`, `neverExpire` narrowing, and `UnrecoverableError` behavior surface.
+The paired file `refactor/15_topics.ts` verifies publish typing, consumer and batch consumer callback shapes, filter namespaces, `TopicRecord`, `neverExpire` narrowing, and `UnrecoverableError` behavior surface.

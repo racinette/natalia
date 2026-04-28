@@ -1,12 +1,14 @@
 import type {
+  BranchHaltRecord,
+  BranchHaltStatus,
   BranchInstanceId,
   BranchInstanceRecord,
   BranchInstanceStatus,
+  CompensationBlockHaltRecord,
+  CompensationBlockHaltStatus,
   CompensationBlockInstanceId,
   CompensationBlockRecord,
   CompensationBlockStatus,
-  HaltRecord,
-  HaltStatus,
   PromiseRecord,
   PromiseStatus,
   RequestCompensationInstanceId,
@@ -15,6 +17,8 @@ import type {
   ScopeInstanceId,
   StepInstanceId,
   StepInstanceRecord,
+  WorkflowHaltRecord,
+  WorkflowHaltStatus,
   WorkflowInstanceId,
 } from "../types";
 
@@ -60,8 +64,14 @@ type _RequestCompensationStatus = Assert<
   >
 >;
 
-type _HaltStatus = Assert<
-  IsEqual<HaltStatus, "open" | "resolved" | "skipped" | "terminated">
+type _WorkflowHaltStatus = Assert<
+  IsEqual<WorkflowHaltStatus, "pending" | "resolved">
+>;
+type _CompensationBlockHaltStatus = Assert<
+  IsEqual<CompensationBlockHaltStatus, "pending" | "resolved" | "skipped">
+>;
+type _BranchHaltStatus = Assert<
+  IsEqual<BranchHaltStatus, "pending" | "resolved" | "skipped">
 >;
 
 declare const workflowId: WorkflowInstanceId;
@@ -127,14 +137,41 @@ const requestCompensationRecord: RequestCompensationRecord = {
   updatedAt: new Date(),
 };
 
-const haltRecord: HaltRecord = {
+const workflowHaltRecord: WorkflowHaltRecord = {
   workflowId,
-  target: { kind: "branch", branchId },
-  status: "open",
-  reason: "determinism",
-  message: "Replay diverged",
+  afterStepId: stepId,
+  status: "pending",
+  errorType: "ReplayDivergence",
+  errorMessage: "Replay diverged",
+  errorStacktrace: null,
+  errorDetails: undefined,
   createdAt: new Date(),
-  resolvedAt: undefined,
+  updatedAt: new Date(),
+};
+
+const compensationBlockHaltRecord: CompensationBlockHaltRecord = {
+  workflowId,
+  compensationBlockId: "comp-1" as CompensationBlockInstanceId,
+  status: "skipped",
+  errorType: "Error",
+  errorMessage: "undo threw",
+  errorStacktrace: null,
+  errorDetails: undefined,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+  resolvedAt: new Date(),
+};
+
+const branchHaltRecord: BranchHaltRecord = {
+  workflowId,
+  branchId,
+  status: "pending",
+  errorType: "Error",
+  errorMessage: "branch threw",
+  errorStacktrace: null,
+  errorDetails: undefined,
+  createdAt: new Date(),
+  updatedAt: new Date(),
 };
 
 // @ts-expect-error status strings must match schema check constraints
@@ -146,4 +183,6 @@ const badPromiseStatus: PromiseRecord = { ...promiseRecord, status: "settled" };
 
 void compensationRecord;
 void requestCompensationRecord;
-void haltRecord;
+void workflowHaltRecord;
+void compensationBlockHaltRecord;
+void branchHaltRecord;

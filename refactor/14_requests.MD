@@ -39,4 +39,4 @@ Add durable requests for workflow code that needs an external handler or manual 
 
 ## Acceptance Contract
 
-The paired file `refactor/13_requests.ts` verifies request definition inference, workflow-side result unions, `MANUAL`, manual client APIs, request compensation info, and rejection of queue/topic-only early termination.
+The paired file `refactor/14_requests.ts` verifies request definition inference, workflow-side result unions, `MANUAL`, manual client APIs, request compensation info, and rejection of queue/topic-only early termination.

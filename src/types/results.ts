@@ -123,80 +123,39 @@ export type WorkflowTerminationReason =
   | "terminated_by_parent";
 
 // =============================================================================
-// HALT TYPES — OPERATOR VISIBILITY
+// HALT STATUS — OPERATOR VISIBILITY
 // =============================================================================
 
 /**
- * Durable halt state exposed to client/operator APIs.
+ * Durable halt state for workflow execution halts.
+ *
+ * Workflow execution halts pause the workflow at the point of an unrecognised
+ * throw. They are resolved automatically by patch + replay, or by `sigkill()`
+ * on the workflow handle. There is no operator-callable skip — skipping
+ * workflow code would leave parent in-memory state inconsistent.
  */
-export type HaltStatus = "open" | "resolved" | "skipped" | "terminated";
+export type WorkflowHaltStatus = "pending" | "resolved";
 
 /**
- * User-visible classification for halted execution, branch, and compensation
- * instances.
+ * Durable halt state for compensation block instance halts.
+ *
+ * Compensation block instances are isolated; if `undo` (or one of the block's
+ * branches) throws unrecognised, the instance is halted. The operator can
+ * either patch + replay or `skip(...)` the compensation block instance, which
+ * records the synthesised result and clears the halt.
  */
-export type HaltReason = "determinism" | "unhandled_error";
+export type CompensationBlockHaltStatus =
+  | "pending"
+  | "resolved"
+  | "skipped";
 
 /**
- * Common halt snapshot returned by halt handles.
+ * Durable halt state for branch instance halts.
+ *
+ * Halted branches can be `skip(result)`-ed via the branch instance handle,
+ * which feeds the operator-supplied result back to the parent scope on replay.
  */
-export interface HaltInfo {
-  readonly id: string;
-  readonly status: HaltStatus;
-  readonly reason: HaltReason;
-  readonly message: string | null;
-  readonly createdAt: Date;
-  readonly updatedAt: Date;
-  readonly resolvedAt?: Date;
-}
-
-export interface ExecutionHaltInfo extends HaltInfo {
-  readonly target: "execution";
-}
-
-export interface BranchHaltInfo extends HaltInfo {
-  readonly target: "branch";
-}
-
-export interface CompensationBlockHaltInfo extends HaltInfo {
-  readonly target: "compensation_block";
-}
-
-/**
- * Execution halts can be resolved by replaying after a patch or by terminating
- * the workflow. They are intentionally not skippable.
- */
-export interface ExecutionHaltHandle {
-  get(): Promise<ExecutionHaltInfo>;
-  replayAfterPatch(): Promise<void>;
-  terminateWorkflow(): Promise<void>;
-}
-
-export interface BranchHaltSkipOptions<TResult> {
-  readonly reason: "operator_decision";
-  readonly result: TResult;
-}
-
-/**
- * Branch halts are isolated from workflow business logic. Skipping requires the
- * result that replay will feed back to the parent scope.
- */
-export interface BranchHaltHandle<TResult = unknown> {
-  get(): Promise<BranchHaltInfo>;
-  skip(options: BranchHaltSkipOptions<TResult>): Promise<void>;
-}
-
-export interface CompensationBlockHaltSkipOptions {
-  readonly reason: "manual_compensation_completed" | "operator_decision";
-}
-
-/**
- * Compensation block halts are per-instance and may be skipped by an operator.
- */
-export interface CompensationBlockHaltHandle {
-  get(): Promise<CompensationBlockHaltInfo>;
-  skip(options: CompensationBlockHaltSkipOptions): Promise<void>;
-}
+export type BranchHaltStatus = "pending" | "resolved" | "skipped";
 
 // =============================================================================
 // RESULT TYPES — STEP (COMPENSATION)
