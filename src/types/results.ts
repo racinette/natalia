@@ -123,6 +123,82 @@ export type WorkflowTerminationReason =
   | "terminated_by_parent";
 
 // =============================================================================
+// HALT TYPES — OPERATOR VISIBILITY
+// =============================================================================
+
+/**
+ * Durable halt state exposed to client/operator APIs.
+ */
+export type HaltStatus = "open" | "resolved" | "skipped" | "terminated";
+
+/**
+ * User-visible classification for halted execution, branch, and compensation
+ * instances.
+ */
+export type HaltReason = "determinism" | "unhandled_error";
+
+/**
+ * Common halt snapshot returned by halt handles.
+ */
+export interface HaltInfo {
+  readonly id: string;
+  readonly status: HaltStatus;
+  readonly reason: HaltReason;
+  readonly message: string | null;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+  readonly resolvedAt?: Date;
+}
+
+export interface ExecutionHaltInfo extends HaltInfo {
+  readonly target: "execution";
+}
+
+export interface BranchHaltInfo extends HaltInfo {
+  readonly target: "branch";
+}
+
+export interface CompensationBlockHaltInfo extends HaltInfo {
+  readonly target: "compensation_block";
+}
+
+/**
+ * Execution halts can be resolved by replaying after a patch or by terminating
+ * the workflow. They are intentionally not skippable.
+ */
+export interface ExecutionHaltHandle {
+  get(): Promise<ExecutionHaltInfo>;
+  replayAfterPatch(): Promise<void>;
+  terminateWorkflow(): Promise<void>;
+}
+
+export interface BranchHaltSkipOptions<TResult> {
+  readonly reason: "operator_decision";
+  readonly result: TResult;
+}
+
+/**
+ * Branch halts are isolated from workflow business logic. Skipping requires the
+ * result that replay will feed back to the parent scope.
+ */
+export interface BranchHaltHandle<TResult = unknown> {
+  get(): Promise<BranchHaltInfo>;
+  skip(options: BranchHaltSkipOptions<TResult>): Promise<void>;
+}
+
+export interface CompensationBlockHaltSkipOptions {
+  readonly reason: "manual_compensation_completed" | "operator_decision";
+}
+
+/**
+ * Compensation block halts are per-instance and may be skipped by an operator.
+ */
+export interface CompensationBlockHaltHandle {
+  get(): Promise<CompensationBlockHaltInfo>;
+  skip(options: CompensationBlockHaltSkipOptions): Promise<void>;
+}
+
+// =============================================================================
 // RESULT TYPES — STEP (COMPENSATION)
 // =============================================================================
 

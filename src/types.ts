@@ -50,6 +50,7 @@ export type {
   BranchEntry,
   BranchHandle,
   BranchInstanceStatus,
+  BranchJoinResult,
   BranchTimeoutCallOptions,
   DefinedBranchResult,
   EntryResult,

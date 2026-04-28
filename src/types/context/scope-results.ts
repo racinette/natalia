@@ -109,9 +109,12 @@ export type BranchInstanceStatus =
   | "halted"
   | "skipped";
 
-export type DefinedBranchResult<T, TErrors extends BranchErrorMode> =
+export type BranchJoinResult<T> =
   | { ok: true; result: T }
   | { ok: false; status: "failed"; error: unknown };
+
+export type DefinedBranchResult<T, TErrors extends BranchErrorMode> =
+  BranchJoinResult<T>;
 
 export interface BranchCallOptions {}
 
