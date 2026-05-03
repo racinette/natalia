@@ -254,22 +254,22 @@ export interface QuorumNotMet<E> {
 }
 
 type InferBranchArgsInput<B> =
-  B extends BranchDefinition<infer TArgs, any, any, any, any>
+  B extends BranchDefinition<infer TArgs, any, any>
     ? SchemaInvocationInput<TArgs>
     : never;
 
 type InferBranchResult<B> =
-  B extends BranchDefinition<any, infer TResult, any, any, any>
+  B extends BranchDefinition<any, infer TResult, any>
     ? StandardSchemaV1.InferOutput<TResult>
     : never;
 
 type InferBranchErrors<B> =
-  B extends BranchDefinition<any, any, any, any, infer TErrors>
+  B extends BranchDefinition<any, any, infer TErrors>
     ? TErrors
     : Record<string, never>;
 
 export interface BranchAccessor<
-  B extends BranchDefinition<any, any, any, any, any>,
+  B extends BranchDefinition<any, any, any>,
   TScopePath extends ScopePath,
   TRoot extends RootScope,
 > {

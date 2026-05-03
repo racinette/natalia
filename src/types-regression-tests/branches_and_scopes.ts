@@ -1,6 +1,5 @@
 import { z } from "zod";
 import {
-  defineBranch,
   defineRequest,
   defineStep,
   defineWorkflow,
@@ -14,24 +13,9 @@ type IsEqual<A, B> =
     ? true
     : false;
 
-const quoteBranch = defineBranch({
-  name: "quoteBranch",
-  args: z.object({ provider: z.string() }),
-  result: z.object({ provider: z.string(), price: z.number() }),
-  async execute(_ctx, args) {
-    return { provider: args.provider, price: 100 };
-  },
-});
-
-const fraudBranch = defineBranch({
-  name: "fraudBranch",
-  args: z.object({ orderId: z.string() }),
-  result: z.object({ score: z.number() }),
-  errors: { FraudServiceDown: z.object({ orderId: z.string() }) },
-  async execute(_ctx, args) {
-    return { score: args.orderId.length };
-  },
-});
+// =============================================================================
+// FIXTURE — workflow-level dependencies. Branches inherit these.
+// =============================================================================
 
 const normalizeStep = defineStep({
   name: "normalizeStep",
@@ -40,6 +24,13 @@ const normalizeStep = defineStep({
   async execute(_ctx, args) {
     return { normalized: args.orderId.toUpperCase() };
   },
+});
+
+const cancelStep = defineStep({
+  name: "cancelStep",
+  args: z.object({ orderId: z.string() }),
+  result: z.void(),
+  async execute() {},
 });
 
 const approvalRequest = defineRequest({
@@ -58,11 +49,28 @@ const followUpWorkflow = defineWorkflow({
   },
 });
 
+// =============================================================================
+// ACCEPTANCE WORKFLOW — branches are inline literals on `branches: {...}`.
+// =============================================================================
+
 export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
   name: "branchesAndScopesAcceptance",
   args: z.object({ orderId: z.string() }),
+  errors: {
+    WorkflowError: z.object({ orderId: z.string() }),
+  },
+  channels: {
+    parentChannel: z.object({ msg: z.string() }),
+  },
+  streams: {
+    parentStream: z.object({ entry: z.string() }),
+  },
+  events: {
+    parentEvent: true,
+  },
   steps: {
     normalize: normalizeStep,
+    cancel: cancelStep,
   },
   requests: {
     approval: approvalRequest,
@@ -71,19 +79,124 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
     followUp: followUpWorkflow,
   },
   branches: {
-    quote: quoteBranch,
-    fraud: fraudBranch,
+    // ---- branch with no errors (mode "none") ----
+    quote: {
+      args: z.object({ provider: z.string() }),
+      result: z.object({ provider: z.string(), price: z.number() }),
+      async execute(branchCtx, args) {
+        // Branch ctx inherits the workflow's full primitive surface.
+        // (1) Steps:
+        const normalized = await branchCtx.steps.normalize({
+          orderId: args.provider,
+        });
+        type _BranchCanCallWorkflowStep = Assert<
+          IsEqual<typeof normalized, { normalized: string }>
+        >;
+
+        // (2) Requests:
+        const approved = await branchCtx.requests.approval({
+          orderId: args.provider,
+        });
+        type _BranchCanCallWorkflowRequest = Assert<
+          IsEqual<typeof approved, { approved: boolean }>
+        >;
+
+        // (3) Child workflows:
+        const child = await branchCtx.childWorkflows.followUp({
+          args: { orderId: args.provider },
+        });
+        type _BranchCanCallChildWorkflow = Assert<
+          Extract<typeof child, { ok: true }> extends { result: { ok: boolean } }
+            ? true
+            : false
+        >;
+
+        // (4) Channels / streams / events — same workflow rows:
+        type _BranchSeesParentChannel = Assert<
+          "parentChannel" extends keyof typeof branchCtx.channels ? true : false
+        >;
+        type _BranchSeesParentStream = Assert<
+          "parentStream" extends keyof typeof branchCtx.streams ? true : false
+        >;
+        type _BranchSeesParentEvent = Assert<
+          "parentEvent" extends keyof typeof branchCtx.events ? true : false
+        >;
+
+        // (5) Nested branch invocation — branch can call sibling branches:
+        const nested = branchCtx.branches.fraud({ orderId: args.provider });
+        type _NestedBranchEntry = Assert<
+          IsAny<typeof nested> extends false ? true : false
+        >;
+
+        // (6) ctx.errors is empty (mode "none") — no factories.
+        type _BranchNoneNoFactories = Assert<
+          typeof branchCtx.errors extends Record<string, never> ? true : false
+        >;
+
+        return { provider: args.provider, price: 100 };
+      },
+    },
+
+    // ---- branch with errors: "any" ----
+    fraud: {
+      args: z.object({ orderId: z.string() }),
+      result: z.object({ score: z.number() }),
+      errors: "any",
+      async execute(branchCtx, args) {
+        // Mode "any" — ctx.errors is empty; throws are captured as Failure.
+        type _BranchAnyNoFactories = Assert<
+          typeof branchCtx.errors extends Record<string, never> ? true : false
+        >;
+        return { score: args.orderId.length };
+      },
+    },
+
+    // ---- branch with explicit errors map ----
+    underwrite: {
+      args: z.object({ orderId: z.string() }),
+      result: z.object({ approved: z.boolean() }),
+      errors: {
+        Declined: z.object({ reason: z.string() }),
+        SystemDown: true,
+      },
+      async execute(branchCtx, args) {
+        // Branch's own errors are reachable.
+        const declinedError = branchCtx.errors.Declined("declined", {
+          reason: "score-too-low",
+        });
+        const downError = branchCtx.errors.SystemDown("system down");
+        void declinedError;
+        void downError;
+
+        // Branch cannot see workflow-level errors.
+        // @ts-expect-error workflow-level error codes are not visible inside this branch
+        branchCtx.errors.WorkflowError("not visible", { orderId: "x" });
+
+        if (args.orderId.length === 0) {
+          throw branchCtx.errors.Declined("empty", { reason: "empty-id" });
+        }
+        return { approved: true };
+      },
+    },
   },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx, args) {
+    // Workflow body's ctx.errors does not see branch-local errors.
+    const wfErr = ctx.errors.WorkflowError("declared", {
+      orderId: args.orderId,
+    });
+    void wfErr;
+    // @ts-expect-error workflow body cannot see branch error codes
+    ctx.errors.Declined("not visible", { reason: "x" });
+
     const quote = ctx.branches.quote({ provider: "alpha" });
-    type _BranchNoAny = Assert<
+    type _BranchEntryNoAny = Assert<
       IsAny<typeof quote> extends false ? true : false
     >;
 
     // @ts-expect-error branch args are schema-checked
     ctx.branches.quote({ provider: 123 });
-    // @ts-expect-error inline branch closures are no longer scope entries
+    // @ts-expect-error inline branch closures are not scope entries
     await ctx.scope(
       "InlineRejected",
       { bad: async () => ({ ok: true }) },
@@ -96,6 +209,7 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
     // @ts-expect-error detached child workflow starts are buffered operations, not scope entries
     await ctx.scope("DetachedRejected", { detached }, async () => undefined);
 
+    // ---- ctx.scope: object input ----
     const scopedObject = await ctx.scope(
       "ObjectScope",
       {
@@ -103,6 +217,14 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
         fraud: ctx.branches.fraud({ orderId: args.orderId }),
       },
       async (scopeCtx, branches) => {
+        // Scope body's ctx.errors is the parent's (workflow body's) errors.
+        const fromScope = scopeCtx.errors.WorkflowError("scope-throws", {
+          orderId: args.orderId,
+        });
+        void fromScope;
+        // @ts-expect-error scope body cannot see branch error codes either
+        scopeCtx.errors.Declined("not visible", { reason: "x" });
+
         const quoteResult = await scopeCtx.join(branches.quote);
         type _QuoteJoin = Assert<
           IsEqual<
@@ -154,6 +276,7 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
     // @ts-expect-error scope inputs must keep a top-level object shape
     await ctx.scope("TopLevelMapRejected", mapEntries, async () => true);
 
+    // ---- ctx.scope: tuple property ----
     const scopedTuple = await ctx.scope(
       "TupleScope",
       {
@@ -180,6 +303,7 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
       },
     );
 
+    // ---- ctx.scope: map property ----
     const scopedMap = await ctx.scope(
       "MapScope",
       { quotesByProvider: mapEntries },
@@ -207,6 +331,7 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
       },
     );
 
+    // ---- ctx.scope: mixed entry families ----
     type ChildJoinResult =
       | { ok: true; result: { ok: boolean } }
       | {
@@ -419,6 +544,7 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
       },
     );
 
+    // ---- ctx.all / atLeast / some — preserved verbatim ----
     const individualAll = await ctx.all("IndividualEntryAll", {
       step: ctx.steps.normalize({ orderId: args.orderId }),
       timedStep: ctx.steps.normalize(
@@ -441,8 +567,14 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
         { timeout: 5 },
       ),
     });
-    type IndividualAllSuccess = Extract<typeof individualAll, { ok: true }>["result"];
-    type IndividualAllError = Extract<typeof individualAll, { ok: false }>["error"];
+    type IndividualAllSuccess = Extract<
+      typeof individualAll,
+      { ok: true }
+    >["result"];
+    type IndividualAllError = Extract<
+      typeof individualAll,
+      { ok: false }
+    >["error"];
     type _IndividualAllSuccess = Assert<
       IsEqual<
         IndividualAllSuccess,
@@ -947,6 +1079,71 @@ export const branchesAndScopesAcceptanceWorkflow = defineWorkflow({
     };
   },
 });
+
+// =============================================================================
+// REJECTED SHAPES — branch literals do not redeclare workflow primitives.
+// =============================================================================
+
+defineWorkflow({
+  name: "branchLiteralRejectedShapes",
+  result: z.object({ ok: z.boolean() }),
+  branches: {
+    illegalSteps: {
+      args: z.object({ id: z.string() }),
+      result: z.object({ ok: z.boolean() }),
+      // @ts-expect-error branches do not redeclare steps; they inherit the workflow's
+      steps: { someStep: normalizeStep },
+      async execute() {
+        return { ok: true };
+      },
+    },
+  },
+  async execute() {
+    return { ok: true };
+  },
+});
+
+defineWorkflow({
+  name: "branchLiteralRejectedRequests",
+  result: z.object({ ok: z.boolean() }),
+  branches: {
+    illegalRequests: {
+      args: z.object({ id: z.string() }),
+      result: z.object({ ok: z.boolean() }),
+      // @ts-expect-error branches do not redeclare requests; they inherit the workflow's
+      requests: { something: approvalRequest },
+      async execute() {
+        return { ok: true };
+      },
+    },
+  },
+  async execute() {
+    return { ok: true };
+  },
+});
+
+defineWorkflow({
+  name: "branchLiteralRejectedName",
+  result: z.object({ ok: z.boolean() }),
+  branches: {
+    illegalName: {
+      // @ts-expect-error branches do not declare a name field; the map key is the name
+      name: "shouldNotBeHere",
+      args: z.object({ id: z.string() }),
+      result: z.object({ ok: z.boolean() }),
+      async execute() {
+        return { ok: true };
+      },
+    },
+  },
+  async execute() {
+    return { ok: true };
+  },
+});
+
+// =============================================================================
+// BRANCH INSTANCE STATUS — preserved
+// =============================================================================
 
 type _BranchStatus = Assert<
   IsEqual<

@@ -20,15 +20,15 @@ The changes are organized into two categories:
 
 **Architectural changes** — corrections and redesigns to existing engine behavior:
 
-1. **Virtual Event Loop (VEL)** — deterministic concurrent execution model
-2. **Compensation model redesign** — compensation belongs to the operation it undoes; each step-compensation invocation becomes an isolated, queryable compensation block instance
-3. **Halt model** — execution halts remain patch-and-replay only; compensation block halts and branch halts can be skipped per instance
-4. **Error model** — schema-declared business and branch failures via a single local `errors` field at each definition level, exposed as `ctx.errors`
+1. **Execution model** — durable replay, batched commits, promise sequencing, and the buffered/dispatched operation distinction described as independent properties of a single sequential workflow body that orchestrates concurrent dispatched entries
+2. **Compensation model redesign** — compensation belongs to the operation it undoes; each step-compensation invocation becomes an isolated, queryable compensation block instance scheduled alongside the workflow body
+3. **Halt model** — execution halts remain patch-and-replay only; compensation block halts can be skipped per instance
+4. **Error model** — schema-declared workflow business failures via a single local `errors` field on `defineWorkflow`, exposed as `ctx.errors`
 5. **Call-time options** — builder chains disappear; operation calls accept options and return discriminated union outcomes where needed
 6. **AttemptAccessor refactoring** — rename `StepErrorAccessor` → `AttemptAccessor`, introduce `Failure` base record + `Attempt extends Failure` for retried operations, introduce `AttemptError` throwable class, unify attempt record shape, make `count()` async
 7. **Context isolation** — isolated units of work receive only their declared args, dependencies, primitives, and local `errors`
-8. **Predefined branches and structured-concurrency consumption** — branches move from inline closures to definition-scoped entries with serializable args and queryable instances
-9. **Database schema** — workflow execution tree plus queryable branch invocations, compensation block instance trees, and parallel primitive tables
+8. **Scopes and structured-concurrency consumption** — `ctx.scope` and the convenience helpers orchestrate steps, requests, and child workflows as scope entries; concurrency comes from dispatched entries, not from user-declared concurrent code paths
+9. **Database schema** — a single durable execution tree per workflow body, parallel compensation block instances modelled as workflow-shaped subordinate execution trees, and parallel primitive tables
 10. `**idempotencyKeyFactory`\*\* — derive idempotency keys from workflow args, make `idempotencyKey` required
 11. **Serializable step arguments** — `args` schema on `defineStep`, single object arg pattern, full observability
 
@@ -63,178 +63,101 @@ The current compensation model defers callbacks to the LIFO unwind that happens 
 
 This is incorrect for one important class of case: a step or request that reached an external side-effect boundary, but whose completion was never observed by the engine. Consider a POST endpoint that records a reservation, then fails to serialize the response. The workflow sees a timeout and continues, but the external reservation may exist. If compensation only runs on workflow failure, the side effect is never cleaned up.
 
-The deeper issue is syntactic isolation. Inline compensation closures and inline branch closures can read and mutate variables from their parent lexical scope, even though the engine treats them as independent units of work. The public API now makes that isolation visible:
+The deeper issue is syntactic isolation. Inline compensation closures can read and mutate variables from their parent lexical scope, even though the engine treats them as independent units of work. The public API now makes that isolation visible:
 
 - Compensation is declared on the step or request definition it undoes.
 - Each step compensation invocation becomes a durable compensation block instance with its own primitive state.
-- Branches are predefined on `defineWorkflow.branches` or `defineStep.compensation.branches` and receive serializable args.
-- Every level has a single local `errors` declaration and a single local `ctx.errors` namespace.
+- The workflow declares a single local `errors` map and receives a single local `ctx.errors` namespace.
 - Operation configuration moves into call-time options; outcomes are handled as returned values in ordinary sequential code.
+
+### Why concurrency lives in dispatched entries, not in user code
+
+Earlier iterations of this design treated branches as user-facing concurrent execution paths within one workflow. That shape is wrong: a workflow's primitives (channels, streams, events, attributes) have semantics that race or aggregate poorly across multiple concurrent writers, and the only thing concurrent branches actually offered above sequential code was a shared durable batch — an operational property, not a semantic one.
+
+The clean alternative is that a workflow body is a single sequential program. Concurrency comes from **dispatched entries** — steps, requests, and child workflows — that the engine starts as their own durable rows and that the body awaits via `ctx.join` / `ctx.match` or via the structured-concurrency helpers. There is no second sequential thread inside the body to interleave; the body and the entries it dispatches are clearly separated.
 
 ### Why the execution model needs formalization
 
-Concurrent execution within a workflow requires a deterministic scheduling model to guarantee replayability. The Virtual Event Loop (VEL) formalizes how branches are ordered, when context switches occur, and how promise resolution is sequenced. Without this formalization, concurrent compensation, scope exit behavior, and the interaction between execution and compensation phases cannot be specified precisely.
+Even with a single sequential body, the engine still needs guarantees: durable replay must reproduce the same sequence of dispatches and observe the same results in the same order, side effects must commit atomically in batches between suspension points, and `ctx.join` / `ctx.match` must observe simultaneously-completed entries in a deterministic order. These are independent properties — durability, batched commitment, and promise sequencing — and they survive without being unified under a single scheduler abstraction.
 
 ---
 
-## Part 1: Virtual Event Loop (VEL)
+## Part 1: Execution Model
 
-The Virtual Event Loop is the core mechanism for deterministic, replayable concurrent execution within a workflow instance.
+A workflow body is a single sequential program. Concurrency comes from **dispatched entries** — steps, requests, and child workflows — that the engine starts as their own durable rows and whose completions the body awaits. There is no second sequential execution path inside the body to interleave.
 
-### Database representation
+The execution model is described as a set of independent properties: durable replay, the buffered/awaitable operation distinction, batched commitment of side effects, promise sequencing for `join` / `match`, and the parallel scheduling lane for compensation.
 
-The execution tree is built from four primitives:
+### 1.1 Workflow body and dispatched entries
 
-- `**branch`\*\* — a sequential execution path. Root branches have no parent scope (`scope_id IS NULL`) and serve as VEL entry points.
-- `**scope**` — a structured concurrency boundary. Created by an `execute_scope` step.
-- `**step**` — an engine-level operation within a branch. The replayable durable execution action.
-- `**promise**` — a resolution token for blocking steps. Until resolved (successfully or with failure), the step does not complete.
+A `defineWorkflow.execute` callback is an ordinary `async` function. Each step / request / child workflow call inside it is recorded as a durable entry; the call returns an awaitable entry value that, when awaited, suspends the body until the engine observes the entry's completion.
 
-A scope has branches. A branch has sequential steps. A step may have a promise. Multiple branches may reference the same promise (via `await_promise` steps), enabling shared-result semantics where different branches block on the same underlying resolution.
+- `ctx.steps.X(args, opts?)`, `ctx.requests.X(payload, opts?)`, and `ctx.childWorkflows.X(startOpts, opts?)` create typed unstarted entries. Direct `await` dispatches and observes an entry. The structured-concurrency helpers (`ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, `ctx.some`) dispatch a top-level object of entries under structural ownership and let the body await results selectively.
+- `ctx.childWorkflows.X.startDetached(opts)` is a buffered start that returns a `ForeignWorkflowHandle<W>` and is not joinable from the parent.
+- The body itself never forks. Whatever concurrency exists is between the dispatched entries the body has started but not yet awaited.
 
-A workflow has one execution tree. Step compensation does not share that tree as a polymorphic phase; each compensation invocation materializes a separate compensation block instance with its own tree and per-instance primitive state.
+### 1.2 Buffered vs awaitable operations
 
-### Execution algorithm
+Operations the body invokes fall into four categories:
 
-The VEL executes all branches within a scope until every branch is blocked, then **batches** all accumulated step records into a single transaction before dispatching any side-effecting work. The order in which concurrent branches are interleaved within a batch round is an implementation detail — workflow logic must never rely on it.
+| Category            | Operations                                                                                                                                                                                                  | Behavior                                                                                          |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| **Buffered**        | `stream.write`, `event.set`, `attribute.set`, `queue.enqueue`, `topic.publish`, foreign / detached / attached `channels.X.send`, `register_compensation_instance`, `promote_compensation_instance`, `startDetached` | Synchronous, returns `void`. The engine records the operation in an in-memory buffer; nothing is dispatched or visible externally until the next batch commit. |
+| **Dispatched**      | `steps.X(...)`, `requests.X(...)`, `childWorkflows.X(...)` (when awaited or passed to a scope helper)                                                                                                       | The engine records a "dispatch" entry plus a promise; commits the buffer; then starts the external work. The body suspends until the promise resolves. |
+| **Awaitable wait**  | `channel.receive`, `sleep`, `sleepUntil`                                                                                                                                                                    | Suspends the body on existing primitive state. Records a wait entry and a promise; commits the buffer; resumes when the promise resolves. |
+| **Awaitable read**  | `channel.receiveNowait`, `patch`                                                                                                                                                                            | Reads from committed state. Triggers a flush of any pending buffer first, then resolves immediately. No promise. |
 
-1. **Non-concurrent code** executes as-is. Sequential operations within a single branch need no scheduling.
-2. **Creating an entry** through `ctx.steps.X(args, opts?)`, `ctx.requests.X(payload, opts?)`, `ctx.childWorkflows.X(startOpts, opts?)`, or `ctx.branches.X(args, opts?)` creates a typed, unstarted entry. It does not by itself start independent work.
-3. **Direct `await`** starts and observes an entry immediately in the current branch.
-4. **Entering a scope** starts the provided entries under structured-concurrency ownership. The scope body is treated as a parent-context orchestration body with a synthetic key (`MAIN_BRANCH`). Concurrent branches are the named entries passed to the scope.
-5. **Branch identity** is encoded as a `readonly BranchPathItem[]` key path representing the full nested scope lineage. Each item is `{ scope: string; branch: string | typeof MAIN_BRANCH }`, where `MAIN_BRANCH` is a module-level `unique symbol` export. For a scope `"A"` with branches `"foo"` and `"bar"`:
+Buffered operations and awaitable reads are the only operations whose direct effect on the body is `void` or an immediate value. Everything else suspends.
 
-```typescript
-declare const MAIN_BRANCH: unique symbol;
+### 1.3 Durable replay
 
-[{ scope: "A", branch: MAIN_BRANCH }][{ scope: "A", branch: "bar" }][ // ← scope body
-  { scope: "A", branch: "foo" }
-];
-```
+Every dispatched entry, awaitable wait, and buffered operation is recorded with an ordinal in the workflow body's execution log (Part 8). When the body is replayed — on worker restart, after a halt, or when fast-forwarding to a known position — the same code must reach the same recorded operations in the same order and observe their recorded results in the same order. This is the durability guarantee.
 
-6. **Branch execution.** Each branch executes until it reaches a blocking point (Tier 1 entry observation or Tier 2 await). The order in which the engine interleaves concurrent branches is an **implementation detail** and must not be relied upon. The only guarantee is that the interleaving is deterministic across replays — the same code produces the same step ordinals within each branch.
-7. **Buffered operations** are synchronous calls that do not trigger context switches. They buffer step records in memory without writing to the database. Stream writes, event sets, attribute sets, queue enqueues, topic publishes, foreign channel sends, compensation instance registration/promotion, and detached workflow starts execute inline within the current branch and do not yield.
-8. **Tier 2 operations** (`channel.receive`, `sleep`) block on external resolution. The engine buffers a step and promise record, then context-switches to the next branch.
-9. **Tier 1 operations** (steps, child workflows, requests) internally still require two-phase execution:
+The engine does not depend on JavaScript promise scheduling for correctness. The body coroutine is driven step by step from recorded ordinals; on replay, the engine returns recorded results to each operation it sees and only blocks at operations that have no recorded result yet.
 
-- **Start phase**: buffer a `start_step` / `start_child_workflow` / `send_request` step record and a promise. Context-switch. The actual work is NOT started yet.
-- **Await phase**: buffer an `await_promise` step referencing the created promise. Context-switch.
-  The public API no longer exposes this as `.resolve(ctx)`. The awaited entry is the terminal surface.
+### 1.4 Batched commitment
 
-10. **Awaitable reads** (`channel.receiveNowait`, `patch`) require database state to make a decision. These trigger a **flush**: the accumulated buffer is committed in a batch transaction, then the read is executed against the committed state. The branch continues with the result.
-11. **Batch commit.** When all branches are blocked, the engine commits the entire accumulated buffer of step records in a **single transaction**. Only after the commit does the engine start the actual side-effecting work: step coroutines, child workflow dispatches, request dispatches. This batching ensures atomicity (the batch fully commits or doesn't) and efficiency (fewer DB round-trips).
-12. **Promise resolution fetch.** All branches are blocked and all work has been dispatched. Fetch resolved promises from the database. Each promise records a `sequence_no` on resolution, assigned from a Postgres sequence protected by a per-VEL advisory lock. This ensures deterministic ordering: no two promises from the same VEL can resolve with the same or out-of-order sequence numbers.
-13. **Resume.** Take the first resolved promise by sequence number. Resume the branch that was blocked on it. Execute until the next blocking point. Continue with the next resolved promise if available.
-14. **Continue.** If no more resolved promises are available, fetch again. The cycle continues until the scope body returns or all branches complete.
+Between two suspension points in the body, the body may have invoked any number of buffered operations and may have decided to dispatch zero or more entries. The engine accumulates all of these in memory. At the next suspension point, it commits the accumulated batch in a single database transaction. Only after that commit does it dispatch any new external work — step coroutines start, child workflow dispatches happen, request rows become claimable, queue messages become visible, topic records appear, attribute notifications fire.
 
-### Important: no reliance on branch execution order
+This guarantees two properties:
 
-**Workflow logic must never depend on the order in which concurrent branches execute within a scope.** Branches in a scope are logically concurrent — they share no mutable state, and the order in which they reach their blocking points does not affect the outcome. Any workflow that behaves differently depending on branch interleaving order is incorrectly designed. The engine guarantees deterministic replay, but the specific interleaving is an implementation detail subject to change.
+1. **Atomicity.** Either the entire batch (every buffered op and every dispatch decision) commits or none of it does. There is no partial visible state.
+2. **Replay safety.** A re-execution that reaches the same suspension point sees the same committed batch. Buffered operations are not re-issued externally; on replay the engine recognizes the existing rows and skips re-emission.
 
-### Buffered vs awaitable operations
+Awaitable reads (`receiveNowait`, `patch`) are the one place where the body needs current committed state mid-flow. They trigger a buffer flush — committing whatever has accumulated so far — before reading.
 
-| Category                  | Operations                                                                                                                                                                                   | Behavior                                                                                                      |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| **Buffered**              | `stream.write`, `event.set`, `attribute.set`, `queue.enqueue`, `topic.publish`, `channel.send` (foreign), `register_compensation_instance`, `promote_compensation_instance`, `startDetached` | Synchronous. Buffers step record in memory. No context switch.                                                |
-| **Tier 2 await**          | `channel.receive`, `sleep`, `sleepUntil`                                                                                                                                                     | Buffers step + promise. Context-switches. Blocks until resolution.                                            |
-| **Tier 1 entry**          | `steps.X(...)`, `childWorkflows.X(...)`, `requests.X(...)`, `branches.X(...)`                                                                                                                | Creates a typed entry. Direct `await` starts and observes it; scopes can start it under structural ownership. |
-| **Internal Tier 1 await** | observing a Tier 1 entry                                                                                                                                                                     | Buffers `await_promise`. Context-switches. Public `.resolve(ctx)` is removed.                                 |
-| **Awaitable read**        | `channel.receiveNowait`, `patch`                                                                                                                                                             | Triggers buffer flush. Reads from committed state. No context switch.                                         |
+### 1.5 Promise sequencing for `join` and `match`
 
-### Nested scopes
+When the body is parked at `ctx.match(handles)` or has dispatched several entries that may complete simultaneously, the order in which the body observes their completions must be deterministic across replays. Each entry's promise records a `sequence_no` on resolution from a Postgres sequence (or equivalent) per workflow body. The body's resume loop fetches resolved promises ordered by `sequence_no`; `match` yields them in that order, and a body parked on `ctx.join` simply waits for that one promise to resolve.
 
-Nested scopes exist on the same VEL — they do not create separate VELs. When a nested scope is entered, its branches are added to the set of active branches. Each branch is identified by its full key path:
+This sequencing is local to the body. It is not the user-facing scheduling of concurrent execution paths — there is only one execution path. It exists solely so that two entries that resolved "at the same time" produce the same yield order on replay.
 
-```typescript
-await ctx.scope(
-  "A",
-  {
-    foo: ctx.branches.foo({ id: "foo" }),
-    bar: ctx.branches.bar({ id: "bar" }),
-  },
-  async (ctx, { foo, bar }) => {
-    return await ctx.scope(
-      "B",
-      {
-        baz: ctx.branches.baz({ id: "baz" }),
-        fuz: ctx.branches.fuz({ id: "fuz" }),
-      },
-      async (ctx, { baz, fuz }) => {
-        return { baz: await ctx.join(baz), fuz: await ctx.join(fuz) };
-      },
-    );
-  },
-);
-```
+### 1.6 Compensation as a sibling workflow
 
-When scope `"A"` is entered, three branches exist:
+Every execution workflow is paired at start time with a sibling **base compensation workflow**. Both are real `workflow` rows (Part 8). The execution workflow runs the user's `defineWorkflow.execute` body. The base compensation workflow runs an engine-internal sequencer that promotes registered compensation block instances eagerly (FIFO at settle decisions) or as LIFO unwind on execution-workflow failure.
 
-```typescript
-[{ scope: "A", branch: MAIN_BRANCH }][{ scope: "A", branch: "bar" }][
-  { scope: "A", branch: "foo" }
-];
-```
+A **compensation block instance** is a child workflow of the base compensation workflow. It has the same shape as any other workflow: its own body (the user's `undo` callback), its own step rows, its own primitives, its own halts. The engine starts it as a `start_child_workflow` step inside the base compensation workflow, exactly like any parent → child workflow dispatch.
 
-When scope `"A"`'s main branch enters scope `"B"`, the branch set expands:
+This means the engine has no specialized "compensation execution model." The execution and compensation paths are both workflows. The execution workflow body is a sequential program with dispatched entries; the base compensation workflow body is a sequential program with dispatched entries (those entries happen to be compensation block instances). Compensation block instance bodies are sequential programs with dispatched entries. All three obey 1.1 through 1.5 identically.
 
-```typescript
-[{ scope: "A", branch: MAIN_BRANCH }][ // blocked (entered scope B)
-  ({ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: MAIN_BRANCH })
-][({ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: "baz" })][
-  ({ scope: "A", branch: MAIN_BRANCH }, { scope: "B", branch: "fuz" })
-][{ scope: "A", branch: "bar" }][{ scope: "A", branch: "foo" }];
-```
+The user-facing behaviour remains: when a compensable forward operation in the execution workflow reaches a settle decision that requires undo, the corresponding compensation block instance is dispatched and starts running. The execution workflow body and the compensation block instance body never share a coroutine, never share buffered state, and never observe each other's primitives — because they are different workflows. They communicate, when they need to, only through global primitives (queues, topics, requests, child workflows).
 
-All six branches are part of the same VEL. The engine executes them in an implementation-defined order until all are blocked, then commits the batch.
+### 1.7 Nested scopes
 
-### Implementation note: possible interleaving strategies
+Nested scopes do not introduce new execution paths — the body is still sequential. A scope is a structured-concurrency boundary that:
 
-The specific order in which the engine interleaves concurrent branches is an implementation detail. Some possible strategies:
+1. Dispatches the entries supplied as its top-level object input.
+2. Hands the body a typed mirror of that object where each entry has been replaced with a handle (joinable, and where applicable also `channels.send`-capable for child workflow handles).
+3. Lets the body await selectively via `ctx.join`, `ctx.match`, or the convenience helpers.
+4. On scope exit, ensures any unconsumed entries are torn down or compensated according to scope rules.
 
-- **Round-robin**: cycle through branches one blocking point at a time (`1→2→3→1→2→3`). Ensures uniform progress.
-- **Depth-first**: run each branch to completion or blocking before moving to the next. Simpler to implement.
-- **Main-branch-first**: always execute the scope body before concurrent branches. Allows the scope body to short-circuit early.
+A scope inside a scope is just another suspension point on the same sequential body, with its own typed handle bag.
 
-All strategies produce the same batch of step records (same ordinals within each branch, same set of promises). The choice affects debugging traces and performance characteristics, not correctness. Workflow logic must never rely on any specific strategy.
+### 1.8 What the durable record looks like
 
-### Two VELs per workflow
+A workflow body is persisted as an ordered sequence of step rows under that workflow's row (Part 8). Step rows record dispatched-entry starts, dispatched-entry settles (`await_promise`), awaitable waits, awaitable reads, buffered ops, and scope structural markers (`execute_scope`). Scope nesting is encoded via `step.parent_step_id` self-references; there is no separate `branch` or `scope` table.
 
-Each workflow instance has exactly two independent VELs:
-
-1. **Execution VEL** — runs the main workflow logic. Rooted at `workflow.execution_branch_id`.
-2. **Compensation VEL** — schedules compensation block instances and request-compensation invocations. Rooted at `workflow.compensation_branch_id`.
-
-Both VELs are created at workflow start time. The compensation VEL may remain empty. Each VEL has its own advisory lock namespace for promise resolution sequencing, ensuring complete independence.
-
-### Step types
-
-| Type                             | Category       | Creates promise | Has `promise_id` | Context switch |
-| -------------------------------- | -------------- | --------------- | ---------------- | -------------- |
-| `start_step`                     | Tier 1 (start) | yes             | no               | yes            |
-| `start_child_workflow`           | Tier 1 (start) | yes             | no               | yes            |
-| `send_request`                   | Tier 1 (start) | yes             | no               | yes            |
-| `start_branch`                   | structural     | yes             | no               | yes            |
-| `await_promise`                  | Tier 1 (await) | no              | **yes**          | yes            |
-| `execute_scope`                  | structural     | no              | no               | no             |
-| `sleep`                          | Tier 2         | yes             | yes              | yes            |
-| `sleep_until`                    | Tier 2         | yes             | yes              | yes            |
-| `channel_receive`                | Tier 2         | yes             | yes              | yes            |
-| `channel_receive_nowait`         | awaitable read | no              | no               | no (flush)     |
-| `patch_check`                    | awaitable read | no              | no               | no (flush)     |
-| `stream_write`                   | buffered       | no              | no               | no             |
-| `event_set`                      | buffered       | no              | no               | no             |
-| `attribute_set`                  | buffered       | no              | no               | no             |
-| `register_compensation_instance` | buffered       | no              | no               | no             |
-| `promote_compensation_instance`  | buffered       | no              | no               | no             |
-| `queue_enqueue`                  | buffered       | no              | no               | no             |
-| `topic_publish`                  | buffered       | no              | no               | no             |
-| `start_detached`                 | buffered       | no              | no               | no             |
-
-Every real await point produces a promise, and the `await_promise` step references it via `promise_id`. The promise already knows its origin (via `promise.step_id` → the `start_`\* step). The await step just says "I'm parked here until this promise resolves." This correctly models multi-branch sharing: two branches awaiting the same step's result both record `await_promise` pointing to the same `promise_id`.
-
-Buffered operations are synchronous calls in the public API — they do not return promises and are not `await`ed. They buffer step records in memory, which are committed in the next batch transaction. Awaitable reads (`receiveNowait`, `patch`) trigger a flush of the buffer before reading from committed state.
-
-Public Tier 1 operation calls return awaitable entries. Direct `await` is the simple path; structured-concurrency primitives can receive the same entries and start them under scope ownership.
+The same shape applies uniformly to execution workflow bodies, base compensation workflow bodies, and compensation block instance bodies — they are all just workflow bodies in the same `step` table. A precise breakdown of step row types and their persistence shape lives in Part 8. The execution model in this Part is independent of that table layout.
 
 ---
 
@@ -289,7 +212,6 @@ interface StepCompensation<TArgs, TResult, TComp> {
   queues?: { [name: string]: QueueDefinition };
   topics?: { [name: string]: TopicDefinition };
   childWorkflows?: { [name: string]: WorkflowDefinition };
-  branches?: { [name: string]: BranchDefinition };
 
   // Optional compensation outcome schema. Default: void.
   result?: TComp;
@@ -371,7 +293,7 @@ Compensation is defined on the step, but each invocation produces a distinct dur
 
 - status: `pending | running | completed | halted | skipped`;
 - its own declared channels, streams, events, and attributes;
-- its own branch tree;
+- its own sequential `undo` execution path (a workflow-shaped body with its own dispatched entries, buffered ops, batch commits, and promise sequencing — see Part 1);
 - its own result value when a `result` schema is declared;
 - its own external query handle.
 
@@ -380,6 +302,15 @@ Two invocations of the same compensable step do not share primitive state. If co
 ### Query-grounding handle pattern
 
 External callers address compensation block instances through a handle. A handle grounds identity for later queries; it does not eagerly fetch a row.
+
+The opaque public id type is `CompensationId<TStep>` — branded with the step definition the compensation belongs to, so that ids from different compensable steps are not interchangeable at the type level. Internally a `CompensationId<TStep>` is a workflow id (the compensation block instance is itself a `workflow` row, see Part 8); externally that detail is not exposed.
+
+```typescript
+type CompensationId<TStep> = string & {
+  readonly __brand: "CompensationId";
+  readonly __step: TStep;
+};
+```
 
 ```typescript
 type CompensationBlockStatus =
@@ -394,32 +325,61 @@ type FindUniqueResult<T> =
   | { readonly status: "missing" }
   | { readonly status: "ambiguous"; readonly count: number };
 
-interface CompensationBlockNamespace<TArgs, TResult, TPrim> {
-  findUnique(
-    query: (
-      q: SearchQuery<{ args: TArgs; metadata: BlockMetadata }>,
-    ) => SearchQueryNode,
-  ): CompensationBlockUniqueHandle<TArgs, TResult, TPrim>;
-  findUnique(
-    id: CompensationBlockInstanceId,
-  ): CompensationBlockUniqueHandle<TArgs, TResult, TPrim>;
-  findMany(
-    query: (
-      q: SearchQuery<{ args: TArgs; metadata: BlockMetadata }>,
-    ) => SearchQueryNode,
-  ): CompensationBlockSubsetHandle<TArgs, TResult, TPrim>;
+// Query namespaces for compensation block instances. Each top-level key is a
+// distinct namespace addressable in the predicate builder.
+type CompensationBlockQueryNamespaces<TArgs, TResult> = {
+  // Flat scalar columns of the compensation block's row.
+  row: CompensationBlockRow<TArgs, TResult>;
+  // JSONB columns, navigable by path.
+  args: TArgs;
+  result: TResult;
+  info: CompensationInfo<unknown>;
+};
+
+// The full row shape, including JSONB columns as opaque values for fetchRow / prefetch.
+interface CompensationBlockRow<TArgs, TResult> {
+  readonly id: CompensationId<TStep>;
+  readonly definitionName: string;
+  readonly status: CompensationBlockStatus;
+  readonly args: TArgs;
+  readonly result: TResult | null;
+  readonly info: CompensationInfo<unknown> | null;
+  readonly halt: HaltRecord | null;
+  readonly createdAt: Date;
+  readonly startedAt: Date | null;
+  readonly completedAt: Date | null;
+  readonly haltedAt: Date | null;
+  readonly skippedAt: Date | null;
 }
+
+interface CompensationBlockNamespace<TStep, TArgs, TResult, TPrim> extends
+  QueryableNamespace<
+    CompensationBlockUniqueHandle<TArgs, TResult, TPrim>,
+    CompensationBlockQueryNamespaces<TArgs, TResult>,
+    CompensationBlockRow<TArgs, TResult>,
+    CompensationId<TStep>
+  > {}
 ```
 
-A unique handle exposes per-instance reads and single-instance writes. A subset handle exposes only operations meaningful over many rows:
+A unique handle exposes per-instance reads and operator actions. `findMany` returns a result that is both awaitable (resolves to an array of handles) and async-iterable (yields handles lazily). Bulk operator actions are expressed by mapping over the iterable.
 
 ```typescript
-interface CompensationBlockUniqueHandle<TArgs, TResult, TPrim> {
-  status(): Promise<FindUniqueResult<CompensationBlockStatus>>;
-  result(): Promise<FindUniqueResult<TResult | null>>;
-  args(): Promise<FindUniqueResult<TArgs>>;
+interface CompensationBlockUniqueHandle<TArgs, TResult, TPrim>
+  extends FetchableHandle<CompensationBlockRow<TArgs, TResult>> {
+  readonly id: CompensationId<TStep>;
+
+  // skip IS abandonment for compensation block instances. There is no
+  // graceful alternative; no strategy choice; no separate sigkill verb.
+  // The result argument is required when the compensation declared a result
+  // schema; only when the schema was omitted (TResult = void) does skip()
+  // accept zero arguments.
   skip(
-    ...args: TResult extends void ? [] : [result: InferInput<TResult>]
+    ...args: TResult extends void
+      ? [opts?: { txOrConn?: IWorkflowTransaction | IWorkflowConnection }]
+      : [
+          result: InferInput<TResult>,
+          opts?: { txOrConn?: IWorkflowTransaction | IWorkflowConnection },
+        ]
   ): Promise<
     | FindUniqueResult<{ skipped: true }>
     | {
@@ -428,36 +388,34 @@ interface CompensationBlockUniqueHandle<TArgs, TResult, TPrim> {
       }
   >;
 
+  // Per-instance primitive accessors. Each operation accepts a txOrConn? in
+  // its options bag (where applicable) per Part 19.
   attributes: {
-    /* declared attributes wrapped in FindUniqueResult */
+    /* declared attributes; per-instance reads, FindUniqueResult-wrapped */
   };
   streams: {
-    /* declared streams wrapped in FindUniqueResult */
+    /* declared streams; per-instance reads */
   };
   events: {
-    /* declared events wrapped in FindUniqueResult */
+    /* declared events; per-instance wait/isSet */
   };
   channels: {
-    /* declared channels; send targets one instance */
+    /* declared channels; send targets this instance, buffered op */
   };
 }
 
-interface CompensationBlockSubsetHandle<TArgs, TResult, TPrim> {
-  count(): Promise<number>;
-  list(opts?: { limit?: number; cursor?: string }): Promise<{
-    items: readonly {
-      id: CompensationBlockInstanceId;
-      status: CompensationBlockStatus;
-      args: TArgs;
-    }[];
-    cursor: string | null;
-  }>;
-  skip(
-    ...args: TResult extends void ? [] : [result: InferInput<TResult>]
-  ): Promise<{ affected: number }>;
-  channels: {
-    /* fan-out send */
-  };
+// FindManyResult is both awaitable (materializes the full array) and async-iterable
+// (streams handles lazily, paginating internally). Used uniformly across every
+// findMany surface in the public API.
+interface FindManyResult<T> extends PromiseLike<readonly T[]>, AsyncIterable<T> {}
+
+// FindManyOptions is parameterized by the same namespaces the predicate is built over,
+// so sort paths get the same type-level safety as filter paths: only paths whose value
+// resolves to purely `string` or purely `number` (no booleans, no unions, no arrays).
+// See Part 9 for the generalization of SearchSort<TNamespaces>.
+interface FindManyOptions<TNamespaces extends Record<string, SearchMetadataRecord>> {
+  readonly sort?: readonly SearchSort<TNamespaces>[];
+  readonly limit?: number;
 }
 ```
 
@@ -465,7 +423,7 @@ interface CompensationBlockSubsetHandle<TArgs, TResult, TPrim> {
 
 The compensation context has no workflow `ctx.errors`. Compensation reports its outcome through the optional `result` schema on its definition. Early `return` is the explicit short-circuit. Throws are reserved for halts.
 
-Aggregate workflow-level compensation APIs such as `handle.compensation.wait()` and `CompensationFailureInfo` are removed. Per-instance reads through `findUnique(...).result()` and developer-declared events replace them.
+Aggregate workflow-level compensation APIs such as `handle.compensation.wait()` and `CompensationFailureInfo` are removed. Per-instance reads through `findUnique(...)` + `fetchRow(...)` and developer-declared events replace them.
 
 ### Type-level discrimination
 
@@ -480,36 +438,42 @@ type IsRequestCompensable<R> = R extends { compensation: true | object }
 
 Compensation dependencies may not themselves be compensable. This prevents compensation from recursively spawning more compensation chains. Child workflows are exempt; each workflow owns its own internal compensation lifecycle.
 
-### Compensation VEL lifecycle
+### Compensation scheduling lifecycle
 
-The two-VEL structure remains: one execution VEL and one compensation VEL per workflow. The unit scheduled on the compensation VEL is no longer an anonymous closure; it is a durable compensation block instance.
+A compensation block instance is a child workflow of the execution workflow's sibling **base compensation workflow** (Part 1.6, Part 8). Registration creates the child workflow row in `pending`; promotion dispatches it. The "scheduling" is just the base compensation workflow's body promoting its children in the right order.
 
-Step record evolution:
+Step record evolution in the execution workflow body:
 
 ```
 ordinal 1: { type: "start_step",                     definition_name: "bookHotel" }
-ordinal 2: { type: "register_compensation_instance", definition_name: "bookHotel", instance_id: "cbi_..." }
+ordinal 2: { type: "register_compensation_instance", definition_name: "bookHotel", compensation_workflow_id: "wf_cbi_..." }
 ordinal 3: { type: "await_promise",                  promise_id: 42 }
 -- timeout fires --
-ordinal 4: { type: "promote_compensation_instance",  instance_id: "cbi_..." }
+ordinal 4: { type: "promote_compensation_instance",  compensation_workflow_id: "wf_cbi_..." }
 ```
 
-The compensation VEL processes eager FIFO entries first, then LIFO unwind entries if the workflow fails. Mirror scopes for unconsumed branch work still exist, but each mirror branch maps to a distinct compensation block instance with isolated state.
+`compensation_workflow_id` is the workflow id of the compensation block instance. Externally, it is exposed to the operator as a branded `CompensationId<TStep>`; the fact that it is a workflow id underneath is an implementation detail.
+
+The engine processes promotions in two modes. **Eager FIFO**: the moment a compensable forward operation reaches a settle decision that requires undo (e.g. a timed-out step that may have produced a side effect), the registered compensation block instance is promoted and starts running. **LIFO unwind**: when the execution workflow body fails, any registered-but-not-promoted compensation block instances are promoted in reverse registration order so that "outer" undo runs after "inner" undo.
+
+A promoted compensation block instance executes its `undo` callback as its workflow body, dispatching its declared dependencies (non-compensable steps, requests, queues, topics, child workflows) and observing them with `ctx.join` / `ctx.match` exactly like an execution workflow body. If the `undo` callback throws, the instance halts (per-instance, skippable). If it returns, the instance completes with the returned value (or void).
 
 ---
 
-## Part 3: Halt Model
+## Part 3: Halt Model and Operator Actions
 
 ### Problem
 
 Any unexpected exception (anything that the surrounding context's mode does not classify as a declared failure — see the per-context throw rules below) in workflow or compensation code puts the engine in an undefined state. The code between the last durable step and the exception is non-deterministic on replay. Retrying the code block is not safe — it may have already modified in-memory state.
 
-### Execution halts
+### Halts
 
-An execution halt is a soft failure that pauses workflow execution at the point of the unexpected exception. The workflow transitions to `status = 'halted'`. Multiple pending workflow halts can coexist — each represents a point where replay encountered an exception.
+A halt is a soft failure that pauses execution of a workflow at the point of the unexpected exception. The workflow transitions to `status = 'halted'`. Multiple pending halts can coexist — each represents a point where replay encountered an exception.
+
+Because compensation block instances are themselves workflows (Part 1.6, Part 8), there is one unified halt concept and one `halt` table covering every kind of workflow row in the system. The differences between an execution-workflow halt and a compensation-block-instance halt are not at the halt-table layer — they are at the operator-action layer (which actions are available against which workflow kinds; see below).
 
 ```sql
-CREATE TABLE workflow_halt (
+CREATE TABLE halt (
   id                BIGSERIAL PRIMARY KEY,
   workflow_id       TEXT NOT NULL REFERENCES workflow(id),
   after_step_id     BIGINT REFERENCES step(id),
@@ -521,20 +485,61 @@ CREATE TABLE workflow_halt (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-  CONSTRAINT chk_workflow_halt_status CHECK (status IN ('pending', 'resolved'))
+  CONSTRAINT chk_halt_status CHECK (status IN ('pending', 'resolved', 'skipped'))
 );
 ```
 
-**Resolution paths:**
+A halt's `status` reaches `'resolved'` when a patch + replay produces a coroutine that proceeds past `after_step_id` without throwing, or `'skipped'` when an operator skips the owning workflow with a `skip(...)` action (see below).
 
-1. **Patch + replay**: deploy a code change that fixes the issue. On worker restart, the engine replays the workflow. If the code now proceeds past `after_step_id` without throwing, all pending halts at or before that point are automatically marked `resolved`.
-2. **SIGKILL**: abandon the workflow entirely. Immediate termination, no further processing.
+### Operator actions
 
-There is no skip mechanism for execution halts. Skipping workflow code would leave parent in-memory state inconsistent.
+Workflows are the only operator-addressable execution entity. The same three terminal-action verbs apply to every operator-addressable workflow row, modulo a few capability differences:
 
-### Compensation halts
+| Verb                                    | Effect                                                                                                                                                            | Status outcome           |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| `sigkill()`                             | Abandon. No `AbortSignal` is raised on in-flight work — it is left as-is and never observed again. No compensation runs. No result is set.                        | `terminated`             |
+| `sigterm()`                             | Cancel in-flight work via `AbortSignal`, then run the compensation stack. The workflow transitions to `completed` or `failed` based on the compensation outcome.  | `completed` or `failed`  |
+| `skip(result, { strategy? })`           | Set `result` to an operator-supplied value AND terminate. `strategy: "sigterm"` runs compensation first; `strategy: "sigkill"` abandons. Default is `"sigterm"`.    | `skipped`                |
 
-A compensation block instance is isolated. If its `undo` callback or one of its branches throws unexpectedly, that block instance transitions to `halted`, but the halt is per instance and can be skipped externally.
+`skip` is the only result-setting verb. It composes "set the result" with "stop the work", and the stop-strategy is the operator's choice within the per-workflow allowed set.
+
+#### Capability matrix
+
+| Workflow kind                  | Globally searchable | `sigkill` | `sigterm` | `skip(result, opts?)`               |
+| ------------------------------ | ------------------- | --------- | --------- | ----------------------------------- |
+| Execution workflow (root)      | yes                 | yes       | yes       | yes; `strategy` defaults to `"sigterm"` |
+| Detached child workflow (root) | yes                 | yes       | yes       | yes; `strategy` defaults to `"sigterm"` |
+| Attached child workflow        | **no** (queryable only via parent) | no | no | no                                  |
+| Compensation block instance    | no (queryable only via parent) | no | no | yes (no opts, no strategy choice) — see below |
+| Base compensation workflow     | no — engine-managed; not exposed to operators. | | |       |
+
+Attached children are subordinate to the parent's lifecycle. Operators do not terminate them directly — the parent's body decides what to do with their results, and the parent's terminal-action verbs cascade down to them. (See Part 12 for how operators read attached children through the parent.)
+
+Compensation block instances cannot be `sigterm`-ed because they have no compensation stack of their own (Part 6 forbids recursive compensation). They also do not get a separate `sigkill()` verb: for compensation block instances, **`skip` IS abandonment**, just with an operator-supplied result. There is no graceful alternative for compensation, so no strategy choice is meaningful.
+
+#### `skip` on workflows
+
+For ordinary workflows (root + detached child), `skip` is meaningful when the workflow is halted and the operator can supply a valid result:
+
+```typescript
+const handle = client.workflows.processOrder.findUnique((q) =>
+  q.idempotencyKey.eq("order-jan-2027"),
+);
+
+await handle.skip({ orderId: "order-jan-2027", status: "manual-cancellation" });
+// equivalent to: handle.skip(result, { strategy: "sigterm" })
+
+await handle.skip(
+  { orderId: "order-jan-2027", status: "force-cleared" },
+  { strategy: "sigkill" },
+);
+```
+
+The result must conform to the workflow's `defineWorkflow.result` schema. If the schema is `z.void()`, `skip()` takes no result argument.
+
+#### `skip` on compensation block instances
+
+For compensation block instances, `skip(result)` takes the result and nothing else — no `opts`, no strategy. The result argument is required when the compensation declared a `result` schema; only when the schema was omitted (effectively `TResult = void`) does `skip()` accept zero arguments. It abandons the running `undo`, sets the operator-supplied result, and transitions the block to `'skipped'`:
 
 ```typescript
 const halted = workflowInstance.compensations.bookHotel.findUnique((q) =>
@@ -547,27 +552,48 @@ await halted.skip({
 });
 ```
 
-If the compensation has a `result` schema, `skip()` requires a result value. If the result is `void`, `skip()` takes no argument. Bulk skip is available through `findMany(...).skip(...)`.
+Bulk skipping is expressed by iterating over `findMany(...)` with a `fields` prefetch and calling `skip(result)` on each yielded handle. Each block receives a different operator-supplied result based on its prefetched args, and the whole transaction can be scoped through a single `txOrConn`:
 
-### Branch halts
+```typescript
+await using tx = await client.transaction();
 
-Branches are also isolated invocations with serializable args and results. A halted branch may be skipped through the external branch handle if the operator can supply a valid result. The parent scope observes the skipped result as the branch's result when replay reaches that consumption point.
+for await (const block of workflowInstance.compensations.bookHotel.findMany(
+  (q) => q.row.status.eq("halted"),
+  { fields: { args: true }, txOrConn: tx },
+)) {
+  // block.row.args is typed as TArgs (prefetched); no extra fetch needed.
+  await block.skip(
+    {
+      kind: "operator-resolved",
+      action: `confirm-no-booking-for-${block.row.args.firstName}`,
+    },
+    { txOrConn: tx },
+  );
+}
+
+await tx.commit();
+```
+
+#### Halt resolution paths
+
+A halt can transition to `'resolved'` or `'skipped'`:
+
+1. **Patch + replay** → `'resolved'`. Deploy a code change that fixes the underlying issue. On worker restart, the engine replays the workflow. If the code now proceeds past `after_step_id` without throwing, all pending halts at or before that point are automatically marked `resolved` and the workflow continues.
+2. **`skip(result, opts?)`** → `'skipped'` for halts on this workflow. The workflow transitions to `'skipped'`; all of its pending halts transition to `'skipped'`.
+3. **`sigkill()` / `sigterm()`** → halts remain `'pending'` and the workflow row transitions to `'terminated'` / `'completed'` / `'failed'`. The halts are no longer actionable but kept for forensics. (Or: they may be moved to a terminal halt state. This is an implementation detail.)
 
 ### Per-context throw rules
 
-Whether a thrown value fails or halts depends on the local definition's error mode. The error model in Part 4 introduces a single local `errors` namespace and three branch modes (`"none"`, `"any"`, `"explicit"`).
+Whether a thrown value fails or halts depends on the surrounding context. The error model in Part 4 introduces a single local `errors` namespace per definition level (workflow body and compensation `undo` only).
 
-| Surrounding context                            | Throw recognized as failure                                                  | Anything else                     |
-| ---------------------------------------------- | ---------------------------------------------------------------------------- | --------------------------------- |
-| Workflow `execute` body                        | `ctx.errors.X(...)` from `defineWorkflow.errors`                             | execution halt                    |
-| Scope body                                     | same `ctx.errors` as the parent body                                         | parent-level halt if unrecognized |
-| Branch with `errors` omitted or `"none"`       | no recognized local failures                                                 | branch halt                       |
-| Branch with `errors: "any"`                    | any ordinary throw becomes a `Failure` value at the parent consumption point | engine-internal exceptions halt   |
-| Branch with explicit `errors` map              | `ctx.errors.X(...)` for the branch's declared keys                           | branch halt                       |
-| Step/request timeout or child workflow failure | return-value union from the awaited entry                                    | no throw machinery involved       |
-| Compensation `undo`                            | no `ctx.errors`; return typed outcomes                                       | compensation block halt           |
+| Surrounding context                            | Throw recognized as failure                                | Anything else                     |
+| ---------------------------------------------- | ---------------------------------------------------------- | --------------------------------- |
+| Workflow `execute` body                        | `ctx.errors.X(...)` from `defineWorkflow.errors`           | execution halt                    |
+| Scope body                                     | same `ctx.errors` as the parent body (workflow body)       | parent-level halt if unrecognized |
+| Step/request timeout or child workflow failure | return-value union from the awaited entry                  | no throw machinery involved       |
+| Compensation `undo`                            | no `ctx.errors`; return typed outcomes                     | compensation block halt           |
 
-There is no cross-level error access. A branch cannot throw the workflow's declared errors because those factories are not present on its context.
+A scope body is part of the workflow body's sequential execution path, so its `ctx.errors` is the workflow's. There is no separate scope-local error namespace, and there is no branch-level error namespace because branches no longer exist.
 
 ---
 
@@ -577,24 +603,22 @@ There is no cross-level error access. A branch cannot throw the workflow's decla
 
 The current public API has no schema-declared business error surface on `defineWorkflow`. Workflow code fails by throwing ordinary JavaScript values or exported error classes such as `WorkflowError` / `StepTimeoutError`; the engine serializes those failures into `WorkflowExecutionError` (`message`, `type`, `timestamp`, optional `details`). That is useful for diagnostics, but it is not a typed contract between workflow author and external caller.
 
-Structured-concurrency failure handling is similarly operational rather than domain-shaped. Scope and convenience-method failure callbacks receive `ScopeFailureInfo`, which is a union of step failures, child workflow failures, and `{ kind: "exception"; error: unknown }`. This gives the workflow a place to react, but the branch's intended business failure vocabulary is not declared where the branch is authored, and external callers cannot distinguish deliberate domain failures from unexpected implementation exceptions by schema.
+Structured-concurrency failure handling is similarly operational rather than domain-shaped. Scope and convenience-method failure callbacks receive `ScopeFailureInfo`, which is a union of step failures, child workflow failures, and `{ kind: "exception"; error: unknown }`. This gives the workflow a place to react, but the intended business failure vocabulary is not declared on the workflow definition, and external callers cannot distinguish deliberate domain failures from unexpected implementation exceptions by schema.
 
-The refactor separates three concerns:
+The refactor separates two concerns:
 
 1. **Workflow business failure** — declared by the workflow and visible to the external caller.
-2. **Recoverable branch failure** — declared by a branch and observed at the parent consumption point.
-3. **Engine events** — step/request timeouts and child workflow failure; these are returned from operation calls as local values.
+2. **Engine events** — step/request timeouts and child workflow failure; these are returned from operation calls as local values, in ordinary sequential code.
 
-### Solution: single local `errors`
+### Solution: workflow-local `errors`
 
-Every definition level that can intentionally fail declares a local `errors` map and receives a local `ctx.errors` namespace.
+The workflow definition declares a local `errors` map and receives a local `ctx.errors` namespace inside its `execute` body and inside any scope body it creates.
 
-| Level    | Declaration                                                                           | Effect of `ctx.errors.X(...)`                                |
-| -------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| Workflow | `defineWorkflow.errors`                                                               | Fails the workflow. Visible externally as `FailureInfo`.     |
-| Branch   | `defineWorkflow.branches.foo.errors` or `defineStep.compensation.branches.foo.errors` | Fails that branch. Captured at the parent consumption point. |
+| Level    | Declaration             | Effect of `ctx.errors.X(...)`                            |
+| -------- | ----------------------- | -------------------------------------------------------- |
+| Workflow | `defineWorkflow.errors` | Fails the workflow. Visible externally as `FailureInfo`. |
 
-There is no cross-level access. A branch cannot see the workflow's errors. A workflow body cannot see branch errors. If the same error name appears at both levels, they are independent declarations. This is a new typed failure surface; it is not a rename of an existing current API field.
+Compensation `undo` callbacks have no `ctx.errors` — they report outcomes through their declared `result` schema (Part 2). The workflow body's `errors` are not visible inside compensation, since each compensation block instance is its own isolated execution path.
 
 ### Workflow error definitions
 
@@ -617,51 +641,22 @@ defineWorkflow({
 
 A workflow-level `ctx.errors.X(...)` throw fails the workflow and triggers compensation. External callers see only the workflow's declared error values.
 
-### Branch error definitions
+### Failures from dispatched entries
 
-Branches declare their failure mode at definition time:
-
-```typescript
-type BranchErrors =
-  | "none"
-  | "any"
-  | { [name: string]: JsonSchemaConstraint | true };
-```
-
-| `errors` field      | Mode     | `ctx.errors` inside branch  | Consumption point                                  |
-| ------------------- | -------- | --------------------------- | -------------------------------------------------- |
-| omitted or `"none"` | none     | empty                       | unexpected throws halt the branch                  |
-| `"any"`             | any      | empty                       | any ordinary throw becomes `Failure`               |
-| explicit map        | explicit | factories for declared keys | declared throws become `ErrorValue<TBranchErrors>` |
+A step or request that fails or times out is observed as a local return-value variant on the awaited entry, not as a thrown error. A child workflow that fails is observed as `{ ok: false; status: "failed"; error: ErrorValue<TChildErrors> }` on its awaited entry. These are ordinary values; whether to translate any of them into a workflow-level failure is the body's decision via `throw ctx.errors.X(...)`.
 
 ```typescript
-branches: {
-  hotelBooking: {
-    args: z.object({ city: z.string(), guestName: z.string() }),
-    result: z.object({ confirmationId: z.string() }),
-    errors: {
-      Sold: true,
-      Unavailable: z.object({ until: z.string() }),
-    },
-    execute: async (ctx, args) => {
-      const result = await ctx.steps.bookHotel({
-        city: args.city,
-        guestName: args.guestName,
-      }, { timeout: 30 });
-
-      if (!result.ok) {
-        throw ctx.errors.Unavailable("Timed out", { until: "unknown" });
-      }
-      if (result.result.status === "sold") {
-        throw ctx.errors.Sold("No rooms available");
-      }
-      return { confirmationId: result.result.confirmationId };
-    },
-  },
+const order = await ctx.childWorkflows.processOrder(startOpts);
+if (!order.ok) {
+  if (order.status === "failed") {
+    throw ctx.errors.OrderProcessingFailed("Child workflow failed", {
+      childError: order.error,
+    });
+  }
 }
 ```
 
-The workflow decides whether a branch failure should fail the whole workflow by observing the branch result and throwing its own workflow-level error from parent code.
+There is no branch-level error namespace, and no `Failure`-as-throwable: ordinary throws inside the workflow body that are not recognized `ctx.errors.X(...)` values become an execution halt (Part 3).
 
 ### ExplicitError and ErrorValue
 
@@ -687,11 +682,11 @@ type ErrorValue<TErrors> = {
 type FailureInfo<TWorkflowErrors> = ErrorValue<TWorkflowErrors>;
 ```
 
-When the engine catches an `ExplicitError`, it resolves it against the current definition level only. Workflow-level throws fail the workflow. Branch-level throws fail the branch. A mismatch halts, which catches stale throws after refactors.
+When the engine catches an `ExplicitError`, it resolves it against the current definition level only. Workflow-body throws fail the workflow. A throw of a code that is not declared at the current level halts, which catches stale throws after refactors.
 
 ### Failure
 
-When a branch is in mode `"any"`, ordinary throws are captured into a `Failure` record. `Failure` is also the base shape that `Attempt` extends; `Attempt` adds an `attempt` number for retried operations.
+`Failure` is the base data record for a single captured throw recorded on a retried operation's attempt log. It is also the base shape that `Attempt` extends; `Attempt` adds an `attempt` number.
 
 ```typescript
 interface Failure {
@@ -707,17 +702,15 @@ interface Attempt extends Failure {
 }
 ```
 
+`Failure` itself is not a workflow-facing throw type — there is no longer any branch mode that converts arbitrary throws into `Failure` values. It surfaces in the system as the per-attempt failure record exposed by `AttemptAccessor` (Part 15) for steps, queue handlers, request handlers, and topic consumers.
+
 ### Per-context throw rules
 
-| Context                     | Recognized failure throws                                   | Anything else                   |
-| --------------------------- | ----------------------------------------------------------- | ------------------------------- |
-| Workflow `execute` body     | `ctx.errors.X(...)` from workflow errors                    | execution halt                  |
-| Scope body                  | parent context's `ctx.errors.X(...)`                        | parent-level halt               |
-| Branch in mode `"none"`     | none                                                        | branch halt                     |
-| Branch in mode `"any"`      | any ordinary throw -> `Failure` at parent consumption point | engine-internal exceptions halt |
-| Branch in mode `"explicit"` | `ctx.errors.X(...)` from branch errors                      | branch halt                     |
-| Compensation `undo`         | none; typed return values model outcomes                    | compensation block halt         |
-| Compensation branch         | same branch modes as execution branches                     | compensation block branch halt  |
+| Context                 | Recognized failure throws                | Anything else           |
+| ----------------------- | ---------------------------------------- | ----------------------- |
+| Workflow `execute` body | `ctx.errors.X(...)` from workflow errors | execution halt          |
+| Scope body              | parent body's `ctx.errors.X(...)`        | execution halt          |
+| Compensation `undo`     | none; typed return values model outcomes | compensation block halt |
 
 ### External caller usage
 
@@ -742,15 +735,15 @@ There is no outer discriminant for error categories. The external caller discrim
 
 ### Compensation error model
 
-Compensation `undo` callbacks do not receive `ctx.errors`. They report intended outcomes by returning values through the optional `result` schema declared on the compensation definition. Unexpected throws halt the compensation block instance. Compensation branches may still declare local branch `errors`, and those are consumed inside the compensation block just like execution branches.
+Compensation `undo` callbacks do not receive `ctx.errors`. They report intended outcomes by returning values through the optional `result` schema declared on the compensation definition. Unexpected throws halt the compensation block instance.
 
-`CompensationFailureInfo` and `handle.compensation.wait()` are removed. Operators observe compensation block instances through `workflowInstance.compensations.<step>.findUnique(...).status()`, `.result()`, declared events, and `skip()`.
+`CompensationFailureInfo` and `handle.compensation.wait()` are removed. Operators observe compensation block instances through `workflowInstance.compensations.<step>.findUnique(...)` + `fetchRow(...)`, declared events, and `skip()`.
 
 ### Rationale recap
 
 1. **The external failure surface must stay business-level.** Developer-declared workflow errors reach the caller; engine events are local return values.
-2. **Error scoping must match isolation.** Branch errors are declared on branch definitions and cannot escape to the workflow unless parent code deliberately converts them.
-3. **The throw site should be local.** `ctx.errors.X(...)` always means "throw an error declared by this definition level."
+2. **Error scoping matches isolation.** The workflow body and each compensation block instance are independent execution paths; neither sees the other's errors.
+3. **The throw site is local.** `ctx.errors.X(...)` always means "throw an error declared at this definition level."
 
 ---
 
@@ -769,7 +762,6 @@ await ctx.steps.bookFlight(args);
 await ctx.steps.bookFlight(args, { timeout: 30 });
 await ctx.childWorkflows.processOrder(startOpts, { timeout: 120 });
 await ctx.requests.humanReview(payload, { priority: 1, timeout: 3600 });
-await ctx.branches.quote({ provider: "alpha" }, { timeout: 60 });
 ```
 
 Calls are not eager native `Promise`s. They are entries that can be directly awaited or passed to named structured-ownership helpers: `ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atMost`, `ctx.atLeast`, or `ctx.some`.
@@ -833,6 +825,24 @@ When a timed-out step is compensable and had an attempted side effect, the engin
 
 ### Child workflows
 
+A workflow can start child workflows in three shapes; the resulting handle types differ because each shape exposes different capabilities.
+
+#### Three start shapes
+
+| Start shape                                                | Returns                                       | Awaitable for result | `channels.X.send` to child | Has `idempotencyKey` | Tied to parent lifecycle |
+| ---------------------------------------------------------- | --------------------------------------------- | -------------------- | -------------------------- | -------------------- | ------------------------ |
+| `ctx.childWorkflows.X(startOpts, opts?)` (workflow body)   | `AttachedChildWorkflowEntry<W>`               | yes                  | yes                        | **no**               | yes                      |
+| `ctx.childWorkflows.X.startDetached(opts)`                 | `ForeignWorkflowHandle<W>`                    | no                   | yes                        | yes                  | no                       |
+| Inside a scope: `ctx.scope("S", { x: ctx.childWorkflows.X(...) }, async (ctx, { x }) => …)` | `AttachedChildWorkflowHandle<W>` (the `x`) | yes (via `ctx.join(x)`) | yes                     | **no**               | yes (until scope exit)   |
+
+The conceptual statement: **a handle to a running workflow can always send to its declared channels.** Attached and detached/foreign all share the channel-send capability. They differ in whether the parent awaits the result, whether the parent's lifecycle terminates the child, and whether the child has a globally addressable `idempotencyKey`.
+
+Attached children deliberately do not have an `idempotencyKey`. They are not globally addressable — their identity is "the attached child of this parent at this dispatch site," not a key under the workflow definition. Detached children are real root workflows with an idempotency key, addressable via `client.workflows.<def>.get(idempotencyKey)` like any other workflow.
+
+`ForeignWorkflowHandle<W>` is also what `ctx.foreignWorkflows.X.get(...)` returns inside workflow logic, accepting either an `idempotencyKey` or `args` (when the target workflow declares an `idempotencyKeyFactory`). Detached starts and foreign lookups produce the same handle type. The client-level direct-access lookup (`client.workflows.X.get(...)`) returns the richer `WorkflowHandleExternal<W>` because external callers need the full operator-action surface.
+
+#### Attached child workflow entries (workflow body level)
+
 Attached child workflows always return a discriminated union because child failure is structurally possible.
 
 ```typescript
@@ -845,7 +855,380 @@ const timed = await ctx.childWorkflows.processOrder(startOpts, { timeout: 60 });
 // timed additionally includes { ok: false; status: "timeout" }
 ```
 
+The entry returned by `ctx.childWorkflows.X(startOpts)` is itself a handle to the running child: it exposes `channels.X.send(...)` for each declared inbound channel and `idempotencyKey`, in addition to being awaitable.
+
+```typescript
+const order = ctx.childWorkflows.processOrder(startOpts);
+order.channels.cancel.send({ reason: "user-cancelled" }); // buffered op, returns void
+const result = await order;
+```
+
 Attached children are not independently terminable business objects. If the parent workflow is externally terminated, the attached subtree is torn down as part of the parent lifecycle; the parent does not resume with a child-level `terminated` result. Termination remains visible at root boundaries: root workflow handles and detached child workflow handles.
+
+#### Inside a scope
+
+The scope body receives `AttachedChildWorkflowHandle<W>` for each child workflow entry passed in. It carries the same `channels.X.send` accessors as the workflow-body entry, plus is joinable via `ctx.join(handle)`. This is the amalgamation point: orchestration code can both push messages and await results.
+
+```typescript
+await ctx.scope(
+  "process",
+  { order: ctx.childWorkflows.processOrder(startOpts) },
+  async (ctx, { order }) => {
+    order.channels.cancel.send({ reason: "timeout-soon" });
+    return await ctx.join(order);
+  },
+);
+```
+
+#### Detached starts
+
+`ctx.childWorkflows.X.startDetached(opts)` is a buffered start. It returns a `ForeignWorkflowHandle<W>` synchronously. The handle exposes `channels.X.send` and `idempotencyKey`; it is not awaitable from the parent.
+
+#### Search and introspection — unified shape
+
+Every queryable namespace in the system shares the same shape: a direct-access `.get(id)` that constructs a handle without fetching, plus three predicate-based methods that fetch.
+
+```typescript
+interface QueryableNamespace<
+  THandle,
+  TQueryNamespaces extends Record<string, SearchNamespaceRecord>,
+  TRow extends RowNamespaceRecord,
+  TId,
+> {
+  // Direct-access constructor. Returns a handle synchronously; the handle is
+  // query-grounded — actual cardinality / existence is reflected in the
+  // FindUniqueResult that handle methods return.
+  get(id: TId): THandle;
+
+  // Identity lookup with prefetched row fields.
+  get<F extends FieldsMask<TRow>>(
+    id: TId,
+    fields: F,
+  ): HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>;
+
+  // Predicate-based lookup that asserts cardinality at fetch time. Returns
+  // 'unique' / 'missing' / 'ambiguous'.
+  findUnique(
+    query: (q: SearchQuery<TQueryNamespaces>) => SearchQueryNode,
+    opts?: FindUniqueOptions,
+  ): Promise<FindUniqueResult<THandle>>;
+  findUnique<F extends FieldsMask<TRow>>(
+    query: (q: SearchQuery<TQueryNamespaces>) => SearchQueryNode,
+    opts: FindUniqueOptions & { fields: F },
+  ): Promise<FindUniqueResult<HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>>>;
+
+  // Predicate-based lookup that may yield zero or more handles. Awaitable
+  // (materializes the array) and async-iterable (streams lazily with internal
+  // pagination).
+  findMany(
+    query: (q: SearchQuery<TQueryNamespaces>) => SearchQueryNode,
+    opts?: FindManyOptions<TQueryNamespaces>,
+  ): FindManyResult<THandle>;
+  findMany<F extends FieldsMask<TRow>>(
+    query: (q: SearchQuery<TQueryNamespaces>) => SearchQueryNode,
+    opts: FindManyOptions<TQueryNamespaces> & { fields: F },
+  ): FindManyResult<HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>>;
+
+  // Aggregate count over the same predicate.
+  count(
+    query: (q: SearchQuery<TQueryNamespaces>) => SearchQueryNode,
+    opts?: CountOptions,
+  ): Promise<number>;
+}
+```
+
+There is no `findUnique(id)` overload. `.get(id)` is the identity-based path; `findUnique(query)` is the assert-uniqueness-at-fetch-time path. They have different shapes because they do different things: `.get` does no I/O and cannot fail synchronously; `findUnique` does I/O and reports cardinality.
+
+`FindManyResult<T>` is both `PromiseLike<readonly T[]>` and `AsyncIterable<T>`. Awaiting it materializes the full array; iterating streams handles lazily with internal pagination.
+
+`FindUniqueResult<T>` carries cardinality:
+
+```typescript
+type FindUniqueResult<T> =
+  | { readonly status: "unique"; readonly value: T }
+  | { readonly status: "missing" }
+  | { readonly status: "ambiguous"; readonly count: number };
+```
+
+There are no "subset handles" with curated bulk operations. The handle returned by `findUnique` and yielded by `findMany` is the canonical handle for that entity; bulk operator actions are expressed by mapping over the iterable.
+
+Where an entity has more than one identity-based addressing scheme (e.g. root workflows are addressable by `idempotencyKey` and, when an `idempotencyKeyFactory` is declared, by `args`), the namespace adds extra `.get(...)` overloads. The `findUnique`/`findMany`/`count` shape is unaffected.
+
+##### Row prefetch and `fetchRow`
+
+Every entity has a flat row of scalar columns (`status`, timestamps, ids, definition names, etc.). JSONB columns (`args`, `result`, `metadata`, `info`, `payload`) are also row columns from a fetch perspective — they are fetched as whole opaque values and projected client-side.
+
+A queryable handle exposes:
+
+```typescript
+interface FetchableHandle<TRow> {
+  // Fetch a fresh row snapshot. Always queries the database — never returns
+  // cached state. Does not mutate any handle state.
+  fetchRow(opts?: { txOrConn?: IWorkflowTransaction | IWorkflowConnection }):
+    Promise<FindUniqueResult<TRow>>;
+  fetchRow<F extends FieldsMask<TRow>>(
+    fields: F,
+    opts?: { txOrConn?: IWorkflowTransaction | IWorkflowConnection },
+  ): Promise<FindUniqueResult<Pick<TRow, ProjectedKeys<TRow, F>>>>;
+}
+```
+
+The optional `fields` parameter is a column mask: `{ status: true, args: true }` returns `{ status, args }` only. Without `fields`, `.fetchRow()` returns the entire row.
+
+When a query method (`get`, `findUnique`, `findMany`) is called with a `fields` option, the engine prefetches those columns into a `.row` field on each yielded handle:
+
+```typescript
+type HandleWithRow<H, TRow> = H & { readonly row: TRow };
+```
+
+A handle without a prefetched row has no `.row` field — operators must call `.fetchRow(...)` to read row data. A handle with a prefetched row has `.row: Pick<Row, ProjectedKeys<...>>` populated at query time.
+
+`.fetchRow(...)` always re-fetches. It does not consult `.row`; it does not modify `.row`. The prefetched `.row` is the snapshot at query time; `.fetchRow` is a fresh read on demand.
+
+##### Field mask and projection types
+
+```typescript
+// A mask of row columns to project.
+type FieldsMask<TRow> = {
+  readonly [K in keyof TRow]?: true;
+};
+
+// The keys explicitly set to true in the mask. Used by Pick<TRow, ProjectedKeys<TRow, F>>.
+type ProjectedKeys<TRow, F extends FieldsMask<TRow>> =
+  Extract<{
+    [K in keyof F]: F[K] extends true ? K : never;
+  }[keyof F], keyof TRow>;
+```
+
+The mask is type-validated: only keys of `TRow` are accepted. The engine additionally validates the mask at runtime, rejecting unknown keys with a clear error in case the type system was bypassed.
+
+##### Common query/option types
+
+```typescript
+interface FindUniqueOptions {
+  readonly txOrConn?: IWorkflowTransaction | IWorkflowConnection;
+}
+
+interface FindManyOptions<TNamespaces extends Record<string, SearchNamespaceRecord>> {
+  readonly sort?: readonly SearchSort<TNamespaces>[];
+  readonly limit?: number;
+  readonly txOrConn?: IWorkflowTransaction | IWorkflowConnection;
+}
+
+interface CountOptions {
+  readonly txOrConn?: IWorkflowTransaction | IWorkflowConnection;
+}
+```
+
+Per the connection-and-transaction model (Part 19), every IO method exposes `txOrConn?` so that reads and writes can be combined into a single transaction. The `opts` parameter pattern keeps signatures uniform: every IO method accepts an options object as its last parameter, with `txOrConn?` always present and entity-specific options layered on top.
+
+#### External introspection of children
+
+Operators inspect a parent workflow's children through two namespaces on the parent's external workflow handle, named after the property keys under which the child workflow definitions were registered in `defineWorkflow.childWorkflows`:
+
+```typescript
+// Attached children — read-only handle, parent-scoped only.
+workflowInstance.attachedChildWorkflows.<name>:
+  QueryableNamespace<
+    AttachedChildWorkflowExternalHandle<W>,
+    { args: InferWorkflowArgs<W>; metadata: WorkflowMetadata },
+    AttachedChildWorkflowId<W>
+  >;
+
+// Detached children — full external handle, parent-scoped (also visible globally).
+// Identity-based lookup uses idempotency key (or args, when factory declared).
+workflowInstance.detachedChildWorkflows.<name>:
+  Omit<QueryableNamespace<WorkflowHandleExternal<W>, …, never>, "get"> & {
+    get(idempotencyKey: string): WorkflowHandleExternal<W>;
+    get(args: InferOutput<TArgs>): WorkflowHandleExternal<W>;  // when HasFactory
+  };
+```
+
+The two namespaces return **different handle types** because attached and detached children have different operator-action surfaces.
+
+##### Detached children
+
+`workflowInstance.detachedChildWorkflows.<name>.findUnique(...)` returns a regular `WorkflowHandleExternal<W>` — the same handle type that `client.workflows.<name>.findUnique(...)` returns. The detachedness is metadata: `parent_step_id` is set, but the child is otherwise globally addressable, has its own `idempotencyKey`, and supports the full operator action surface (`sigkill()`, `sigterm()`, `skip(result, opts?)`).
+
+Detached children also appear in the global `client.workflows.<def>.findMany(...)` query. The parent-scoped namespace is a convenience: it pre-filters to detached children of this parent. `.get(idempotencyKey | args)` is available there too, though its semantics narrow correspondingly: "this detached child must be an immediate child of this parent AND have this idempotency key (or args that derive it)."
+
+##### Attached children
+
+`workflowInstance.attachedChildWorkflows.<name>.findUnique(...)` returns an `AttachedChildWorkflowExternalHandle<W>` — a *read-only* handle (apart from channel sends). Its surface:
+
+```typescript
+interface AttachedChildWorkflowExternalHandle<W extends AnyWorkflowHeader>
+  extends FetchableHandle<WorkflowRow<InferWorkflowArgs<W>, InferWorkflowResult<W>>> {
+  readonly id: AttachedChildWorkflowId<W>;
+
+  attributes: { /* declared attributes; per-instance reads, FindUniqueResult-wrapped */ };
+  streams:    { /* declared streams; per-instance reads */ };
+  events:     { /* declared events; per-instance wait/isSet */ };
+  channels:   { /* declared channels; send fan-in to this instance */ };
+}
+```
+
+The handle exposes `.fetchRow(...)` for reading row fields (status, args, result, halt, timestamps, etc.) — see the unified shape above. It does not expose terminal-action verbs:
+
+- No `idempotencyKey` (attached children have none).
+- No `sigkill()`, `sigterm()`, `skip(...)` (the parent's lifecycle controls them; operators do not terminate attached children directly).
+
+The `id` is `AttachedChildWorkflowId<W>` — branded with the child's workflow header so attached child ids are not interchangeable with regular workflow ids or compensation block ids:
+
+```typescript
+type AttachedChildWorkflowId<W extends AnyWorkflowHeader> = string & {
+  readonly __brand: "AttachedChildWorkflowId";
+  readonly __workflow: W;
+};
+```
+
+Internally an `AttachedChildWorkflowId<W>` is a workflow id; externally that is not exposed.
+
+##### Global queries filter out attached children
+
+`client.workflows.<def>.findMany(...)` returns only globally addressable workflows. Workflow rows where `attached = TRUE` are filtered out at query time. To inspect attached children, operators must go through the parent's `attachedChildWorkflows.<name>` namespace.
+
+This matches the actor-model framing: attached children are subordinate to a parent workflow's lifecycle and not independently addressable in the system.
+
+#### Workflow row, query namespaces, and `WorkflowHandleExternal`
+
+Workflows have one row shape and a fixed set of query namespaces:
+
+```typescript
+// Flat scalar columns of a workflow row.
+interface WorkflowRow<TArgs, TResult, TMetadata> {
+  readonly id: string;
+  readonly definitionName: string;
+  readonly idempotencyKey: string | null;
+  readonly status: WorkflowStatus;
+  readonly args: TArgs;
+  readonly result: TResult | null;
+  readonly metadata: TMetadata;
+  readonly error: WorkflowErrorEnvelope | null;
+  readonly attached: boolean;
+  readonly isCompensation: boolean;
+  readonly compensationStepName: string | null;
+  readonly createdAt: Date;
+  readonly startedAt: Date | null;
+  readonly completedAt: Date | null;
+  readonly failedAt: Date | null;
+  readonly terminatedAt: Date | null;
+  readonly scheduledAt: Date | null;
+  readonly deadlineAt: Date | null;
+}
+
+// Query namespaces. Each top-level key is a separate namespace with its own
+// path machinery. JSONB columns (args, result, metadata, error) are exposed as
+// their own namespaces because they have nested structure.
+type WorkflowQueryNamespaces<TArgs, TResult, TMetadata> = {
+  row: WorkflowRow<TArgs, TResult, TMetadata>;
+  args: TArgs;
+  result: TResult;
+  metadata: TMetadata;
+  error: WorkflowErrorEnvelope;
+};
+```
+
+`WorkflowHandleExternal<W>` extends the fetchable handle with operator-action verbs and the full primitive plane:
+
+```typescript
+interface WorkflowHandleExternal<W extends AnyWorkflowHeader>
+  extends FetchableHandle<WorkflowRow<InferWorkflowArgs<W>, InferWorkflowResult<W>, InferWorkflowMetadata<W>>> {
+  readonly id: string;
+
+  // Operator-action verbs. Per Part 19, every IO method takes an optional
+  // txOrConn for transaction composition.
+  sigkill(opts?: { txOrConn?: IWorkflowTransaction | IWorkflowConnection }):
+    Promise<{ /* terminal outcome */ }>;
+  sigterm(opts?: { txOrConn?: IWorkflowTransaction | IWorkflowConnection }):
+    Promise<{ /* terminal outcome */ }>;
+  skip(
+    ...args: InferWorkflowResult<W> extends void
+      ? [opts?: { strategy?: "sigterm" | "sigkill"; txOrConn?: IWorkflowTransaction | IWorkflowConnection }]
+      : [
+          result: InferInput<InferWorkflowResult<W>>,
+          opts?: { strategy?: "sigterm" | "sigkill"; txOrConn?: IWorkflowTransaction | IWorkflowConnection },
+        ]
+  ): Promise<{ /* skip outcome */ }>;
+
+  // Primitive plane. Each operation accepts a txOrConn? in its options bag
+  // (see Part 13/14/etc. for individual primitive shapes).
+  attributes: { /* declared attributes; reads */ };
+  streams:    { /* declared streams; reads */ };
+  events:     { /* declared events; wait/isSet */ };
+  channels:   { /* declared channels; send (write) only */ };
+
+  halts: {
+    list(opts?: {
+      txOrConn?: IWorkflowTransaction | IWorkflowConnection;
+    }): Promise<readonly HaltRecord[]>;
+  };
+
+  // Per-parent-scoped namespaces.
+  attachedChildWorkflows: { /* see "External introspection of children" */ };
+  detachedChildWorkflows: { /* see "External introspection of children" */ };
+  compensations:          { /* see Part 2 */ };
+  requestCompensations:   { /* see Part 11 */ };
+}
+```
+
+#### `client.workflows.<def>` surface
+
+The root client namespace gains the same `findUnique` / `findMany` / `count` surface, alongside `.start` and the identity-based `.get` direct-access methods:
+
+```typescript
+client.workflows.<def>:
+  & {
+      start(
+        opts: StartWorkflowOptions<TArgs, HasFactory> & {
+          txOrConn?: IWorkflowTransaction | IWorkflowConnection;
+        },
+      ): Promise<WorkflowHandleExternal<W>>;
+
+      // Identity-based lookups. Synchronous, query-grounding, no I/O.
+      get(idempotencyKey: string): WorkflowHandleExternal<W>;
+      get(args: InferOutput<TArgs>): WorkflowHandleExternal<W>;  // when HasFactory
+    }
+  & Omit<
+      QueryableNamespace<
+        WorkflowHandleExternal<W>,
+        WorkflowQueryNamespaces<InferWorkflowArgs<W>, InferWorkflowResult<W>, InferWorkflowMetadata<W>>,
+        WorkflowRow<InferWorkflowArgs<W>, InferWorkflowResult<W>, InferWorkflowMetadata<W>>,
+        never
+      >,
+      "get"
+    >;
+```
+
+The `Omit<..., "get">` reflects that the identity-based `.get` is replaced by the two domain-specific overloads (`idempotencyKey` and, when factory is declared, `args`). The shape of `findUnique` / `findMany` / `count` is unchanged from the unified shape.
+
+`.get(args)` is the new overload: when the workflow definition declares an `idempotencyKeyFactory`, the engine derives the idempotency key from the args at call time and performs the same fast direct-access lookup. The same overload is added to `ctx.foreignWorkflows.<W>.get(...)` inside workflow logic.
+
+`findUnique(query)` is for predicate-based lookup that must match exactly one row. `.get` is the fast path when the operator already knows the addressing key. Operators use whichever fits.
+
+`findMany` excludes attached children automatically (`row.attached = TRUE` rows are filtered out). Detached children appear in `findMany` results because they are globally addressable workflows.
+
+##### Worked example: query, prefetch, and act in one transaction
+
+```typescript
+await using tx = await client.transaction();
+
+const halted = await client.workflows.processOrder.findMany(
+  (q) => q.row.status.eq("halted").and(q.row.createdAt.lt(sevenDaysAgo)),
+  { fields: { id: true, args: true, idempotencyKey: true }, txOrConn: tx },
+);
+
+for await (const wf of halted) {
+  await wf.skip(
+    { orderId: wf.row.args.orderId, status: "expired-cleanup" },
+    { strategy: "sigkill", txOrConn: tx },
+  );
+}
+
+await tx.commit();
+```
+
+Predicate uses `q.row.status` (engine-managed row column) and `q.row.createdAt` (Date column on the row); prefetch hoists `id`, `args`, `idempotencyKey` into `wf.row` so no extra reads happen during the loop; the entire scan + N skips run in one transaction.
 
 ### Requests
 
@@ -888,10 +1271,42 @@ interface StepAccessor<TArgs, TResult> {
 
 type StepEntry<TAwaited> = AwaitableEntry<TAwaited>;
 
+// Channel-send surface — the only externally-writable plane on a running workflow,
+// shared by every kind of handle that points at one. Sends are buffered ops in
+// workflow context, async ops outside; the type sketch elides that distinction.
+interface ChannelSendSurface<W extends AnyWorkflowHeader> {
+  readonly channels: {
+    [K in keyof InferWorkflowChannels<W> & string]: {
+      send(payload: InferInput<InferWorkflowChannels<W>[K]>): void;
+    };
+  };
+}
+
+// AttachedChildWorkflowEntry<W, TAwaited> is what the workflow body receives from
+// ctx.childWorkflows.X(...). Awaitable for the result union AND exposes channels.send.
+// Notably has NO idempotencyKey — attached children are not globally addressable.
+type AttachedChildWorkflowEntry<W extends AnyWorkflowHeader, TAwaited> =
+  AwaitableEntry<TAwaited> & ChannelSendSurface<W>;
+
+// AttachedChildWorkflowHandle<W, TAwaited> is what a scope body receives for an
+// attached child entry passed in. Same shape as the entry — awaitable + channels.send,
+// no idempotencyKey.
+type AttachedChildWorkflowHandle<W extends AnyWorkflowHeader, TAwaited> =
+  AttachedChildWorkflowEntry<W, TAwaited>;
+
+// ForeignWorkflowHandle<W> is a handle to a globally addressable workflow.
+// Returned by startDetached(...) and by foreignWorkflows.X.get(idempotencyKey | args).
+// Channel-send + idempotencyKey, not awaitable.
+interface ForeignWorkflowHandle<W extends AnyWorkflowHeader>
+  extends ChannelSendSurface<W> {
+  readonly idempotencyKey: string;
+}
+
 interface ChildWorkflowAccessor<W extends AnyWorkflowHeader> {
   (
     startOpts: AttachedChildWorkflowStartOptions<W>,
   ): AttachedChildWorkflowEntry<
+    W,
     | { ok: true; result: InferWorkflowResult<W> }
     | { ok: false; status: "failed"; error: ErrorValue<InferWorkflowErrors<W>> }
   >;
@@ -899,6 +1314,32 @@ interface ChildWorkflowAccessor<W extends AnyWorkflowHeader> {
     startOpts: AttachedChildWorkflowStartOptions<W>,
     opts: { retry?: RetryPolicyOptions; timeout: StepBoundary },
   ): AttachedChildWorkflowEntry<
+    W,
+    | { ok: true; result: InferWorkflowResult<W> }
+    | { ok: false; status: "failed"; error: ErrorValue<InferWorkflowErrors<W>> }
+    | { ok: false; status: "timeout" }
+  >;
+  startDetached(opts: DetachedStartOptions<W>): ForeignWorkflowHandle<W>;
+}
+
+// ForeignWorkflowHandle<W> = the surface above with no awaitable result. Returned by
+// startDetached() and by foreignWorkflows.X.get(idempotencyKey).
+type ForeignWorkflowHandle<W extends AnyWorkflowHeader> =
+  ForeignWorkflowHandleSurface<W>;
+
+interface ChildWorkflowAccessor<W extends AnyWorkflowHeader> {
+  (
+    startOpts: AttachedChildWorkflowStartOptions<W>,
+  ): AttachedChildWorkflowEntry<
+    W,
+    | { ok: true; result: InferWorkflowResult<W> }
+    | { ok: false; status: "failed"; error: ErrorValue<InferWorkflowErrors<W>> }
+  >;
+  (
+    startOpts: AttachedChildWorkflowStartOptions<W>,
+    opts: { retry?: RetryPolicyOptions; timeout: StepBoundary },
+  ): AttachedChildWorkflowEntry<
+    W,
     | { ok: true; result: InferWorkflowResult<W> }
     | { ok: false; status: "failed"; error: ErrorValue<InferWorkflowErrors<W>> }
     | { ok: false; status: "timeout" }
@@ -940,109 +1381,51 @@ interface RequestAccessor<TPayload, TResponse> {
 
 Each isolated unit of work gets a context whose syntax reflects what the unit is allowed to see.
 
-- Workflow `execute` sees workflow primitives, workflow branches, workflow steps, and workflow `errors`.
-- Branch `execute` sees only the primitives and dependencies declared on that branch definition; its `ctx.errors` comes from that branch definition.
+- Workflow `execute` sees workflow primitives, workflow steps/requests/childWorkflows, and workflow `errors`.
 - Compensation `undo` sees only primitives and dependencies declared on the step's `compensation` field; it has no workflow `ctx.errors`.
-- Compensation branches see compensation-block primitives/dependencies and their own local branch `ctx.errors`.
 
 ### No shared compensation namespace
 
 Compensation block primitive state is declared on the compensable step and materialized per invocation. The current workflow-wide compensation hooks and ad hoc `addCompensation` registration do not survive as public API surfaces.
 
-| Primitive        | Workflow execution              | Step compensation block                    |
-| ---------------- | ------------------------------- | ------------------------------------------ |
-| `ctx.channels`   | workflow instance channels      | compensation block instance channels       |
-| `ctx.streams`    | workflow instance streams       | compensation block instance streams        |
-| `ctx.events`     | workflow instance events        | compensation block instance events         |
-| `ctx.attributes` | workflow instance attributes    | compensation block instance attributes     |
-| `ctx.branches`   | `defineWorkflow.branches`       | `defineStep.compensation.branches`         |
-| `ctx.errors`     | workflow or branch-local errors | branch-local errors only; absent in `undo` |
+| Primitive        | Workflow body              | Step compensation block instance         |
+| ---------------- | -------------------------- | ---------------------------------------- |
+| `ctx.channels`   | workflow instance channels | compensation block instance channels     |
+| `ctx.streams`    | workflow instance streams  | compensation block instance streams      |
+| `ctx.events`     | workflow instance events   | compensation block instance events       |
+| `ctx.attributes` | workflow instance attrs    | compensation block instance attributes   |
+| `ctx.errors`     | workflow-declared errors   | absent (use the `result` schema instead) |
 
-The execution VEL cannot read or write compensation block primitives, and a compensation block cannot read or write workflow primitives unless coordination is exposed through an explicit global primitive such as a request, topic, queue, or child workflow.
+The workflow body cannot read or write compensation block primitives, and a compensation block cannot read or write workflow body primitives unless coordination is exposed through an explicit global primitive such as a request, topic, queue, or child workflow.
 
 ### Definition-time dependency filtering
 
-Compensation can depend on non-compensable steps and requests; queues, topics, and child workflows. It cannot depend on compensable steps or compensable requests, preventing recursive compensation chains.
+Compensation can depend on non-compensable steps and requests; queues, topics, and child workflows. It cannot depend on compensable steps or compensable requests, preventing recursive compensation chains. Child workflows are exempt from the non-compensable filter — each child owns its own internal compensation lifecycle.
 
 ---
 
-## Part 7: Branches, Scopes, and Structured-Concurrency Consumption
+## Part 7: Scopes and Structured-Concurrency Consumption
 
-All scopes must be named. Branches are no longer inline async closures passed to `ctx.scope`; they are predefined isolated units with serializable args and results.
-
-### Branch definitions
-
-Branches are predefined on `defineWorkflow.branches` and on `defineStep.compensation.branches`. Each branch has `args`, `result`, optional local dependencies such as `steps` and `requests`, optional local `errors`, and `execute`.
-
-```typescript
-defineWorkflow({
-  name: "tripBooking",
-  args: z.object({ destination: z.string(), customerId: z.string() }),
-  errors: {
-    BookingFailed: z.object({ reason: z.string() }),
-  },
-  steps: { bookFlight, bookHotel },
-
-  branches: {
-    flightBooking: {
-      args: z.object({ destination: z.string(), customerId: z.string() }),
-      result: z.object({ confirmationId: z.string() }),
-      steps: { bookFlight },
-      errors: "any",
-      execute: async (ctx, args) => {
-        const booking = await ctx.steps.bookFlight(
-          { destination: args.destination, passengerId: args.customerId },
-          { timeout: 30 },
-        );
-        if (!booking.ok) throw new Error("Flight booking timed out");
-        return { confirmationId: booking.result.confirmationId };
-      },
-    },
-  },
-
-  execute: async (ctx, args) => {
-    return await ctx.scope(
-      "booking",
-      {
-        flight: ctx.branches.flightBooking({
-          destination: args.destination,
-          customerId: args.customerId,
-        }),
-      },
-      async (ctx, { flight }) => {
-        const flightResult = await ctx.join(flight);
-        if (!flightResult.ok) {
-          throw ctx.errors.BookingFailed("Booking failed", {
-            reason: "flight",
-          });
-        }
-        return flightResult.res;
-      },
-    );
-  },
-});
-```
+All scopes must be named. A scope orchestrates a top-level object of dispatched entries — steps, requests, and attached child workflows — and lets the body await results selectively. The body itself remains a single sequential execution path; the concurrency exists between dispatched entries.
 
 ### Entry family
 
-Branches, steps, requests, and attached child workflows all produce typed unstarted entries:
+Steps, requests, and attached child workflows all produce typed unstarted entries:
 
 ```typescript
-type BranchEntry<T, TErrors> = /* opaque branch entry */;
 type StepEntry<T> = /* opaque step entry */;
 type RequestEntry<T> = /* opaque request entry */;
-type AttachedChildWorkflowEntry<T, TErrors> = /* opaque child-workflow entry */;
+type AttachedChildWorkflowEntry<W, T> = /* opaque attached child-workflow entry */;
 
-type ConcurrentEntry =
-  | BranchEntry<any, any>
+type AwaitableEntry =
   | StepEntry<any>
   | RequestEntry<any>
   | AttachedChildWorkflowEntry<any, any>;
 ```
 
-Direct `await` starts and observes an entry. A scope starts entries under structural ownership and passes handles to the body.
+Direct `await` dispatches and observes an entry. A scope dispatches entries under structural ownership and passes handles to the body.
 
-Detached child workflow starts are not entries. `startDetached` is a buffered synchronous operation that returns a foreign workflow handle immediately and cannot be passed to structured-concurrency scopes.
+Detached child workflow starts are not entries. `ctx.childWorkflows.X.startDetached(opts)` is a buffered synchronous operation that returns a `ForeignWorkflowHandle<W>` immediately and cannot be passed to structured-concurrency scopes.
 
 ### Scope input structure
 
@@ -1060,26 +1443,37 @@ await ctx.scope(
       ["bar1", ctx.childWorkflows.bar({ args: { n: 1 } })],
       ["bar2", ctx.childWorkflows.bar({ args: { n: 2 } })],
     ]),
-    branch: ctx.branches.lookup({ n: 1 }),
+    review: ctx.requests.humanReview({ data: "..." }),
   },
-  async (ctx, { quotes, children, branch }) => {
+  async (ctx, { quotes, children, review }) => {
     const paris = await ctx.join(quotes[0]);
     const bar1 = children.get("bar1");
-    const b = await ctx.join(branch);
-    return { paris, bar1: bar1 && (await ctx.join(bar1)), b };
+    const decision = await ctx.join(review);
+    return { paris, bar1: bar1 && (await ctx.join(bar1)), decision };
+  },
+);
+```
+
+For attached child workflow handles, the scope body can also push messages:
+
+```typescript
+await ctx.scope(
+  "process",
+  { order: ctx.childWorkflows.processOrder(startOpts) },
+  async (ctx, { order }) => {
+    order.channels.cancel.send({ reason: "timeout-soon" });
+    return await ctx.join(order);
   },
 );
 ```
 
 ### Scope body
 
-The scope body remains an inline callback because it is orchestration code in the parent context. It receives a narrowed context with `join`, `match`, and `select`, and its `ctx.errors` is the parent's local `errors`. There is no scope-local error mode and no `ScopeCall.failure(cb)`.
+The scope body is an inline callback because it is orchestration code that runs as part of the workflow body's sequential execution path. It receives a narrowed context with `join`, `match`, and the convenience helpers, and its `ctx.errors` is the workflow's. There is no scope-local error mode and no `ScopeCall.failure(cb)`.
 
 ### `ctx.join`
 
-`ctx.join(handle)` observes one leaf handle and returns the handle's full flattened outcome. Plain step and request entries return their success payloads directly. Branches and attached child workflows return their declared workflow-facing result unions, such as `{ ok: true; result: T } | { ok: false; status: "failed"; error: unknown }`. When a branch is called with `{ timeout }`, its workflow-facing result union also includes `{ ok: false; status: "timeout" }`.
-
-If a halted branch is externally skipped with an operator-supplied result, workflow code observes that value as a normal successful branch result. `skipped` is retained as an external branch-instance status, not as a workflow-facing `join` outcome.
+`ctx.join(handle)` observes one leaf handle and returns the handle's full flattened outcome. Plain step and request entries return their success payloads directly (or, with a `timeout` option on the entry, their success-or-timeout union). Attached child workflows return their declared workflow-facing result union, `{ ok: true; result: T } | { ok: false; status: "failed"; error: ErrorValue<TChildErrors> }` — and with a `timeout` option also `{ ok: false; status: "timeout" }`.
 
 `ctx.join(handle, { timeout })` is an observation timeout. It races this wait only; it does not cancel, terminate, fail, or compensate the underlying work. The same handle can be joined again later. If observation times out, `join` adds `{ ok: false; status: "join_timeout" }`, separate from an entry's own operation timeout result.
 
@@ -1106,47 +1500,41 @@ for await (const event of ctx.match(handles)) {
 
 `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.some` accept an explicit scope name followed by the same top-level object input structure as `ctx.scope`. They return directly awaitable results and have no `.failure(cb)` builder.
 
-| Method                          | Strategy                                                                 | Success result                                                  | Failure error                                                                                                                            |
-| ------------------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `ctx.all(name, entries)`        | Wait for every entry to succeed.                                         | `ScopeSuccessResults<E>` preserving the input object structure. | `{ code: "SomeBranchesFailed"; message; details: { failures: KeyedFailure<E>[]; completed: KeyedSuccess<E>[] } }`                        |
-| `ctx.first(name, entries)`      | Return the first successful entry; compensate entries left unconsumed.   | `KeyedSuccess<E>`                                               | `{ code: "NoBranchCompleted"; message; details: { failures: KeyedFailure<E>[] } }`                                                       |
-| `ctx.atLeast(name, n, entries)` | Wait until at least `n` entries succeed.                                 | `KeyedSuccess<E>[]` with length at least `n`.                   | `{ code: "QuorumNotMet"; message; details: { required: number; got: number; failures: KeyedFailure<E>[]; completed: KeyedSuccess<E>[] } }` |
-| `ctx.atMost(name, n, entries)`  | Return up to `n` successful entries; compensate entries left unconsumed. | `KeyedSuccess<E>[]` with length at most `n`.                    | No failure case.                                                                                                                         |
-| `ctx.some(name, entries)`       | Return as many successful entries as possible.                           | `KeyedSuccess<E>[]`, possibly empty.                            | No failure case.                                                                                                                         |
+| Method                          | Strategy                                                                 | Success result                                                  | Failure error                                                                                                                                |
+| ------------------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ctx.all(name, entries)`        | Wait for every entry to succeed.                                         | `ScopeSuccessResults<E>` preserving the input object structure. | `{ code: "SomeEntriesFailed"; message; details: { failures: KeyedFailure<E>[]; completed: KeyedSuccess<E>[] } }`                             |
+| `ctx.first(name, entries)`      | Return the first successful entry; compensate entries left unconsumed.   | `KeyedSuccess<E>`                                               | `{ code: "NoEntryCompleted"; message; details: { failures: KeyedFailure<E>[] } }`                                                            |
+| `ctx.atLeast(name, n, entries)` | Wait until at least `n` entries succeed.                                 | `KeyedSuccess<E>[]` with length at least `n`.                   | `{ code: "QuorumNotMet"; message; details: { required: number; got: number; failures: KeyedFailure<E>[]; completed: KeyedSuccess<E>[] } }`   |
+| `ctx.atMost(name, n, entries)`  | Return up to `n` successful entries; compensate entries left unconsumed. | `KeyedSuccess<E>[]` with length at most `n`.                    | No failure case.                                                                                                                             |
+| `ctx.some(name, entries)`       | Return as many successful entries as possible.                           | `KeyedSuccess<E>[]`, possibly empty.                            | No failure case.                                                                                                                             |
 
-### Branch query surface
-
-Every branch invocation is persisted with serializable args and result. Workflow handles expose a query surface parallel to compensation blocks:
-
-```typescript
-const branchInfo = await workflowInstance.branches.hotelBooking
-  .findUnique((q) => q.args.city.eq("Paris"))
-  .status();
-
-await workflowInstance.branches.hotelBooking
-  .findUnique((q) => q.args.city.eq("Paris"))
-  .skip({ confirmationId: "manual-resolution" });
-```
-
-Skipped branch instances require a valid branch result and are replayed into the parent workflow as successful branch results.
-
-```typescript
-type BranchStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "halted"
-  | "skipped";
-```
+The error `code` values are renamed from earlier iterations (`SomeBranchesFailed` → `SomeEntriesFailed`, `NoBranchCompleted` → `NoEntryCompleted`) to reflect that scope entries are dispatched units of work, not "branches."
 
 ---
 
 ## Part 8: Database Schema
 
-The storage model is no longer a single unified tree for execution and compensation. A workflow has one execution tree. Each compensation block instance has its own compensation tree and its own primitive tables. Branch invocations and compensation block instances are queryable entities with serialized args, metadata, status, result, and attempts.
+The execution model is unified. There is no separate hierarchy for compensation: a compensation block instance **is a child workflow** of a special sibling workflow (the base compensation workflow) that the engine creates alongside every execution workflow. The same `workflow`, `step`, and `promise` tables represent every execution path in the system.
 
-### Core workflow tables
+### The two-workflow pairing
+
+When a caller starts a workflow, the engine creates **two** `workflow` rows:
+
+1. **Execution workflow.** `is_compensation = FALSE`. Carries the user-facing `idempotency_key`, `args`, `result`, etc. Its body is the user's `defineWorkflow.execute` callback. Its `compensation_workflow_id` points at the sibling base compensation workflow.
+2. **Base compensation workflow.** `is_compensation = TRUE`. No `idempotency_key`. Its body is engine-internal: a sequencer that promotes registered compensation block instances eagerly (FIFO at settle decisions) or as LIFO unwind on execution-workflow failure. Each compensation block instance is dispatched from its body as a `start_child_workflow` step.
+
+A compensation block instance is then a regular child workflow of the base compensation workflow. It has the same shape as any other workflow — a `workflow` row, step rows, primitive rows, halts, and so on. The "compensation block" abstraction dissolves at the storage layer; the compensation step name and the origin step in the execution workflow are recorded on the child workflow row itself.
+
+This means the schema needs:
+
+- A single `workflow` table (carrying enough columns to discriminate execution vs base-compensation vs compensation-block-instance).
+- A single `step` table (including step rows for the base compensation workflow's sequencing body and for each compensation block instance's `undo` body).
+- A single `promise` table.
+- A single set of primitive tables (`workflow_attributes`, `channel_message`, `stream_record`, `workflow_event`) — each row is owned by its `workflow_id`. Per-compensation-block primitives are simply primitives of that compensation block's workflow row.
+
+There is no `branch` table, no `scope` table, no `child_workflow` join table, no parallel `compensation_block_*` hierarchy. Scope nesting is encoded by `step.parent_step_id` self-references. The parent → child workflow relationship is encoded by `workflow.parent_step_id`.
+
+### `workflow`
 
 ```sql
 CREATE TABLE workflow (
@@ -1154,8 +1542,6 @@ CREATE TABLE workflow (
   definition_name               TEXT NOT NULL,
   idempotency_key               TEXT,
   seed                          TEXT,
-  execution_branch_id           BIGINT NOT NULL REFERENCES branch(id),
-  compensation_branch_id        BIGINT NOT NULL REFERENCES branch(id),
   args                          JSONB,
   metadata                      JSONB,
   result                        JSONB,
@@ -1175,63 +1561,86 @@ CREATE TABLE workflow (
   retention_terminated_seconds  INT,
   retention_deadline_at         TIMESTAMPTZ,
 
+  -- Parent workflow linkage. Root workflows (started by the client) have NULL.
+  -- Child workflows have parent_step_id pointing at the parent's start_child_workflow
+  -- or start_detached step.
+  parent_step_id                BIGINT REFERENCES step(id),
+  attached                      BOOLEAN NOT NULL DEFAULT FALSE,
+
+  -- Compensation pairing. Set on every execution workflow at creation time.
+  compensation_workflow_id      TEXT REFERENCES workflow(id),
+
+  -- Compensation discrimination.
+  is_compensation               BOOLEAN NOT NULL DEFAULT FALSE,
+
+  -- Compensation block instance metadata. Populated when this workflow is a
+  -- compensation block instance (i.e., a child workflow of a base compensation
+  -- workflow). NULL on execution workflows and on the base compensation workflow.
+  compensation_step_name        TEXT,
+  compensation_origin_step_id   BIGINT REFERENCES step(id),
+  compensation_info             JSONB,
+
   CONSTRAINT chk_workflow_status CHECK (
-    status IN ('pending', 'running', 'complete', 'failed', 'terminated', 'halted')
+    status IN ('pending', 'running', 'completed', 'failed', 'terminated', 'halted', 'skipped')
+  ),
+  CONSTRAINT chk_workflow_idempotency CHECK (
+    -- Globally addressable workflows (root execution workflows + detached children)
+    -- require an idempotency_key. Attached children, base compensation workflows,
+    -- and compensation block instances must have NULL.
+    CASE
+      WHEN is_compensation = FALSE AND attached = FALSE THEN idempotency_key IS NOT NULL
+      ELSE idempotency_key IS NULL
+    END
+  ),
+  CONSTRAINT chk_workflow_compensation_pairing CHECK (
+    -- Execution workflows must point at a compensation workflow.
+    -- Compensation workflows do not have a compensation_workflow_id of their own.
+    (is_compensation = FALSE AND compensation_workflow_id IS NOT NULL)
+    OR (is_compensation = TRUE AND compensation_workflow_id IS NULL)
+  ),
+  CONSTRAINT chk_workflow_compensation_metadata CHECK (
+    -- Compensation block instances populate compensation_step_name + origin_step_id.
+    -- Base compensation workflows and execution workflows do not.
+    (compensation_step_name IS NULL AND compensation_origin_step_id IS NULL)
+    OR (compensation_step_name IS NOT NULL AND compensation_origin_step_id IS NOT NULL
+        AND is_compensation = TRUE AND parent_step_id IS NOT NULL)
   ),
   UNIQUE (definition_name, idempotency_key)
 );
 ```
 
-### Branch, scope, step, promise
+The status enum gains `'skipped'` for compensation block instances that were operator-skipped (Part 3, Part 12). Execution workflows never reach `'skipped'`; the CHECK constraint can be tightened with a partial index if desired.
+
+### `step`
 
 ```sql
-CREATE TABLE branch (
-  id               BIGSERIAL PRIMARY KEY,
-  workflow_id      TEXT REFERENCES workflow(id),
-  scope_id         BIGINT,
-  definition_name  TEXT,
-  key              TEXT NOT NULL,
-  key_path         TEXT[] NOT NULL,
-  args             JSONB,
-  result           JSONB,
-  error            JSONB,
-  status           TEXT NOT NULL DEFAULT 'pending',
-  consumed         BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  started_at       TIMESTAMPTZ,
-  completed_at     TIMESTAMPTZ,
-  failed_at        TIMESTAMPTZ,
-  halted_at        TIMESTAMPTZ,
-
-  CONSTRAINT chk_branch_status CHECK (
-    status IN ('pending', 'running', 'completed', 'failed', 'halted', 'skipped')
-  )
-);
-
-CREATE TABLE scope (
-  id              BIGSERIAL PRIMARY KEY,
-  parent_step_id  BIGINT NOT NULL,
-  name            TEXT NOT NULL,
-  status          TEXT NOT NULL DEFAULT 'active',
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-  CONSTRAINT chk_scope_status CHECK (status IN ('active', 'complete', 'failed'))
-);
-
 CREATE TABLE step (
-  id               BIGSERIAL PRIMARY KEY,
-  branch_id        BIGINT NOT NULL,
-  ordinal          INT NOT NULL,
-  type             TEXT NOT NULL,
-  definition_name  TEXT,
-  args             JSONB,
-  promise_id       BIGINT,
-  result           JSONB,
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-  UNIQUE (branch_id, ordinal)
+  id                BIGSERIAL PRIMARY KEY,
+  workflow_id       TEXT NOT NULL REFERENCES workflow(id),
+  parent_step_id    BIGINT REFERENCES step(id),         -- enclosing execute_scope step; NULL = body top-level
+  ordinal           INT NOT NULL,
+  type              TEXT NOT NULL,
+  definition_name   TEXT,                               -- step / request / scope / channel / etc. name as appropriate
+  args              JSONB,
+  promise_id        BIGINT,
+  result            JSONB,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Top-level body and scope-nested step ordinals are independent unique sequences.
+CREATE UNIQUE INDEX step_top_level_ordinal_uniq
+  ON step (workflow_id, ordinal) WHERE parent_step_id IS NULL;
+CREATE UNIQUE INDEX step_scoped_ordinal_uniq
+  ON step (parent_step_id, ordinal) WHERE parent_step_id IS NOT NULL;
+```
+
+A scope is a step with `type = 'execute_scope'`. Steps that "live inside" that scope reference it via `parent_step_id`. There is no separate `scope` row — the structural marker and the scope's identity are the same row. `step.definition_name` carries the scope's name when `type = 'execute_scope'`.
+
+Steps belonging to the workflow body have `workflow_id = <execution workflow id>` and `parent_step_id = NULL` (or pointing at an `execute_scope` step in the same workflow). Steps belonging to a compensation block instance's `undo` body have `workflow_id = <compensation block instance id>` — i.e., they are owned by that workflow row exactly like any other workflow's steps. There is no `compensation_block_id` on `step`; `step.workflow_id` already identifies which workflow the step belongs to, and `workflow.compensation_step_name` (when set) identifies that workflow as a compensation block instance.
+
+### `promise`
+
+```sql
 CREATE TABLE promise (
   id           BIGSERIAL PRIMARY KEY,
   step_id      BIGINT NOT NULL REFERENCES step(id),
@@ -1244,49 +1653,32 @@ CREATE TABLE promise (
 );
 ```
 
-The precise foreign key cycle between `branch`, `scope`, and `step` is resolved with `ALTER TABLE` constraints after table creation, as in the original design.
+Promises are owned by a step. The step's `workflow_id` transitively determines which workflow's body sequence the promise participates in. Promise sequence numbers (Part 1.5) are scoped per workflow body, not globally — two different workflows (execution and compensation, sibling compensation block instances, etc.) have independent `sequence_no` spaces.
 
-### Compensation block instance tables
+### Foreign-key cycles
 
-Compensation block instances are separate durable entities and use parallel tables rather than polymorphic owner columns.
+`workflow.parent_step_id → step.id`, `workflow.compensation_origin_step_id → step.id`, and `step.workflow_id → workflow.id` form a cycle resolvable with `ALTER TABLE` constraints after table creation, as in the original design. `step.parent_step_id → step.id` is a self-reference (no cycle, just nullable).
 
-```text
-workflow                             compensation_block_instance
-workflow_attributes                  compensation_block_attributes
-channel_message                      compensation_block_channel_message
-stream_record                        compensation_block_stream_record
-workflow_event                       compensation_block_event
-workflow_halt                        compensation_block_halt
-step                                 compensation_block_step
-```
+### Primitive tables
+
+Workflow primitive tables are unchanged in shape. Each row is owned by `workflow_id`. Per-compensation-block primitives are just primitives of that compensation block's workflow row.
 
 ```sql
-CREATE TABLE compensation_block_instance (
-  id                 TEXT PRIMARY KEY,
-  workflow_id        TEXT NOT NULL REFERENCES workflow(id),
-  step_id            BIGINT NOT NULL REFERENCES step(id),
-  definition_name    TEXT NOT NULL,
-  args               JSONB NOT NULL,
-  info               JSONB,
-  result             JSONB,
-  status             TEXT NOT NULL DEFAULT 'pending',
-  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  started_at         TIMESTAMPTZ,
-  completed_at       TIMESTAMPTZ,
-  halted_at          TIMESTAMPTZ,
-  skipped_at         TIMESTAMPTZ,
-
-  CONSTRAINT chk_compensation_block_status CHECK (
-    status IN ('pending', 'running', 'completed', 'halted', 'skipped')
-  )
+CREATE TABLE workflow_attributes (
+  workflow_id    TEXT NOT NULL REFERENCES workflow(id),
+  attribute_name TEXT NOT NULL,
+  value          JSONB NOT NULL,
+  version        BIGINT NOT NULL DEFAULT 1,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (workflow_id, attribute_name)
 );
 ```
 
-All compensation block instances share the same physical tables, discriminated by `definition_name` and instance id. Schema enforcement happens at the engine layer using each step's declared compensation primitive schemas.
+`channel_message`, `stream_record`, and `workflow_event` follow the same pattern. There is no `compensation_block_id` discriminator on these tables: when an operator queries `workflowInstance.compensations.bookHotel.findUnique(...).attributes.progress.get()`, the engine resolves that to a `workflow_id` (the compensation block instance) and reads from `workflow_attributes` directly.
 
 ### Request compensation tables
 
-Request compensation invocations are observable but lightweight. They have no per-instance primitives and no durable branch tree.
+Request compensation invocations are observable but lightweight. They have no per-instance primitives and no durable subordinate execution tree.
 
 ```sql
 CREATE TABLE request_compensation_instance (
@@ -1310,12 +1702,12 @@ CREATE TABLE request_compensation_instance (
 );
 ```
 
-### Halt tables
+### Halt table
 
-Execution halts and compensation block halts have different resolution semantics, so they use distinct tables.
+Halts are uniform across all workflow kinds (Part 3). One table covers them all:
 
 ```sql
-CREATE TABLE workflow_halt (
+CREATE TABLE halt (
   id                BIGSERIAL PRIMARY KEY,
   workflow_id       TEXT NOT NULL REFERENCES workflow(id),
   after_step_id     BIGINT REFERENCES step(id),
@@ -1327,28 +1719,47 @@ CREATE TABLE workflow_halt (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-  CONSTRAINT chk_workflow_halt_status CHECK (status IN ('pending', 'resolved'))
-);
-
-CREATE TABLE compensation_block_halt (
-  id                          BIGSERIAL PRIMARY KEY,
-  compensation_block_id        TEXT NOT NULL REFERENCES compensation_block_instance(id),
-  after_compensation_step_id   BIGINT,
-  status                      TEXT NOT NULL DEFAULT 'pending',
-  error_type                  TEXT,
-  error_message               TEXT,
-  error_stacktrace            TEXT,
-  error_details               JSONB,
-  created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-  CONSTRAINT chk_compensation_block_halt_status CHECK (
-    status IN ('pending', 'resolved', 'skipped')
-  )
+  CONSTRAINT chk_halt_status CHECK (status IN ('pending', 'resolved', 'skipped'))
 );
 ```
 
+There is no `branch_halt` table because there are no branches. There is no separate `compensation_block_halt` table because compensation block instances are themselves workflows — their halts are halts on a workflow row, indistinguishable at the table layer.
+
+The differences between operator-facing halt resolution surfaces (`workflowInstance.halts.list()` for execution-workflow halts, `workflowInstance.compensations.X.findUnique(...).halt()` for compensation-block-instance halts) are implemented as views/queries over this single table, joined against the `workflow` row's kind columns (`is_compensation`, `compensation_step_name`) when needed.
+
 Implementation details below this level — indexes, retention, and exact FK choices — should be finalized with the public API implementation.
+
+### Step type catalog
+
+The persisted `step.type` values, with their model categories from Part 1.2, are:
+
+| Type                             | Category         | Creates promise | Has `promise_id` | Suspends body |
+| -------------------------------- | ---------------- | --------------- | ---------------- | ------------- |
+| `start_step`                     | dispatched       | yes             | no               | yes           |
+| `start_child_workflow`           | dispatched       | yes             | no               | yes           |
+| `send_request`                   | dispatched       | yes             | no               | yes           |
+| `await_promise`                  | dispatched-await | no              | **yes**          | yes           |
+| `execute_scope`                  | structural       | no              | no               | no            |
+| `sleep`                          | awaitable wait   | yes             | yes              | yes           |
+| `sleep_until`                    | awaitable wait   | yes             | yes              | yes           |
+| `channel_receive`                | awaitable wait   | yes             | yes              | yes           |
+| `channel_receive_nowait`         | awaitable read   | no              | no               | no (flush)    |
+| `patch_check`                    | awaitable read   | no              | no               | no (flush)    |
+| `stream_write`                   | buffered         | no              | no               | no            |
+| `event_set`                      | buffered         | no              | no               | no            |
+| `attribute_set`                  | buffered         | no              | no               | no            |
+| `register_compensation_instance` | buffered         | no              | no               | no            |
+| `promote_compensation_instance`  | buffered         | no              | no               | no            |
+| `queue_enqueue`                  | buffered         | no              | no               | no            |
+| `topic_publish`                  | buffered         | no              | no               | no            |
+| `channel_send`                   | buffered         | no              | no               | no            |
+| `start_detached`                 | buffered         | no              | no               | no            |
+
+Every awaitable wait or dispatch produces a promise, and the `await_promise` step references it via `promise_id`. The promise already knows its origin (`promise.step_id` → the `start_*` step). The await step just says "I'm parked here until this promise resolves." Buffered operations are synchronous calls in the public API — they buffer step records that are committed in the next batch transaction. Awaitable reads (`receiveNowait`, `patch`) trigger a flush of the buffer before reading from committed state.
+
+The same catalog applies to every workflow body: execution workflows, the base compensation workflow's engine-internal sequencer body, and compensation block instance `undo` bodies. Definition-time filtering (Part 6) constrains which step types can appear in a compensation block instance's body — for example, dispatching a compensable step or request is rejected at compile time.
+
+`register_compensation_instance` and `promote_compensation_instance` rows record `compensation_workflow_id` (the child workflow id of the compensation block instance) on the step. `register_compensation_instance` corresponds to the engine creating the child workflow row inside the base compensation workflow; `promote_compensation_instance` corresponds to the engine dispatching that child workflow's body.
 
 ---
 
@@ -1361,19 +1772,45 @@ The existing `src/types/search-query.ts` implements a typed query AST parameteri
 ### Task
 
 ```typescript
-type SearchQueryNode<TNamespaces extends Record<string, SearchMetadataRecord>>
-type SearchQuery<TNamespaces extends Record<string, SearchMetadataRecord>>
+type SearchQueryNode<TNamespaces extends Record<string, SearchNamespaceRecord>>
+type SearchQuery<TNamespaces extends Record<string, SearchNamespaceRecord>>
+type SearchSort<TNamespaces extends Record<string, SearchNamespaceRecord>>
 
-type WorkflowSearchQueryNode<TMeta extends SearchMetadataRecord> =
-  SearchQueryNode<{ engine: WorkflowSearchEngineFields; meta: TMeta }>
+type WorkflowSearchQueryNode<TMetadata extends SearchMetadataRecord> =
+  SearchQueryNode<WorkflowQueryNamespaces<TArgs, TResult, TMetadata>>
 
-type WorkflowSearchQueryBuilder<TMeta extends SearchMetadataRecord> =
-  SearchQuery<{ engine: WorkflowSearchEngineFields; meta: TMeta }>
+type WorkflowSearchQueryBuilder<TMetadata extends SearchMetadataRecord> =
+  SearchQuery<WorkflowQueryNamespaces<TArgs, TResult, TMetadata>>
+
+type WorkflowSearchSort<TMetadata extends SearchMetadataRecord> =
+  SearchSort<WorkflowQueryNamespaces<TArgs, TResult, TMetadata>>
 ```
 
 The `SearchQuery<TNamespaces>` builder exposes one sub-builder per namespace key, each using the existing predicate machinery (`eq`, `ne`, `in`, `notIn`, `gt`, `gte`, `lt`, `lte`, `exists`, `contains`, `containsAny`, `containsAll`) typed to that namespace's field record. The `and`, `or`, `not` combinators remain top-level.
 
-Existing aliases are kept so no call sites break.
+`SearchSort<TNamespaces>` is the generalization of the existing `WorkflowSearchSort<TMeta>`. Each sort term is `{ namespace: N; path: SortablePath<TNamespaces[N]>; direction: "asc" | "desc" }` for some `N` in `TNamespaces`. `SortablePath<T>` is the generalized form of the existing `MetaSortablePath<T>` — paths whose value resolves to purely `string` or purely `number` (no booleans, no unions, no arrays). For row namespaces, the rule additionally allows `bigint` and `Date` — sortable in both contexts because they carry total ordering.
+
+### Two namespace shapes: row and JSONB
+
+Each top-level namespace in `TNamespaces` is one of two shapes:
+
+- **Row namespace** (`RowNamespaceRecord`) — a flat record of scalar columns from the entity's database row. Allowed scalar types: `string | number | boolean | bigint | Date | null | undefined`. No nesting. Used by the `row` namespace on every queryable entity.
+- **JSONB namespace** (`SearchMetadataRecord`) — a nested record representing a JSONB column's content. Allowed leaf types: `string | number | boolean | null | undefined`, plus arrays of those, plus nested records. No `bigint`/`Date` (those don't survive JSONB serialization without convention). Used by JSONB columns: `args`, `result`, `metadata`, `info`, `payload`, `error`.
+
+```typescript
+type RowNamespaceScalar =
+  | string | number | boolean | bigint | Date | null | undefined;
+
+interface RowNamespaceRecord {
+  readonly [key: string]: RowNamespaceScalar;
+}
+
+type SearchNamespaceRecord = RowNamespaceRecord | SearchMetadataRecord;
+```
+
+Both shapes go through the same path-derivation machinery to produce `MetaScalarPath` / `MetaComparablePath` / `MetaArrayPath` (with `bigint` and `Date` admitted by the comparable-path predicate for row namespaces). Range comparisons remain restricted to homogeneously typed paths in both shapes.
+
+Existing aliases (`WorkflowSearchQueryNode`, `WorkflowSearchQueryBuilder`, `WorkflowSearchSort`) are kept so no call sites break.
 
 ### Range comparison restriction for union types
 
@@ -1795,7 +2232,7 @@ declare function registerRequestCompensationHandler<TReq, TRes, TCompResult>(
 
 It is acceptable for no compensation handler to exist. The invocation enters manual mode and is resolved externally.
 
-Request compensation invocations are lightweight: no per-instance primitives, no durable branch tree, and no halt semantics. They are still observable and skippable.
+Request compensation invocations are lightweight: no per-instance primitives, no durable subordinate execution tree, and no halt semantics. They are still observable and skippable.
 
 ```typescript
 type RequestCompensationStatus =
@@ -1809,30 +2246,52 @@ type RequestCompensationStatus =
 ### Request compensation query surface
 
 ```typescript
-interface RequestCompensationNamespace<TPayload, TCompResult> {
-  findUnique(
-    query: (
-      q: SearchQuery<{ payload: TPayload; metadata: RequestCompBlockMetadata }>,
-    ) => SearchQueryNode,
-  ): RequestCompensationUniqueHandle<TPayload, TCompResult>;
-  findUnique(
-    id: RequestCompensationInstanceId,
-  ): RequestCompensationUniqueHandle<TPayload, TCompResult>;
-  findMany(
-    query: (
-      q: SearchQuery<{ payload: TPayload; metadata: RequestCompBlockMetadata }>,
-    ) => SearchQueryNode,
-  ): RequestCompensationSubsetHandle<TPayload, TCompResult>;
+type RequestCompensationQueryNamespaces<TPayload, TCompResult> = {
+  row: RequestCompensationRow<TPayload, TCompResult>;
+  payload: TPayload;
+  result: TCompResult;
+  info: RequestCompensationInfo<unknown>;
+};
+
+interface RequestCompensationRow<TPayload, TCompResult> {
+  readonly id: RequestCompensationInstanceId;
+  readonly requestName: string;
+  readonly status: RequestCompensationStatus;
+  readonly payload: TPayload;
+  readonly result: TCompResult | null;
+  readonly info: RequestCompensationInfo<unknown> | null;
+  readonly createdAt: Date;
+  readonly startedAt: Date | null;
+  readonly completedAt: Date | null;
+  readonly manualAt: Date | null;
+  readonly skippedAt: Date | null;
 }
 
-interface RequestCompensationUniqueHandle<TPayload, TCompResult> {
-  status(): Promise<FindUniqueResult<RequestCompensationStatus>>;
-  result(): Promise<FindUniqueResult<TCompResult | null>>;
-  payload(): Promise<FindUniqueResult<TPayload>>;
-  info(): Promise<FindUniqueResult<RequestCompensationInfo<unknown>>>;
-  attempts(): Promise<FindUniqueResult<AttemptAccessor>>;
+interface RequestCompensationNamespace<TPayload, TCompResult> extends
+  QueryableNamespace<
+    RequestCompensationUniqueHandle<TPayload, TCompResult>,
+    RequestCompensationQueryNamespaces<TPayload, TCompResult>,
+    RequestCompensationRow<TPayload, TCompResult>,
+    RequestCompensationInstanceId
+  > {}
+
+interface RequestCompensationUniqueHandle<TPayload, TCompResult>
+  extends FetchableHandle<RequestCompensationRow<TPayload, TCompResult>> {
+  readonly id: RequestCompensationInstanceId;
+
+  // attempts() is kept as a separate accessor because AttemptAccessor exposes
+  // its own methods (last(), all(), count(), iteration). It is not a row column.
+  attempts(opts?: {
+    txOrConn?: IWorkflowTransaction | IWorkflowConnection;
+  }): Promise<FindUniqueResult<AttemptAccessor>>;
+
   skip(
-    ...args: TCompResult extends void ? [] : [result: InferInput<TCompResult>]
+    ...args: TCompResult extends void
+      ? [opts?: { txOrConn?: IWorkflowTransaction | IWorkflowConnection }]
+      : [
+          result: InferInput<TCompResult>,
+          opts?: { txOrConn?: IWorkflowTransaction | IWorkflowConnection },
+        ]
   ): Promise<
     | FindUniqueResult<{ skipped: true }>
     | {
@@ -1841,32 +2300,20 @@ interface RequestCompensationUniqueHandle<TPayload, TCompResult> {
       }
   >;
 }
-
-interface RequestCompensationSubsetHandle<TPayload, TCompResult> {
-  count(): Promise<number>;
-  list(opts?: { limit?: number; cursor?: string }): Promise<{
-    items: readonly {
-      id: RequestCompensationInstanceId;
-      status: RequestCompensationStatus;
-      payload: TPayload;
-    }[];
-    cursor: string | null;
-  }>;
-  skip(
-    ...args: TCompResult extends void ? [] : [result: InferInput<TCompResult>]
-  ): Promise<{ affected: number }>;
-}
 ```
 
 Usage:
 
 ```typescript
-await workflowInstance.requestCompensations.refundCharge
-  .findUnique((q) => q.payload.chargeId.eq("ch_123"))
-  .skip({
+const found = await workflowInstance.requestCompensations.refundCharge
+  .findUnique((q) => q.payload.chargeId.eq("ch_123"));
+
+if (found.status === "unique") {
+  await found.value.skip({
     kind: "operator-resolved",
     note: "Refund processed via partner portal",
   });
+}
 ```
 
 ### Postgres implementation
@@ -1955,7 +2402,7 @@ const unregister = client.registerTopicConsumer(
   {
     neverExpire: true,
     filter: (q) =>
-      q.and(q.meta.tenantId.eq("acme"), q.payload.type.eq("booking.confirmed")),
+      q.and(q.metadata.tenantId.eq("acme"), q.payload.type.eq("booking.confirmed")),
     retryPolicy: {
       timeoutSeconds: 10,
       maxAttempts: 5,
@@ -2004,9 +2451,9 @@ The consumer callback receives `{ signal: AbortSignal }` as its first argument. 
 Optional. A predicate builder callback that receives a `SearchQuery<{ meta: TMetadata; payload: TPayload }>` builder with namespaces for both the topic's metadata and payload schemas. Only records matching the filter are delivered to the handler — non-matching records are skipped (offset advances past them without invoking the handler).
 
 ```typescript
-filter: (q) => q.meta.tenantId.eq("acme");
+filter: (q) => q.metadata.tenantId.eq("acme");
 filter: (q) =>
-  q.and(q.meta.type.eq("booking.confirmed"), q.payload.amount.gte(100));
+  q.and(q.metadata.type.eq("booking.confirmed"), q.payload.amount.gte(100));
 filter: (q) =>
   q.or(
     q.payload.type.eq("booking.confirmed"),
@@ -2106,7 +2553,7 @@ const unregister = client.registerBatchTopicConsumer(
       flushAfterSeconds: 60, // optional — force-invoke below minRecords after this duration
     },
     neverExpire: true,
-    filter: (q) => q.meta.tenantId.eq("acme"),
+    filter: (q) => q.metadata.tenantId.eq("acme"),
     retryPolicy: {
       timeoutSeconds: 120,
       maxAttempts: 3,
@@ -2287,7 +2734,7 @@ When a `Date` is provided, the receive blocks until a message arrives or the abs
 
 **Rename `StepErrorAccessor` → `AttemptAccessor`:** shared interface for lazy access to per-attempt records across steps, queue dead-lettered messages, topic consumer failures, and request handler failures.
 
-**Introduce `Failure` (base) and `Attempt extends Failure` (with `attempt: number`).** The previous single `StepExecutionError` type leaked the step origin into a type shared across all attempt-bearing contexts and conflated _captured throws with no retry context_ (what a mode-`"any"` branch surfaces — a single throw, no attempt number) with _captured throws inside a retried operation_ (what a step / queue handler / request handler / topic consumer surfaces — one record per attempt with a 1-indexed number). Splitting into `Failure` (the base) and `Attempt extends Failure` (the retried-operation extension) makes both contexts type-correct without losing field reuse.
+**Introduce `Failure` (base) and `Attempt extends Failure` (with `attempt: number`).** The previous single `StepExecutionError` type leaked the step origin into a type shared across all attempt-bearing contexts. Splitting into `Failure` (the base shape — a single captured throw with no attempt context) and `Attempt extends Failure` (a retried-operation record with a 1-indexed `attempt`) keeps the field set reusable across contexts: `Attempt` is what `AttemptAccessor` exposes for steps, queue handlers, request handlers, and topic consumers; `Failure` is the bare data shape underneath.
 
 **Introduce `AttemptError` class:** a throwable `Error` subclass that handlers can use to attach structured, JSON-serializable details to failures. When the engine catches an `AttemptError`, it persists `type`, `message`, and `details` directly. When it catches a plain `Error`, it extracts `message` and `constructor.name`. When it catches any other thrown value, it best-efforts `String(thrown)` for the message. This means all error fields on `Failure` (and therefore `Attempt`) are nullable — JavaScript's `throw` can throw anything, including values with no message, no type, and no details.
 
@@ -2318,7 +2765,7 @@ class AttemptError extends Error {
 
 ### Engine extraction rules
 
-The same rules apply to producing both `Failure` records (for any throw captured by a mode-`"any"` branch — see Part 4) and `Attempt` records (for steps, queue handlers, request handlers, topic consumers — one row per attempt). The only difference between the two contexts is that `Attempt` adds the `attempt: number` (1-indexed) on top of the `Failure` shape.
+The same rules apply when producing `Attempt` records (for steps, queue handlers, request handlers, topic consumers — one row per attempt). `Attempt` is `Failure` plus a 1-indexed `attempt: number`.
 
 | Thrown value             | `type`                                                                                           | `message`        | `details`           |
 | ------------------------ | ------------------------------------------------------------------------------------------------ | ---------------- | ------------------- |
@@ -2330,7 +2777,7 @@ The same rules apply to producing both `Failure` records (for any throw captured
 
 ### `Failure` (base record — captured single throw)
 
-A plain data record representing a single captured throw. Used by mode-`"any"` branches at consumption points (`match`, `join`, `.all`/`.first`/`.atLeast` `err.details.failed[K]` slots).
+A plain data record representing a single captured throw. Used as the base shape that `Attempt` extends; not exposed as a workflow-facing throw type in the new error model.
 
 ```typescript
 interface Failure {
@@ -2516,7 +2963,15 @@ type StartWorkflowOptions<
   : { args: TArgs; idempotencyKey: string } & ScheduledDeliveryOptions;
 ```
 
-The same conditionality applies to `ctx.childWorkflows.X(startOpts, opts?)` for attached children and `ctx.childWorkflows.X.startDetached(...)` for detached children.
+This applies to `client.workflows.<def>.start(...)` (root workflows) and `ctx.childWorkflows.X.startDetached(...)` (detached children) — both cases where the workflow is globally addressable and needs an idempotency key.
+
+It does **not** apply to attached children. Attached children are not globally addressable (Part 5) and do not have an idempotency key. Their start options are simply:
+
+```typescript
+type AttachedChildWorkflowStartOptions<TArgs> = { args: TArgs } & ScheduledDeliveryOptions;
+```
+
+No `idempotencyKey` field, no `idempotencyKeyFactory` interaction.
 
 ---
 
@@ -2584,19 +3039,153 @@ For most schemas (no transforms), `InferInput` and `InferOutput` are identical a
 
 ---
 
+## Part 19: Connection and Transaction Model
+
+### Goal
+
+Every read or write operation against the engine's durable state must be composable into a single database transaction so that operators can read state, decide on actions, and apply those actions as one atomic unit. This is the foundation that lets `findMany` + `skip` + `findUnique` flow safely through one transaction without race windows.
+
+### Two opaque types
+
+```typescript
+type IWorkflowConnection;
+type IWorkflowTransaction;
+
+type TxOrConn = IWorkflowTransaction | IWorkflowConnection;
+```
+
+`IWorkflowConnection` represents a database connection (auto-commit, no transaction scope). `IWorkflowTransaction` represents a transaction within a connection. Both are opaque to user code; the engine acquires and manages them through the configured driver.
+
+The client exposes:
+
+```typescript
+interface NataliaClient {
+  // Acquire a connection. Most operations don't need this — they use a default
+  // connection from the engine's pool. Useful when an operator wants to pin
+  // multiple operations to the same connection without a transaction.
+  connection(): Promise<IWorkflowConnection & AsyncDisposable>;
+
+  // Begin a transaction. Returns a disposable handle that commits on success
+  // or rolls back on error.
+  transaction(): Promise<IWorkflowTransaction & AsyncDisposable>;
+  transaction(opts: { connection: IWorkflowConnection }):
+    Promise<IWorkflowTransaction & AsyncDisposable>;
+}
+```
+
+Both `IWorkflowConnection` and `IWorkflowTransaction` are `AsyncDisposable`, so `await using` cleans them up automatically:
+
+```typescript
+await using tx = await client.transaction();
+// ... perform reads and writes through tx ...
+await tx.commit();
+```
+
+If the block exits via exception, the disposer rolls back automatically.
+
+### Normative rule: every IO method accepts `txOrConn?`
+
+**Every** IO method in the public API exposes an optional `txOrConn?: IWorkflowTransaction | IWorkflowConnection` as part of its options bag. When provided, the operation runs through that connection or transaction. When omitted, the engine uses a default connection from its pool.
+
+This applies uniformly to:
+
+- `client.workflows.<def>.start(opts)` — `opts.txOrConn?`.
+- `client.workflows.<def>.findUnique`, `.findMany`, `.count` — second `opts` argument carries `txOrConn?`.
+- `client.workflows.<def>.get(...)` — synchronous handle constructor; the *handle's* methods carry `txOrConn?`, not `.get` itself.
+- All workflow-handle methods (`fetchRow`, `sigkill`, `sigterm`, `skip`, `attributes.X.get`, `streams.X.read`, `events.X.wait`, `channels.X.send`, `halts.list`, etc.).
+- All compensation-block-handle methods (`fetchRow`, `skip`, primitive accessors).
+- All request-compensation-handle methods.
+- All attached-child-workflow external-handle methods.
+- All client-level dead-letter, request-resolution, and primitive subscription APIs.
+- Halt records, search queries, count queries.
+
+Non-IO methods do **not** take `txOrConn`:
+
+- `.get(id)` (synchronous, no I/O).
+- Iterator methods on `FindManyResult` (the `for await` triggers I/O via the underlying iterator, which inherits the `txOrConn` passed to `findMany`).
+- Constructor-style helpers (e.g., the type-only handle types).
+
+### Scope rules
+
+A workflow body's `ctx.*` calls do **not** accept `txOrConn` — they run inside the engine's durable execution transaction (the batch commit, see Part 1.4). Workflow-internal IO is scheduled by the engine, not by user code.
+
+The `txOrConn?` parameter is exclusively for **client-side / operator-facing** IO: the client API and the external workflow handles. Inside workflow logic, transaction scoping is the engine's responsibility.
+
+### Worked example: read-decide-act in one transaction
+
+```typescript
+await using tx = await client.transaction();
+
+// 1. Read: find halted bookings with prefetched args.
+const halted = await client.workflows.processOrder.findMany(
+  (q) => q.row.status.eq("halted").and(q.row.createdAt.lt(sevenDaysAgo)),
+  { fields: { id: true, args: true }, txOrConn: tx },
+);
+
+// 2. Decide + act: skip each with an operator-supplied result, all in tx.
+for await (const wf of halted) {
+  await wf.skip(
+    { orderId: wf.row.args.orderId, status: "expired-cleanup" },
+    { strategy: "sigkill", txOrConn: tx },
+  );
+}
+
+// 3. Commit: everything atomic, or nothing happens.
+await tx.commit();
+```
+
+The same pattern applies to compensation-block sweeps, attached-child inspection batches, request-compensation resolution flows, and any other operator-facing workflow.
+
+### Composing across multiple entities
+
+A single transaction can compose operations across different entity kinds because everything goes through the same `txOrConn`:
+
+```typescript
+await using tx = await client.transaction();
+
+const order = client.workflows.processOrder.get("order-jan-2027");
+const orderRow = await order.fetchRow({ status: true, args: true }, { txOrConn: tx });
+
+if (orderRow.status === "unique" && orderRow.value.status === "halted") {
+  // Read related compensations in same tx.
+  for await (const block of order.compensations.bookHotel.findMany(
+    (q) => q.row.status.eq("halted"),
+    { txOrConn: tx },
+  )) {
+    await block.skip({ kind: "abandoned" }, { txOrConn: tx });
+  }
+  // Then skip the parent in the same tx.
+  await order.skip(
+    { orderId: orderRow.value.args.orderId, status: "force-cleared" },
+    { strategy: "sigkill", txOrConn: tx },
+  );
+}
+
+await tx.commit();
+```
+
+### Implementation note: `txOrConn` validation
+
+The engine validates `txOrConn` against the configured driver at runtime: a transaction or connection from a different driver / engine instance is rejected with a clear error. This prevents accidental cross-engine transaction passing.
+
+---
+
 ## Summary of Public API Changes
 
 ### New `defineWorkflow` options
 
 ```typescript
 defineWorkflow({
+  channels:              { [name: string]: JsonSchemaConstraint },
+  streams:               { [name: string]: JsonSchemaConstraint },
+  events:                { [name: string]: true },
+  attributes:            { [name: string]: JsonSchemaConstraint },
   queues:                { [name: string]: QueueDefinition<M> },
   requests:              { [name: string]: RequestDefinition<Req, Res> },
   topics:                { [name: string]: TopicDefinition<R, Meta> },
-  attributes:            { [name: string]: JsonSchemaConstraint },
   errors:                { [name: string]: JsonSchemaConstraint | true },
-  branches:              { [name: string]: BranchDefinition },
   steps:                 { [name: string]: StepDefinition },
+  childWorkflows:        { [name: string]: WorkflowDefinition },
   idempotencyKeyFactory: (args: InferOutput<TArgs>) => string,
 });
 ```
@@ -2605,12 +3194,12 @@ Removed or replaced from current workflow definitions:
 
 - `state` as a workflow-level mutable state factory.
 - `beforeCompensate` / `afterCompensate` hooks.
-- inline branch declarations inside `ctx.scope`.
+- inline branch closures inside `ctx.scope`.
+- `defineWorkflow.branches` and `ctx.branches.X(...)` — concurrent isolated work is expressed via child workflows orchestrated under `ctx.scope` / `ctx.all` / etc.
 
 New workflow-definition surface:
 
 - `errors` declares typed workflow business failures.
-- `branches` declares reusable isolated branch definitions.
 
 ### `defineStep` changes
 
@@ -2622,14 +3211,16 @@ defineStep({
   execute: ({ signal }, args) => Promise<Result>,
   retryPolicy?: RetryPolicyOptions,
   compensation?: {
-    channels?:   { [name: string]: JsonSchemaConstraint },
-    streams?:    { [name: string]: JsonSchemaConstraint },
-    events?:     { [name: string]: true },
-    attributes?: { [name: string]: JsonSchemaConstraint },
-    steps?:      { [name: string]: NonCompensableStepDefinition },
-    requests?:   { [name: string]: NonCompensableRequestDefinition },
-    branches?:   { [name: string]: BranchDefinition },
-    result?:     JsonSchemaConstraint,
+    channels?:       { [name: string]: JsonSchemaConstraint },
+    streams?:        { [name: string]: JsonSchemaConstraint },
+    events?:         { [name: string]: true },
+    attributes?:     { [name: string]: JsonSchemaConstraint },
+    steps?:          { [name: string]: NonCompensableStepDefinition },
+    requests?:       { [name: string]: NonCompensableRequestDefinition },
+    queues?:         { [name: string]: QueueDefinition },
+    topics?:         { [name: string]: TopicDefinition },
+    childWorkflows?: { [name: string]: WorkflowDefinition },
+    result?:         JsonSchemaConstraint,
     undo: (ctx, args, info) => Promise<Result>,
   },
 });
@@ -2641,8 +3232,8 @@ defineStep({
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `ctx.steps.X(args, opts?)`                                                                                                                                   | Returns an awaitable entry. No builder chain. Timeout via `{ timeout }`.                                                                                     |
 | `ctx.requests.X(payload, opts?)`                                                                                                                             | Returns an awaitable entry. Priority and timeout via options.                                                                                                |
-| `ctx.childWorkflows.X(startOpts, opts?)`                                                                                                                     | Attached child workflow entry; always returns success/failure union, timeout adds timeout variant.                                                           |
-| `ctx.branches.X(args, opts?)`                                                                                                                                | Creates an unstarted branch entry from a predefined branch. Timeout via `{ timeout }` adds a timeout variant to that branch's result union.                  |
+| `ctx.childWorkflows.X(startOpts, opts?)`                                                                                                                     | Attached child workflow entry. Awaitable for the success/failure union (timeout adds a timeout variant) AND exposes `channels.X.send` and `idempotencyKey`.   |
+| `ctx.childWorkflows.X.startDetached(opts)`                                                                                                                   | Buffered start. Returns `ForeignWorkflowHandle<W>` (`channels.X.send`, `idempotencyKey`; not awaitable from the parent).                                      |
 | `ctx.errors.X(message, details?)`                                                                                                                            | Factory functions for the current definition level's declared errors.                                                                                        |
 | `ctx.queues.X.enqueue(payload, opts?)`                                                                                                                       | Sync buffered operation.                                                                                                                                     |
 | `ctx.topics.X.publish(payload, opts?)`                                                                                                                       | Sync buffered operation.                                                                                                                                     |
@@ -2673,13 +3264,17 @@ Removed context APIs:
 ### New exports
 
 - `defineQueue`, `defineRequest`, `defineTopic`.
-- `SearchQueryNode`, `SearchQuery`.
+- `SearchQueryNode`, `SearchQuery`, `SearchSort`.
 - `DeadLetterRecordFields`, `DeadLetterSort`, `DeadLetterCursor`, `DeadLetteredMessage`, `DeadLetterHandle`.
 - `AttemptAccessor`, `Failure`, `Attempt`, `AttemptError`.
 - `ExplicitError`, `ErrorValue`, `FailureInfo`.
-- `CompensationInfo`, `CompensationBlockStatus`, `CompensationBlockInstanceId`, `FindUniqueResult`.
+- `CompensationInfo`, `CompensationBlockStatus`, `CompensationId`, `FindUniqueResult`, `FindManyResult`, `FindManyOptions`, `FindUniqueOptions`, `CountOptions`.
+- `FieldsMask`, `ProjectedKeys`, `HandleWithRow`, `FetchableHandle`.
+- `WorkflowRow`, `WorkflowQueryNamespaces`, `CompensationBlockRow`, `CompensationBlockQueryNamespaces`, `RequestCompensationRow`, `RequestCompensationQueryNamespaces`.
+- `RowNamespaceRecord`, `SearchNamespaceRecord`.
 - `RequestCompensationInfo`, `RequestCompensationStatus`, `RequestCompensationInstanceId`.
-- `StepBoundary`, `MAIN_BRANCH`, `BranchPathItem`, `MANUAL`, `UnrecoverableError`.
+- `StepBoundary`, `MANUAL`, `UnrecoverableError`.
+- `ForeignWorkflowHandle`, `AttachedChildWorkflowEntry`, `AttachedChildWorkflowHandle`, `AttachedChildWorkflowExternalHandle`, `AttachedChildWorkflowId`.
 - `Unsubscribe`.
 - `TopicRecord`.
 - `RegisterTopicConsumerError`, `RegisterTopicConsumerErrorEvent`, `TopicConsumerAlreadyActiveError`, `TopicConsumerConsumeErrorEvent`.
@@ -2702,20 +3297,79 @@ Removed context APIs:
 #### Compensation
 
 - Compensation moves from call sites to `defineStep.compensation` and `defineRequest.compensation`.
-- Step compensation invocations become queryable compensation block instances with per-instance primitive state.
+- Step compensation invocations become queryable compensation block instances. At the storage layer they are workflow rows; at the public API layer they remain addressable via `workflowInstance.compensations.<step>` with their own per-instance primitives.
 - Request compensation invocations are lightweight observable entities with manual-mode support.
 - Compensation reports typed results by return value, not by throwing declared compensation errors.
-- Compensation block halts are skippable per instance.
+- Compensation block halts are skippable per instance via `skip(result)` (no opts, no strategy choice).
 - Workflow-level compensation hooks and ad hoc `ctx.addCompensation` cleanup registration are removed.
 
-#### Branches and errors
+#### Operator actions on workflows
 
-- Branches are predefined with serializable args and results.
-- Inline scope branch closures are removed.
-- `errors` is a new schema-declared failure surface for workflow and branch definitions.
-- Branches declare local `errors` and receive local `ctx.errors`.
-- Branches cannot access workflow-level errors.
-- Branch invocations are externally queryable and skippable.
+- Three terminal-action verbs are exposed on globally addressable workflows (root execution + detached children): `sigkill()` (abandon), `sigterm()` (cancel + run compensation), and `skip(result, { strategy? })` (set result + terminate via the chosen strategy; default `"sigterm"`).
+- `skip` is the only result-setting verb; `sigkill` and `sigterm` do not set a result.
+- Compensation block instances expose only `skip(result)` — single verb, no opts. The result is required (or zero-arg only when the compensation has no `result` schema, i.e. `TResult = void`). There is no separate `sigkill`; for compensation, `skip` IS abandonment with an operator-supplied result. They cannot be `sigterm`-ed.
+- Attached child workflows expose **no** terminal-action verbs. Operators inspect them but do not terminate them. Their lifecycle is owned by the parent workflow body.
+- The base compensation workflow is engine-managed and not exposed to operators.
+
+#### Attached vs detached child workflows
+
+- Attached children have no `idempotencyKey` and are not globally addressable. They appear only via `workflowInstance.attachedChildWorkflows.<name>.findUnique/findMany`. The returned handle is `AttachedChildWorkflowExternalHandle<W>`: read-only introspection plus `channels.X.send`, no terminal-action verbs.
+- Detached children are real root workflows with an `idempotencyKey`, addressable both globally (`client.workflows.<def>.findUnique/findMany`) and through `workflowInstance.detachedChildWorkflows.<name>` as a parent-scoped convenience. The returned handle is the standard `WorkflowHandleExternal<W>`.
+- Global `client.workflows.<def>.findMany(...)` queries filter out workflow rows where `attached = TRUE`. Attached children never appear in the global view.
+
+#### Search and introspection unified
+
+- Every queryable namespace shares the same surface: `.get(id)` → handle (synchronous, query-grounding, no fetch); `findUnique(query, opts?)` → `Promise<FindUniqueResult<Handle>>` (predicate-based, asserts cardinality); `findMany(query, opts?)` → `FindManyResult<Handle>` (awaitable + async-iterable); `count(query, opts?)` → `Promise<number>`.
+- `findUnique` does not have an id overload. `.get(id)` is the identity-based path; `findUnique(query)` is the predicate-based path. They have different shapes because `.get` does no I/O and `findUnique` does.
+- `FindManyResult<T>` is `PromiseLike<readonly T[]> & AsyncIterable<T>`. Awaiting materializes the array; iterating streams handles lazily with internal pagination.
+- `FindManyOptions<TNamespaces>` is parameterized by the predicate's namespaces, so sort paths get the same type-level safety as filter paths (`SearchSort<TNamespaces>` from Part 9 — only homogeneous comparable paths are sortable).
+- Subset handles (`CompensationBlockSubsetHandle`, `RequestCompensationSubsetHandle`) are removed. Bulk operator actions are expressed by mapping over the iterable handles, with each handle producing its own per-row result.
+- `client.workflows.<def>` adds `findUnique(query, opts?)`, `findMany(query, opts?)`, `count(query, opts?)` alongside `.start(...)` and `.get(idempotencyKey | args)`. `findMany` excludes attached children automatically.
+- `workflowInstance.compensations.<step>`, `workflowInstance.attachedChildWorkflows.<name>`, and `workflowInstance.requestCompensations.<request>` now expose `.get(id)` (with their respective branded ids) in addition to `findUnique` / `findMany` / `count`.
+- `client.workflows.<def>.get(args)` is a new overload available when the workflow declares `idempotencyKeyFactory`. The engine derives the key from args at call time. The same overload is added to `ctx.foreignWorkflows.<W>.get(...)` inside workflow logic and to `workflowInstance.detachedChildWorkflows.<name>.get(...)`.
+
+#### Row prefetch and `fetchRow`
+
+- Per-field accessor methods on unique handles (`status()`, `args()`, `result()`, `info()`, `payload()`, `halt()`) are removed. They caused N+1 round trips and were ergonomically bad.
+- Every fetchable handle exposes `fetchRow(fields?, opts?)` which returns a row snapshot. With `fields`, only the listed columns are projected (`Pick<Row, keys>`); without, the whole row.
+- `findMany` / `findUnique` / `get` accept a `fields` option that prefetches the listed columns into a `.row` field on each yielded handle. Handles obtained without `fields` have no `.row` field at all (type-level enforcement).
+- `.fetchRow` always re-fetches; it does not consult or modify `.row`. The prefetched `.row` is a snapshot at query time; `.fetchRow` is a fresh read on demand.
+- JSONB columns (`args`, `result`, `metadata`, `info`, `payload`) are first-class row fields for `fetchRow` / prefetch — they are returned as whole opaque values.
+- `RequestCompensationUniqueHandle.attempts()` is preserved as a separate method (it returns an `AttemptAccessor`, not a row column).
+
+#### Query namespaces renamed
+
+- `q.engine` → `q.row` everywhere. The flat scalar columns of an entity's row.
+- JSONB columns are first-class top-level namespaces: `q.args`, `q.result`, `q.metadata`, `q.info`, `q.payload`, `q.error`. Each has its own path machinery for filtering and sorting.
+- `q.metadata` only exists on entities that have user-attached metadata (workflows, topic records). It is no longer used for engine-managed row columns.
+- For workflows, `args` and `result` are no longer separate top-level namespaces flattening the workflow's args/result schemas — they remain top-level namespaces but the `row` namespace also contains them as opaque fields for fetch/prefetch.
+
+#### Connection and transaction model
+
+- `IWorkflowConnection` and `IWorkflowTransaction` are opaque types exposed via `client.connection()` and `client.transaction()`. Both are `AsyncDisposable`.
+- **Every IO method** accepts an optional `txOrConn?: IWorkflowTransaction | IWorkflowConnection` in its options bag. This applies uniformly to client-level methods, workflow-handle methods, compensation-handle methods, attached-child external-handle methods, request-compensation-handle methods, and primitive accessors.
+- Workflow-internal `ctx.*` calls do not accept `txOrConn` — they run inside the engine's batch-commit transaction (Part 1.4).
+- The unified shape lets operators read state, decide on actions, and apply those actions in one atomic transaction across multiple entity kinds. See Part 19 for the normative rule and worked examples.
+
+#### Halts
+
+- A single `halt` table covers all workflow kinds. `compensation_block_halt` is removed.
+- Halt status is `'pending' | 'resolved' | 'skipped'`.
+- Halt resolution paths: patch + replay (auto-resolves), or `skip(...)` on the owning workflow (transitions halts to `'skipped'`). `sigkill` / `sigterm` leave halts as `'pending'` (or terminal-archived) but transition the workflow row to its terminal status. Attached children halt normally but do not have operator-driven resolution; the parent body's behaviour resolves them.
+
+#### Branches removed
+
+- The `branches` field on `defineWorkflow` and `defineStep.compensation` is removed.
+- `ctx.branches.X(...)` is removed. Concurrent isolated work is modelled with child workflows orchestrated through `ctx.scope` / `ctx.all` / etc.
+- `MAIN_BRANCH`, `BranchPathItem`, `BranchEntry`, `BranchHandle`, `BranchAccessor`, `BranchInstanceStatus`, `BranchHaltStatus`, `BranchErrors`, and the `start_branch` step type are removed.
+- The `branch` database table is removed; the workflow body's sequential execution is implicit in step rows under `workflow.id`.
+- Branch-instance external query handles (`workflowInstance.branches.X.findUnique(...)`, `.findMany(...)`) are removed; the equivalent introspection for child workflows reuses existing handle types.
+
+#### Errors
+
+- `errors` is a new schema-declared failure surface for workflow definitions only (declared on `defineWorkflow`).
+- `ctx.errors` exists on the workflow body context and on scope-body contexts (which share the workflow's errors).
+- Compensation `undo` callbacks have no `ctx.errors`; they report typed outcomes through the optional `result` schema.
 
 #### Call sites
 
@@ -2743,20 +3397,12 @@ Removed context APIs:
 
 #### Engine and runtime
 
-- Branch interleaving order is implementation-defined and must not affect workflow logic.
+- The workflow body is a single sequential execution path; concurrency comes only from dispatched entries (steps, requests, child workflows). There is no user-facing concurrent execution path within a workflow body.
+- Compensation is unified with execution at the storage layer: a compensation block instance is a regular workflow row (a child of the execution workflow's sibling base compensation workflow). The schema collapses to `workflow / step / promise / halt` plus the workflow primitive tables. There are no parallel `compensation_block_*` tables.
 - Buffered operations remain synchronous and are committed in batch transactions.
 - `receiveNowait` and `patch` trigger buffer flushes before reading committed state.
 - Request handler `MANUAL` return transitions directly to manual mode.
 - Handler retry policies use seconds for durable persisted retry configuration; runtime retry policies use milliseconds.
 - Search range comparisons and sorting are restricted to homogeneous comparable fields.
 
-### Connection and transaction model
 
-Two opaque types:
-
-```typescript
-type IWorkflowConnection;
-type IWorkflowTransaction;
-```
-
-Client and engine-level CRUD APIs accept optional `txOrConn?: IWorkflowTransaction | IWorkflowConnection`. Workflow logic (`ctx.*`) runs inside the engine's durable execution transaction; blocking operations and subscriptions are exempt.

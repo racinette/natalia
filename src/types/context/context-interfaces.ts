@@ -27,11 +27,35 @@ export type ErrorFactories<TErrors extends ErrorDefinitions> = {
       : never;
 };
 
+/**
+ * Branch context.
+ *
+ * A branch is a workflow-scoped concurrent unit of work. Its `ctx` inherits
+ * the parent workflow's full primitive plane (channels, streams, events) and
+ * dependency surface (steps, requests, child workflows, foreign workflows,
+ * branches recursion, patches, rng). The single difference between a branch
+ * body and a workflow body is `errors`: a branch's `ctx.errors` exposes only
+ * the branch's own declared errors (per `BranchErrorMode`), never the
+ * parent workflow's errors. Cross-level error access is impossible by design.
+ *
+ * The 11 primitive/dependency type parameters mirror `WorkflowContext`'s
+ * parameters one-for-one. `TErrors` replaces the workflow's `TErrors`.
+ */
 export interface BranchContext<
+  TChannels extends ChannelDefinitions = Record<string, never>,
+  TStreams extends StreamDefinitions = Record<string, never>,
+  TEvents extends EventDefinitions = Record<string, never>,
   TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
+  TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TBranches extends BranchDefinitions = Record<string, never>,
+  TPatches extends PatchDefinitions = Record<string, never>,
+  TRng extends RngDefinitions = Record<string, never>,
   TErrors extends BranchErrorMode = Record<string, never>,
-> {
+  TScopePath extends ScopePath = [],
+> extends BaseContext<TChannels, TStreams, TEvents, TPatches, TRng>,
+    ExecutionResolver {
   readonly steps: {
     [K in keyof TSteps]: TSteps[K] extends StepDefinition<
       infer TArgs,
@@ -50,7 +74,115 @@ export interface BranchContext<
       ? RequestAccessor<TPayload, StandardSchemaV1.InferOutput<TResponseSchema>>
       : never;
   };
+  readonly childWorkflows: {
+    [K in keyof TChildWorkflows]: ChildWorkflowAccessor<
+      TChildWorkflows[K],
+      // Branches don't have a separate compensation context; reuse the
+      // workflow's compensation context shape via the workflow type
+      // parameters. (Branches inside compensation get a different
+      // BranchContext — see compensation-block branches below.)
+      CompensationContext<
+        TChannels,
+        TStreams,
+        TEvents,
+        TSteps,
+        TRequests,
+        TChildWorkflows,
+        TForeignWorkflows,
+        TPatches,
+        TRng
+      >
+    >;
+  };
+  readonly foreignWorkflows: {
+    [K in keyof TForeignWorkflows]: ForeignWorkflowAccessor<
+      TForeignWorkflows[K]
+    >;
+  };
+  /** Branch-local business error factories — never the parent workflow's. */
   readonly errors: ErrorFactories<ExplicitBranchErrorDefinitions<TErrors>>;
+  /** Sibling branches on the parent workflow, accessible for nested invocation. */
+  readonly branches: {
+    [K in keyof TBranches]: BranchAccessor<
+      TBranches[K],
+      TScopePath,
+      ExecutionRoot
+    >;
+  };
+
+  // Branch bodies are themselves orchestration code; they expose the same
+  // structured-concurrency surface as workflow bodies (scope/all/first/etc.).
+  scope<Name extends string, E, R>(
+    name: ScopeNameArg<TScopePath, Name>,
+    entries: E,
+    callback: (
+      ctx: WorkflowConcurrencyContext<
+        TChannels,
+        TStreams,
+        TEvents,
+        TSteps,
+        TRequests,
+        TChildWorkflows,
+        TForeignWorkflows,
+        TPatches,
+        TRng,
+        AppendScopeName<TScopePath, Name>
+      >,
+      handles: ScopeHandles<E, AppendScopeName<TScopePath, Name>, ExecutionRoot>,
+    ) => Promise<R>,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<R>;
+
+  all<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
+    entries: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<
+    | { ok: true; result: ScopeSuccessResults<E> }
+    | { ok: false; error: SomeBranchesFailed<E> }
+  >;
+
+  first<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
+    entries: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<
+    | { ok: true; result: FirstResult<E> }
+    | { ok: false; error: NoBranchCompleted<E> }
+  >;
+
+  atLeast<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
+    count: number,
+    entries: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<
+    | { ok: true; result: KeyedSuccess<E>[] }
+    | { ok: false; error: QuorumNotMet<E> }
+  >;
+
+  atMost<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
+    count: number,
+    entries: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<KeyedSuccess<E>[]>;
+
+  some<Name extends string, E>(
+    name: ScopeNameArg<TScopePath, Name>,
+    entries: E,
+    ..._check: ScopeEntryValidation<E>
+  ): AwaitableEntry<KeyedSuccess<E>[]>;
+
+  join<H extends BranchEntry<any, any, ExecutionRoot>>(
+    handle: H,
+    ..._check: IsJoinableByPath<H, TScopePath>
+  ): Promise<JoinResult<H>>;
+  join<H extends BranchEntry<any, any, ExecutionRoot>>(
+    handle: H,
+    opts: JoinOptions,
+    ..._check: IsJoinableByPath<H, TScopePath>
+  ): Promise<JoinResult<H> | JoinTimeoutResult>;
 }
 
 // =============================================================================

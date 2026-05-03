@@ -135,7 +135,6 @@ export * from "./types";
 
 // Public API - Definition helpers
 export {
-  defineBranch,
   defineQueue,
   defineRequest,
   defineStep,
