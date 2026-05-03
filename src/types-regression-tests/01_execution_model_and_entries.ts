@@ -7,6 +7,35 @@ import type {
   WorkflowEntry,
 } from "../types";
 
+// =============================================================================
+// REMOVED PUBLIC TYPES — must NOT be exported from "../types".
+//
+// Each of the following imports is paired with a `@ts-expect-error`. If any
+// type re-emerges on the public surface, the directive becomes unused and
+// fails the build, flagging the regression at the import site.
+// =============================================================================
+
+// @ts-expect-error DurableHandle is no longer part of the public type surface
+import type { DurableHandle as _RemovedDurableHandle } from "../types";
+// @ts-expect-error AtomicResult is no longer part of the public type surface
+import type { AtomicResult as _RemovedAtomicResult } from "../types";
+// @ts-expect-error BlockingResult is no longer part of the public type surface
+import type { BlockingResult as _RemovedBlockingResult } from "../types";
+// @ts-expect-error StepCall is no longer part of the public type surface
+import type { StepCall as _RemovedStepCall } from "../types";
+// @ts-expect-error WorkflowCall is no longer part of the public type surface
+import type { WorkflowCall as _RemovedWorkflowCall } from "../types";
+// @ts-expect-error WorkflowCallResult is no longer part of the public type surface
+import type { WorkflowCallResult as _RemovedWorkflowCallResult } from "../types";
+// @ts-expect-error ScopeCall is no longer part of the public type surface
+import type { ScopeCall as _RemovedScopeCall } from "../types";
+// @ts-expect-error FirstCall is no longer part of the public type surface
+import type { FirstCall as _RemovedFirstCall } from "../types";
+// @ts-expect-error CompensationStepCall is no longer part of the public type surface
+import type { CompensationStepCall as _RemovedCompensationStepCall } from "../types";
+// @ts-expect-error CompensationWorkflowCall is no longer part of the public type surface
+import type { CompensationWorkflowCall as _RemovedCompensationWorkflowCall } from "../types";
+
 type Assert<T extends true> = T;
 type IsAny<T> = 0 extends 1 & T ? true : false;
 type IsEqual<A, B> =
@@ -143,34 +172,7 @@ export const executionModelAcceptanceWorkflow = defineWorkflow({
 });
 
 // =============================================================================
-// 4. The legacy call-builder types must NOT be exported from "../types".
-//
-// `@ts-expect-error` here proves the type was successfully removed from the
-// public surface. If any of these become undiagnosed (i.e. the import
-// succeeds), the directive fails — flagging that the type re-emerged.
-// =============================================================================
-
-// @ts-expect-error DurableHandle is no longer part of the public type surface
-type _NoDurableHandle = import("../types").DurableHandle<unknown>;
-// @ts-expect-error AtomicResult is no longer part of the public type surface
-type _NoAtomicResult = import("../types").AtomicResult<unknown>;
-// @ts-expect-error StepCall is no longer part of the public type surface
-type _NoStepCall = import("../types").StepCall<unknown>;
-// @ts-expect-error WorkflowCall is no longer part of the public type surface
-type _NoWorkflowCall = import("../types").WorkflowCall<unknown>;
-// @ts-expect-error WorkflowCallResult is no longer part of the public type surface
-type _NoWorkflowCallResult = import("../types").WorkflowCallResult<unknown>;
-// @ts-expect-error ScopeCall is no longer part of the public type surface
-type _NoScopeCall = import("../types").ScopeCall<unknown>;
-// @ts-expect-error FirstCall is no longer part of the public type surface
-type _NoFirstCall = import("../types").FirstCall<unknown, Record<string, never>>;
-// @ts-expect-error CompensationStepCall is no longer part of the public type surface
-type _NoCompensationStepCall = import("../types").CompensationStepCall<unknown>;
-// @ts-expect-error CompensationWorkflowCall is no longer part of the public type surface
-type _NoCompensationWorkflowCall = import("../types").CompensationWorkflowCall<unknown>;
-
-// =============================================================================
-// 5. The legacy builder methods must NOT exist on entries.
+// 4. The legacy builder methods must NOT exist on entries.
 //
 // `@ts-expect-error` proves the surface is gone.
 // =============================================================================

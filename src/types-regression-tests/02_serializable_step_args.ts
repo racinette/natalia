@@ -8,6 +8,15 @@ type IsEqual<A, B> =
     ? true
     : false;
 
+// =============================================================================
+// SCHEMA-BACKED STEP DEFINITION
+//
+// Per REFACTOR.MD Part 18, every step has an `args` schema and a `result`
+// schema. The `execute` callback receives the *decoded* args
+// (`InferOutput<TArgs>`); the call site accepts the *encoded* args
+// (`InferInput<TArgs>`).
+// =============================================================================
+
 const SerializableStepArgs = z.object({
   destination: z.string(),
   passengerId: z.string(),
@@ -43,6 +52,10 @@ const bookSerializableFlight = defineStep({
   },
 });
 
+// =============================================================================
+// OLD SHAPES REJECTED
+// =============================================================================
+
 defineStep({
   name: "oldShapeRejected",
   args: z.object({ id: z.string() }),
@@ -62,6 +75,15 @@ defineStep({
     return { ok: true };
   },
 });
+
+// =============================================================================
+// CALL-SITE INPUT/OUTPUT DISCIPLINE
+//
+// - Call sites accept `InferInput<TArgs>` (encoded).
+// - `await` resolves to `InferOutput<TResult>` (decoded).
+// - Positional call sites are rejected.
+// - Missing required props are rejected.
+// =============================================================================
 
 export const serializableStepArgsAcceptanceWorkflow = defineWorkflow({
   name: "serializableStepArgsAcceptance",
@@ -98,6 +120,10 @@ export const serializableStepArgsAcceptanceWorkflow = defineWorkflow({
     return booking;
   },
 });
+
+// =============================================================================
+// DEFINITION RETAINS THE ARGS/RESULT SCHEMAS FOR INTROSPECTION
+// =============================================================================
 
 type _DefinitionStoresArgsSchema = Assert<
   typeof bookSerializableFlight extends {
