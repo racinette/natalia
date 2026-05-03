@@ -2,7 +2,6 @@ import type { StandardSchemaV1 } from "./types/standard-schema";
 import type {
   StepDefinition,
   StepCompensationDefinition,
-  BranchDefinition,
   NonCompensableStepDefinitions,
   RequestDefinition,
   RequestCompensationConfig,
@@ -17,7 +16,6 @@ import type {
   StreamDefinitions,
   EventDefinitions,
   StepDefinitions,
-  BranchDefinitions,
   RequestDefinitions,
   WorkflowDefinitions,
   WorkflowDefinition,
@@ -29,10 +27,8 @@ import type {
   PatchDefinitions,
   RngDefinitions,
   WorkflowErrorDefinitions,
-  BranchErrorMode,
   Unsubscribe,
 } from "./types";
-import type { BranchDefinitionWithin } from "./types/definitions/branches";
 
 export { AttemptError } from "./types/results";
 
@@ -533,108 +529,19 @@ export function defineWorkflowHeader<
 /**
  * Define a workflow with full type safety.
  *
- * Workflows are durable, long-running processes that:
- * - Survive process restarts via replay
- * - Communicate via channels (messages)
- * - Output data via streams
- * - Signal milestones via events
- * - Execute durable operations via steps
+ * The body is a single sequential program. Concurrency comes from dispatched
+ * entries (steps, requests, attached child workflows) the body awaits.
+ * Structured-concurrency orchestration is provided by `ctx.scope`, `ctx.all`,
+ * `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.some`.
  *
- * **Callable thenable model:** Steps and child workflows are called directly and
- * return thenables (`StepCall<T>`, `WorkflowCall<T>`). Chain builder methods before
- * awaiting: `.compensate(cb)`, `.retry(policy)`, `.failure(cb)`, `.complete(cb)`.
- * Failure auto-terminates the workflow unless `.failure(cb)` is used.
+ * Compensation is declared on the step or request that owns the action; each
+ * invocation produces a per-instance compensation block.
  *
- * **Compensation:** Register per-step via `.compensate(cb)` builder.
- * `ctx.addCompensation(cb)` provides general-purpose cleanup.
- * All compensations run in LIFO order when the workflow fails.
+ * Errors are declared on `defineWorkflow.errors` and thrown via
+ * `ctx.errors.X(message, details?)`.
  *
- * **Structured concurrency:** All concurrent branches run as closures inside
- * `ctx.scope(name, ...)`. Collections (Array, Map) are supported for dynamic fan-out.
- * Branches with compensated steps are compensated on scope exit.
- *
- * **Failure handling:** Concurrency primitives (match, map) support
- * `{ complete, failure }` handlers for explicit failure recovery without
- * crashing the workflow.
- *
- * **Child workflows:** `ctx.childWorkflows.*` for structured invocation;
- * `ctx.foreignWorkflows.*` for message-only access to existing instances.
- * Use child call option `{ detached: true }` for fire-and-forget mode.
- *
- * @example
- * ```typescript
- * const travelWorkflow = defineWorkflow({
- *   name: 'travel',
- *   args: TravelArgs,
- *   steps: { bookFlight, cancelFlight, bookHotel, cancelHotel },
- *   result: z.object({ bookingId: z.string() }),
- *
- *   async execute(ctx, args) {
- *     // Call step directly — failure auto-compensates
- *     const flight = await ctx.steps
- *       .bookFlight(args.destination, args.customerId)
- *       .compensate(async (ctx) => {
- *         // No status check — compensation is always unconditional.
- *         // The step is idempotent; side effects may exist even on failure.
- *         await ctx.steps.cancelFlight(args.destination, args.customerId);
- *       });
- *
- *     // Concurrent with scope — closures as branches
- *     const hotel = await ctx.scope("BookHotel", {
- *       a: async () => ctx.steps
- *         .bookHotel(args.city, args.checkIn, args.checkOut)
- *         .compensate(async (ctx) => {
- *           await ctx.steps.cancelHotel(args.city, args.checkIn, args.checkOut);
- *         }),
- *     }, async (ctx, { a }) => await a);
- *
- *     return { bookingId: flight.id };
- *   },
- * });
- * ```
+ * See REFACTOR.MD for the authoritative public API.
  */
-type ValidatedBranchMap<
-  TChannels extends ChannelDefinitions,
-  TStreams extends StreamDefinitions,
-  TEvents extends EventDefinitions,
-  TSteps extends StepDefinitions,
-  TRequests extends RequestDefinitions,
-  TChildWorkflows extends WorkflowDefinitions,
-  TForeignWorkflows extends WorkflowDefinitions,
-  TPatches extends PatchDefinitions,
-  TRng extends RngDefinitions,
-  TBranches,
-> = {
-  [K in keyof TBranches]: BranchDefinitionWithin<
-    TChannels,
-    TStreams,
-    TEvents,
-    TSteps,
-    TRequests,
-    TChildWorkflows,
-    TForeignWorkflows,
-    TBranches extends BranchDefinitions ? TBranches : BranchDefinitions,
-    TPatches,
-    TRng,
-    TBranches[K] extends { args: infer TA }
-      ? TA extends JsonSchemaConstraint
-        ? TA
-        : JsonSchemaConstraint
-      : JsonSchemaConstraint,
-    TBranches[K] extends { result: infer TR }
-      ? TR extends JsonSchemaConstraint
-        ? TR
-        : JsonSchemaConstraint
-      : JsonSchemaConstraint,
-    TBranches[K] extends { errors?: infer TE }
-      ? TE extends BranchErrorMode
-        ? TE
-        : Record<string, never>
-      : Record<string, never>,
-    []
-  >;
-};
-
 export function defineWorkflow<
   TChannels extends ChannelDefinitions = Record<string, never>,
   TStreams extends StreamDefinitions = Record<string, never>,
@@ -643,18 +550,6 @@ export function defineWorkflow<
   TRequests extends RequestDefinitions = Record<string, never>,
   TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
   TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
-  TBranches extends ValidatedBranchMap<
-    TChannels,
-    TStreams,
-    TEvents,
-    TSteps,
-    TRequests,
-    TChildWorkflows,
-    TForeignWorkflows,
-    TPatches,
-    TRng,
-    TBranches
-  >,
   TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<void, void>,
@@ -670,7 +565,6 @@ export function defineWorkflow<
   requests?: TRequests;
   childWorkflows?: TChildWorkflows;
   foreignWorkflows?: TForeignWorkflows;
-  branches?: TBranches;
   patches?: TPatches;
   rng?: TRng;
   result?: TResultSchema;
@@ -700,8 +594,7 @@ export function defineWorkflow<
             TPatches,
             TRng,
             [],
-            TErrors,
-            TBranches
+            TErrors
           >;
           args: StandardSchemaV1.InferOutput<TArgs>;
           result: StandardSchemaV1.InferOutput<TResultSchema>;
@@ -734,8 +627,7 @@ export function defineWorkflow<
       TPatches,
       TRng,
       [],
-      TErrors,
-      TBranches
+      TErrors
     >,
     args: StandardSchemaV1.InferOutput<TArgs>,
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
@@ -747,7 +639,6 @@ export function defineWorkflow<
   TRequests,
   TChildWorkflows,
   TForeignWorkflows,
-  TBranches,
   TResultSchema,
   TArgs,
   TMetadata,
@@ -886,38 +777,6 @@ export function defineWorkflow<
     }
   }
 
-  // Validate branches — branches are inline literals on the workflow,
-  // so we validate the schemas/execute here. The map key is the branch name;
-  // there is no `name` field on a branch literal.
-  const branches = config.branches ?? ({} as TBranches);
-  if (config.branches !== undefined) {
-    if (typeof config.branches !== "object" || Array.isArray(config.branches)) {
-      throw new Error("branches must be an object");
-    }
-    for (const [name, branch] of Object.entries(config.branches)) {
-      if (!branch || typeof branch !== "object") {
-        throw new Error(`Branch '${name}' must be a valid branch definition`);
-      }
-      if (!isStandardSchema((branch as { args: unknown }).args)) {
-        throw new Error(`Branch '${name}' must have a standard args schema`);
-      }
-      if (!isStandardSchema((branch as { result: unknown }).result)) {
-        throw new Error(`Branch '${name}' must have a standard result schema`);
-      }
-      if (typeof (branch as { execute: unknown }).execute !== "function") {
-        throw new Error(`Branch '${name}' must have an execute function`);
-      }
-      const branchErrors = (branch as { errors?: unknown }).errors;
-      if (
-        branchErrors !== undefined &&
-        branchErrors !== "any" &&
-        branchErrors !== "none"
-      ) {
-        validateErrorDefinitions(branchErrors, `branch '${name}' errors`);
-      }
-    }
-  }
-
   // Validate execute
   if (typeof config.execute !== "function") {
     throw new Error("execute must be a function");
@@ -1032,7 +891,6 @@ export function defineWorkflow<
     requests,
     childWorkflows,
     foreignWorkflows,
-    branches,
     errors,
     patches,
     rng,
@@ -1044,7 +902,6 @@ export function defineWorkflow<
     TRequests,
     TChildWorkflows,
     TForeignWorkflows,
-    TBranches,
     TResultSchema,
     TArgs,
     TMetadata,

@@ -6,7 +6,6 @@ export * from "./types/definitions/steps";
 export * from "./types/definitions/handlers";
 export * from "./types/definitions/requests";
 export * from "./types/definitions/messaging";
-export * from "./types/definitions/branches";
 export * from "./types/definitions/workflow-headers";
 export * from "./types/definitions/workflow-definition";
 export * from "./types/results";
@@ -14,8 +13,6 @@ export * from "./types/engine";
 export * from "./types/helpers";
 export * from "./types/search-query";
 export * from "./types/json-input";
-export { MAIN_BRANCH } from "./types/context/entries";
-export { scopeDivider, branchDivider } from "./types/context/scope-path";
 export type {
   AllBranchesFailedInfo,
   ChildWorkflowFailureInfo,
@@ -23,16 +20,12 @@ export type {
   StepFailureInfo,
 } from "./types/context/failures";
 export type {
-  AppendBranchKey,
   AppendScopeName,
-  BranchDivider,
-  ScopeDivider,
   ScopeNameArg,
   ScopePath,
 } from "./types/context/scope-path";
 export type {
   AwaitableEntry,
-  BranchPathItem,
   JoinOptions,
   JoinResult,
   JoinTimeoutResult,
@@ -45,31 +38,22 @@ export type {
   RequestEntry,
 } from "./types/context/entries";
 export type {
-  BranchAccessor,
-  BranchCallOptions,
-  BranchEntry,
-  BranchHandle,
-  BranchInstanceStatus,
-  BranchJoinResult,
-  BranchTimeoutCallOptions,
-  DefinedBranchResult,
   EntryResult,
   FirstResult,
   KeyedFailure,
   KeyedSuccess,
   MatchEvent,
   MatchEvents,
-  NoBranchCompleted,
+  NoEntryCompleted,
   QuorumNotMet,
   ScopeEntry,
   ScopeEntryStructure,
   ScopeHandles,
   ScopeSuccessResults,
-  SomeBranchesFailed,
+  SomeEntriesFailed,
 } from "./types/context/scope-results";
 export type {
   BaseContext,
-  BranchContext,
   CompensationContext,
   CompensationConcurrencyContext,
   ErrorFactories,
@@ -99,20 +83,9 @@ export type {
   PhaseLifecycleEvents,
 } from "./types/context/lifecycle";
 export type {
-  CompensationSelection,
-  HandleMatchData,
-  HandleSelectEvent,
   ListenableHandle,
   Listener,
   ListenerEvent,
-  MatchHandlerEntry,
-  MatchHandlers,
-  MatchReturn,
-  ScopeSelectableHandle,
-  ScopeSelectableRecordForPath,
-  SelectDataKeyedUnion,
-  SelectEvent,
-  Selection,
 } from "./types/context/selection";
 export type {
   ScheduleHandle,

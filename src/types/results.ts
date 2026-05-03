@@ -139,23 +139,15 @@ export type WorkflowHaltStatus = "pending" | "resolved";
 /**
  * Durable halt state for compensation block instance halts.
  *
- * Compensation block instances are isolated; if `undo` (or one of the block's
- * branches) throws unrecognised, the instance is halted. The operator can
- * either patch + replay or `skip(...)` the compensation block instance, which
- * records the synthesised result and clears the halt.
+ * Compensation block instances are isolated; if `undo` throws unrecognised,
+ * the instance is halted. The operator can either patch + replay or
+ * `skip(...)` the compensation block instance, which records the synthesised
+ * result and clears the halt.
  */
 export type CompensationBlockHaltStatus =
   | "pending"
   | "resolved"
   | "skipped";
-
-/**
- * Durable halt state for branch instance halts.
- *
- * Halted branches can be `skip(result)`-ed via the branch instance handle,
- * which feeds the operator-supplied result back to the parent scope on replay.
- */
-export type BranchHaltStatus = "pending" | "resolved" | "skipped";
 
 // =============================================================================
 // RESULT TYPES — STEP (COMPENSATION)

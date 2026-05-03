@@ -1,26 +1,21 @@
-import type { StandardSchemaV1 } from "../standard-schema";
-import type { BranchDefinition } from "../definitions/branches";
-import type { BranchErrorMode } from "../definitions/errors";
-import type { AwaitableEntry, RequestEntry, SchemaInvocationInput, StepBoundary, StepEntry, WorkflowEntry } from "./entries";
-import type { RootScope, rootScopeBrand } from "./deterministic-handles";
-import type { ScopePath } from "./scope-path";
+import type { AwaitableEntry, RequestEntry, StepEntry, WorkflowEntry } from "./entries";
 
 // =============================================================================
-// SCOPE TYPES — ENTRY, BRANCH HANDLES
+// SCOPE TYPES — ENTRY, HANDLES
 // =============================================================================
 
 export type EntryResult<E> = E extends AwaitableEntry<infer T> ? T : never;
 
 /**
- * A scope entry is an unstarted typed workflow entry. Inline branch closures are
- * intentionally not accepted; isolated branches are declared up front and
- * instantiated through `ctx.branches`.
+ * A scope entry is an unstarted typed workflow entry.
+ *
+ * The new model orchestrates steps, requests, and child workflows under
+ * scopes — there is no "branch entry" kind.
  */
 export type ScopeEntry<T = unknown> =
   | StepEntry<T>
   | RequestEntry<T>
-  | WorkflowEntry<T>
-  | BranchEntry<T, any, any>;
+  | WorkflowEntry<T>;
 
 export type ScopeEntryPropertyStructure =
   | ScopeEntry
@@ -69,59 +64,6 @@ type TupleIndex<K> = K extends `${infer N extends number}` ? N : never;
 
 type TupleIndexes<T extends readonly unknown[]> = TupleIndex<TupleIndexKeys<T>>;
 
-/**
- * A handle to a running scope branch.
- * Resolves to T when the branch completes successfully.
- *
- * `BranchHandle<T>` values are produced by `ctx.scope()` and can be:
- * - Resolved via `handle.resolve(ctx)` on all contexts, or `ctx.join(handle)` on concurrency contexts
- * - Passed into `ctx.select()` and `ctx.match()`
- *
- * @typeParam T          - The resolved value type.
- * @typeParam TScopePath - Scope lineage of the parent scope that spawned this branch.
- *                        `ctx.join()` enforces `IsPrefix<TScopePath, TCurrentPath>`.
- * @typeParam TRoot      - Root context that created this branch handle.
- */
-declare const scopePathBrand: unique symbol;
-
-export interface BranchEntry<
-  T,
-  TScopePath extends ScopePath = ScopePath,
-  TRoot extends RootScope = RootScope,
-> extends AwaitableEntry<T> {
-  /** @internal Type-level scope ownership brand. */
-  readonly [scopePathBrand]: TScopePath;
-  /** @internal Root context discriminator — do not access at runtime. */
-  readonly [rootScopeBrand]: TRoot;
-}
-
-export interface BranchHandle<
-  T,
-  TScopePath extends ScopePath = ScopePath,
-  TRoot extends RootScope = RootScope,
-> extends BranchEntry<T, TScopePath, TRoot> {}
-
-export type BranchInstanceStatus =
-  | "pending"
-  | "running"
-  | "complete"
-  | "failed"
-  | "halted"
-  | "skipped";
-
-export type BranchJoinResult<T> =
-  | { ok: true; result: T }
-  | { ok: false; status: "failed"; error: unknown };
-
-export type DefinedBranchResult<T, TErrors extends BranchErrorMode> =
-  BranchJoinResult<T>;
-
-export interface BranchCallOptions {}
-
-export interface BranchTimeoutCallOptions extends BranchCallOptions {
-  readonly timeout: StepBoundary;
-}
-
 type EntrySuccessFromValue<T> = [
   Extract<T, { ok: true; result: any }>,
 ] extends [never]
@@ -142,10 +84,6 @@ export type ScopeSuccessResults<E> =
           : never;
 
 type EntryFailureFromValue<T> = Extract<T, { ok: false }>;
-
-type TupleSuccessUnion<E extends readonly unknown[]> = {
-  [K in TupleIndexKeys<E>]: ScopeSuccessResults<E[K]>;
-}[TupleIndexKeys<E>];
 
 type TupleKeyedSuccess<
   TKey extends PropertyKey,
@@ -225,8 +163,8 @@ export type KeyedFailure<E> = E extends object
     }[keyof E & PropertyKey]
   : never;
 
-export interface SomeBranchesFailed<E> {
-  readonly code: "SomeBranchesFailed";
+export interface SomeEntriesFailed<E> {
+  readonly code: "SomeEntriesFailed";
   readonly message: string;
   readonly details: {
     readonly failures: KeyedFailure<E>[];
@@ -234,8 +172,8 @@ export interface SomeBranchesFailed<E> {
   };
 }
 
-export interface NoBranchCompleted<E> {
-  readonly code: "NoBranchCompleted";
+export interface NoEntryCompleted<E> {
+  readonly code: "NoEntryCompleted";
   readonly message: string;
   readonly details: {
     readonly failures: KeyedFailure<E>[];
@@ -253,81 +191,24 @@ export interface QuorumNotMet<E> {
   };
 }
 
-type InferBranchArgsInput<B> =
-  B extends BranchDefinition<infer TArgs, any, any>
-    ? SchemaInvocationInput<TArgs>
-    : never;
-
-type InferBranchResult<B> =
-  B extends BranchDefinition<any, infer TResult, any>
-    ? StandardSchemaV1.InferOutput<TResult>
-    : never;
-
-type InferBranchErrors<B> =
-  B extends BranchDefinition<any, any, infer TErrors>
-    ? TErrors
-    : Record<string, never>;
-
-export interface BranchAccessor<
-  B extends BranchDefinition<any, any, any>,
-  TScopePath extends ScopePath,
-  TRoot extends RootScope,
-> {
-  (
-    args: InferBranchArgsInput<B>,
-  ): BranchEntry<
-    DefinedBranchResult<InferBranchResult<B>, InferBranchErrors<B>>,
-    TScopePath,
-    TRoot
-  >;
-
-  (
-    args: InferBranchArgsInput<B>,
-    opts: BranchTimeoutCallOptions,
-  ): BranchEntry<
-    | DefinedBranchResult<InferBranchResult<B>, InferBranchErrors<B>>
-    | { ok: false; status: "timeout" },
-    TScopePath,
-    TRoot
-  >;
-
-  (
-    args: InferBranchArgsInput<B>,
-    opts: BranchCallOptions,
-  ): BranchEntry<
-    DefinedBranchResult<InferBranchResult<B>, InferBranchErrors<B>>,
-    TScopePath,
-    TRoot
-  >;
-}
-
 /**
- * Maps closure entries to their corresponding branch handle types.
- *
- * @typeParam E          - Record of branch closures `(ctx: any) => Promise<unknown>`.
- * @typeParam TScopePath - The scope path where these handles are created.
- * @typeParam TRoot      - The root context.
+ * Maps an entry structure to its corresponding handle structure inside a scope
+ * body. Each entry is replaced by its `AwaitableEntry<T>` form; the structural
+ * shape (objects, arrays, maps) is preserved.
  */
-export type ScopeHandles<
-  E,
-  TScopePath extends ScopePath,
-  TRoot extends RootScope,
-> =
+export type ScopeHandles<E> =
   E extends AwaitableEntry<infer T>
-    ? BranchEntry<T, TScopePath, TRoot>
+    ? AwaitableEntry<T>
     : E extends readonly unknown[]
-      ? { readonly [K in keyof E]: ScopeHandles<E[K], TScopePath, TRoot> }
+      ? { readonly [K in keyof E]: ScopeHandles<E[K]> }
       : E extends ReadonlyMap<infer K, infer V>
-        ? ReadonlyMap<K, ScopeHandles<V, TScopePath, TRoot>>
+        ? ReadonlyMap<K, ScopeHandles<V>>
         : E extends object
-          ? { readonly [K in keyof E]: ScopeHandles<E[K], TScopePath, TRoot> }
+          ? { readonly [K in keyof E]: ScopeHandles<E[K]> }
           : never;
 
 /**
- * Result type for `ctx.first()` — a discriminated union of `{ key, result }` pairs
- * for the first branch to complete.
- *
- * @typeParam E - Generalized entry structure.
+ * Result type for `ctx.first()` — the first successful entry as a keyed value.
  */
 export type MatchEvent<TKey extends PropertyKey, TResult> = {
   key: TKey;

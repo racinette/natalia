@@ -2,13 +2,6 @@ import type { StandardSchemaV1 } from "../standard-schema";
 import type { JsonInput } from "../json-input";
 import type { RetryPolicyOptions } from "../definitions/policies";
 
-export const MAIN_BRANCH: unique symbol = Symbol("MAIN_BRANCH") as any;
-
-export interface BranchPathItem {
-  readonly scope: string;
-  readonly branch: string | typeof MAIN_BRANCH;
-}
-
 declare const nataliaEntryBrand: unique symbol;
 declare const nataliaEntryValue: unique symbol;
 declare const stepEntryBrand: unique symbol;
