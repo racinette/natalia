@@ -92,23 +92,28 @@ export interface ChannelHandle<T> extends AsyncIterable<T> {
  * Stream accessor on ctx.streams (for writing from within the workflow).
  * T is the encoded type (z.input<Schema>).
  *
+ * `write` is a buffered operation — synchronous return at the public API,
+ * committed in the next batch transaction. The assigned offset is observable
+ * only externally via the stream's read APIs.
+ *
  * @typeParam T - The encoded record type.
  */
 export interface StreamAccessor<T> {
   /**
    * Write a record to the stream.
    * @param data - Record data (z.input type — encoded).
-   * @returns The offset at which the record was saved.
    */
-  write(data: T): AtomicResult<number>;
+  write(data: T): void;
 }
 
 /**
  * Event accessor on ctx.events (for setting from within the workflow).
+ *
+ * `set` is a buffered operation — synchronous return.
  */
 export interface EventAccessor {
   /**
    * Set the event (idempotent — second call is no-op).
    */
-  set(): AtomicResult<void>;
+  set(): void;
 }

@@ -91,8 +91,10 @@ export type {
   WorkflowLogger,
 } from "./types/context/schedule-logger";
 export type {
+  AttachedChildWorkflowEntry,
   AttachedChildWorkflowResult,
   AttachedChildWorkflowStartOptions,
+  ChannelSendSurface,
   ChildWorkflowAccessor,
   ChildWorkflowCallOptions,
   ChildWorkflowStartOptions,
@@ -104,5 +106,4 @@ export type {
   ForeignWorkflowHandle,
   RequestAccessor,
   RequestCallOptions,
-  RequestTimeoutCallOptions,
 } from "./types/context/call-builders";

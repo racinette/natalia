@@ -17,22 +17,35 @@ import type { RequestEntry, SchemaInvocationInput, StepBoundary, TimeoutResult, 
 // =============================================================================
 
 /**
+ * Channel-send surface on a handle to a running workflow.
+ *
+ * Every kind of handle that points at a running workflow exposes this surface
+ * (attached child entries inside the workflow body, detached / foreign
+ * workflow handles outside it). Send is a buffered operation — returns plain
+ * `void`; the message is visible to the receiving workflow only after the
+ * caller's next batch commit.
+ */
+export interface ChannelSendSurface<
+  TChannels extends ChannelDefinitions = Record<string, never>,
+> {
+  readonly channels: {
+    [K in keyof TChannels]: {
+      send(data: StandardSchemaV1.InferInput<TChannels[K]>): void;
+    };
+  };
+}
+
+/**
  * A limited handle to an existing (non-child or detached) workflow instance.
  *
- * Only `channels.X.send(...)` is available. Send is a buffered operation
- * (returns void at the public-API level — see step 01 for the buffered/
- * dispatched/awaitable taxonomy).
+ * Returned by `ctx.foreignWorkflows.X.get(...)` and by
+ * `ctx.childWorkflows.X.startDetached(...)`. Send-only: `channels.X.send` plus
+ * the workflow's `idempotencyKey`. No awaitable result; no lifecycle control.
  */
 export interface ForeignWorkflowHandle<
   TChannels extends ChannelDefinitions = Record<string, never>,
-> {
+> extends ChannelSendSurface<TChannels> {
   readonly idempotencyKey: string;
-
-  readonly channels: {
-    [K in keyof TChannels]: {
-      send(data: StandardSchemaV1.InferInput<TChannels[K]>): AtomicResult<void>;
-    };
-  };
 }
 
 // =============================================================================
@@ -90,19 +103,47 @@ export type CompensationChildWorkflowStartOptions<W extends AnyWorkflowHeader> =
   >;
 
 /**
- * Result type for an attached child workflow entry. Step 01 keeps the
- * current shape; step 03 may extend it.
+ * Result type for an attached child workflow entry awaited inside the parent
+ * body. Per REFACTOR.MD Part 5, attached child failure is structurally
+ * possible and must be handled in ordinary code.
  */
 export type AttachedChildWorkflowResult<T, TError = unknown> =
   | { ok: true; result: T }
   | { ok: false; status: "failed"; error: TError };
 
 /**
+ * The unstarted attached child workflow entry returned by
+ * `ctx.childWorkflows.X(startOpts, opts?)`.
+ *
+ * Awaitable for the success/failure (and optionally timeout) union AND
+ * exposes the child's declared channel-send surface — the parent body may
+ * push messages while the child is running. Attached children have no
+ * `idempotencyKey` (they are not globally addressable).
+ */
+export type AttachedChildWorkflowEntry<
+  W extends AnyWorkflowHeader,
+  TAwaited,
+> = WorkflowEntry<TAwaited> & ChannelSendSurface<InferWorkflowChannels<W>>;
+
+/**
  * Callable child workflow accessor on `ctx.childWorkflows` in
  * `WorkflowContext`.
  *
+ * Two call overloads:
+ * - `(opts)` — dispatches the attached child; the awaited value is a
+ *   success-or-failure union (no timeout variant).
+ * - `(opts, { timeout })` — dispatches with an observation timeout; the
+ *   awaited value adds a `{ ok: false; status: "timeout" }` variant.
+ *
+ * Child workflows are not retried by the parent; configure retry/backoff at
+ * the child workflow definition level if needed.
+ *
+ * `startDetached` is a buffered operation that starts the child as a
+ * globally addressable root workflow and returns a `ForeignWorkflowHandle`.
+ *
  * @typeParam W - The child workflow definition.
- * @typeParam Tctx - The parent workflow's CompensationContext type.
+ * @typeParam Tctx - The parent workflow's CompensationContext type
+ *   (preserved for callsite type inference).
  */
 export interface ChildWorkflowAccessor<
   W extends AnyWorkflowHeader,
@@ -110,7 +151,8 @@ export interface ChildWorkflowAccessor<
 > {
   (
     options: AttachedChildWorkflowStartOptions<W>,
-  ): WorkflowEntry<
+  ): AttachedChildWorkflowEntry<
+    W,
     AttachedChildWorkflowResult<
       InferWorkflowResult<W>,
       ErrorValue<InferWorkflowErrors<W>>
@@ -120,7 +162,8 @@ export interface ChildWorkflowAccessor<
   (
     options: AttachedChildWorkflowStartOptions<W>,
     opts: ChildWorkflowTimeoutCallOptions,
-  ): WorkflowEntry<
+  ): AttachedChildWorkflowEntry<
+    W,
     | AttachedChildWorkflowResult<
         InferWorkflowResult<W>,
         ErrorValue<InferWorkflowErrors<W>>
@@ -128,20 +171,10 @@ export interface ChildWorkflowAccessor<
     | { ok: false; status: "timeout" }
   >;
 
-  (
-    options: AttachedChildWorkflowStartOptions<W>,
-    opts: ChildWorkflowCallOptions,
-  ): WorkflowEntry<
-    AttachedChildWorkflowResult<
-      InferWorkflowResult<W>,
-      ErrorValue<InferWorkflowErrors<W>>
-    >
-  >;
-
   /**
-   * Start this child workflow in detached mode. The child runs
-   * independently; the parent does not wait for its result. Returns a
-   * `ForeignWorkflowHandle` for fire-and-forget channel messaging.
+   * Start this child workflow in detached mode — buffered, synchronous,
+   * returns a `ForeignWorkflowHandle` immediately. The child runs
+   * independently of the parent's lifecycle.
    */
   startDetached(
     options: DetachedStartOptions<W>,
@@ -165,11 +198,17 @@ export interface CompensationChildWorkflowAccessor<
 // REQUEST ACCESSOR
 // =============================================================================
 
+/**
+ * Call options for a request. `priority` is optional (default 0); `timeout`
+ * is required when an options bag is supplied. Without an options bag the
+ * request waits indefinitely.
+ *
+ * Requests delegate resolution; the workflow does not own the resolution
+ * implementation, so configuration of retries, deadlines, and
+ * exhaustion-fallbacks lives on the handler registration — not here.
+ */
 export interface RequestCallOptions {
   readonly priority?: number;
-}
-
-export interface RequestTimeoutCallOptions extends RequestCallOptions {
   readonly timeout: StepBoundary;
 }
 
@@ -180,12 +219,8 @@ export interface RequestAccessor<
   (payload: SchemaInvocationInput<TPayloadSchema>): RequestEntry<TResponse>;
   (
     payload: SchemaInvocationInput<TPayloadSchema>,
-    opts: RequestTimeoutCallOptions,
-  ): RequestEntry<TimeoutResult<TResponse>>;
-  (
-    payload: SchemaInvocationInput<TPayloadSchema>,
     opts: RequestCallOptions,
-  ): RequestEntry<TResponse>;
+  ): RequestEntry<TimeoutResult<TResponse>>;
 }
 
 // =============================================================================
