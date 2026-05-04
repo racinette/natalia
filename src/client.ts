@@ -39,7 +39,7 @@ export abstract class AbstractWorkflowClient<
       };
     }
 
-    this.workflows = workflowAccessors as {
+    this.workflows = workflowAccessors as unknown as {
       [K in keyof TWfs]: WorkflowClientAccessor<TWfs[K]>;
     };
   }
