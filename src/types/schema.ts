@@ -213,3 +213,149 @@ export interface RequestCompensationRow<
   readonly manualAt: Date | null;
   readonly skippedAt: Date | null;
 }
+
+// =============================================================================
+// WORKFLOW QUERY NAMESPACES (REFACTOR.MD Part 5 §"Workflow row, query
+// namespaces, and `WorkflowHandleExternal`")
+//
+// Query namespaces for workflow rows. Each top-level key is a separate
+// namespace addressable in a `SearchQuery<TNamespaces>` predicate. JSONB
+// columns are exposed as their own namespaces with nested-path machinery;
+// the flat scalar columns of a workflow row come from the `row` namespace.
+// =============================================================================
+
+/**
+ * Flat scalar projection of `WorkflowRow` — the columns that participate in
+ * the `row` query namespace. JSONB columns (`args`, `result`, `metadata`,
+ * `error`) are exposed as their own top-level namespaces with nested-path
+ * machinery; they are not part of the `row` namespace.
+ *
+ * `WorkflowRow` itself remains the full row shape for `fetchRow` /
+ * prefetch — JSONB columns survive there as whole opaque values.
+ */
+export interface WorkflowRowFlat {
+  readonly id: WorkflowId;
+  readonly definitionName: string;
+  readonly idempotencyKey: string | null;
+  readonly status: WorkflowStatus;
+  readonly attached: boolean;
+  readonly isCompensation: boolean;
+  readonly compensationStepName: string | null;
+  readonly createdAt: Date;
+  readonly startedAt: Date | null;
+  readonly completedAt: Date | null;
+  readonly failedAt: Date | null;
+  readonly terminatedAt: Date | null;
+  readonly scheduledAt: Date | null;
+  readonly deadlineAt: Date | null;
+}
+
+/**
+ * Query namespaces for workflow rows.
+ *
+ * - `row`      — flat scalar columns from `WorkflowRowFlat`.
+ * - `args`     — JSONB args column; nested-path queryable.
+ * - `result`   — JSONB result column.
+ * - `metadata` — JSONB metadata column.
+ * - `error`    — JSONB error envelope column.
+ *
+ * Used in `client.workflows.<def>.findUnique/findMany/count` predicates and
+ * in the per-parent attached/detached child workflow query namespaces
+ * (step 12).
+ */
+export type WorkflowQueryNamespaces<
+  TArgs = unknown,
+  TResult = unknown,
+  TMetadata = unknown,
+> = {
+  row: WorkflowRowFlat;
+  args: TArgs;
+  result: TResult;
+  metadata: TMetadata;
+  error: WorkflowErrorEnvelope;
+};
+
+/**
+ * Flat scalar projection of `RequestCompensationRow` — the columns that
+ * participate in the `row` query namespace.
+ */
+export interface RequestCompensationRowFlat {
+  readonly id: RequestCompensationInstanceId;
+  readonly requestName: string;
+  readonly status: RequestCompensationStatus;
+  readonly createdAt: Date;
+  readonly startedAt: Date | null;
+  readonly completedAt: Date | null;
+  readonly manualAt: Date | null;
+  readonly skippedAt: Date | null;
+}
+
+/**
+ * Query namespaces for request compensation invocation rows.
+ */
+export type RequestCompensationQueryNamespaces<
+  TPayload = unknown,
+  TCompResult = unknown,
+> = {
+  row: RequestCompensationRowFlat;
+  payload: TPayload;
+  result: TCompResult;
+};
+
+// =============================================================================
+// COMPENSATION BLOCK INSTANCE ROW + QUERY NAMESPACES
+// =============================================================================
+
+import type { CompensationBlockStatus } from "./definitions/steps";
+import type {
+  CompensationInfo,
+} from "./definitions/steps";
+import type { CompensationId, HaltRecord } from "./results";
+
+/**
+ * Full row shape for a compensation block instance. Includes JSONB columns
+ * as whole opaque values for `fetchRow` / prefetch.
+ */
+export interface CompensationBlockRow<TStep, TArgs = unknown, TResult = unknown> {
+  readonly id: CompensationId<TStep>;
+  readonly definitionName: string;
+  readonly status: CompensationBlockStatus;
+  readonly args: TArgs;
+  readonly result: TResult | null;
+  readonly info: CompensationInfo<unknown> | null;
+  readonly halt: HaltRecord | null;
+  readonly createdAt: Date;
+  readonly startedAt: Date | null;
+  readonly completedAt: Date | null;
+  readonly haltedAt: Date | null;
+  readonly skippedAt: Date | null;
+}
+
+/**
+ * Flat scalar projection of `CompensationBlockRow` — the columns that
+ * participate in the `row` query namespace.
+ */
+export interface CompensationBlockRowFlat<TStep> {
+  readonly id: CompensationId<TStep>;
+  readonly definitionName: string;
+  readonly status: CompensationBlockStatus;
+  readonly createdAt: Date;
+  readonly startedAt: Date | null;
+  readonly completedAt: Date | null;
+  readonly haltedAt: Date | null;
+  readonly skippedAt: Date | null;
+}
+
+/**
+ * Query namespaces for compensation block instance rows.
+ */
+export type CompensationBlockQueryNamespaces<
+  TStep,
+  TArgs = unknown,
+  TResult = unknown,
+> = {
+  row: CompensationBlockRowFlat<TStep>;
+  args: TArgs;
+  result: TResult;
+  info: CompensationInfo<unknown>;
+};

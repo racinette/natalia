@@ -32,11 +32,19 @@ export abstract class AbstractWorkflowClient<
           this.assertClientAvailable();
           throw new Error("Not implemented");
         },
-        search: async (_queryOrBuilder: any, _options?: any) => {
+        findUnique: async (_query: any, _opts?: any) => {
           this.assertClientAvailable();
           throw new Error("Not implemented");
         },
-      };
+        findMany: ((_query: any, _opts?: any) => {
+          this.assertClientAvailable();
+          throw new Error("Not implemented");
+        }) as any,
+        count: async (_query: any, _opts?: any) => {
+          this.assertClientAvailable();
+          throw new Error("Not implemented");
+        },
+      } as WorkflowClientAccessor<any>;
     }
 
     this.workflows = workflowAccessors as unknown as {

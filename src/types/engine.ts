@@ -1,41 +1,79 @@
 import type { StandardSchemaV1 } from "./standard-schema";
-import type { ChannelDefinitions, EventDefinitions, StreamDefinitions } from "./definitions/primitives";
-import type { DeadlineOptions, RetentionSetter, WorkflowInvocationBaseOptions } from "./definitions/policies";
+import type {
+  ChannelDefinitions,
+  EventDefinitions,
+  StreamDefinitions,
+} from "./definitions/primitives";
+import type {
+  DeadlineOptions,
+  RetentionSetter,
+  WorkflowInvocationBaseOptions,
+} from "./definitions/policies";
 import type { AnyPublicWorkflowHeader } from "./definitions/workflow-headers";
 import type { AnyWorkflowDefinition } from "./definitions/workflow-definition";
 import type {
+  AttachedChildWorkflowId,
+  CompensationBlockRow,
+  CompensationBlockQueryNamespaces,
+  RequestCompensationRow,
+  RequestCompensationQueryNamespaces,
+  WorkflowQueryNamespaces,
+  WorkflowRow,
+} from "./schema";
+import type {
   ChannelSendResult,
-  StreamReadResult,
+  CompensationBlockOperatorActions,
+  CompensationId,
+  ErrorValue,
+  EventCheckResult,
+  EventWaitResultNoTimeout,
+  ExternalWaitOptions,
+  HaltRecord,
+  IWorkflowConnection,
+  IWorkflowTransaction,
   StreamIteratorReadResult,
   StreamOpenResult,
-  EventWaitResultNoTimeout,
-  EventCheckResult,
-  SignalResult,
-  ExecutionResultExternal,
-  CompensationResultExternal,
+  StreamReadResult,
+  WorkflowOperatorActions,
   WorkflowResult,
-  ErrorValue,
-  ExternalWaitOptions,
+  AttemptAccessor,
+  SkipOutcome,
+  OperatorActionOptions,
 } from "./results";
+import type { RequestCompensationInfo } from "./definitions/steps";
+import type { RequestCompensationInstanceId } from "./schema";
 import type {
-  InferWorkflowResult,
-  InferWorkflowChannels,
-  InferWorkflowStreams,
-  InferWorkflowEvents,
+  CountOptions,
+  FetchableHandle,
+  FetchOptions,
+  FieldsMask,
+  FindManyOptions,
+  FindManyResult,
+  FindUniqueOptions,
+  FindUniqueResult,
+  HandleWithRow,
+  ProjectedKeys,
+  QueryableNamespace,
+  QueryPredicate,
+} from "./introspection";
+import type {
+  InferWorkflowArgs,
   InferWorkflowArgsInput,
-  InferWorkflowMetadataInput,
+  InferWorkflowChannels,
   InferWorkflowErrors,
+  InferWorkflowEvents,
+  InferWorkflowMetadata,
+  InferWorkflowMetadataInput,
+  InferWorkflowResult,
+  InferWorkflowStreams,
 } from "./helpers";
-import type {
-  SearchMetadataFromInput,
-  WorkflowSearchCursor,
-  WorkflowSearchQuery,
-  WorkflowSearchQueryBuilder,
-  WorkflowSearchResultPage,
-} from "./search-query";
 
 // =============================================================================
-// ENGINE LEVEL — EXTERNAL HANDLES
+// PRIMITIVE PLANE — channel/stream/event/attribute accessors at engine level.
+//
+// Step 12 keeps the existing primitive-plane shapes intact. Step 16
+// (attributes + streams) refines them and introduces `attributes.X.get` /
+// `getNowait` / `set` accessors. Channel send and stream read remain unchanged.
 // =============================================================================
 
 /**
@@ -43,231 +81,350 @@ import type {
  * T is z.input<Schema> for sending (encoded).
  */
 export interface ChannelAccessorExternal<T> {
-  /**
-   * Send a message to this channel.
-   * @param data - Message data (z.input type — encoded).
-   * @returns Result indicating success or workflow not found.
-   */
-  send(data: T): Promise<ChannelSendResult>;
+  send(
+    data: T,
+    opts?: { txOrConn?: IWorkflowConnection | IWorkflowTransaction },
+  ): Promise<ChannelSendResult>;
 }
 
 /**
  * Event accessor at engine level (with "never" support).
  */
 export interface EventAccessorExternal {
-  /**
-   * Wait for the event to be set.
-   * Returns "never" if the workflow finished without setting this event.
-   */
-  wait(options?: ExternalWaitOptions): Promise<EventWaitResultNoTimeout>;
-
-  /**
-   * Check if the event is set (non-blocking).
-   */
-  isSet(): Promise<EventCheckResult>;
-}
-
-/**
- * Lifecycle event accessor at engine level.
- * Uses AbortSignal for runtime wait cancellation.
- */
-export interface LifecycleEventAccessorExternal {
-  /**
-   * Wait for the lifecycle event to be set.
-   * Returns "never" if the workflow reached a terminal state without this event firing.
-   */
-  wait(options?: ExternalWaitOptions): Promise<EventWaitResultNoTimeout>;
-
-  /**
-   * Check if the lifecycle event is set (non-blocking).
-   */
-  get(): Promise<EventCheckResult>;
-}
-
-/**
- * All lifecycle events available on an external workflow handle.
- */
-export interface PhaseLifecycleEventsExternal {
-  readonly started: LifecycleEventAccessorExternal;
-  readonly complete: LifecycleEventAccessorExternal;
-  readonly failed: LifecycleEventAccessorExternal;
-  readonly terminated: LifecycleEventAccessorExternal;
-}
-
-/**
- * Execution phase accessors on an external workflow handle.
- */
-export interface ExecutionHandleExternal<TResult, TError = unknown> {
-  /**
-   * Execution phase lifecycle.
-   */
-  readonly lifecycle: PhaseLifecycleEventsExternal;
-
-  /**
-   * Wait for execution phase terminal outcome and return typed result payload.
-   */
-  wait(options?: ExternalWaitOptions): Promise<ExecutionResultExternal<TResult, TError>>;
-}
-
-/**
- * Compensation phase accessors on an external workflow handle.
- */
-export interface CompensationHandleExternal {
-  /**
-   * Compensation phase lifecycle.
-   */
-  readonly lifecycle: PhaseLifecycleEventsExternal;
-
-  /**
-   * Wait for compensation phase terminal outcome.
-   */
-  wait(options?: ExternalWaitOptions): Promise<CompensationResultExternal>;
+  wait(
+    options?: ExternalWaitOptions & {
+      txOrConn?: IWorkflowConnection | IWorkflowTransaction;
+    },
+  ): Promise<EventWaitResultNoTimeout>;
+  isSet(opts?: {
+    txOrConn?: IWorkflowConnection | IWorkflowTransaction;
+  }): Promise<EventCheckResult>;
 }
 
 /**
  * Stream iterator handle at engine level.
- * Uses AbortSignal for runtime wait cancellation.
- * T is the decoded type (z.output<Schema>).
  */
 export interface StreamIteratorHandleExternal<T> extends AsyncIterable<T> {
-  /**
-   * Read the next record from the stream.
-   * @param options - Optional wait options with AbortSignal.
-   */
   read(options?: ExternalWaitOptions): Promise<StreamIteratorReadResult<T>>;
-
-  /**
-   * Iterate stream records sequentially.
-   */
   [Symbol.asyncIterator](): AsyncIterableIterator<T>;
 }
 
 /**
  * Stream reader at engine level.
- * Uses AbortSignal for runtime wait cancellation.
- * T is the decoded type (z.output<Schema>).
  */
 export interface StreamReaderAccessorExternal<T> extends AsyncIterable<T> {
-  /**
-   * Read a record at the given offset (random access).
-   * @param offset - The stream offset to read from.
-   * @param options - Optional wait options with AbortSignal.
-   */
   read(
     offset: number,
     options?: ExternalWaitOptions,
   ): Promise<StreamReadResult<T>>;
-
-  /**
-   * Create an iterator starting at the given offset.
-   * @param startOffset - Start reading from this offset (default: 0).
-   * @param endOffset - Stop reading at this offset (inclusive, default: unbounded).
-   */
   iterator(
     startOffset?: number,
     endOffset?: number,
   ): StreamIteratorHandleExternal<T>;
-
-  /**
-   * Check if the stream is still open.
-   */
-  isOpen(): Promise<StreamOpenResult>;
-
-  /**
-   * Iterate stream records from offset 0.
-   */
+  isOpen(opts?: {
+    txOrConn?: IWorkflowConnection | IWorkflowTransaction;
+  }): Promise<StreamOpenResult>;
   [Symbol.asyncIterator](): AsyncIterableIterator<T>;
 }
 
+// =============================================================================
+// HALTS NAMESPACE — read-only halt observation on a workflow handle.
+//
+// Per `REFACTOR.MD` Part 3, execution-workflow halts are not skippable
+// directly — resolution is patch + replay (automatic on worker restart) or
+// `skip(...)` on the workflow handle (which transitions the workflow to
+// `'skipped'` and its pending halts to `'skipped'` along with it).
+// =============================================================================
+
+export interface HaltsNamespaceExternal {
+  list(opts?: FetchOptions): Promise<readonly HaltRecord[]>;
+}
+
+// =============================================================================
+// COMPENSATION BLOCK INSTANCE HANDLE
+// =============================================================================
+
 /**
- * Handle to a workflow from engine level.
- * Full access to all public APIs: channels, streams, events, phases, signals.
+ * Per-instance primitive plane on a compensation block handle.
  *
- * Engine-level handles retain `sigterm()` and `sigkill()` — these are
- * operational concerns for engine callers. Workflow code uses scopes instead.
+ * Step 12 publishes the namespace placeholders. The full accessor surfaces
+ * (`attributes.X.get`, `streams.X.read`, `events.X.wait`, `channels.X.send`)
+ * land in steps 13/15/16 alongside their per-instance primitive
+ * declarations on `StepCompensationDefinition` (step 08).
+ *
+ * Each accessor read returns `FindUniqueResult<T>` to surface row-level
+ * absence and ambiguity, mirroring how the parent compensation block row is
+ * looked up.
  */
-export interface WorkflowHandleExternal<
-  TResult,
-  TError,
-  TChannels extends ChannelDefinitions,
-  TStreams extends StreamDefinitions,
-  TEvents extends EventDefinitions,
-> {
+export interface CompensationBlockPrimitivePlane {
+  readonly attributes: Record<string, unknown>;
+  readonly streams: Record<string, unknown>;
+  readonly events: Record<string, unknown>;
+  readonly channels: Record<string, unknown>;
+}
+
+/**
+ * Operator-facing handle for a compensation block instance row.
+ */
+export interface CompensationBlockUniqueHandleExternal<
+  TStep,
+  TArgs = unknown,
+  TResult = unknown,
+> extends FetchableHandle<CompensationBlockRow<TStep, TArgs, TResult>>,
+    CompensationBlockOperatorActions<TResult>,
+    CompensationBlockPrimitivePlane {
+  readonly id: CompensationId<TStep>;
+}
+
+/**
+ * Per-parent compensation block instance namespace, keyed by step name on
+ * `workflowInstance.compensations.<step>`.
+ */
+export interface CompensationBlockNamespaceExternal<
+  TStep,
+  TArgs = unknown,
+  TResult = unknown,
+> extends QueryableNamespace<
+    CompensationBlockUniqueHandleExternal<TStep, TArgs, TResult>,
+    CompensationBlockQueryNamespaces<TStep, TArgs, TResult>,
+    CompensationBlockRow<TStep, TArgs, TResult>,
+    CompensationId<TStep>
+  > {}
+
+// =============================================================================
+// REQUEST COMPENSATION INSTANCE HANDLE
+// =============================================================================
+
+/**
+ * Operator-facing handle for a request compensation invocation.
+ *
+ * Request compensations are lightweight — no per-instance primitives, no
+ * halt records (`REFACTOR.MD` Part 11). The handle exposes:
+ *   - `fetchRow` (the row scalar columns + JSONB-as-opaque `payload` /
+ *     `result` columns);
+ *   - `attempts()` — async accessor over the retried-handler attempt log;
+ *   - `skip(result, opts?)` — operator skip with the operator-supplied
+ *     compensation result.
+ */
+export interface RequestCompensationUniqueHandleExternal<
+  TPayload = unknown,
+  TCompResult = unknown,
+> extends FetchableHandle<RequestCompensationRow<TPayload, TCompResult>> {
+  readonly id: RequestCompensationInstanceId;
+
+  attempts(opts?: FetchOptions): Promise<FindUniqueResult<AttemptAccessor>>;
+
+  skip(
+    ...args: [TCompResult] extends [void]
+      ? [opts?: OperatorActionOptions]
+      : [result: TCompResult, opts?: OperatorActionOptions]
+  ): Promise<SkipOutcome>;
+}
+
+/**
+ * Per-parent request compensation namespace, keyed by request name on
+ * `workflowInstance.requestCompensations.<request>`.
+ */
+export interface RequestCompensationNamespaceExternal<
+  TPayload = unknown,
+  TCompResult = unknown,
+> extends QueryableNamespace<
+    RequestCompensationUniqueHandleExternal<TPayload, TCompResult>,
+    RequestCompensationQueryNamespaces<TPayload, TCompResult>,
+    RequestCompensationRow<TPayload, TCompResult>,
+    RequestCompensationInstanceId
+  > {}
+
+// =============================================================================
+// ATTACHED / DETACHED CHILD WORKFLOW NAMESPACES
+//
+// Per `REFACTOR.MD` Part 5 §"External introspection of children" — operators
+// inspect a parent's children through two namespaces. Attached children are
+// queryable only via the parent (parent-scoped) and have a read-only handle
+// (no terminal-action verbs). Detached children are real root workflows
+// addressable globally; the parent-scoped namespace is a convenience filter
+// that returns the standard `WorkflowHandleExternal<W>`.
+// =============================================================================
+
+/**
+ * Read-only external handle for an attached child workflow row.
+ *
+ * Attached children are subordinate to the parent's lifecycle — operators
+ * inspect them but do not terminate them. `idempotencyKey` is absent because
+ * attached children are not globally addressable.
+ */
+export interface AttachedChildWorkflowExternalHandle<W extends AnyPublicWorkflowHeader>
+  extends FetchableHandle<
+    WorkflowRow<
+      InferWorkflowArgs<W>,
+      InferWorkflowResult<W>,
+      InferWorkflowMetadata<W>
+    >
+  > {
+  readonly id: AttachedChildWorkflowId<W>;
+
+  readonly attributes: Record<string, unknown>;
+  readonly streams: {
+    [K in keyof InferWorkflowStreams<W>]: StreamReaderAccessorExternal<
+      StandardSchemaV1.InferOutput<InferWorkflowStreams<W>[K]>
+    >;
+  };
+  readonly events: {
+    [K in keyof InferWorkflowEvents<W>]: EventAccessorExternal;
+  };
+  readonly channels: {
+    [K in keyof InferWorkflowChannels<W>]: ChannelAccessorExternal<
+      StandardSchemaV1.InferInput<InferWorkflowChannels<W>[K]>
+    >;
+  };
+}
+
+/**
+ * Per-parent attached child workflow namespace, keyed by child workflow name
+ * on `workflowInstance.attachedChildWorkflows.<name>`.
+ */
+export interface AttachedChildWorkflowNamespaceExternal<
+  W extends AnyPublicWorkflowHeader,
+> extends QueryableNamespace<
+    AttachedChildWorkflowExternalHandle<W>,
+    WorkflowQueryNamespaces<
+      InferWorkflowArgs<W>,
+      InferWorkflowResult<W>,
+      InferWorkflowMetadata<W>
+    >,
+    WorkflowRow<
+      InferWorkflowArgs<W>,
+      InferWorkflowResult<W>,
+      InferWorkflowMetadata<W>
+    >,
+    AttachedChildWorkflowId<W>
+  > {}
+
+// =============================================================================
+// WORKFLOW HANDLE — globally addressable workflows.
+//
+// `WorkflowHandleExternal<W>` is parameterised over a workflow header so all
+// the per-workflow types (channels, streams, events, args, result, metadata,
+// errors) flow from one source. Replaces the earlier 5-generic shape.
+// =============================================================================
+
+export interface WorkflowHandleExternal<W extends AnyPublicWorkflowHeader>
+  extends FetchableHandle<
+      WorkflowRow<
+        InferWorkflowArgs<W>,
+        InferWorkflowResult<W>,
+        InferWorkflowMetadata<W>
+      >
+    >,
+    WorkflowOperatorActions<InferWorkflowResult<W>> {
+  readonly id: import("./schema").WorkflowId;
+
   readonly idempotencyKey: string;
 
-  /**
-   * Channels for sending messages.
-   * Send accepts z.input<Schema> (encoded).
-   */
-  readonly channels: {
-    [K in keyof TChannels]: ChannelAccessorExternal<
-      StandardSchemaV1.InferInput<TChannels[K]>
-    >;
-  };
-
-  /**
-   * Streams for reading data.
-   * Read returns z.output<Schema> (decoded).
-   */
+  // Primitive plane.
+  readonly attributes: Record<string, unknown>;
   readonly streams: {
-    [K in keyof TStreams]: StreamReaderAccessorExternal<
-      StandardSchemaV1.InferOutput<TStreams[K]>
+    [K in keyof InferWorkflowStreams<W>]: StreamReaderAccessorExternal<
+      StandardSchemaV1.InferOutput<InferWorkflowStreams<W>[K]>
+    >;
+  };
+  readonly events: {
+    [K in keyof InferWorkflowEvents<W>]: EventAccessorExternal;
+  };
+  readonly channels: {
+    [K in keyof InferWorkflowChannels<W>]: ChannelAccessorExternal<
+      StandardSchemaV1.InferInput<InferWorkflowChannels<W>[K]>
     >;
   };
 
-  /**
-   * User-defined events.
-   */
-  readonly events: {
-    [K in keyof TEvents]: EventAccessorExternal;
-  };
+  // Halts.
+  readonly halts: HaltsNamespaceExternal;
 
-  /** Execution phase accessors. */
-  readonly execution: ExecutionHandleExternal<TResult, TError>;
-  /** Compensation phase accessors. */
-  readonly compensation: CompensationHandleExternal;
+  // Per-parent introspection namespaces.
+  readonly attachedChildWorkflows: Record<
+    string,
+    AttachedChildWorkflowNamespaceExternal<AnyPublicWorkflowHeader>
+  >;
+  readonly detachedChildWorkflows: Record<
+    string,
+    AttachedChildWorkflowNamespaceExternal<AnyPublicWorkflowHeader>
+  >;
+  readonly compensations: Record<
+    string,
+    CompensationBlockNamespaceExternal<unknown>
+  >;
+  readonly requestCompensations: Record<
+    string,
+    RequestCompensationNamespaceExternal
+  >;
 
   /**
-   * Send SIGTERM — graceful shutdown with compensation.
+   * Wait for the workflow to reach a terminal state. Resolves to a typed
+   * `WorkflowResult` carrying the success / failure / terminated outcome.
+   *
+   * Useful for already-started workflows. `client.workflows.<def>.execute(opts)`
+   * is the equivalent start+wait one-shot.
    */
-  sigterm(): Promise<SignalResult>;
-
-  /**
-   * Send SIGKILL — immediate shutdown without compensation or hooks.
-   */
-  sigkill(): Promise<SignalResult>;
+  wait(
+    options?: ExternalWaitOptions & {
+      txOrConn?: IWorkflowConnection | IWorkflowTransaction;
+    },
+  ): Promise<WorkflowResult<InferWorkflowResult<W>, ErrorValue<InferWorkflowErrors<W>>>>;
 
   /**
    * Update the retention policy for this workflow instance.
    */
-  setRetention(retention: number | RetentionSetter<"complete" | "failed" | "terminated">): Promise<void>;
+  setRetention(
+    retention: number | RetentionSetter<"complete" | "failed" | "terminated">,
+    opts?: { txOrConn?: IWorkflowConnection | IWorkflowTransaction },
+  ): Promise<void>;
 }
 
 // =============================================================================
-// START WORKFLOW OPTIONS (ENGINE LEVEL)
+// START WORKFLOW OPTIONS
 // =============================================================================
 
 /**
- * Options for starting a workflow at engine level.
+ * Options for starting a workflow at engine / client level.
  */
 export type StartWorkflowOptions<
   TArgsInput,
   TMetadataInput = void,
 > = WorkflowInvocationBaseOptions<TArgsInput, TMetadataInput> & {
-  /**
-   * Override retention policy for this workflow instance.
-   */
   retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
+  txOrConn?: IWorkflowConnection | IWorkflowTransaction;
 } & DeadlineOptions;
 
 // =============================================================================
-// CLIENT LEVEL — WORKFLOW ACCESS
+// CLIENT-LEVEL WORKFLOW ACCESSOR
+//
+// Per `REFACTOR.MD` Part 5 §"`client.workflows.<def>` surface" — gain the
+// unified queryable namespace surface alongside `start` / `execute` / `get`.
+//
+// `findMany` automatically excludes attached children (Part 5 §"Global
+// queries filter out attached children" — the filter is a runtime guarantee;
+// the type-level surface returns the same `WorkflowHandleExternal<W>` shape
+// regardless).
 // =============================================================================
 
-/**
- * Accessor for a workflow in client-facing APIs.
- */
-export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader> {
+export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader>
+  extends Omit<
+    QueryableNamespace<
+      WorkflowHandleExternal<W>,
+      WorkflowQueryNamespaces<
+        InferWorkflowArgs<W>,
+        InferWorkflowResult<W>,
+        InferWorkflowMetadata<W>
+      >,
+      WorkflowRow<
+        InferWorkflowArgs<W>,
+        InferWorkflowResult<W>,
+        InferWorkflowMetadata<W>
+      >,
+      never
+    >,
+    "get"
+  > {
   /**
    * Start a new instance of this workflow and return a typed external handle.
    */
@@ -276,19 +433,11 @@ export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader> {
       InferWorkflowArgsInput<W>,
       InferWorkflowMetadataInput<W>
     >,
-  ): Promise<
-    WorkflowHandleExternal<
-      InferWorkflowResult<W>,
-      ErrorValue<InferWorkflowErrors<W>>,
-      InferWorkflowChannels<W>,
-      InferWorkflowStreams<W>,
-      InferWorkflowEvents<W>
-    >
-  >;
+  ): Promise<WorkflowHandleExternal<W>>;
 
   /**
-   * Start and wait for execution terminal outcome
-   * (start + handle.execution.wait() convenience).
+   * Start and wait for the workflow's terminal outcome (start + handle.wait()
+   * one-shot convenience).
    */
   execute(
     options: StartWorkflowOptions<
@@ -296,65 +445,14 @@ export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader> {
       InferWorkflowMetadataInput<W>
     >,
   ): Promise<
-    WorkflowResult<
-      InferWorkflowResult<W>,
-      ErrorValue<InferWorkflowErrors<W>>
-    >
+    WorkflowResult<InferWorkflowResult<W>, ErrorValue<InferWorkflowErrors<W>>>
   >;
 
   /**
-   * Get an external handle to an existing workflow instance.
+   * Get an external handle to an existing workflow instance by its
+   * idempotency key. Synchronous; no I/O.
    */
-  get(
-    idempotencyKey: string,
-  ): WorkflowHandleExternal<
-    InferWorkflowResult<W>,
-    ErrorValue<InferWorkflowErrors<W>>,
-    InferWorkflowChannels<W>,
-    InferWorkflowStreams<W>,
-    InferWorkflowEvents<W>
-  >;
-
-  /**
-   * Continue search pagination using an opaque typed cursor from a previous page.
-   */
-  search(
-    cursor: WorkflowSearchCursor<
-      SearchMetadataFromInput<InferWorkflowMetadataInput<W>>
-    >,
-  ): Promise<
-    WorkflowSearchResultPage<SearchMetadataFromInput<InferWorkflowMetadataInput<W>>>
-  >;
-
-  /**
-   * Search workflow instances using a typed discriminated-union query object.
-   */
-  search(
-    query?: WorkflowSearchQuery<
-      SearchMetadataFromInput<InferWorkflowMetadataInput<W>>
-    >,
-  ): Promise<
-    WorkflowSearchResultPage<SearchMetadataFromInput<InferWorkflowMetadataInput<W>>>
-  >;
-
-  /**
-   * Search workflow instances using the typed builder callback.
-   */
-  search(
-    build: (
-      builder: WorkflowSearchQueryBuilder<
-        SearchMetadataFromInput<InferWorkflowMetadataInput<W>>
-      >,
-    ) => WorkflowSearchQuery<
-      SearchMetadataFromInput<InferWorkflowMetadataInput<W>>
-    >["where"],
-    options?: Omit<
-      WorkflowSearchQuery<SearchMetadataFromInput<InferWorkflowMetadataInput<W>>>,
-      "where"
-    >,
-  ): Promise<
-    WorkflowSearchResultPage<SearchMetadataFromInput<InferWorkflowMetadataInput<W>>>
-  >;
+  get(idempotencyKey: string): WorkflowHandleExternal<W>;
 }
 
 /**

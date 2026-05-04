@@ -144,13 +144,13 @@ export interface SearchMetadataRecord {
  * Umbrella namespace constraint — every key in `TNamespaces` of a
  * `SearchQuery<TNamespaces>` must be either a row namespace (flat
  * `RowNamespaceScalar` values) or a metadata namespace (nested JSONB
- * record). Rather than enforcing assignability to either of the two record
- * types directly (which would require user-supplied namespaces to carry an
- * `[key: string]` index signature), we accept any non-array object and let
- * the dispatch in `NamespacePredicateNode` / `NamespaceBuilder` test the
- * shape.
+ * record). The constraint is intentionally permissive (`unknown`) so that
+ * any user-supplied namespace shape (including JSONB columns inferred from
+ * schemas as primitive types) is accepted at the constraint layer; the
+ * dispatch in `NamespacePredicateNode` / `NamespaceBuilder` discriminates
+ * row vs metadata at use time.
  */
-export type SearchNamespaceRecord = object;
+export type SearchNamespaceRecord = unknown;
 
 type SearchMetadataValueFromInput<T> = T extends unknown
   ? T extends readonly (infer E)[]

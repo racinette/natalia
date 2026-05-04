@@ -195,10 +195,7 @@ export type CompensationBlockStatus =
   | "halted"
   | "skipped";
 
-export type FindUniqueResult<T> =
-  | { readonly status: "unique"; readonly value: T }
-  | { readonly status: "missing" }
-  | { readonly status: "ambiguous"; readonly count: number };
+import type { FindUniqueResult } from "../introspection";
 
 type Simplify<T> = { [K in keyof T]: T[K] };
 

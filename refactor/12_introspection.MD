@@ -2,201 +2,270 @@
 
 ## Goal
 
-Specify the operator-facing introspection surface for queryable entities
-inside a workflow instance — branches, compensation block instances, and
-request compensation invocations — and the read-only halt observation surface
-for workflow execution halts.
+Establish the operator-facing introspection surface: the unified
+`QueryableNamespace<...>` shape that every queryable entity uses, the
+`FetchableHandle<TRow>` row-fetch interface, the row-prefetch ergonomics,
+and the concrete handles for workflows, attached child workflows,
+detached child workflows, compensation block instances, and request
+compensation invocations.
 
-This refactor depends on `11_search_query_generalization` because every
-introspection accessor is parameterised over `SearchQuery<TNamespaces>`.
+This step also lands the cross-cutting `txOrConn?` rule (REFACTOR.MD
+Part 19) on the new operator-facing IO methods, plugs the
+operator-action verb signatures from step 09 onto the concrete
+handles, and consumes the schema-derived row / namespace types from
+steps 10–11.
 
 ## Source Coverage
 
-- `BUFFER.MD` §5: query-grounding handle pattern for compensation block
-  instances.
-- `BUFFER.MD` §10: request compensation invocation query surface.
-- `BUFFER.MD` §15.10: branch invocation query surface.
-- `BUFFER.MD` §7: halts in compensation are skippable; execution halts are not.
-- `REFACTOR.MD` Part 2: compensation block instance handle.
-- `REFACTOR.MD` Part 3: workflow execution halt records.
-- `REFACTOR.MD` Part 7: branch instance status; skip recovery.
-- `REFACTOR.MD` Part 8: persistence shapes used by handle reads.
+- `REFACTOR.MD` Part 5 §"Search and introspection — unified shape" —
+  `QueryableNamespace<...>`, `FetchableHandle<TRow>`,
+  `FindManyResult` / `FindUniqueResult`, `FieldsMask` /
+  `ProjectedKeys` / `HandleWithRow`.
+- `REFACTOR.MD` Part 5 §"Workflow row, query namespaces, and
+  `WorkflowHandleExternal`" — the new workflow handle shape.
+- `REFACTOR.MD` Part 5 §"External introspection of children" —
+  `attachedChildWorkflows.<name>` and
+  `detachedChildWorkflows.<name>` parent-scoped namespaces.
+- `REFACTOR.MD` Part 2 §"Query-grounding handle pattern" —
+  compensation block instance unique handle.
+- `REFACTOR.MD` Part 11 §"Request compensation query surface" —
+  request compensation unique handle.
+- `REFACTOR.MD` Part 19 — `txOrConn?` rule applied uniformly.
 
 ## Public API Target
 
-### Workflow handle introspection namespace
+### Unified introspection types (`src/types/introspection.ts`)
 
-A workflow instance handle (returned by `client.workflows.X.start()` or
-`client.workflows.X.get(idempotencyKey)`) exposes three introspection
-namespaces:
+```typescript
+type FindUniqueResult<T> =
+  | { readonly status: "unique"; readonly value: T }
+  | { readonly status: "missing" }
+  | { readonly status: "ambiguous"; readonly count: number };
 
-```ts
-workflowInstance.branches.<branchName>.findUnique(query | id)
-workflowInstance.branches.<branchName>.findMany(query)
-workflowInstance.compensations.<stepName>.findUnique(query | id)
-workflowInstance.compensations.<stepName>.findMany(query)
-workflowInstance.requestCompensations.<requestName>.findUnique(query | id)
-workflowInstance.requestCompensations.<requestName>.findMany(query)
-```
+interface FindManyResult<T>
+  extends PromiseLike<readonly T[]>, AsyncIterable<T> {}
 
-Plus a halt-observation surface on the workflow handle for execution halts:
+type FieldsMask<TRow> = { readonly [K in keyof TRow]?: true };
+type ProjectedKeys<TRow, F extends FieldsMask<TRow>> = ...;
+type HandleWithRow<H, TRow> = H & { readonly row: TRow };
 
-```ts
-workflowInstance.halts.list(): Promise<readonly WorkflowHaltRecord[]>
-```
+interface FetchableHandle<TRow> {
+  fetchRow(opts?: FetchOptions): Promise<FindUniqueResult<TRow>>;
+  fetchRow<F extends FieldsMask<TRow>>(
+    fields: F,
+    opts?: FetchOptions,
+  ): Promise<FindUniqueResult<Pick<TRow, ProjectedKeys<TRow, F>>>>;
+}
 
-Execution halts have no `skip` — resolution is by patch + replay (automatic on
-worker restart) or `sigkill()` on the workflow handle.
+interface QueryableNamespace<THandle, TNamespaces, TRow, TId> {
+  get(id: TId): THandle;
+  get<F>(id: TId, fields: F): HandleWithRow<THandle, Pick<TRow, ...>>;
 
-### Result types
+  findUnique(query, opts?): Promise<FindUniqueResult<THandle>>;
+  findUnique<F>(query, opts: { fields: F; ... }): Promise<FindUniqueResult<HandleWithRow<...>>>;
 
-`FindUniqueResult<T>` carries cardinality:
+  findMany(query, opts?): FindManyResult<THandle>;
+  findMany<F>(query, opts: { fields: F; ... }): FindManyResult<HandleWithRow<...>>;
 
-- `{ status: "unique"; value: T }`
-- `{ status: "missing" }`
-- `{ status: "ambiguous"; count: number }`
-
-### Query overloads
-
-`findUnique` and `findMany` accept either a `SearchQuery<TNamespaces>` builder
-callback or, for `findUnique` only, an opaque branded instance id. Branches
-and compensation blocks share the namespace shape `{ args: TArgs; metadata:
-EntityMetadata }`. Request compensations expose `{ payload: TPayload;
-metadata: RequestCompensationMetadata }`.
-
-### Branch instance unique handle
-
-```ts
-interface BranchInstanceUniqueHandle<TBranch> {
-  status(): Promise<FindUniqueResult<BranchInstanceStatus>>;
-  result(): Promise<FindUniqueResult<BranchResultStored<TBranch> | null>>;
-  args(): Promise<FindUniqueResult<BranchArgs<TBranch>>>;
-  halt(): Promise<FindUniqueResult<BranchHaltRecord | null>>;
-  skip(
-    ...args: BranchResult<TBranch> extends void
-      ? []
-      : [result: BranchResultInput<TBranch>]
-  ): Promise<
-    | FindUniqueResult<{ skipped: true }>
-    | { status: "already_terminal"; current: "complete" | "skipped" }
-  >;
+  count(query, opts?): Promise<number>;
 }
 ```
 
-### Compensation block instance unique handle
+Per Part 19 every option bag carries `txOrConn?:
+IWorkflowConnection | IWorkflowTransaction`. `FetchOptions`,
+`FindUniqueOptions`, `FindManyOptions<TNamespaces>`, `CountOptions`
+are the option shapes.
 
-```ts
-interface CompensationBlockInstanceUniqueHandle<TStep> {
-  status(): Promise<FindUniqueResult<CompensationBlockStatus>>;
-  result(): Promise<FindUniqueResult<CompensationBlockStored<TStep> | null>>;
-  args(): Promise<FindUniqueResult<StepArgs<TStep>>>;
-  halt(): Promise<FindUniqueResult<CompensationBlockHaltRecord | null>>;
-  skip(
-    ...args: CompensationBlockResult<TStep> extends void
-      ? []
-      : [result: CompensationBlockResultInput<TStep>]
-  ): Promise<
-    | FindUniqueResult<{ skipped: true }>
-    | { status: "already_terminal"; current: "complete" | "skipped" }
-  >;
+### Workflow handle (`WorkflowHandleExternal<W>`)
 
-  attributes: { [K in DeclaredAttributes<TStep>]: PerInstanceAttributeReader };
-  streams: { [K in DeclaredStreams<TStep>]: PerInstanceStreamReader };
-  events: { [K in DeclaredEvents<TStep>]: PerInstanceEventReader };
-  channels: { [K in DeclaredChannels<TStep>]: PerInstanceChannelWriter };
-}
-```
+Single-generic shape parameterised over the workflow header. Wires:
 
-The per-instance accessors mirror the workflow-handle attribute / stream /
-event / channel APIs from `16_attributes_and_streams`, but every read is
-wrapped in `FindUniqueResult` to express row-level absence and ambiguity.
+- **`FetchableHandle<WorkflowRow<TArgs, TResult, TMetadata>>`** —
+  `fetchRow(...)` reads a fresh row snapshot.
+- **`WorkflowOperatorActions<TResult>`** (step 09) —
+  `sigkill / sigterm / skip(result, opts?)`.
+- **Primitive plane** — `channels` / `streams` / `events` accessors
+  (existing shapes; step 16 adds `attributes`).
+- **`halts: HaltsNamespaceExternal`** — read-only `list()` over
+  workflow execution halt records. No `skip` on the namespace
+  itself (resolution is patch + replay or `skip(...)` on the
+  workflow itself, which transitions the workflow to `'skipped'`).
+- **Parent-scoped namespaces** —
+  `attachedChildWorkflows.<name>` /
+  `detachedChildWorkflows.<name>` /
+  `compensations.<step>` /
+  `requestCompensations.<request>`.
+- **`wait(opts?)`** — terminal-outcome wait returning
+  `WorkflowResult<TResult, ErrorValue<TErrors>>`. Useful for
+  already-started workflows; `client.workflows.X.execute(opts)` is
+  the equivalent start+wait one-shot.
+- **`setRetention(...)`** — operator override of the workflow's
+  retention policy.
 
-### Request compensation unique handle
+### Compensation block handle
+(`CompensationBlockUniqueHandleExternal<TStep, TArgs, TResult>`)
 
-```ts
-interface RequestCompensationUniqueHandle<TRequest> {
-  status(): Promise<FindUniqueResult<RequestCompensationStatus>>;
-  result(): Promise<FindUniqueResult<RequestCompResult<TRequest> | null>>;
-  payload(): Promise<FindUniqueResult<RequestPayload<TRequest>>>;
-  info(): Promise<FindUniqueResult<RequestCompensationInfo<unknown>>>;
-  attempts(): Promise<FindUniqueResult<AttemptAccessor>>;
-  skip(
-    ...args: RequestCompResult<TRequest> extends void
-      ? []
-      : [result: RequestCompResultInput<TRequest>]
-  ): Promise<
-    | FindUniqueResult<{ skipped: true }>
-    | { status: "already_terminal"; current: "complete" | "skipped" }
-  >;
-}
-```
+- `FetchableHandle<CompensationBlockRow<TStep, TArgs, TResult>>`
+- `CompensationBlockOperatorActions<TResult>` (step 09) — `skip`
+  only; no `sigkill` / `sigterm`; no `strategy` option.
+- `id: CompensationId<TStep>` — branded per step.
+- Per-instance primitive plane placeholders
+  (`attributes` / `streams` / `events` / `channels`). Full accessor
+  surfaces wire in steps 13/15/16.
 
-Request compensation invocations have no primitives, no halts.
+### Compensation block namespace
+(`CompensationBlockNamespaceExternal<TStep, TArgs, TResult>`)
 
-### Subset handles
+`extends QueryableNamespace<...>` — the unified surface, with:
 
-`findMany(query)` returns a subset handle. The subset handle exposes only
-operations that have well-defined semantics over `N >= 0` matched rows:
+- `THandle = CompensationBlockUniqueHandleExternal<...>`
+- `TNamespaces = CompensationBlockQueryNamespaces<TStep, TArgs, TResult>`
+- `TRow = CompensationBlockRow<TStep, TArgs, TResult>`
+- `TId = CompensationId<TStep>`
 
-```ts
-interface SubsetHandle<TStored, TSkipResult> {
-  count(): Promise<number>;
-  list(opts?: { limit?: number; cursor?: string }): Promise<{
-    items: readonly TStored[];
-    cursor: string | null;
-  }>;
-  skip(
-    ...args: TSkipResult extends void ? [] : [result: TSkipResult]
-  ): Promise<{ affected: number }>;
-}
-```
+### Request compensation handle
+(`RequestCompensationUniqueHandleExternal<TPayload, TCompResult>`)
 
-For compensation block subset handles, `channels` adds a fan-out `send` that
-delivers the same payload to every matched instance.
+- `FetchableHandle<RequestCompensationRow<TPayload, TCompResult>>`
+- `attempts(opts?): Promise<FindUniqueResult<AttemptAccessor>>` —
+  separate accessor (not a row column) because `AttemptAccessor`
+  exposes its own methods (Part 15).
+- `skip(result, opts?)` for non-void result; `skip(opts?)` for void.
+- `id: RequestCompensationInstanceId`.
+- No per-instance primitives; no halts (Part 11).
 
-## Out Of Scope
+### Request compensation namespace
 
-- Per-namespace search-query namespace contents — that is owned by the
-  individual primitive refactors (queues, topics, etc.) layering on
-  `11_search_query_generalization`.
-- Workflow client cross-workflow search (already covered by
-  `11_search_query_generalization` and the existing `WorkflowSearchQuery`
-  alias).
+`extends QueryableNamespace<...>` with the corresponding
+`RequestCompensationQueryNamespaces<TPayload, TCompResult>` and
+`RequestCompensationRow<TPayload, TCompResult>`.
+
+### Attached child workflow handle
+(`AttachedChildWorkflowExternalHandle<W>`)
+
+- `FetchableHandle<WorkflowRow<TArgs, TResult, TMetadata>>`
+- `id: AttachedChildWorkflowId<W>` — branded per child workflow
+  definition.
+- Primitive plane (per the parent's child workflow declaration).
+- **No** terminal-action verbs (no `sigkill`, no `sigterm`, no
+  `skip`). Attached children are subordinate to the parent's
+  lifecycle; the parent's verbs cascade down.
+
+### Attached child workflow namespace
+(`AttachedChildWorkflowNamespaceExternal<W>`)
+
+`extends QueryableNamespace<...>` — namespaces are the standard
+`WorkflowQueryNamespaces<TArgs, TResult, TMetadata>`; `TId` is
+`AttachedChildWorkflowId<W>`.
+
+### Detached child workflow namespace
+
+Returns the **standard** `WorkflowHandleExternal<W>` (detached
+children are real root workflows). The parent-scoped namespace is a
+convenience filter; identity-based `.get(idempotencyKey | args)`
+works the same way as the global `client.workflows.<def>.get(...)`.
+
+For step 12's surface we publish
+`AttachedChildWorkflowNamespaceExternal` and reuse the same shape
+for detached (modulo `THandle`). Step 12's
+`workflowInstance.detachedChildWorkflows.<name>` is typed against
+`Record<string, AttachedChildWorkflowNamespaceExternal<...>>` for
+brevity; step 18 (idempotency-key factory) and step 17 (scheduled
+delivery) refine the detached `.get(args | idempotencyKey)`
+overloads.
+
+### Client workflow accessor (`WorkflowClientAccessor<W>`)
+
+`extends Omit<QueryableNamespace<...>, "get">` — gains
+`findUnique` / `findMany` / `count` over the workflow query
+namespaces, alongside `start` / `execute` / `get(idempotencyKey)`.
+
+The omitted `get` is replaced with the identity-based
+`get(idempotencyKey: string): WorkflowHandleExternal<W>` overload.
+Step 18 will add the `get(args)` overload conditional on
+`idempotencyKeyFactory` being declared on the workflow.
+
+`findMany` excludes attached children automatically at runtime
+(filter on `row.attached = TRUE`) — runtime guarantee; the type
+surface is unchanged.
+
+### Halts namespace
+
+`HaltsNamespaceExternal` exposes `list(opts?)` only. No `findUnique`
+or `skip` — REFACTOR.MD Part 3 specifies execution halt resolution
+is patch + replay (automatic on worker restart) or `skip(...)` on
+the workflow itself.
 
 ## Affected Areas
 
-- `src/types/engine.ts` — `WorkflowHandleExternal` gains the introspection
-  namespaces and `halts.list()`.
-- `src/types/definitions/steps.ts` — `CompensationBlockHandle` /
-  `CompensationBlockUniqueHandle` extended with the search-query overload,
-  per-instance primitive accessors, and `skip(...)`.
-- `src/types/definitions/branches.ts` — new `BranchInstanceHandle` /
-  `BranchInstanceUniqueHandle` types.
-- `src/types/definitions/requests.ts` — new
-  `RequestCompensationHandle` / `RequestCompensationUniqueHandle` types.
-- `src/types/results.ts` — record types for branch/compensation halt rows.
+- `src/types/introspection.ts` (new) — abstract introspection types.
+- `src/types/schema.ts` — adds `WorkflowRowFlat`,
+  `RequestCompensationRowFlat`, `CompensationBlockRow`,
+  `CompensationBlockRowFlat`, query-namespace types
+  (`WorkflowQueryNamespaces`, `RequestCompensationQueryNamespaces`,
+  `CompensationBlockQueryNamespaces`).
+- `src/types/search-query.ts` — relaxed
+  `SearchNamespaceRecord = unknown` so JSONB namespaces inferred as
+  primitive types are accepted.
+- `src/types/engine.ts` — full rewrite:
+  - new `WorkflowHandleExternal<W>` (single generic);
+  - new `CompensationBlockUniqueHandleExternal` /
+    `CompensationBlockNamespaceExternal`;
+  - new `RequestCompensationUniqueHandleExternal` /
+    `RequestCompensationNamespaceExternal`;
+  - new `AttachedChildWorkflowExternalHandle` /
+    `AttachedChildWorkflowNamespaceExternal`;
+  - new `HaltsNamespaceExternal`;
+  - `WorkflowClientAccessor<W>` extends the queryable surface;
+  - legacy `.execution` / `.compensation` / `.lifecycle` removed.
+- `src/types/helpers.ts` — added `InferWorkflowMetadata<W>`.
+- `src/client.ts` — runtime stub updated to mirror
+  `findUnique` / `findMany` / `count` instead of the old `search`.
 
 ## Acceptance Contract
 
-The paired file `refactor/12_introspection.ts` verifies:
+The paired file
+`src/types-regression-tests/12_introspection.ts` verifies:
 
-1. `workflowInstance.branches.<name>.findUnique(query)` and
-   `findUnique(id)` return a typed unique handle whose `status`, `result`,
-   `args`, `halt`, and `skip` return the documented result shapes.
-2. `workflowInstance.branches.<name>.findMany(query)` returns a subset
-   handle with `count`, `list`, and `skip`.
-3. Branches with `result: z.void()` reject any positional arg to `skip`;
-   branches with a `result` schema require the result.
-4. `workflowInstance.compensations.<step>.findUnique(query)` returns a
-   handle that exposes the step's declared per-instance attributes,
-   streams, events, and channels, each wrapped in `FindUniqueResult`.
-5. No-result compensation blocks expose `null` through `result()` and
-   forbid arguments to `skip()`.
-6. `workflowInstance.requestCompensations.<request>.findUnique(...)`
-   returns a handle whose surface omits primitives and halt observation.
-7. `workflowInstance.halts.list()` returns workflow execution halt records;
-   the workflow handle does not expose any `skip` for execution halts.
-8. Search-query callbacks are typed against the entity's namespaces
-   (`args`/`payload` plus `metadata`), and ill-typed references (unknown
-   namespace, range comparisons on heterogeneous unions, sort on array
-   fields) are rejected.
+1. `FindUniqueResult<T>` shape (unique / missing / ambiguous).
+2. `FindManyResult<T>` is both `PromiseLike<readonly T[]>` and
+   `AsyncIterable<T>`.
+3. `FetchableHandle.fetchRow()` returns the full row;
+   `fetchRow(fields)` returns a typed projection
+   (`Pick<TRow, ProjectedKeys<TRow, F>>`).
+4. `QueryableNamespace.get(id)` returns a synchronous handle;
+   `get(id, fields)` adds a typed `.row` snapshot.
+5. `findUnique(query)` resolves to `FindUniqueResult<Handle>`.
+6. `findMany(query)` returns `FindManyResult<Handle>`.
+7. `count(query)` returns `Promise<number>`.
+8. `WorkflowHandleExternal<W>` exposes
+   `sigkill / sigterm / skip(result, opts?)` from step 09.
+9. `WorkflowHandleExternal<W>` exposes `fetchRow`, `wait`,
+   `setRetention`, `halts.list()`, plus the four parent-scoped
+   namespaces.
+10. The `halts` namespace exposes `list()` only — no `skip`.
+11. `CompensationBlockUniqueHandleExternal` exposes `skip(result)`
+    only — no `sigkill` / `sigterm`; the `strategy` option is
+    rejected.
+12. `RequestCompensationUniqueHandleExternal` exposes `attempts()`
+    returning `FindUniqueResult<AttemptAccessor>`.
+13. `WorkflowClientAccessor<W>` exposes
+    `start / execute / get / findUnique / findMany / count`.
+14. The legacy `search()` method is gone.
+
+## Out of Scope (Deferred)
+
+- Per-instance primitive accessors on compensation block handles —
+  the namespace placeholders exist but the full
+  `attributes.X.get / getNowait` and similar accessors land in
+  steps 13/15/16.
+- `client.workflows.<def>.get(args)` overload (when
+  `idempotencyKeyFactory` is declared) — step 18.
+- `idempotencyKey` on workflow start required + factory-derivation
+  rules — step 18.
+- `ScheduledDeliveryOptions` (`delaySeconds` / `scheduledAt`) on
+  start options — step 17.
+- The full `attributes.X` accessor surface on workflow handles —
+  step 16.
+- `ChannelSendResult` updates with `txOrConn?` to other primitive
+  handles — covered piecemeal as steps 13/15/16 land.

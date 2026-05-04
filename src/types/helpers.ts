@@ -78,6 +78,17 @@ export type InferWorkflowMetadataInput<W> = W extends {
   : void;
 
 /**
+ * Extract metadata type from a workflow definition or header (decoded — z.output).
+ */
+export type InferWorkflowMetadata<W> = W extends {
+  metadata?: infer TMetadataSchema;
+}
+  ? TMetadataSchema extends StandardSchemaV1<unknown, unknown>
+    ? StandardSchemaV1.InferOutput<TMetadataSchema>
+    : void
+  : void;
+
+/**
  * Extract declared workflow business errors.
  */
 export type InferWorkflowErrors<W> = W extends { errors?: infer TErrors }
