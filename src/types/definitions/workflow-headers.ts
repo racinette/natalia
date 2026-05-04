@@ -25,6 +25,7 @@ export type WorkflowDefinitions = Record<string, AnyWorkflowHeader>;
  * shape structurally and can be used where only client contracts are needed.
  */
 export interface PublicWorkflowHeader<
+  TName extends string = string,
   TChannels extends ChannelDefinitions = Record<string, never>,
   TStreams extends StreamDefinitions = Record<string, never>,
   TEvents extends EventDefinitions = Record<string, never>,
@@ -42,7 +43,7 @@ export interface PublicWorkflowHeader<
   >,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
 > {
-  readonly name: string;
+  readonly name: TName;
   readonly channels?: TChannels;
   readonly streams?: TStreams;
   readonly events?: TEvents;
@@ -56,6 +57,7 @@ export interface PublicWorkflowHeader<
  * Any public workflow descriptor shape.
  */
 export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
+  string,
   any,
   any,
   any,
@@ -111,6 +113,7 @@ export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
  * ```
  */
 export interface WorkflowHeader<
+  TName extends string = string,
   TChannels extends ChannelDefinitions = Record<string, never>,
   TArgs extends JsonSchemaConstraint = StandardSchemaV1<
     void,
@@ -126,7 +129,7 @@ export interface WorkflowHeader<
   >,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
 > {
-  readonly name: string;
+  readonly name: TName;
   readonly channels?: TChannels;
   readonly args?: TArgs;
   readonly metadata?: TMetadata;
@@ -140,4 +143,4 @@ export interface WorkflowHeader<
  * both full `WorkflowDefinition` objects and lightweight `WorkflowHeader`
  * descriptors satisfy this type.
  */
-export type AnyWorkflowHeader = WorkflowHeader<any, any, any, any, any>;
+export type AnyWorkflowHeader = WorkflowHeader<string, any, any, any, any, any>;

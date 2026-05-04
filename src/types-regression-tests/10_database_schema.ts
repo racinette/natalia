@@ -61,12 +61,13 @@ type _AttachedIdIsString = Assert<
 >;
 
 // Brand separation: ids from different definitions are not interchangeable.
-// (Header signatures intentionally differ so the `__workflow` phantom resolves
-// to distinct types.)
+// Even structurally identical headers are distinguishable because the
+// `defineWorkflowHeader` factory captures `name` as a literal — see
+// `00_name_literals.ts`.
 const otherHeader = defineWorkflowHeader({
   name: "schemaOther",
-  args: z.object({ id: z.string(), tag: z.literal("other") }),
-  result: z.object({ done: z.boolean() }),
+  args: z.object({ id: z.string() }),
+  result: z.object({ ok: z.boolean() }),
 });
 declare const otherAttachedId: AttachedChildWorkflowId<typeof otherHeader>;
 type _AttachedBrandSeparation = Assert<

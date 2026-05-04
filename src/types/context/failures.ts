@@ -38,7 +38,7 @@ export type ScopeStepFailures<TSteps extends StepDefinitions> = {
   [K in keyof TSteps & string]: {
     readonly kind: "step";
     readonly name: K;
-    readonly args: TSteps[K] extends StepDefinition<infer A, any>
+    readonly args: TSteps[K] extends StepDefinition<any, infer A, any>
       ? StandardSchemaV1.InferOutput<A>
       : never;
     readonly info: StepFailureInfo;

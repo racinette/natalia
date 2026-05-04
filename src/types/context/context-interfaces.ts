@@ -136,6 +136,7 @@ export interface CompensationContext<
    */
   readonly steps: {
     [K in keyof TSteps]: TSteps[K] extends StepDefinition<
+      any,
       infer TArgs,
       infer TResultSchema,
       any
@@ -149,6 +150,7 @@ export interface CompensationContext<
    */
   readonly requests: {
     [K in keyof TRequests]: TRequests[K] extends RequestDefinition<
+      any,
       infer TPayload,
       infer TResponseSchema,
       any
@@ -292,6 +294,7 @@ export interface WorkflowContext<
    */
   readonly steps: {
     [K in keyof TSteps]: TSteps[K] extends StepDefinition<
+      any,
       infer TArgs,
       infer TResultSchema,
       any
@@ -305,6 +308,7 @@ export interface WorkflowContext<
    */
   readonly requests: {
     [K in keyof TRequests]: TRequests[K] extends RequestDefinition<
+      any,
       infer TPayload,
       infer TResponseSchema,
       any

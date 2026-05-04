@@ -11,9 +11,10 @@ import type {
  * Queue definition - created via defineQueue().
  */
 export interface QueueDefinition<
+  TName extends string = string,
   TMessageSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
 > {
-  readonly name: string;
+  readonly name: TName;
   /** Message schema for enqueued payloads and decoded handler messages. */
   readonly message: TMessageSchema;
   readonly ttlSeconds?: number;
@@ -32,16 +33,17 @@ export interface QueueDefinition<
 /**
  * Map of queue definitions.
  */
-export type QueueDefinitions = Record<string, QueueDefinition<any>>;
+export type QueueDefinitions = Record<string, QueueDefinition<any, any>>;
 
 /**
  * Topic definition - created via defineTopic().
  */
 export interface TopicDefinition<
+  TName extends string = string,
   TRecordSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TMetadataSchema extends JsonSchemaConstraint | undefined = undefined,
 > {
-  readonly name: string;
+  readonly name: TName;
   /** Record schema for published payloads and decoded consumer records. */
   readonly record: TRecordSchema;
   /** Optional metadata schema attached to published records. */
@@ -63,4 +65,4 @@ export interface TopicDefinition<
 /**
  * Map of topic definitions.
  */
-export type TopicDefinitions = Record<string, TopicDefinition<any, any>>;
+export type TopicDefinitions = Record<string, TopicDefinition<any, any, any>>;

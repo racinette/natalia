@@ -14,6 +14,7 @@ import type { PublicWorkflowHeader, WorkflowDefinitions } from "./workflow-heade
  * Useful for avoiding repeated `WorkflowDefinition<any, ...>` constraints.
  */
 export type AnyWorkflowDefinition = WorkflowDefinition<
+  string,
   any,
   any,
   any,
@@ -41,13 +42,14 @@ export type AnyWorkflowDefinition = WorkflowDefinition<
  * is no user-facing branch primitive.
  */
 export interface WorkflowDefinition<
-  TChannels extends ChannelDefinitions,
-  TStreams extends StreamDefinitions,
-  TEvents extends EventDefinitions,
-  TSteps extends StepDefinitions,
-  TRequests extends RequestDefinitions,
-  TChildWorkflows extends WorkflowDefinitions,
-  TForeignWorkflows extends WorkflowDefinitions,
+  TName extends string = string,
+  TChannels extends ChannelDefinitions = Record<string, never>,
+  TStreams extends StreamDefinitions = Record<string, never>,
+  TEvents extends EventDefinitions = Record<string, never>,
+  TSteps extends StepDefinitions = Record<string, never>,
+  TRequests extends RequestDefinitions = Record<string, never>,
+  TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<
     void,
     void
@@ -64,6 +66,7 @@ export interface WorkflowDefinition<
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
 > extends PublicWorkflowHeader<
+    TName,
     TChannels,
     TStreams,
     TEvents,
@@ -73,7 +76,7 @@ export interface WorkflowDefinition<
     TErrors
   > {
   /** Unique workflow name */
-  readonly name: string;
+  readonly name: TName;
 
   /** Channel definitions */
   readonly channels?: TChannels;

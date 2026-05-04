@@ -25,6 +25,7 @@ import type { WorkflowDefinitions } from "./workflow-headers";
  * step implementations — workflow-level logging is separate via ctx.logger.
  */
 export type StepDefinition<
+  TName extends string = string,
   TArgsSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TResultSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TCompensation extends
@@ -44,7 +45,7 @@ export type StepDefinition<
       >
     | undefined = undefined,
 > = {
-  readonly name: string;
+  readonly name: TName;
   /**
    * Execute function — must return z.input<schema>.
    * Use your own application logger for step-level logging.
@@ -66,7 +67,7 @@ export type StepDefinition<
       readonly compensation: TCompensation;
     });
 
-export type NonCompensableStepDefinition = StepDefinition<any, any, undefined> & {
+export type NonCompensableStepDefinition = StepDefinition<string, any, any, undefined> & {
   readonly compensation?: never;
 };
 
@@ -185,7 +186,7 @@ export interface StepCompensationDefinition<
 /**
  * Map of step definitions.
  */
-export type StepDefinitions = Record<string, StepDefinition<any, any, any>>;
+export type StepDefinitions = Record<string, StepDefinition<any, any, any, any>>;
 
 export type CompensationBlockStatus =
   | "pending"
@@ -208,7 +209,7 @@ type DistributeStatusResult<T> = T extends { status: infer TStatus }
   : T;
 
 type StepCompensationResultSchema<TStep> =
-  TStep extends StepDefinition<any, any, infer TCompensation>
+  TStep extends StepDefinition<any, any, any, infer TCompensation>
     ? TCompensation extends StepCompensationDefinition<
         any,
         any,
@@ -228,27 +229,27 @@ type StepCompensationResultSchema<TStep> =
     : undefined;
 
 export type CompensationBlockResult<
-  TStep extends StepDefinition<any, any, any>,
+  TStep extends StepDefinition<any, any, any, any>,
 > = StepCompensationResultSchema<TStep> extends JsonSchemaConstraint
   ? DistributeStatusResult<
       StandardSchemaV1.InferOutput<StepCompensationResultSchema<TStep>>
     >
   : void;
 
-type CompensationBlockStoredResult<TStep extends StepDefinition<any, any, any>> =
+type CompensationBlockStoredResult<TStep extends StepDefinition<any, any, any, any>> =
   CompensationBlockResult<TStep> extends void
     ? null
     : CompensationBlockResult<TStep> | null;
 
 export interface CompensationBlockUniqueHandle<
-  TStep extends StepDefinition<any, any, any>,
+  TStep extends StepDefinition<any, any, any, any>,
 > {
   status(): Promise<FindUniqueResult<CompensationBlockStatus>>;
   result(): Promise<FindUniqueResult<CompensationBlockStoredResult<TStep>>>;
 }
 
 export interface CompensationBlockHandle<
-  TStep extends StepDefinition<any, any, any>,
+  TStep extends StepDefinition<any, any, any, any>,
 > {
   findUnique(id: string): CompensationBlockUniqueHandle<TStep>;
 }

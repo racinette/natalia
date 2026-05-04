@@ -135,6 +135,7 @@ type RequestCompensationHandlerResult<TCompensation> =
  * ```
  */
 export function defineStep<
+  TName extends string,
   TArgsSchema extends JsonSchemaConstraint,
   TResultSchema extends JsonSchemaConstraint,
   TCompChannels extends ChannelDefinitions = Record<string, never>,
@@ -148,7 +149,7 @@ export function defineStep<
   TCompChildWorkflows extends WorkflowDefinitions = Record<string, never>,
   TCompensationResultSchema extends JsonSchemaConstraint | undefined = undefined,
 >(config: {
-  name: string;
+  name: TName;
   args: TArgsSchema;
   result: TResultSchema;
   compensation: StepCompensationDefinition<
@@ -171,6 +172,7 @@ export function defineStep<
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
   retryPolicy?: RetryPolicyOptions;
 }): StepDefinition<
+  TName,
   TArgsSchema,
   TResultSchema,
   StepCompensationDefinition<
@@ -189,10 +191,11 @@ export function defineStep<
   >
 >;
 export function defineStep<
+  TName extends string,
   TArgsSchema extends JsonSchemaConstraint,
   TResultSchema extends JsonSchemaConstraint,
 >(config: {
-  name: string;
+  name: TName;
   args: TArgsSchema;
   result: TResultSchema;
   compensation?: undefined;
@@ -201,7 +204,7 @@ export function defineStep<
     args: StandardSchemaV1.InferOutput<TArgsSchema>,
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
   retryPolicy?: RetryPolicyOptions;
-}): StepDefinition<TArgsSchema, TResultSchema>;
+}): StepDefinition<TName, TArgsSchema, TResultSchema>;
 export function defineStep(config: {
   name: string;
   args: JsonSchemaConstraint;
@@ -222,7 +225,7 @@ export function defineStep(config: {
   >;
   execute: (context: { signal: AbortSignal }, args: unknown) => Promise<unknown>;
   retryPolicy?: RetryPolicyOptions;
-}): StepDefinition<any, any, any> {
+}): StepDefinition<any, any, any, any> {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Step name must be a non-empty string");
   }
@@ -261,7 +264,7 @@ export function defineStep(config: {
     result: config.result,
     retryPolicy: config.retryPolicy,
     compensation: config.compensation,
-  } as StepDefinition<any, any, any>;
+  } as StepDefinition<any, any, any, any>;
 }
 
 // =============================================================================
@@ -272,42 +275,46 @@ export function defineStep(config: {
  * Define a typed request-response interaction.
  */
 export function defineRequest<
+  TName extends string,
   TPayloadSchema extends JsonSchemaConstraint,
   TResponseSchema extends JsonSchemaConstraint,
   TCompensationResultSchema extends JsonSchemaConstraint | undefined = undefined,
 >(config: {
-  name: string;
+  name: TName;
   payload: TPayloadSchema;
   response: TResponseSchema;
   compensation: RequestCompensationConfig<TCompensationResultSchema>;
 }): RequestDefinition<
+  TName,
   TPayloadSchema,
   TResponseSchema,
   RequestCompensationConfig<TCompensationResultSchema>
 >;
 export function defineRequest<
+  TName extends string,
   TPayloadSchema extends JsonSchemaConstraint,
   TResponseSchema extends JsonSchemaConstraint,
 >(config: {
-  name: string;
+  name: TName;
   payload: TPayloadSchema;
   response: TResponseSchema;
   compensation: true;
-}): RequestDefinition<TPayloadSchema, TResponseSchema, true>;
+}): RequestDefinition<TName, TPayloadSchema, TResponseSchema, true>;
 export function defineRequest<
+  TName extends string,
   TPayloadSchema extends JsonSchemaConstraint,
   TResponseSchema extends JsonSchemaConstraint,
 >(config: {
-  name: string;
+  name: TName;
   payload: TPayloadSchema;
   response: TResponseSchema;
-}): RequestDefinition<TPayloadSchema, TResponseSchema>;
+}): RequestDefinition<TName, TPayloadSchema, TResponseSchema>;
 export function defineRequest(config: {
   name: string;
   payload: JsonSchemaConstraint;
   response: JsonSchemaConstraint;
   compensation?: RequestCompensationDefinition<any>;
-}): RequestDefinition<any, any, any> {
+}): RequestDefinition<any, any, any, any> {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Request name must be a non-empty string");
   }
@@ -341,7 +348,7 @@ export function defineRequest(config: {
     response: config.response,
     compensation: config.compensation,
     registerHandler: () => noopUnsubscribe,
-  } as RequestDefinition<any, any, any>;
+  } as RequestDefinition<any, any, any, any>;
 }
 
 export function registerRequestCompensationHandler<
@@ -349,7 +356,7 @@ export function registerRequestCompensationHandler<
   TResponseSchema extends JsonSchemaConstraint,
   TCompensation extends RequestCompensationDefinition<any>,
 >(
-  definition: RequestDefinition<TPayloadSchema, TResponseSchema, TCompensation>,
+  definition: RequestDefinition<string, TPayloadSchema, TResponseSchema, TCompensation>,
   handler: (
     ctx: { signal: AbortSignal },
     payload: StandardSchemaV1.InferOutput<TPayloadSchema>,
@@ -381,16 +388,19 @@ export function registerRequestCompensationHandler<
 /**
  * Define a global durable queue.
  */
-export function defineQueue<TMessageSchema extends JsonSchemaConstraint>(config: {
-  name: string;
+export function defineQueue<
+  TName extends string,
+  TMessageSchema extends JsonSchemaConstraint,
+>(config: {
+  name: TName;
   message: TMessageSchema;
   ttlSeconds?: number;
-}): QueueDefinition<TMessageSchema>;
+}): QueueDefinition<TName, TMessageSchema>;
 export function defineQueue(config: {
   name: string;
   message: JsonSchemaConstraint;
   ttlSeconds?: number;
-}): QueueDefinition<any> {
+}): QueueDefinition<any, any> {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Queue name must be a non-empty string");
   }
@@ -414,20 +424,21 @@ export function defineQueue(config: {
  * Define a global ordered topic.
  */
 export function defineTopic<
+  TName extends string,
   TRecordSchema extends JsonSchemaConstraint,
   TMetadataSchema extends JsonSchemaConstraint | undefined = undefined,
 >(config: {
-  name: string;
+  name: TName;
   record: TRecordSchema;
   metadata?: TMetadataSchema;
   retentionSeconds?: number;
-}): TopicDefinition<TRecordSchema, TMetadataSchema>;
+}): TopicDefinition<TName, TRecordSchema, TMetadataSchema>;
 export function defineTopic(config: {
   name: string;
   record: JsonSchemaConstraint;
   metadata?: JsonSchemaConstraint;
   retentionSeconds?: number;
-}): TopicDefinition<any, any> {
+}): TopicDefinition<any, any, any> {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Topic name must be a non-empty string");
   }
@@ -500,19 +511,20 @@ export function defineTopic(config: {
  * ```
  */
 export function defineWorkflowHeader<
+  TName extends string,
   TChannels extends ChannelDefinitions = Record<string, never>,
   TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<void, void>,
   TResult extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
 >(config: {
-  name: string;
+  name: TName;
   channels?: TChannels;
   args?: TArgs;
   metadata?: TMetadata;
   result?: TResult;
   errors?: TErrors;
-}): WorkflowHeader<TChannels, TArgs, TMetadata, TResult, TErrors> {
+}): WorkflowHeader<TName, TChannels, TArgs, TMetadata, TResult, TErrors> {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Workflow name must be a non-empty string");
   }
@@ -556,7 +568,7 @@ export function defineWorkflowHeader<
   if (config.errors !== undefined) {
     validateErrorDefinitions(config.errors, "errors");
   }
-  return config as WorkflowHeader<TChannels, TArgs, TMetadata, TResult, TErrors>;
+  return config as WorkflowHeader<TName, TChannels, TArgs, TMetadata, TResult, TErrors>;
 }
 
 // =============================================================================
@@ -580,6 +592,7 @@ export function defineWorkflowHeader<
  * See REFACTOR.MD for the authoritative public API.
  */
 export function defineWorkflow<
+  TName extends string,
   TChannels extends ChannelDefinitions = Record<string, never>,
   TStreams extends StreamDefinitions = Record<string, never>,
   TEvents extends EventDefinitions = Record<string, never>,
@@ -594,7 +607,7 @@ export function defineWorkflow<
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
 >(config: {
-  name: string;
+  name: TName;
   channels?: TChannels;
   streams?: TStreams;
   events?: TEvents;
@@ -669,6 +682,7 @@ export function defineWorkflow<
     args: StandardSchemaV1.InferOutput<TArgs>,
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
 }): WorkflowDefinition<
+  TName,
   TChannels,
   TStreams,
   TEvents,
@@ -932,6 +946,7 @@ export function defineWorkflow<
     patches,
     rng,
   } as WorkflowDefinition<
+    TName,
     TChannels,
     TStreams,
     TEvents,

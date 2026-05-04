@@ -24,13 +24,14 @@ export type RequestCompensationDefinition<
 > = true | RequestCompensationConfig<TResultSchema>;
 
 export type RequestDefinition<
+  TName extends string = string,
   TPayloadSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TResponseSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TCompensation extends
     | RequestCompensationDefinition<any>
     | undefined = undefined,
 > = {
-  readonly name: string;
+  readonly name: TName;
   /** Payload schema for observable, serializable request input. */
   readonly payload: TPayloadSchema;
   /** Response schema for encoding/decoding resolved request data. */
@@ -52,6 +53,7 @@ export type RequestDefinition<
     });
 
 export type NonCompensableRequestDefinition = RequestDefinition<
+  string,
   any,
   any,
   undefined
@@ -67,4 +69,4 @@ export type NonCompensableRequestDefinitions = Record<
 /**
  * Map of request definitions.
  */
-export type RequestDefinitions = Record<string, RequestDefinition<any, any, any>>;
+export type RequestDefinitions = Record<string, RequestDefinition<any, any, any, any>>;
