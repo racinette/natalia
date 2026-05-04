@@ -9,6 +9,7 @@ export * from "./types/definitions/messaging";
 export * from "./types/definitions/workflow-headers";
 export * from "./types/definitions/workflow-definition";
 export * from "./types/results";
+export * from "./types/schema";
 export * from "./types/engine";
 export * from "./types/helpers";
 export * from "./types/search-query";
