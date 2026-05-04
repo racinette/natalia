@@ -156,9 +156,9 @@ export type WorkflowTerminationReason =
  * Durable halt state for workflow execution halts.
  *
  * Workflow execution halts pause the workflow at the point of an unrecognised
- * throw. They are resolved automatically by patch + replay, or by `sigkill()`
- * on the workflow handle. There is no operator-callable skip — skipping
- * workflow code would leave parent in-memory state inconsistent.
+ * throw. They are resolved automatically by patch + replay, or by `skip(...)`
+ * on the workflow handle (which transitions the workflow to `'skipped'` and
+ * records an operator-supplied result).
  */
 export type WorkflowHaltStatus = "pending" | "resolved";
 
@@ -168,12 +168,158 @@ export type WorkflowHaltStatus = "pending" | "resolved";
  * Compensation block instances are isolated; if `undo` throws unrecognised,
  * the instance is halted. The operator can either patch + replay or
  * `skip(...)` the compensation block instance, which records the synthesised
- * result and clears the halt.
+ * result and abandons the running `undo`.
  */
 export type CompensationBlockHaltStatus =
   | "pending"
   | "resolved"
   | "skipped";
+
+// =============================================================================
+// HALT RECORD — DURABLE ROW
+// =============================================================================
+
+/**
+ * Durable record of a halt — one row per occurrence in the unified `halt`
+ * table (`REFACTOR.MD` Part 3). One table covers every workflow kind in the
+ * system (execution workflows, base compensation workflows, and compensation
+ * block instances). The differences between workflow kinds are at the
+ * operator-action layer (which actions are available against which kinds),
+ * not at the halt-table layer.
+ */
+export interface HaltRecord {
+  readonly id: number;
+  readonly workflowId: string;
+  readonly afterStepId: number | null;
+  readonly status: WorkflowHaltStatus | CompensationBlockHaltStatus;
+  readonly errorType: string | null;
+  readonly errorMessage: string | null;
+  readonly errorStacktrace: string | null;
+  readonly errorDetails: JsonInput | undefined;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+}
+
+// =============================================================================
+// CONNECTION AND TRANSACTION (forward-declared; step 19 firms up)
+// =============================================================================
+
+declare const workflowConnectionBrand: unique symbol;
+declare const workflowTransactionBrand: unique symbol;
+
+/**
+ * Opaque database connection for engine IO.
+ *
+ * Step 19 introduces the `client.connection()` constructor and the
+ * acquisition / disposal lifecycle. Step 12 wires `txOrConn?: IWorkflowConnection
+ * | IWorkflowTransaction` onto every IO method on operator-facing handles.
+ *
+ * The brand is non-enumerable at runtime; user code cannot construct values of
+ * this type directly.
+ */
+export interface IWorkflowConnection {
+  /** @internal */
+  readonly [workflowConnectionBrand]: true;
+}
+
+/**
+ * Opaque database transaction for engine IO.
+ *
+ * `await using tx = await client.transaction(); ... await tx.commit();` is the
+ * canonical usage pattern (step 19). Operations passed `{ txOrConn: tx }`
+ * participate in the same transaction.
+ */
+export interface IWorkflowTransaction {
+  /** @internal */
+  readonly [workflowTransactionBrand]: true;
+}
+
+// =============================================================================
+// OPERATOR-ACTION VERBS — TYPE-LEVEL SIGNATURES
+//
+// `REFACTOR.MD` Part 3 defines three terminal-action verbs on operator-
+// addressable workflow rows: `sigkill()`, `sigterm()`, and `skip(result, opts?)`.
+//
+// Step 09 defines the verb signature types here. Step 12 plugs them onto the
+// concrete handles (`WorkflowHandleExternal`, `CompensationBlockUniqueHandle`).
+// =============================================================================
+
+/**
+ * Strategy for `skip(...)` on a workflow.
+ *
+ * - `"sigterm"` (default): cancel in-flight work via `AbortSignal`, then run
+ *   the compensation stack before transitioning to `'skipped'`.
+ * - `"sigkill"`: abandon in-flight work without raising any abort and without
+ *   running compensation; transition immediately to `'skipped'`.
+ */
+export type SkipStrategy = "sigterm" | "sigkill";
+
+/**
+ * Common options bag accepted by every operator-action verb.
+ *
+ * Step 19 makes `txOrConn?` mandatory across every IO method; step 12 plugs
+ * this options shape onto the concrete handle methods.
+ */
+export interface OperatorActionOptions {
+  readonly txOrConn?: IWorkflowConnection | IWorkflowTransaction;
+}
+
+/** Outcome of a `sigkill()` invocation. Status is set on the workflow row. */
+export interface SigkillOutcome {
+  readonly status: "terminated";
+}
+
+/**
+ * Outcome of a `sigterm()` invocation. The workflow runs the compensation
+ * stack and transitions to `'completed'` or `'failed'` depending on the
+ * compensation outcome.
+ */
+export type SigtermOutcome =
+  | { readonly status: "completed" }
+  | { readonly status: "failed" };
+
+/** Outcome of a `skip(result, opts?)` invocation. Status is `'skipped'`. */
+export interface SkipOutcome {
+  readonly status: "skipped";
+}
+
+/**
+ * Operator-action verbs available on globally-addressable workflows
+ * (root execution workflows + detached child workflows).
+ *
+ * The `skip(...)` overload set is conditional on the workflow's result
+ * schema: when `TResult` is `void`, `skip()` accepts zero data arguments
+ * (just options); otherwise the operator-supplied result is required.
+ */
+export interface WorkflowOperatorActions<TResult> {
+  sigkill(opts?: OperatorActionOptions): Promise<SigkillOutcome>;
+  sigterm(opts?: OperatorActionOptions): Promise<SigtermOutcome>;
+  skip(
+    ...args: [TResult] extends [void]
+      ? [opts?: OperatorActionOptions & { strategy?: SkipStrategy }]
+      : [
+          result: TResult,
+          opts?: OperatorActionOptions & { strategy?: SkipStrategy },
+        ]
+  ): Promise<SkipOutcome>;
+}
+
+/**
+ * Operator-action verbs available on compensation block instances.
+ *
+ * Compensation blocks expose only `skip(result)` — no `sigkill`, no
+ * `sigterm`, no strategy choice. For compensation, `skip` IS abandonment
+ * with an operator-supplied result. There is no graceful alternative
+ * because compensation blocks have no compensation stack of their own
+ * (Part 6 forbids recursive compensation).
+ */
+export interface CompensationBlockOperatorActions<TResult> {
+  skip(
+    ...args: [TResult] extends [void]
+      ? [opts?: OperatorActionOptions]
+      : [result: TResult, opts?: OperatorActionOptions]
+  ): Promise<SkipOutcome>;
+}
 
 // =============================================================================
 // RESULT TYPES — STEP (COMPENSATION)
