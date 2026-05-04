@@ -102,59 +102,46 @@ export interface WorkflowEngineConfig<
 // =============================================================================
 
 /**
- * WorkflowEngine — The main entry point for workflow operations.
+ * WorkflowEngine — the main entry point for workflow operations.
  *
- * The engine wraps a Postgres pool with workflow execution capabilities.
- * All workflow operations go through the engine.
+ * Wraps a Postgres pool with workflow execution capabilities. All workflow
+ * operations go through the engine; the engine extends `AbstractWorkflowClient`
+ * so `engine.workflows.<name>` exposes the standard client surface
+ * (`start` / `execute` / `get` / `findUnique` / `findMany` / `count`) per
+ * `REFACTOR.MD` Part 5.
  *
  * @example
  * ```typescript
  * import { WorkflowEngine } from './engine';
  * import { Pool } from 'pg';
- * import { orderWorkflow, travelBookingWorkflow } from './workflows';
+ * import { orderWorkflow } from './workflows';
  *
  * const pool = new Pool({ connectionString: process.env.DATABASE_URL });
  * const engine = new WorkflowEngine({
  *   pool,
- *   workflows: {
- *     order: orderWorkflow,
- *     travelBooking: travelBookingWorkflow,
- *   },
+ *   workflows: { order: orderWorkflow },
  * });
  *
  * await engine.start();
  *
- * const handle = await engine.workflows.order.start({
+ * // One-shot start + wait via execute(...).
+ * const result = await engine.workflows.order.execute({
  *   idempotencyKey: 'order-123',
- *   metadata: { tenantId: 'tenant-acme', correlationId: 'req-42' },
- *   args: { customerId: 'cust-456', items: [...] },
+ *   args: { customerId: 'cust-456' },
  * });
  *
- * // Send a message
- * const result = await handle.channels.payment.send({ amount: 100, txnId: 'abc' });
- *
- * // Wait for execution lifecycle event
- * const completed = await handle.execution.lifecycle.complete.wait({
- *   signal: AbortSignal.timeout(300_000),
+ * // Or start and observe the typed handle.
+ * const handle = await engine.workflows.order.start({
+ *   idempotencyKey: 'order-456',
+ *   args: { customerId: 'cust-789' },
  * });
+ * await handle.channels.payment.send({ amount: 100, txnId: 'abc' });
+ * const terminal = await handle.wait({ signal: AbortSignal.timeout(300_000) });
  *
- * // Wait for user-defined event
- * const eventResult = await handle.events.paymentReceived.wait({
- *   signal: AbortSignal.timeout(300_000),
- * });
- *
- * // Wait for execution terminal result
- * const finalResult = await handle.execution.wait();
- * if (!finalResult.ok && finalResult.status === 'failed') {
- *   console.error(finalResult.error.message); // WorkflowExecutionError
- * }
- *
- * // Wait for compensation phase terminal result
- * const compensationResult = await handle.compensation.wait();
- *
- * // Signals (engine-level only — not available in workflow code)
- * await handle.sigterm();  // Graceful shutdown with compensation
- * await handle.sigkill();  // Immediate shutdown, no compensation
+ * // Operator-action verbs (REFACTOR.MD Part 3).
+ * await handle.sigterm();
+ * await handle.sigkill();
+ * await handle.skip({ orderId: '...' }, { strategy: 'sigterm' });
  *
  * await engine.shutdown();
  * ```

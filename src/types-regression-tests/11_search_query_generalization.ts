@@ -7,10 +7,6 @@ import type {
   SearchQueryBuilder,
   SearchQueryNode,
   SearchSort,
-  WorkflowSearchEngineFields,
-  WorkflowSearchQuery,
-  WorkflowSearchQueryBuilder,
-  WorkflowSearchQueryNode,
 } from "../types";
 
 type Assert<T extends true> = T;
@@ -264,51 +260,31 @@ const _badSortMixedUnion: SearchSort<Namespaces> = {
 void _badSortMixedUnion;
 
 // =============================================================================
-// LEGACY WORKFLOW ALIASES — thin aliases over SearchQuery<{ engine; meta }>.
+// REMOVED LEGACY WORKFLOW SEARCH TYPES — must NOT be exported from "../types".
+//
+// These were the pre-step-12 workflow-specific aliases over the generic
+// `SearchQuery<TNamespaces>`. Step 12's introspection consumes the generic
+// surface directly with `WorkflowQueryNamespaces<TArgs, TResult, TMetadata>`
+// (from schema.ts), making these aliases redundant.
 // =============================================================================
 
-interface ExampleWorkflowMetadata extends SearchMetadataRecord {
-  readonly tenantId: string;
-  readonly priority: 1 | 2 | 3;
-}
-
-type _WorkflowQueryAlias = Assert<
-  IsEqual<
-    WorkflowSearchQuery<ExampleWorkflowMetadata>,
-    SearchQuery<{
-      engine: WorkflowSearchEngineFields;
-      meta: ExampleWorkflowMetadata;
-    }>
-  > extends false
-    ? false // structural extends-but-not-equals due to interface vs type — accept as long as it's a valid alias
-    : true
->;
-
-type _WorkflowNodeAlias = Assert<
-  WorkflowSearchQueryNode<ExampleWorkflowMetadata> extends SearchQueryNode<{
-    engine: WorkflowSearchEngineFields;
-    meta: ExampleWorkflowMetadata;
-  }>
-    ? true
-    : false
->;
-
-declare const workflowBuilder: WorkflowSearchQueryBuilder<ExampleWorkflowMetadata>;
-
-// engine namespace is a row namespace → flat-key access with bigint/Date range.
-const workflowBuilt = workflowBuilder.and(
-  workflowBuilder.engine.executionTerminalStatus.eq("complete"),
-  workflowBuilder.engine.createdAt.gte(new Date("2027-01-01T00:00:00.000Z")),
-  workflowBuilder.engine.executorId.gt(1000n),
-  workflowBuilder.meta.tenantId.eq("acme"),
-);
-void workflowBuilt;
-
-// @ts-expect-error executor id range expects bigint
-workflowBuilder.engine.executorId.gt(1000);
-
-// @ts-expect-error invalid enum value
-workflowBuilder.engine.executionTerminalStatus.eq("succeeded");
-
-// @ts-expect-error meta is the JSONB namespace; tenantId is string only
-workflowBuilder.meta.tenantId.gte(1);
+// @ts-expect-error WorkflowSearchEngineFields was superseded by `WorkflowRow` (step 10) plus `WorkflowQueryNamespaces` (step 10/12).
+import type { WorkflowSearchEngineFields as _RemovedWorkflowSearchEngineFields } from "../types";
+// @ts-expect-error WorkflowSearchQuery is removed in favour of `SearchQuery<TNamespaces>` (step 11).
+import type { WorkflowSearchQuery as _RemovedWorkflowSearchQuery } from "../types";
+// @ts-expect-error WorkflowSearchQueryNode is removed in favour of `SearchQueryNode<TNamespaces>` (step 11).
+import type { WorkflowSearchQueryNode as _RemovedWorkflowSearchQueryNode } from "../types";
+// @ts-expect-error WorkflowSearchQueryBuilder is removed in favour of `SearchQueryBuilder<TNamespaces>` (step 11).
+import type { WorkflowSearchQueryBuilder as _RemovedWorkflowSearchQueryBuilder } from "../types";
+// @ts-expect-error WorkflowSearchSort is removed in favour of `SearchSort<TNamespaces>` (step 11).
+import type { WorkflowSearchSort as _RemovedWorkflowSearchSort } from "../types";
+// @ts-expect-error WorkflowSearchSortDirection is removed in favour of `SearchSortDirection` (step 11).
+import type { WorkflowSearchSortDirection as _RemovedWorkflowSearchSortDirection } from "../types";
+// @ts-expect-error WorkflowSearchNamespace is removed.
+import type { WorkflowSearchNamespace as _RemovedWorkflowSearchNamespace } from "../types";
+// @ts-expect-error WorkflowSearchItem is removed in favour of FetchableHandle + WorkflowRow (step 12).
+import type { WorkflowSearchItem as _RemovedWorkflowSearchItem } from "../types";
+// @ts-expect-error WorkflowSearchResultPage is removed in favour of FindManyResult (step 12).
+import type { WorkflowSearchResultPage as _RemovedWorkflowSearchResultPage } from "../types";
+// @ts-expect-error WorkflowSearchCursor is removed; FindManyResult is async-iterable with internal pagination (step 12).
+import type { WorkflowSearchCursor as _RemovedWorkflowSearchCursor } from "../types";

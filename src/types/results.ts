@@ -322,63 +322,15 @@ export interface CompensationBlockOperatorActions<TResult> {
 }
 
 // =============================================================================
-// RESULT TYPES — STEP (COMPENSATION)
+// RESULT TYPES — TERMINAL WAIT
+//
+// Returned by `WorkflowHandleExternal.wait()` and
+// `WorkflowClientAccessor.execute()`. Discriminates the workflow's terminal
+// outcome — completed (with the typed result), failed (with the typed
+// declared business error), or terminated (with a runtime termination
+// reason).
 // =============================================================================
 
-/**
- * Result passed to compensation callbacks.
- * Represents what happened to the forward step — the compensation callback
- * must inspect `status` to decide what to undo.
- *
- * "terminated" IS included because SIGTERM can arrive during compensation
- * (e.g. the workflow failed and is compensating, then SIGTERM arrives).
- */
-export type StepCompensationResult<T> =
-  | { status: "complete"; data: T; attempts: AttemptAccessor }
-  | {
-      status: "failed";
-      reason: "attempts_exhausted" | "timeout";
-      attempts: AttemptAccessor;
-    }
-  | { status: "terminated"; attempts: AttemptAccessor };
-
-/**
- * Result of executing a step inside CompensationContext.
- * Compensation code MUST handle step failures gracefully — it cannot crash
- * the compensation chain. The `ok` field enables Go-style error checking.
- *
- * "terminated" is NOT included — the only way to terminate during compensation
- * is SIGKILL, which tears down the entire process immediately. Compensation
- * code never observes a "terminated" status.
- */
-export type CompensationStepResult<T> =
-  | { ok: true; status: "complete"; data: T; attempts: AttemptAccessor }
-  | {
-      ok: false;
-      status: "failed";
-      reason: "attempts_exhausted" | "timeout";
-      attempts: AttemptAccessor;
-    };
-
-/**
- * Result passed to child workflow compensation callbacks.
- * Similar to StepCompensationResult but for child workflows — no `reason`
- * or `errors` (workflows don't retry, and error info is on the `error` field).
- */
-export type ChildWorkflowCompensationResult<T> =
-  | { status: "complete"; data: T }
-  | { status: "failed"; error: WorkflowExecutionError }
-  | { status: "terminated"; reason: WorkflowTerminationReason };
-
-// =============================================================================
-// RESULT TYPES — ENGINE LEVEL (with error info)
-// =============================================================================
-
-/**
- * Result of a child workflow run/join at engine level.
- * Retains full discriminated union with `ok` field — engine callers need
- * explicit outcome handling.
- */
 export type WorkflowResult<T, TError = WorkflowExecutionError> =
   | { ok: true; status: "complete"; data: T }
   | { ok: false; status: "failed"; error: TError }
@@ -387,32 +339,6 @@ export type WorkflowResult<T, TError = WorkflowExecutionError> =
       status: "terminated";
       reason: WorkflowTerminationReason;
     };
-
-/**
- * Result of waiting for execution phase terminal outcome (engine level).
- */
-export type ExecutionResultExternal<TResult, TError = WorkflowExecutionError> =
-  | { ok: true; status: "complete"; data: TResult }
-  | { ok: false; status: "failed"; error: TError }
-  | {
-      ok: false;
-      status: "terminated";
-      reason: WorkflowTerminationReason;
-    }
-  | { ok: false; status: "not_found" };
-
-/**
- * Result of waiting for compensation phase terminal outcome (engine level).
- */
-export type CompensationResultExternal =
-  | { ok: true; status: "complete" }
-  | { ok: false; status: "failed"; error: WorkflowExecutionError }
-  | {
-      ok: false;
-      status: "terminated";
-      reason: WorkflowTerminationReason;
-    }
-  | { ok: false; status: "not_found" };
 
 // =============================================================================
 // RESULT TYPES — CHANNELS, STREAMS, EVENTS
@@ -473,14 +399,6 @@ export type EventCheckResult =
   | { ok: true; status: "set" }
   | { ok: false; status: "not_set" }
   | { ok: false; status: "never" }
-  | { ok: false; status: "not_found" };
-
-/**
- * Result of sending a signal (sigterm/sigkill) to a workflow (engine level).
- */
-export type SignalResult =
-  | { ok: true; status: "sent" }
-  | { ok: false; status: "already_finished" }
   | { ok: false; status: "not_found" };
 
 // =============================================================================

@@ -16,12 +16,6 @@ export * from "./types/helpers";
 export * from "./types/search-query";
 export * from "./types/json-input";
 export type {
-  AllBranchesFailedInfo,
-  ChildWorkflowFailureInfo,
-  ScopeFailureInfo,
-  StepFailureInfo,
-} from "./types/context/failures";
-export type {
   AppendScopeName,
   ScopeNameArg,
   ScopePath,
@@ -75,12 +69,6 @@ export type {
   EventAccessor,
   StreamAccessor,
 } from "./types/context/io-accessors";
-export type {
-  EventAccessorReadonly,
-  LifecycleEventAccessor,
-  PhaseLifecycleEventName,
-  PhaseLifecycleEvents,
-} from "./types/context/lifecycle";
 export type {
   ListenableHandle,
   Listener,

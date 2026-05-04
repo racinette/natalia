@@ -54,17 +54,11 @@ export { WorkflowEngine, type WorkflowEngineConfig } from "./engine";
 // Public API - Client
 export { createWorkflowClient } from "./client";
 
-// Public API - Errors (for catch blocks)
-export {
-  WorkflowError,
-  WorkflowCancelledError,
-  WorkflowKilledError,
-  StepCancelledError,
-  MaxRetriesExceededError,
-  WorkflowConflictError,
-  WorkflowNotFoundError,
-  NonDeterminismError,
-  StepTimeoutError,
-  EngineShutdownError,
-  CompensationFailedError,
-} from "./internal/errors";
+// Public API - Engine errors
+//
+// User-facing error vocabulary lives in `./types/results`:
+//   - `ExplicitError` (thrown via `ctx.errors.X(message, details?)`)
+//   - `AttemptError` (handler-side structured failure)
+//
+// Engine runtime errors (currently only `EngineShutdownError`) live here.
+export { EngineShutdownError } from "./internal/errors";

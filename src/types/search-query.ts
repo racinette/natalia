@@ -24,36 +24,6 @@
 // =============================================================================
 
 // =============================================================================
-// LEGACY ENGINE FIELDS (kept until step 12 sweeps the workflow query surface)
-// =============================================================================
-
-/**
- * Engine-managed terminal status values exposed in search predicates.
- */
-export type WorkflowTerminalStatus = "complete" | "failure" | "terminated";
-
-/**
- * Engine-managed searchable fields.
- *
- * These are semantic engine fields, not storage-engine specific columns.
- * Step 12 supersedes this with the unified `WorkflowRow` published by step 10.
- */
-export interface WorkflowSearchEngineFields {
-  createdAt: Date;
-  updatedAt: Date | null;
-  executionStartedAt: Date | null;
-  executionFinishedAt: Date | null;
-  compensationStartedAt: Date | null;
-  compensationFinishedAt: Date | null;
-  deadlineAt: Date | null;
-  executorId: bigint | null;
-  executionTerminalStatus: WorkflowTerminalStatus | null;
-  compensationTerminalStatus: WorkflowTerminalStatus | null;
-  isChild: boolean;
-  isDetached: boolean | null;
-}
-
-// =============================================================================
 // NAMESPACE-SHAPE PRIMITIVES
 // =============================================================================
 
@@ -279,22 +249,7 @@ type MetaArrayPathOf<T> = MetaAnyPath<T> extends infer P
     : never
   : never;
 
-// Backward-compat aliases for code that still wants the constrained form.
-type MetaScalarBranchAtPath<
-  T extends SearchMetadataRecord,
-  P extends MetaAnyPath<T>,
-> = MetaScalarBranchAtPathOf<T, P & string>;
-type MetaComparableBranchAtPath<
-  T extends SearchMetadataRecord,
-  P extends MetaAnyPath<T>,
-> = MetaComparableBranchAtPathOf<T, P & string>;
-type MetaArrayElementBranchAtPath<
-  T extends SearchMetadataRecord,
-  P extends MetaAnyPath<T>,
-> = MetaArrayElementBranchAtPathOf<T, P & string>;
-type MetaScalarPath<T extends SearchMetadataRecord> = MetaScalarPathOf<T>;
-type MetaComparablePath<T extends SearchMetadataRecord> = MetaComparablePathOf<T>;
-type MetaArrayPath<T extends SearchMetadataRecord> = MetaArrayPathOf<T>;
+
 
 // -----------------------------------------------------------------------------
 // ROW NAMESPACE — flat keys, comparable paths admit Date / bigint.
@@ -605,14 +560,7 @@ type MetadataBuilderNode<
   ArrayCapabilityBuilder<TNamespaces, TValue> &
   ScalarCapabilityBuilder<TNamespaces, TValue>;
 
-// Make the `_` reference reachable so unused-aliases don't confuse TS.
-type _UnusedBackcompatAliases =
-  | MetaScalarBranchAtPath<SearchMetadataRecord, never>
-  | MetaComparableBranchAtPath<SearchMetadataRecord, never>
-  | MetaArrayElementBranchAtPath<SearchMetadataRecord, never>
-  | MetaScalarPath<SearchMetadataRecord>
-  | MetaComparablePath<SearchMetadataRecord>
-  | MetaArrayPath<SearchMetadataRecord>;
+
 
 // -----------------------------------------------------------------------------
 // ROW SUB-BUILDER — flat-key accessors over a row namespace.
@@ -663,70 +611,4 @@ export type SearchQueryBuilder<
   not(node: SearchQueryNode<TNamespaces>): SearchQueryNode<TNamespaces>;
 };
 
-// =============================================================================
-// LEGACY WORKFLOW SEARCH ALIASES
-//
-// Kept until step 12 sweeps the workflow query surface. The workflow-specific
-// types are thin aliases over `SearchQuery<{ engine; meta }>`. Step 12 will
-// replace these with the unified workflow query namespaces from REFACTOR.MD
-// Part 5 (`row` / `args` / `result` / `metadata` / `error`).
-// =============================================================================
 
-type WorkflowSearchNamespaces<
-  TMetadata extends SearchMetadataRecord = Record<string, never>,
-> = {
-  engine: WorkflowSearchEngineFields;
-  meta: TMetadata;
-};
-
-export type WorkflowSearchNamespace = "engine" | "meta";
-
-export type WorkflowSearchQueryNode<
-  TMetadata extends SearchMetadataRecord = Record<string, never>,
-> = SearchQueryNode<WorkflowSearchNamespaces<TMetadata>>;
-
-export type WorkflowSearchSortDirection = SearchSortDirection;
-
-export type WorkflowSearchSort<
-  TMetadata extends SearchMetadataRecord = Record<string, never>,
-> = SearchSort<WorkflowSearchNamespaces<TMetadata>>;
-
-export interface WorkflowSearchQuery<
-  TMetadata extends SearchMetadataRecord = Record<string, never>,
-> extends SearchQuery<WorkflowSearchNamespaces<TMetadata>> {}
-
-export type WorkflowSearchQueryBuilder<
-  TMetadata extends SearchMetadataRecord = Record<string, never>,
-> = SearchQueryBuilder<WorkflowSearchNamespaces<TMetadata>>;
-
-// =============================================================================
-// LEGACY PAGINATION (kept until step 12 replaces with FindManyResult)
-// =============================================================================
-
-/**
- * Minimal placeholder search item for API-shaping phase.
- */
-export interface WorkflowSearchItem<
-  TMetadata extends SearchMetadataRecord = Record<string, never>,
-> {
-  readonly idempotencyKey: string;
-  readonly metadata: TMetadata;
-}
-
-/**
- * Minimal placeholder search page for API-shaping phase.
- */
-export interface WorkflowSearchResultPage<
-  TMetadata extends SearchMetadataRecord = Record<string, never>,
-> {
-  readonly items: readonly WorkflowSearchItem<TMetadata>[];
-  readonly nextCursor?: WorkflowSearchCursor<TMetadata>;
-}
-
-/**
- * Opaque pagination cursor branded by workflow search metadata type.
- */
-declare const workflowSearchCursorBrand: unique symbol;
-export type WorkflowSearchCursor<
-  TMetadata extends SearchMetadataRecord = Record<string, never>,
-> = string & { readonly [workflowSearchCursorBrand]: TMetadata };
