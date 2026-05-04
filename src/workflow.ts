@@ -10,8 +10,11 @@ import type {
   RequestCompensationInfo,
   NonCompensableRequestDefinitions,
   QueueDefinition,
+  QueueDefinitions,
   TopicDefinition,
+  TopicDefinitions,
   RetryPolicyOptions,
+  AttributeDefinitions,
   ChannelDefinitions,
   StreamDefinitions,
   EventDefinitions,
@@ -134,8 +137,15 @@ type RequestCompensationHandlerResult<TCompensation> =
 export function defineStep<
   TArgsSchema extends JsonSchemaConstraint,
   TResultSchema extends JsonSchemaConstraint,
+  TCompChannels extends ChannelDefinitions = Record<string, never>,
+  TCompStreams extends StreamDefinitions = Record<string, never>,
+  TCompEvents extends EventDefinitions = Record<string, never>,
+  TCompAttributes extends AttributeDefinitions = Record<string, never>,
   TCompensationSteps extends NonCompensableStepDefinitions = Record<string, never>,
   TCompensationRequests extends NonCompensableRequestDefinitions = Record<string, never>,
+  TCompQueues extends QueueDefinitions = Record<string, never>,
+  TCompTopics extends TopicDefinitions = Record<string, never>,
+  TCompChildWorkflows extends WorkflowDefinitions = Record<string, never>,
   TCompensationResultSchema extends JsonSchemaConstraint | undefined = undefined,
 >(config: {
   name: string;
@@ -144,8 +154,15 @@ export function defineStep<
   compensation: StepCompensationDefinition<
     TArgsSchema,
     TResultSchema,
+    TCompChannels,
+    TCompStreams,
+    TCompEvents,
+    TCompAttributes,
     TCompensationSteps,
     TCompensationRequests,
+    TCompQueues,
+    TCompTopics,
+    TCompChildWorkflows,
     TCompensationResultSchema
   >;
   execute: (
@@ -159,8 +176,15 @@ export function defineStep<
   StepCompensationDefinition<
     TArgsSchema,
     TResultSchema,
+    TCompChannels,
+    TCompStreams,
+    TCompEvents,
+    TCompAttributes,
     TCompensationSteps,
     TCompensationRequests,
+    TCompQueues,
+    TCompTopics,
+    TCompChildWorkflows,
     TCompensationResultSchema
   >
 >;
@@ -182,7 +206,20 @@ export function defineStep(config: {
   name: string;
   args: JsonSchemaConstraint;
   result: JsonSchemaConstraint;
-  compensation?: StepCompensationDefinition<any, any, any, any, any>;
+  compensation?: StepCompensationDefinition<
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any
+  >;
   execute: (context: { signal: AbortSignal }, args: unknown) => Promise<unknown>;
   retryPolicy?: RetryPolicyOptions;
 }): StepDefinition<any, any, any> {

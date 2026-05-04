@@ -25,6 +25,17 @@ export type StreamDefinitions = Record<
 >;
 
 /**
+ * Attribute definitions map - keys are attribute names, values are standard
+ * schemas. Attributes model an observable single current value on a workflow
+ * instance — externally readable, workflow-writable. The full accessor surface
+ * lands in step 16.
+ */
+export type AttributeDefinitions = Record<
+  string,
+  StandardSchemaV1<JsonInput, unknown>
+>;
+
+/**
  * Event definitions - keys are event names, values are `true`.
  * Events are value-less write-once flags for coordination.
  */

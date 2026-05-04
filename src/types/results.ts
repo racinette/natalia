@@ -51,6 +51,27 @@ export type ErrorValue<TErrors> = {
  */
 export type FailureInfo<TWorkflowErrors> = ErrorValue<TWorkflowErrors>;
 
+// =============================================================================
+// COMPENSATION BLOCK INSTANCE ID
+// =============================================================================
+
+/**
+ * Branded opaque public id for a compensation block instance.
+ *
+ * Compensation block instances are addressable through the parent workflow's
+ * `compensations.<step>` query namespace (step 12). The `__step` phantom
+ * prevents ids from different compensable steps being assignable to each
+ * other at the type level.
+ *
+ * Internally a `CompensationId<TStep>` is the workflow id of the
+ * compensation block instance (`workflow` table row, see `REFACTOR.MD` Part
+ * 8). Externally that detail is not exposed.
+ */
+export type CompensationId<TStep> = string & {
+  readonly __brand: "CompensationId";
+  readonly __step: TStep;
+};
+
 /**
  * Base captured-throw record for non-explicit failures.
  */
