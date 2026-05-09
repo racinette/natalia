@@ -416,11 +416,11 @@ export type EventCheckResult =
  * @example
  * ```typescript
  * // Time-based wait (5 seconds)
- * await handle.execution.wait({ signal: AbortSignal.timeout(5_000) });
+ * await handle.wait({ signal: AbortSignal.timeout(5_000) });
  *
  * // Cancellable wait
  * const controller = new AbortController();
- * await handle.execution.wait({ signal: controller.signal });
+ * await handle.wait({ signal: controller.signal });
  * // elsewhere: controller.abort();
  * ```
  *

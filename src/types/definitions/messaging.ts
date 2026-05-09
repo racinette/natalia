@@ -8,7 +8,11 @@ import type {
 } from "./handlers";
 
 /**
- * Queue definition - created via defineQueue().
+ * Queue definition — created via `defineQueue()`.
+ *
+ * `registerHandler` is still attached for early API shaping; `REFACTOR.MD`
+ * moves durable registration to the engine/client. The authoring helper wires a
+ * stub that returns a no-op unsubscribe until that lands.
  */
 export interface QueueDefinition<
   TName extends string = string,
@@ -36,7 +40,10 @@ export interface QueueDefinition<
 export type QueueDefinitions = Record<string, QueueDefinition<any, any>>;
 
 /**
- * Topic definition - created via defineTopic().
+ * Topic definition — created via `defineTopic()`.
+ *
+ * `registerConsumer` follows the same transitional pattern as queue handlers
+ * (see `QueueDefinition`); the definition-level hook is a stub for now.
  */
 export interface TopicDefinition<
   TName extends string = string,

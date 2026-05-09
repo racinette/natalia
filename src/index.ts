@@ -24,6 +24,9 @@
  * - Child workflows: `ctx.childWorkflows.X(startOpts, opts?)` for attached
  *   children (lifecycle bound to parent), `.startDetached(opts)` for detached
  *   starts. Foreign workflows are addressable via `ctx.foreignWorkflows.X.get`.
+ * - Engine / static client: `WorkflowEngine` and `createWorkflowClient` expose
+ *   the same per-workflow accessors (`start`, `execute`, `get`, introspection
+ *   queries) on `engine.workflows.<name>` / `client.workflows.<name>`.
  * - Channels / streams / events / attributes: per-instance primitives,
  *   inbound, outbound, write-once, observable single value respectively.
  * - Compensation: declared on the step or request that owns the action; each

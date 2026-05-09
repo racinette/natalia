@@ -7,11 +7,8 @@ import type {
 } from "./handlers";
 
 /**
- * Request definition - created via defineRequest().
- *
- * Requests are typed request-response interactions with external handlers or
- * manual resolution. Workflow code controls payload, priority, and observation
- * timeout at call time.
+ * Optional compensation payload schema for a compensable request (`compensation`
+ * on `defineRequest`).
  */
 export interface RequestCompensationConfig<
   TResultSchema extends JsonSchemaConstraint | undefined = undefined,
@@ -23,6 +20,17 @@ export type RequestCompensationDefinition<
   TResultSchema extends JsonSchemaConstraint | undefined = undefined,
 > = true | RequestCompensationConfig<TResultSchema>;
 
+/**
+ * Request definition — created via `defineRequest()`.
+ *
+ * Typed request/response with external handlers or manual resolution. Workflow
+ * code supplies the payload and per-call options (priority, observation timeout)
+ * at the accessor.
+ *
+ * `registerHandler` remains on the definition for early API shaping; durable
+ * registration moves to the engine/client per `REFACTOR.MD` (alongside queues
+ * and topics). The authoring helper currently returns a no-op unsubscribe.
+ */
 export type RequestDefinition<
   TName extends string = string,
   TPayloadSchema extends JsonSchemaConstraint = JsonSchemaConstraint,

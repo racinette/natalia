@@ -81,17 +81,20 @@ type RequestCompensationHandlerResult<TCompensation> =
  * - Are automatically retried on failure per their retry policy
  * - Have their results cached for deterministic replay
  *
- * In `WorkflowContext`, calling a step returns a `StepCall<T>` thenable.
- * Await it directly for the happy path (failure auto-terminates the workflow),
- * or chain builder methods before awaiting:
- * - `.compensate(cb)` — register compensation callback
- * - `.retry(policy)` — override retry policy
- * - `.failure(cb)` — handle failure explicitly without auto-terminating
- * - `.complete(cb)` — transform success result
+ * Author `execute` and optional `retryPolicy` for the forward path. When the step
+ * must be undoable, supply `compensation` with an `undo` callback (and optional
+ * nested primitives); that lives on the definition, not on each call site.
  *
- * In `CompensationContext`, calling a step returns a `CompensationStepCall<T>`
- * thenable that resolves to `CompensationStepResult<T>` — a discriminated union
- * that compensation code must handle gracefully.
+ * In both `WorkflowContext` and `CompensationContext`, `ctx.steps.<name>` is a
+ * `StepAccessor`: calling it returns a `StepEntry` of the declared result type.
+ * Pass `{ retry }` to override retries for that invocation, or `{ timeout, retry? }`
+ * to get a `StepEntry` that resolves to `TimeoutResult` instead of the raw result.
+ * Unhandled step failures in the workflow body terminate the workflow via the
+ * declared error model.
+ *
+ * Compensation `undo` runs under `CompensationContext` with the same accessor
+ * shape; it must not throw—handle failures inside `undo` and surface outcomes via
+ * the optional compensation `result` schema when you need structured data.
  *
  * LOGGING: Use your own application logger (console.log, Winston, Pino, etc.)
  * inside step implementations. Workflow-level logging is separate via ctx.logger.
@@ -273,6 +276,9 @@ export function defineStep(config: {
 
 /**
  * Define a typed request-response interaction.
+ *
+ * See `RequestDefinition` for compensation shapes and the transitional
+ * `registerHandler` stub on the returned object.
  */
 export function defineRequest<
   TName extends string,
@@ -387,6 +393,8 @@ export function registerRequestCompensationHandler<
 
 /**
  * Define a global durable queue.
+ *
+ * See `QueueDefinition` for the stub `registerHandler` on the returned object.
  */
 export function defineQueue<
   TName extends string,
@@ -422,6 +430,8 @@ export function defineQueue(config: {
 
 /**
  * Define a global ordered topic.
+ *
+ * See `TopicDefinition` for the stub `registerConsumer` on the returned object.
  */
 export function defineTopic<
   TName extends string,

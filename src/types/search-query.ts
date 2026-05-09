@@ -1,8 +1,8 @@
 // =============================================================================
 // SEARCH QUERY — SHARED TYPE SYSTEM
 //
-// `REFACTOR.MD` Part 9 generalises the legacy two-namespace
-// `WorkflowSearchQuery<TMeta>` into a reusable
+// `REFACTOR.MD` Part 9 replaces the old workflow-only query shape (historically
+// described as engine + metadata namespaces) with a reusable
 // `SearchQuery<TNamespaces>` over an arbitrary record of namespaces.
 //
 // Two namespace shapes participate:

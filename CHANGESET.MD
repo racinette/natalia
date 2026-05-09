@@ -1,80 +1,60 @@
-## Main points
+# Public API proposals (CHANGESET)
 
-3. OTel integration. nuff said, needs exploratory analysis first.
-4. client vs engine: different connection sources. does client accept a pool in the constructor? or does every client method accept a pool? how to make it generic over the type of the backend?
-5. a way to pause a workflow.
-6. forking a workflow from a specific place in time. essentially this forces us to introduce an api to introspect a workflow and its steps as well as scopes. Why? because forking doesn't really work that nicely in case of concurrent branches - and it's an open question of how this is supposed to really work.
-7. client should have the ability to rollback any workflow. this means that they should be able to send a sigint / sigterm, in case the workflow is alive and wait for the workflow to compensate. OR if the workflow is complete, they should be able to revert its effects nonetheless by simply forcing the rollback to happen.
-8. we need a new primitive, a "stream aggregator" - i dunno what to call it. Basically it sits atop of some stream and aggregates the incoming messages into a "denormalized" json. It's an amalgamation of a consumer and a workflow with the workflow creating the initial state (if needed) and the consumer picking up the new pieces of data to modify on top of the thing. It should be able to start from some offset (a callback returning an offset after the consumer rights have been acquired). What would also be interesting is adding these kinds of stream aggregators dynamically. Maybe this is semantically close to an infinitely running workflow that updates an attribute. This could solve the entire issue. But we'd need a continue-as-new if we let it run infinitely and prevent it from growing infinitely large. However, this would only be possible if we let workflows consume the topics, which is a questionable capability, since it's globally stateful. workflow-as-an-object seems like a concept similar to distributed objects in restate. for now I cannot find a compelling use-case. however, the streams are effectively a way to collect some event stream into a single logical unit, so maybe this is actually what really is needed.
-9. real cron-like workflows. I feel like outside
-   - see sketch below.
-10. search result completeness.
-
-I guess if I do all of this the public API will be feature complete.
+This document records **proposed** changes and open questions for the **public** surface. It is **not** a changelog. Authoritative “what we’re building” lives in **`REFACTOR.MD`** and the **`src/types`** tree; here we only keep work that is still **ahead of us** or **undecided**. Occasional **baseline** one-liners exist solely so a proposal isn’t read in a vacuum — they are not a substitute for the spec.
 
 ---
 
-## 20. Search result completeness
+## Main themes (informal backlog)
 
-`WorkflowSearchItem` is currently a minimal placeholder (`idempotencyKey` + `metadata`). Search results need to be operationally useful — when scanning multiple projects at a glance, you need status, timing, and error context without hitting individual workflow handles.
+3. OTel integration — needs exploratory analysis first.
+4. **Client vs engine** — different connection sources. Does the client accept a pool in the constructor, or does every method accept a connection? How do we stay generic over backend type?
+5. A way to **pause** a workflow.
+6. **Forking** a workflow from a specific point in time — likely requires richer introspection over workflow state, steps, and scopes. Concurrent branches make semantics an open problem.
+7. Client-driven **rollback** — signal a running workflow (`sigterm` / etc.) and wait for compensation, *or* force rollback after completion. (Operator verbs and `WorkflowResult` are taking shape in the type layer; runtime wiring is still ahead.)
+8. New primitive: **stream aggregator** (working name) — denormalized aggregate over a stream, possibly related to long-running workflows, topic consumption, continue-as-new, etc. Use cases and global-state concerns are still fuzzy.
+9. **Real cron-like workflow starts** — external scheduling that creates new instances (see §19). Distinct from in-workflow `ctx.schedule()` ticks.
+10. **List / browse ergonomics** for operators — see §20.
 
-### Proposed `WorkflowSearchItem` structure
+If we land the above coherently, the public API is close to “feature complete” for the product vision.
 
-```typescript
-interface WorkflowSearchItem<TMeta = unknown> {
-  readonly idempotencyKey: string;
-  readonly metadata: TMeta;
-  readonly status: "running" | "complete" | "failed" | "terminated" | "halted";
-  readonly createdAt: Date;
-  readonly completedAt: Date | null;
-  readonly failedAt: Date | null;
-  readonly terminatedAt: Date | null;
-  readonly haltedAt: Date | null;
+---
 
-  /** Populated when status is "failed". */
-  readonly error: WorkflowFailureInfo | null;
+## 20. List / browse ergonomics (introspection)
 
-  /** Populated when status is "terminated". */
-  readonly terminationReason: WorkflowTerminationReason | null;
+### Baseline (for reading this proposal only)
 
-  /** Populated when status is "halted". */
-  readonly haltInfo: {
-    readonly stepName: string;
-    readonly errorMessage: string | null;
-    readonly errorType: string | null;
-  } | null;
+The **target** shape in the type system today (runtime still largely stubbed) is:
 
-  /** Whether compensation has run / is running / hasn't started. */
-  readonly compensationStatus:
-    | "pending"
-    | "running"
-    | "complete"
-    | "failed"
-    | "not_applicable"
-    | null;
+- Per-workflow accessors on engine/client: `start`, `execute`, `get(idempotencyKey)`, `findUnique`, `findMany`, `count`.
+- Predicates and sorts use the generalized **`SearchQuery<TNamespaces>`** machinery; workflows use **`WorkflowQueryNamespaces`** (flat `row` columns plus JSONB namespaces such as `args`, `result`, `metadata`, `error`), not legacy workflow-only search aliases.
+- **`findMany`** returns **`FindManyResult<THandle>`** — dual `PromiseLike` + `AsyncIterable` — rather than an explicit “search page” DTO. Pagination is an implementation detail behind that surface.
+- Each row is addressed through a typed handle; **`fetchRow(fields?)`** (with field masks / **`WorkflowRow`**) is the projection path for “what columns do I need on this instance?”.
 
-  /** Deadline if set. */
-  readonly deadlineAt: Date | null;
-}
-```
+So the old idea of a dedicated minimal **`WorkflowSearchItem`** type is **superseded** by: **handle + query + optional row projection**. This section proposes what might still be **missing** for operator UX on top of that baseline.
 
-Key decisions:
+### Proposals
 
-- Terminal timestamps are mutually exclusive (one is set based on status), but all are present for uniform access.
-- `error` uses the existing `WorkflowFailureInfo` discriminated union — no new types.
-- `haltInfo` is minimal: which step halted and the captured error. Full halt inspection (stacktrace, step args) requires hitting the workflow handle.
-- `compensationStatus` gives a quick read on whether cleanup has run.
-- Search results should support pagination (cursor-based, consistent with `DeadLetterCursor`).
+1. **Summary-friendly defaults**  
+   For dashboards and multi-project scans, we may want either:
+   - documented **recommended field masks** for `fetchRow` in list contexts, and/or  
+   - an optional **higher-level “summary” view** (still to be designed) that avoids N+1 round-trips without abandoning the handle-centric model.
 
-### Search result ordering
+2. **Rich enough row semantics**  
+   Ensure the **persistence model + `WorkflowRow`** (and related halt / termination types) expose everything operators need at a glance: status, key timestamps, failure vs termination vs halt, compensation progress — aligned with **`WorkflowResult`**, halt records, and schema types, rather than inventing parallel DTOs.
 
-Default sort should be `createdAt DESC` (newest first). Sortable fields: `createdAt`, `completedAt`, `status`. Custom sort via the existing `SearchQuery` builder.
+3. **Pagination contract**  
+   **`FindManyResult`** intentionally hides cursor encoding. Proposal: specify **ordering defaults** (e.g. `createdAt` descending), **stable sort keys**, and **behavior under concurrent writes** for implementers; document any **page-size** or **back-pressure** knobs once the wire format exists.
+
+4. **Sorting**  
+   Keep the goal: default “newest first”; allow overrides via the existing sort types on the query builder, tied to **`WorkflowQueryNamespaces`** (not a parallel sort API).
 
 ---
 
 ## 19. Cron workflow starts (external scheduling)
 
-`ctx.schedule()` handles recurring work _within_ a running workflow. But the common need is "start a new instance of `OrderCleanup` every day at midnight" — recurring workflow _creation_ at the engine level.
+**Baseline:** `ctx.schedule()` addresses **recurring work inside** an already-running workflow.
+
+**Proposal:** first-class **engine/client schedule registry** that **starts new workflow instances** on a cron (or similar), e.g. nightly cleanup.
 
 ### Proposed API
 
@@ -145,7 +125,7 @@ CREATE TABLE workflow_schedules (
 
 ---
 
-## Addons
+## Add-ons
 
-- We _most probably_ need a logger wrapper to support multiple logging backends.
-- We _may_ want to have a clean abstraction over a storage client, instead of forcing the postgres all the way. However, this really boils down to how the actual engine is going to be implemented. I think it's better to be going both ways to meet in the middle, and then abstract away the storage cleanly - I don't think it's gonna be "implementation detail"y much.
+- We **most probably** need a logger wrapper to support multiple logging backends.
+- We **may** want a clean abstraction over a storage client instead of hard-coding Postgres everywhere — likely converges with item 4 above as the engine solidifies.

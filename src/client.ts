@@ -6,7 +6,11 @@ import type {
 
 /**
  * Generic client surface shared by concrete clients and the executable engine.
- * Subclasses provide lifecycle/state guards via assertClientAvailable().
+ *
+ * `workflows` is keyed by workflow name; each value matches `WorkflowClientAccessor`
+ * (`start`, `execute`, `get`, `findUnique`, `findMany`, `count`). Subclasses
+ * supply lifecycle/state guards via `assertClientAvailable()` before invoking
+ * the stubbed runtime methods.
  */
 export abstract class AbstractWorkflowClient<
   TWfs extends Record<string, AnyPublicWorkflowHeader>,
@@ -68,8 +72,9 @@ class StaticWorkflowClient<
  * Create a typed client surface from workflow public contracts.
  *
  * Accepts either lightweight `PublicWorkflowHeader` maps or full
- * `WorkflowDefinition` maps (structural typing). This is useful for callers
- * that only need client operations and do not own engine lifecycle.
+ * `WorkflowDefinition` maps (structural typing). Use when callers need the
+ * typed client API (start/execute/get and introspection) without owning engine
+ * lifecycle; method bodies are stubs until wired to a real runtime.
  */
 export function createWorkflowClient<
   TWfs extends Record<string, AnyPublicWorkflowHeader>,

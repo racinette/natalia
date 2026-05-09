@@ -21,8 +21,9 @@ export interface WorkflowEngineConfig<
    * Registered workflows.
    *
    * Workflows must be registered at construction time for type safety.
-   * This creates engine.workflows.{workflowName}.start() and
-   * engine.workflows.{workflowName}.get() accessors.
+   * Each `engine.workflows.<name>` exposes the client accessor surface:
+   * `start`, `execute`, `get` (by idempotency key), `findUnique`, `findMany`,
+   * and `count` (see `WorkflowClientAccessor` in `./types`).
    */
   workflows: TWfs;
 
