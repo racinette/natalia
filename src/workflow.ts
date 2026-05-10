@@ -149,7 +149,9 @@ export function defineStep<
   TCompensationRequests extends NonCompensableRequestDefinitions = Record<string, never>,
   TCompQueues extends QueueDefinitions = Record<string, never>,
   TCompTopics extends TopicDefinitions = Record<string, never>,
-  TCompChildWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TCompAttachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TCompDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TCompExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TCompensationResultSchema extends JsonSchemaConstraint | undefined = undefined,
 >(config: {
   name: TName;
@@ -166,7 +168,9 @@ export function defineStep<
     TCompensationRequests,
     TCompQueues,
     TCompTopics,
-    TCompChildWorkflows,
+    TCompAttachedChildren,
+    TCompDetachedChildren,
+    TCompExternalWorkflows,
     TCompensationResultSchema
   >;
   execute: (
@@ -189,7 +193,9 @@ export function defineStep<
     TCompensationRequests,
     TCompQueues,
     TCompTopics,
-    TCompChildWorkflows,
+    TCompAttachedChildren,
+    TCompDetachedChildren,
+    TCompExternalWorkflows,
     TCompensationResultSchema
   >
 >;
@@ -213,6 +219,8 @@ export function defineStep(config: {
   args: JsonSchemaConstraint;
   result: JsonSchemaConstraint;
   compensation?: StepCompensationDefinition<
+    any,
+    any,
     any,
     any,
     any,
@@ -473,8 +481,8 @@ export function defineTopic(config: {
 // =============================================================================
 
 /**
- * Define a minimal workflow descriptor for use in `childWorkflows` and
- * `foreignWorkflows` references before the full workflow is defined.
+ * Define a minimal workflow descriptor for use in `children` and
+ * `external` references before the full workflow is defined.
  *
  * A `WorkflowHeader` captures a lightweight authoring contract — `name`,
  * optional `channels`, `args`, `metadata`, and `result` — with no
@@ -500,14 +508,14 @@ export function defineTopic(config: {
  *
  * const workerWorkflow = defineWorkflow({
  *   ...workerHeader,
- *   foreignWorkflows: { manager: managerHeader },
+ *   external: { manager: managerHeader },
  *   execute: async (ctx, args) => { ... },
  * });
  *
  * const managerWorkflow = defineWorkflow({
  *   ...managerHeader,           // spreads name + channels
  *   args: ManagerArgs,          // adds implementation-only fields
- *   childWorkflows: { worker: workerWorkflow },
+ *   children: { attached: { worker: workerWorkflow } },
  *   execute: async (ctx, args) => { ... },
  * });
  *
@@ -515,7 +523,7 @@ export function defineTopic(config: {
  * const treeHeader = defineWorkflowHeader({ name: "tree", args: TreeArgs });
  * const treeWorkflow = defineWorkflow({
  *   ...treeHeader,
- *   childWorkflows: { subtree: treeHeader },
+ *   children: { attached: { subtree: treeHeader } },
  *   execute: async (ctx, args) => { ... },
  * });
  * ```
@@ -608,8 +616,9 @@ export function defineWorkflow<
   TEvents extends EventDefinitions = Record<string, never>,
   TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
-  TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
-  TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<void, void>,
@@ -623,8 +632,11 @@ export function defineWorkflow<
   events?: TEvents;
   steps?: TSteps;
   requests?: TRequests;
-  childWorkflows?: TChildWorkflows;
-  foreignWorkflows?: TForeignWorkflows;
+  children?: {
+    attached?: TAttachedChildren;
+    detached?: TDetachedChildren;
+  };
+  external?: TExternalWorkflows;
   patches?: TPatches;
   rng?: TRng;
   result?: TResultSchema;
@@ -649,8 +661,9 @@ export function defineWorkflow<
             TEvents,
             TSteps,
             TRequests,
-            TChildWorkflows,
-            TForeignWorkflows,
+            TAttachedChildren,
+            TDetachedChildren,
+            TExternalWorkflows,
             TPatches,
             TRng,
             [],
@@ -667,8 +680,9 @@ export function defineWorkflow<
             TEvents,
             TSteps,
             TRequests,
-            TChildWorkflows,
-            TForeignWorkflows,
+            TAttachedChildren,
+            TDetachedChildren,
+            TExternalWorkflows,
             TPatches,
             TRng
           >;
@@ -682,8 +696,9 @@ export function defineWorkflow<
       TEvents,
       TSteps,
       TRequests,
-      TChildWorkflows,
-      TForeignWorkflows,
+      TAttachedChildren,
+      TDetachedChildren,
+      TExternalWorkflows,
       TPatches,
       TRng,
       [],
@@ -698,8 +713,9 @@ export function defineWorkflow<
   TEvents,
   TSteps,
   TRequests,
-  TChildWorkflows,
-  TForeignWorkflows,
+  TAttachedChildren,
+  TDetachedChildren,
+  TExternalWorkflows,
   TResultSchema,
   TArgs,
   TMetadata,
@@ -796,44 +812,65 @@ export function defineWorkflow<
     }
   }
 
-  // Validate childWorkflows
-  const childWorkflows = config.childWorkflows ?? ({} as TChildWorkflows);
-  if (config.childWorkflows !== undefined) {
-    if (
-      typeof config.childWorkflows !== "object" ||
-      Array.isArray(config.childWorkflows)
-    ) {
-      throw new Error("childWorkflows must be an object");
+  // Validate children
+  const children = {
+    attached: config.children?.attached ?? ({} as TAttachedChildren),
+    detached: config.children?.detached ?? ({} as TDetachedChildren),
+  };
+  if (config.children !== undefined) {
+    if (typeof config.children !== "object" || Array.isArray(config.children)) {
+      throw new Error("children must be an object");
     }
-    for (const [name, wf] of Object.entries(config.childWorkflows)) {
+    if (
+      config.children.attached !== undefined &&
+      (typeof config.children.attached !== "object" ||
+        Array.isArray(config.children.attached))
+    ) {
+      throw new Error("children.attached must be an object");
+    }
+    if (
+      config.children.detached !== undefined &&
+      (typeof config.children.detached !== "object" ||
+        Array.isArray(config.children.detached))
+    ) {
+      throw new Error("children.detached must be an object");
+    }
+    for (const [name, wf] of Object.entries(config.children.attached ?? {})) {
       if (!wf || typeof wf !== "object") {
         throw new Error(
-          `Child workflow '${name}' must be a valid workflow definition or header`,
+          `Attached child workflow '${name}' must be a valid workflow definition or header`,
         );
       }
       if (!wf.name || typeof wf.name !== "string") {
-        throw new Error(`Child workflow '${name}' must have a name`);
+        throw new Error(`Attached child workflow '${name}' must have a name`);
+      }
+    }
+    for (const [name, wf] of Object.entries(config.children.detached ?? {})) {
+      if (!wf || typeof wf !== "object") {
+        throw new Error(
+          `Detached child workflow '${name}' must be a valid workflow definition or header`,
+        );
+      }
+      if (!wf.name || typeof wf.name !== "string") {
+        throw new Error(`Detached child workflow '${name}' must have a name`);
       }
     }
   }
 
-  // Validate foreignWorkflows
-  const foreignWorkflows = config.foreignWorkflows ?? ({} as TForeignWorkflows);
-  if (config.foreignWorkflows !== undefined) {
-    if (
-      typeof config.foreignWorkflows !== "object" ||
-      Array.isArray(config.foreignWorkflows)
-    ) {
-      throw new Error("foreignWorkflows must be an object");
+  // Validate external workflows
+  const external = config.external ?? ({} as TExternalWorkflows);
+  if (config.external !== undefined) {
+    if (typeof config.external !== "object" || Array.isArray(config.external)) {
+      throw new Error("external must be an object");
     }
-    for (const [name, wf] of Object.entries(config.foreignWorkflows)) {
+    for (const [name, wf] of Object.entries(config.external)) {
       if (!wf || typeof wf !== "object") {
         throw new Error(
-          `Foreign workflow '${name}' must be a valid workflow definition or header`,
+          `External workflow '${name}' must be a valid workflow definition or header`,
         );
       }
       if (!wf.name || typeof wf.name !== "string") {
-        throw new Error(`Foreign workflow '${name}' must have a name`);
+        throw new Error(`External workflow '${name}' must have a name`);
       }
     }
   }
@@ -950,8 +987,8 @@ export function defineWorkflow<
     events,
     steps,
     requests,
-    childWorkflows,
-    foreignWorkflows,
+    children,
+    external,
     errors,
     patches,
     rng,
@@ -962,8 +999,9 @@ export function defineWorkflow<
     TEvents,
     TSteps,
     TRequests,
-    TChildWorkflows,
-    TForeignWorkflows,
+    TAttachedChildren,
+    TDetachedChildren,
+    TExternalWorkflows,
     TResultSchema,
     TArgs,
     TMetadata,

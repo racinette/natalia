@@ -125,16 +125,48 @@ export type InferWorkflowRequests<W> = W extends { requests?: infer TRequests }
   : never;
 
 /**
- * Extract declared child workflows from a full workflow definition.
+ * Extract declared attached children from a full workflow definition.
  *
  * Header-only workflow descriptors do not carry this field and resolve to
  * `never` so callers can choose an explicit fallback policy.
  */
-export type InferWorkflowChildWorkflows<W> = W extends {
-  childWorkflows?: infer TChildWorkflows;
+export type InferWorkflowAttachedChildren<W> = W extends {
+  children?: infer TChildren;
 }
-  ? TChildWorkflows extends WorkflowDefinitions
-    ? TChildWorkflows
+  ? TChildren extends { attached?: infer TAttachedChildren }
+    ? TAttachedChildren extends WorkflowDefinitions
+      ? TAttachedChildren
+      : never
+    : never
+  : never;
+
+/**
+ * Extract declared detached children from a full workflow definition.
+ *
+ * Header-only workflow descriptors do not carry this field and resolve to
+ * `never` so callers can choose an explicit fallback policy.
+ */
+export type InferWorkflowDetachedChildren<W> = W extends {
+  children?: infer TChildren;
+}
+  ? TChildren extends { detached?: infer TDetachedChildren }
+    ? TDetachedChildren extends WorkflowDefinitions
+      ? TDetachedChildren
+      : never
+    : never
+  : never;
+
+/**
+ * Extract declared external workflow dependencies from a full workflow definition.
+ *
+ * Header-only workflow descriptors do not carry this field and resolve to
+ * `never` so callers can choose an explicit fallback policy.
+ */
+export type InferWorkflowExternal<W> = W extends {
+  external?: infer TExternalWorkflows;
+}
+  ? TExternalWorkflows extends WorkflowDefinitions
+    ? TExternalWorkflows
     : never
   : never;
 

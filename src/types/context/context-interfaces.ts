@@ -6,7 +6,13 @@ import type { RngAccessors, RngDefinitions } from "../definitions/rng";
 import type { StepDefinition, StepDefinitions } from "../definitions/steps";
 import type { WorkflowDefinitions } from "../definitions/workflow-headers";
 import type { ExplicitError } from "../results";
-import type { ChildWorkflowAccessor, CompensationChildWorkflowAccessor, ForeignWorkflowAccessor, RequestAccessor } from "./call-builders";
+import type {
+  ChildWorkflowAccessor,
+  CompensationChildWorkflowAccessor,
+  DetachedChildWorkflowAccessor,
+  ForeignWorkflowAccessor,
+  RequestAccessor,
+} from "./call-builders";
 import type { BlockingResult, CompensationResolver, ExecutionResolver } from "./deterministic-handles";
 import type { AwaitableEntry, JoinOptions, JoinResult, JoinTimeoutResult, SchemaInvocationInput, StepAccessor } from "./entries";
 import type { ChannelHandle, EventAccessor, StreamAccessor } from "./io-accessors";
@@ -122,8 +128,9 @@ export interface CompensationContext<
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
   TRequests extends RequestDefinitions = Record<string, never>,
-  TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
-  TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
   TScopePath extends ScopePath = [],
@@ -162,18 +169,25 @@ export interface CompensationContext<
   /**
    * Child workflows.
    */
-  readonly childWorkflows: {
-    [K in keyof TChildWorkflows]: CompensationChildWorkflowAccessor<
-      TChildWorkflows[K]
-    >;
+  readonly children: {
+    readonly attached: {
+      [K in keyof TAttachedChildren]: CompensationChildWorkflowAccessor<
+        TAttachedChildren[K]
+      >;
+    };
+    readonly detached: {
+      [K in keyof TDetachedChildren]: DetachedChildWorkflowAccessor<
+        TDetachedChildren[K]
+      >;
+    };
   };
 
   /**
    * Foreign workflow accessors — message-only handles to existing workflow instances.
    */
-  readonly foreignWorkflows: {
-    [K in keyof TForeignWorkflows]: ForeignWorkflowAccessor<
-      TForeignWorkflows[K]
+  readonly external: {
+    [K in keyof TExternalWorkflows]: ForeignWorkflowAccessor<
+      TExternalWorkflows[K]
     >;
   };
 
@@ -201,8 +215,9 @@ export interface CompensationContext<
         TEvents,
         TSteps,
         TRequests,
-        TChildWorkflows,
-        TForeignWorkflows,
+        TAttachedChildren,
+        TDetachedChildren,
+        TExternalWorkflows,
         TPatches,
         TRng,
         AppendScopeName<TScopePath, Name>
@@ -279,8 +294,9 @@ export interface WorkflowContext<
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
   TRequests extends RequestDefinitions = Record<string, never>,
-  TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
-  TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
   TScopePath extends ScopePath = [],
@@ -320,29 +336,37 @@ export interface WorkflowContext<
   /**
    * Child workflow accessors — structured invocation (lifecycle managed by parent).
    */
-  readonly childWorkflows: {
-    [K in keyof TChildWorkflows]: ChildWorkflowAccessor<
-      TChildWorkflows[K],
-      CompensationContext<
-        TChannels,
-        TStreams,
-        TEvents,
-        TSteps,
-        TRequests,
-        TChildWorkflows,
-        TForeignWorkflows,
-        TPatches,
-        TRng
-      >
-    >;
+  readonly children: {
+    readonly attached: {
+      [K in keyof TAttachedChildren]: ChildWorkflowAccessor<
+        TAttachedChildren[K],
+        CompensationContext<
+          TChannels,
+          TStreams,
+          TEvents,
+          TSteps,
+          TRequests,
+          TAttachedChildren,
+          TDetachedChildren,
+          TExternalWorkflows,
+          TPatches,
+          TRng
+        >
+      >;
+    };
+    readonly detached: {
+      [K in keyof TDetachedChildren]: DetachedChildWorkflowAccessor<
+        TDetachedChildren[K]
+      >;
+    };
   };
 
   /**
    * Foreign workflow accessors — message-only handles to existing workflow instances.
    */
-  readonly foreignWorkflows: {
-    [K in keyof TForeignWorkflows]: ForeignWorkflowAccessor<
-      TForeignWorkflows[K]
+  readonly external: {
+    [K in keyof TExternalWorkflows]: ForeignWorkflowAccessor<
+      TExternalWorkflows[K]
     >;
   };
 
@@ -378,8 +402,9 @@ export interface WorkflowContext<
         TEvents,
         TSteps,
         TRequests,
-        TChildWorkflows,
-        TForeignWorkflows,
+        TAttachedChildren,
+        TDetachedChildren,
+        TExternalWorkflows,
         TPatches,
         TRng,
         AppendScopeName<TScopePath, Name>,
@@ -464,8 +489,9 @@ export interface WorkflowConcurrencyContext<
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
   TRequests extends RequestDefinitions = Record<string, never>,
-  TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
-  TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
   TScopePath extends ScopePath = [],
@@ -479,8 +505,9 @@ export interface WorkflowConcurrencyContext<
         TEvents,
         TSteps,
         TRequests,
-        TChildWorkflows,
-        TForeignWorkflows,
+        TAttachedChildren,
+        TDetachedChildren,
+        TExternalWorkflows,
         TPatches,
         TRng,
         TScopePath,
@@ -505,8 +532,9 @@ export interface CompensationConcurrencyContext<
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
   TRequests extends RequestDefinitions = Record<string, never>,
-  TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
-  TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
   TScopePath extends ScopePath = [],
@@ -518,8 +546,9 @@ export interface CompensationConcurrencyContext<
       TEvents,
       TSteps,
       TRequests,
-      TChildWorkflows,
-      TForeignWorkflows,
+      TAttachedChildren,
+      TDetachedChildren,
+      TExternalWorkflows,
       TPatches,
       TRng,
       TScopePath

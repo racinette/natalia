@@ -27,6 +27,7 @@ export type AnyWorkflowDefinition = WorkflowDefinition<
   any,
   any,
   any,
+  any,
   any
 >;
 
@@ -48,8 +49,9 @@ export interface WorkflowDefinition<
   TEvents extends EventDefinitions = Record<string, never>,
   TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
-  TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
-  TForeignWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<
     void,
     void
@@ -93,11 +95,14 @@ export interface WorkflowDefinition<
   /** Request definitions */
   readonly requests?: TRequests;
 
-  /** Child workflow definitions (for ctx.childWorkflows) */
-  readonly childWorkflows?: TChildWorkflows;
+  /** Child workflow definitions (for ctx.children.attached / ctx.children.detached) */
+  readonly children?: {
+    readonly attached?: TAttachedChildren;
+    readonly detached?: TDetachedChildren;
+  };
 
-  /** Foreign workflow definitions (for ctx.foreignWorkflows) */
-  readonly foreignWorkflows?: TForeignWorkflows;
+  /** External workflow definitions (for ctx.external) */
+  readonly external?: TExternalWorkflows;
 
   /**
    * Patch definitions for safe workflow evolution.
@@ -145,8 +150,9 @@ export interface WorkflowDefinition<
           TEvents,
           TSteps,
           TRequests,
-          TChildWorkflows,
-          TForeignWorkflows,
+          TAttachedChildren,
+          TDetachedChildren,
+          TExternalWorkflows,
           TPatches,
           TRng,
           [],
@@ -163,8 +169,9 @@ export interface WorkflowDefinition<
           TEvents,
           TSteps,
           TRequests,
-          TChildWorkflows,
-          TForeignWorkflows,
+          TAttachedChildren,
+          TDetachedChildren,
+          TExternalWorkflows,
           TPatches,
           TRng
         >;
@@ -181,8 +188,9 @@ export interface WorkflowDefinition<
       TEvents,
       TSteps,
       TRequests,
-      TChildWorkflows,
-      TForeignWorkflows,
+      TAttachedChildren,
+      TDetachedChildren,
+      TExternalWorkflows,
       TPatches,
       TRng,
       [],

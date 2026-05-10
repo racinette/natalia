@@ -91,6 +91,7 @@ export type {
   ChildWorkflowTimeoutCallOptions,
   CompensationChildWorkflowAccessor,
   CompensationChildWorkflowStartOptions,
+  DetachedChildWorkflowAccessor,
   DetachedStartOptions,
   ForeignWorkflowAccessor,
   ForeignWorkflowHandle,

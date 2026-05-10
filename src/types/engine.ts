@@ -59,9 +59,11 @@ import type {
 import type {
   InferWorkflowArgs,
   InferWorkflowArgsInput,
-  InferWorkflowChildWorkflows,
+  InferWorkflowAttachedChildren,
   InferWorkflowChannels,
+  InferWorkflowDetachedChildren,
   InferWorkflowErrors,
+  InferWorkflowExternal,
   InferWorkflowEvents,
   InferWorkflowMetadata,
   InferWorkflowMetadataInput,
@@ -289,7 +291,7 @@ export interface AttachedChildWorkflowExternalHandle<W extends AnyPublicWorkflow
 
 /**
  * Per-parent attached child workflow namespace, keyed by child workflow name
- * on `workflowInstance.attachedChildWorkflows.<name>`.
+ * on `workflowInstance.children.attached.<name>`.
  */
 export interface AttachedChildWorkflowNamespaceExternal<
   W extends AnyPublicWorkflowHeader,
@@ -377,6 +379,8 @@ type StepCompensationResultForNamespace<TStep> =
         any,
         any,
         any,
+        any,
+        any,
         infer TResultSchema
       >
       ? TResultSchema extends StandardSchemaV1<unknown, unknown>
@@ -425,21 +429,21 @@ type WorkflowHandleRequestCompensationNamespaces<
 };
 
 type WorkflowHandleChildWorkflowNamespaces<
-  TChildWorkflows extends Record<string, unknown>,
+  TChildren extends Record<string, unknown>,
 > = {
-  [K in keyof TChildWorkflows & string]: AttachedChildWorkflowNamespaceExternal<
-    TChildWorkflows[K] extends AnyPublicWorkflowHeader
-      ? TChildWorkflows[K]
+  [K in keyof TChildren & string]: AttachedChildWorkflowNamespaceExternal<
+    TChildren[K] extends AnyPublicWorkflowHeader
+      ? TChildren[K]
       : AnyPublicWorkflowHeader
   >;
 };
 
 type WorkflowHandleDetachedChildWorkflowNamespaces<
-  TChildWorkflows extends Record<string, unknown>,
+  TChildren extends Record<string, unknown>,
 > = {
-  [K in keyof TChildWorkflows & string]: DetachedChildWorkflowNamespaceExternal<
-    TChildWorkflows[K] extends AnyPublicWorkflowHeader
-      ? TChildWorkflows[K]
+  [K in keyof TChildren & string]: DetachedChildWorkflowNamespaceExternal<
+    TChildren[K] extends AnyPublicWorkflowHeader
+      ? TChildren[K]
       : AnyPublicWorkflowHeader
   >;
 };
@@ -475,26 +479,43 @@ type WorkflowHandleCompensationsRoot<W extends AnyPublicWorkflowHeader> =
   WorkflowHandleCompensationsTree<W>;
 
 type WorkflowHandleChildWorkflows<W extends AnyPublicWorkflowHeader> =
-  InferWorkflowChildWorkflows<W> extends infer TChildWorkflows
-    ? [TChildWorkflows] extends [never]
+  InferWorkflowAttachedChildren<W> extends infer TChildren
+    ? [TChildren] extends [never]
       ? WorkflowHandleLooseChildWorkflows
-      : IsAny<TChildWorkflows> extends true
+      : IsAny<TChildren> extends true
         ? WorkflowHandleLooseChildWorkflows
-        : TChildWorkflows extends Record<string, unknown>
-          ? WorkflowHandleChildWorkflowNamespaces<TChildWorkflows>
+        : TChildren extends Record<string, unknown>
+          ? WorkflowHandleChildWorkflowNamespaces<TChildren>
           : WorkflowHandleLooseChildWorkflows
     : WorkflowHandleLooseChildWorkflows;
 
 type WorkflowHandleDetachedChildWorkflows<W extends AnyPublicWorkflowHeader> =
-  InferWorkflowChildWorkflows<W> extends infer TChildWorkflows
-    ? [TChildWorkflows] extends [never]
+  InferWorkflowDetachedChildren<W> extends infer TChildren
+    ? [TChildren] extends [never]
       ? WorkflowHandleLooseDetachedChildWorkflows
-      : IsAny<TChildWorkflows> extends true
+      : IsAny<TChildren> extends true
         ? WorkflowHandleLooseDetachedChildWorkflows
-        : TChildWorkflows extends Record<string, unknown>
-          ? WorkflowHandleDetachedChildWorkflowNamespaces<TChildWorkflows>
+        : TChildren extends Record<string, unknown>
+          ? WorkflowHandleDetachedChildWorkflowNamespaces<TChildren>
           : WorkflowHandleLooseDetachedChildWorkflows
     : WorkflowHandleLooseDetachedChildWorkflows;
+
+type WorkflowHandleExternalNamespaces<W extends AnyPublicWorkflowHeader> =
+  InferWorkflowExternal<W> extends infer TExternalWorkflows
+    ? [TExternalWorkflows] extends [never]
+      ? Record<string, WorkflowHandleExternal<AnyPublicWorkflowHeader>>
+      : IsAny<TExternalWorkflows> extends true
+        ? Record<string, WorkflowHandleExternal<AnyPublicWorkflowHeader>>
+        : TExternalWorkflows extends Record<string, unknown>
+          ? {
+              [K in keyof TExternalWorkflows & string]: WorkflowHandleExternal<
+                TExternalWorkflows[K] extends AnyPublicWorkflowHeader
+                  ? TExternalWorkflows[K]
+                  : AnyPublicWorkflowHeader
+              >;
+            }
+          : Record<string, WorkflowHandleExternal<AnyPublicWorkflowHeader>>
+    : Record<string, WorkflowHandleExternal<AnyPublicWorkflowHeader>>;
 
 // =============================================================================
 // WORKFLOW HANDLE — globally addressable workflows.
@@ -537,8 +558,11 @@ export interface WorkflowHandleExternal<W extends AnyPublicWorkflowHeader>
   readonly halts: HaltsNamespaceExternal;
 
   // Per-parent introspection namespaces.
-  readonly attachedChildWorkflows: WorkflowHandleChildWorkflows<W>;
-  readonly detachedChildWorkflows: WorkflowHandleDetachedChildWorkflows<W>;
+  readonly children: {
+    readonly attached: WorkflowHandleChildWorkflows<W>;
+    readonly detached: WorkflowHandleDetachedChildWorkflows<W>;
+  };
+  readonly external: WorkflowHandleExternalNamespaces<W>;
   readonly compensations: WorkflowHandleCompensationsRoot<W>;
 
   /**

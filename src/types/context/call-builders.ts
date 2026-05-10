@@ -12,7 +12,7 @@ import type { RequestEntry, SchemaInvocationInput, StepBoundary, TimeoutResult, 
 // FOREIGN WORKFLOW HANDLE
 //
 // A handle to a globally addressable workflow instance. Returned by
-// `ctx.foreignWorkflows.X.get(...)` and by `ctx.childWorkflows.X.startDetached(...)`.
+// `ctx.external.X.get(...)` and by `ctx.children.detached.X(...)`.
 // Send-only — no awaitable result, no lifecycle control.
 // =============================================================================
 
@@ -38,8 +38,8 @@ export interface ChannelSendSurface<
 /**
  * A limited handle to an existing (non-child or detached) workflow instance.
  *
- * Returned by `ctx.foreignWorkflows.X.get(...)` and by
- * `ctx.childWorkflows.X.startDetached(...)`. Send-only: `channels.X.send` plus
+ * Returned by `ctx.external.X.get(...)` and by
+ * `ctx.children.detached.X(...)`. Send-only: `channels.X.send` plus
  * the workflow's `idempotencyKey`. No awaitable result; no lifecycle control.
  */
 export interface ForeignWorkflowHandle<
@@ -51,10 +51,10 @@ export interface ForeignWorkflowHandle<
 // =============================================================================
 // CHILD WORKFLOW ACCESSORS
 //
-// Child workflow accessors live on `ctx.childWorkflows` (in execution
-// context) and `ctx.childWorkflows` (in compensation context). They produce
+// Child workflow accessors live on `ctx.children.attached` (in execution
+// context) and `ctx.children.attached` (in compensation context). They produce
 // `WorkflowEntry<T>` for attached starts or `ForeignWorkflowHandle<W>` for
-// detached starts.
+// detached starts via `ctx.children.detached`.
 //
 // Step 01 keeps the existing accessor shapes; step 03 will revisit the
 // attached-entry channel-send surface and call-time options.
@@ -113,7 +113,7 @@ export type AttachedChildWorkflowResult<T, TError = unknown> =
 
 /**
  * The unstarted attached child workflow entry returned by
- * `ctx.childWorkflows.X(startOpts, opts?)`.
+ * `ctx.children.attached.X(startOpts, opts?)`.
  *
  * Awaitable for the success/failure (and optionally timeout) union AND
  * exposes the child's declared channel-send surface — the parent body may
@@ -126,7 +126,7 @@ export type AttachedChildWorkflowEntry<
 > = WorkflowEntry<TAwaited> & ChannelSendSurface<InferWorkflowChannels<W>>;
 
 /**
- * Callable child workflow accessor on `ctx.childWorkflows` in
+ * Callable child workflow accessor on `ctx.children.attached` in
  * `WorkflowContext`.
  *
  * Two call overloads:
@@ -137,9 +137,6 @@ export type AttachedChildWorkflowEntry<
  *
  * Child workflows are not retried by the parent; configure retry/backoff at
  * the child workflow definition level if needed.
- *
- * `startDetached` is a buffered operation that starts the child as a
- * globally addressable root workflow and returns a `ForeignWorkflowHandle`.
  *
  * @typeParam W - The child workflow definition.
  * @typeParam Tctx - The parent workflow's CompensationContext type
@@ -171,18 +168,23 @@ export interface ChildWorkflowAccessor<
     | { ok: false; status: "timeout" }
   >;
 
-  /**
-   * Start this child workflow in detached mode — buffered, synchronous,
-   * returns a `ForeignWorkflowHandle` immediately. The child runs
-   * independently of the parent's lifecycle.
-   */
-  startDetached(
+}
+
+/**
+ * Callable child workflow accessor on `ctx.children.detached`.
+ *
+ * Detached starts are buffered and synchronous; they return a
+ * `ForeignWorkflowHandle` immediately. Detached children run independently of
+ * the parent's lifecycle.
+ */
+export interface DetachedChildWorkflowAccessor<W extends AnyWorkflowHeader> {
+  (
     options: DetachedStartOptions<W>,
   ): ForeignWorkflowHandle<InferWorkflowChannels<W>>;
 }
 
 /**
- * Callable child workflow accessor on `ctx.childWorkflows` in
+ * Callable child workflow accessor on `ctx.children.attached` in
  * `CompensationContext`. Returns a `WorkflowEntry` whose awaited value is a
  * full `WorkflowResult<T>` — compensation must handle all outcomes.
  */
@@ -228,7 +230,7 @@ export interface RequestAccessor<
 // =============================================================================
 
 /**
- * Foreign workflow accessor on `ctx.foreignWorkflows` in `WorkflowContext`.
+ * External workflow accessor on `ctx.external` in `WorkflowContext`.
  *
  * Use `.get(idempotencyKey)` to obtain a `ForeignWorkflowHandle` for an
  * existing workflow instance. Only `channels.send()` is available — no

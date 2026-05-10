@@ -41,6 +41,8 @@ export type StepDefinition<
         any,
         any,
         any,
+        any,
+        any,
         any
       >
     | undefined = undefined,
@@ -112,9 +114,10 @@ export type RequestCompensationInfo<TResponse> =
  *   own private set of `channels`, `streams`, `events`, `attributes` (these
  *   are isolated from the workflow body's primitives).
  * - **Dependencies** — non-compensable steps and requests, queues, topics,
- *   and child workflows. Compensable steps and requests are rejected at
- *   compile time to prevent recursive compensation chains. Child workflows
- *   are exempt because each child owns its own compensation lifecycle.
+ *   children, and external workflows. Compensable steps and requests are
+ *   rejected at compile time to prevent recursive compensation chains.
+ *   Child workflows are exempt because each child owns its own compensation
+ *   lifecycle.
  * - **Result schema** — optional; if omitted the compensation reports `void`.
  *
  * The `undo` callback's `ctx` is wired through the compensation context with
@@ -135,7 +138,9 @@ export interface StepCompensationDefinition<
   TRequests extends NonCompensableRequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
   TTopics extends TopicDefinitions = Record<string, never>,
-  TChildWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint | undefined = undefined,
 > {
   /** Per-instance channels for this compensation block. */
@@ -155,7 +160,12 @@ export interface StepCompensationDefinition<
   /** Declared topic dependencies (the compensation can publish). */
   readonly topics?: TTopics;
   /** Declared child workflow dependencies (exempt from compensable filter). */
-  readonly childWorkflows?: TChildWorkflows;
+  readonly children?: {
+    readonly attached?: TAttachedChildren;
+    readonly detached?: TDetachedChildren;
+  };
+  /** Declared external workflow dependencies. */
+  readonly external?: TExternalWorkflows;
   /** Optional outcome schema. Default: `void`. */
   readonly result?: TResultSchema;
   /**
@@ -171,7 +181,9 @@ export interface StepCompensationDefinition<
       TEvents,
       TSteps,
       TRequests,
-      TChildWorkflows
+      TAttachedChildren,
+      TDetachedChildren,
+      TExternalWorkflows
     >,
     args: StandardSchemaV1.InferOutput<TArgsSchema>,
     info: CompensationInfo<StandardSchemaV1.InferOutput<TForwardResultSchema>>,
@@ -208,6 +220,8 @@ type DistributeStatusResult<T> = T extends { status: infer TStatus }
 type StepCompensationResultSchema<TStep> =
   TStep extends StepDefinition<any, any, any, infer TCompensation>
     ? TCompensation extends StepCompensationDefinition<
+        any,
+        any,
         any,
         any,
         any,

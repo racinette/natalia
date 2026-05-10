@@ -48,7 +48,7 @@ export type WorkflowId = string & { readonly __brand: "WorkflowId" };
  *
  * Per `REFACTOR.MD` Part 5, attached children have no `idempotencyKey`;
  * they are addressable only via the parent workflow's
- * `attachedChildWorkflows.<name>` namespace (step 12).
+ * `children.attached.<name>` namespace (step 12).
  */
 export type AttachedChildWorkflowId<W extends AnyWorkflowHeader> = string & {
   readonly __brand: "AttachedChildWorkflowId";

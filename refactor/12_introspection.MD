@@ -24,8 +24,8 @@ steps 10–11.
 - `REFACTOR.MD` Part 5 §"Workflow row, query namespaces, and
   `WorkflowHandleExternal`" — the new workflow handle shape.
 - `REFACTOR.MD` Part 5 §"External introspection of children" —
-  `attachedChildWorkflows.<name>` and
-  `detachedChildWorkflows.<name>` parent-scoped namespaces.
+  `children.attached.<name>` and
+  `children.detached.<name>` parent-scoped namespaces.
 - `REFACTOR.MD` Part 2 §"Query-grounding handle pattern" —
   compensation block instance unique handle.
 - `REFACTOR.MD` Part 11 §"Request compensation query surface" —
@@ -91,12 +91,13 @@ Single-generic shape parameterised over the workflow header. Wires:
   itself (resolution is patch + replay or `skip(...)` on the
   workflow itself, which transitions the workflow to `'skipped'`).
 - **Parent-scoped namespaces** —
-  `attachedChildWorkflows.<name>` /
-  `detachedChildWorkflows.<name>` /
+  `children.attached.<name>` /
+  `children.detached.<name>` /
   `compensations.steps.<step>` /
   `compensations.requests.<request>`.
   On full workflow definitions these are key-narrowed from
-  `childWorkflows`, compensable `steps`, and compensable `requests`.
+  `children.attached` / `children.detached`, compensable `steps`, and
+  compensable `requests`.
   On header-only `W` (or widened `W` that erases those maps), these
   intentionally fall back to loose `Record<string, ...>` namespaces
   because definition-level maps are not present in the type.
@@ -173,7 +174,8 @@ works the same way as the global `client.workflows.<def>.get(...)`.
 For step 12's surface we publish
 `AttachedChildWorkflowNamespaceExternal` and reuse the same shape
 for detached (modulo `THandle`). Keys are now derived from the parent
-workflow's declared `childWorkflows` map when available; otherwise
+workflow's declared `children.attached` / `children.detached` maps when
+available; otherwise
 header-only / widened workflows keep the loose `Record<string, ...>`
 fallback. Step 18 (idempotency-key factory) and step 17 (scheduled
 delivery) refine the detached `.get(args | idempotencyKey)` overloads.

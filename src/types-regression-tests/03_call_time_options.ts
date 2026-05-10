@@ -79,6 +79,13 @@ const childHeader = defineWorkflowHeader({
   },
 });
 
+const externalHeader = defineWorkflowHeader({
+  name: "callTimeOptionsExternal",
+  channels: {
+    ping: z.object({ at: z.string() }),
+  },
+});
+
 const humanReviewRequest = defineRequest({
   name: "humanReview",
   payload: z.object({ documentId: z.string() }),
@@ -92,7 +99,8 @@ const humanReviewRequest = defineRequest({
 export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
   name: "callTimeOptionsAcceptance",
   steps: { timedStep },
-  childWorkflows: { child: childHeader },
+  children: { attached: { child: childHeader }, detached: { child: childHeader } },
+  external: { ops: externalHeader },
   requests: { humanReview: humanReviewRequest },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx) {
@@ -146,7 +154,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     // `idempotencyKey` (attached children are not globally addressable).
     // -------------------------------------------------------------------------
 
-    const childEntry = ctx.childWorkflows.child({
+    const childEntry = ctx.children.attached.child({
       idempotencyKey: "child-1",
       args: { id: "c-1" },
     });
@@ -185,7 +193,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     childEntry.channels.nudge.send({ at: "2027-01-01T00:00:00.000Z" });
 
     // Timeout overload adds `{ ok: false; status: "timeout" }`.
-    const timedChild = await ctx.childWorkflows.child(
+    const timedChild = await ctx.children.attached.child(
       { idempotencyKey: "child-2", args: { id: "c-2" } },
       { timeout: 60 },
     );
@@ -198,7 +206,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     // No retry-only overload on child workflows: passing `retry` without
     // `timeout` is rejected because the only options-bag overload requires
     // `timeout`.
-    ctx.childWorkflows.child(
+    ctx.children.attached.child(
       { idempotencyKey: "child-3", args: { id: "c-3" } },
       // @ts-expect-error child workflows require `timeout` when an options bag is supplied
       { retry: { intervalSeconds: 1 } },
@@ -211,7 +219,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     // and carries idempotencyKey. Not awaitable.
     // -------------------------------------------------------------------------
 
-    const detached = ctx.childWorkflows.child.startDetached({
+    const detached = ctx.children.detached.child({
       idempotencyKey: "child-detached-1",
       args: { id: "d-1" },
     });
@@ -228,6 +236,17 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     type _DetachedNotAwaitable = Assert<
       typeof detached extends PromiseLike<unknown> ? false : true
     >;
+    // @ts-expect-error detached starts are exposed on ctx.children.detached only
+    ctx.children.attached.child.startDetached;
+
+    // -------------------------------------------------------------------------
+    // EXTERNAL WORKFLOW ACCESSORS
+    // -------------------------------------------------------------------------
+    const externalHandle = ctx.external.ops.get("external-1");
+    type _ExternalHandle = Assert<
+      typeof externalHandle extends ForeignWorkflowHandle<any> ? true : false
+    >;
+    externalHandle.channels.ping.send({ at: "2027-01-01T00:00:00.000Z" });
 
     // -------------------------------------------------------------------------
     // REQUESTS

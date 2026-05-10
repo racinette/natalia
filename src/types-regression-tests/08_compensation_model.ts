@@ -48,7 +48,7 @@ const undoChildHeader = defineWorkflowHeader({
 // STEP COMPENSATION DEFINITION — full Part 2 surface.
 //
 // Declares per-instance primitives (channels/streams/events/attributes),
-// dependency keys (steps/requests/queues/topics/childWorkflows), and an
+// dependency keys (steps/requests/queues/topics/children), and an
 // optional `result` schema. The `undo` callback receives the original
 // step args (decoded) and the forward outcome `info`.
 // =============================================================================
@@ -68,7 +68,7 @@ const chargeStep = defineStep({
     // Dependencies.
     steps: { refundStep },
     requests: { reconcileRequest },
-    childWorkflows: { undoChild: undoChildHeader },
+    children: { attached: { undoChild: undoChildHeader } },
 
     // Outcome schema.
     result: z.object({
@@ -340,7 +340,7 @@ export const compensationModelAcceptanceWorkflow = defineWorkflow({
   name: "compensationModelAcceptance",
   steps: { chargeStep },
   requests: { approvalRequest },
-  childWorkflows: { childWorkflow },
+  children: { attached: { childWorkflow } },
   result: z.object({ ok: z.boolean() }),
   // @ts-expect-error workflow-level compensation hooks are removed
   async beforeCompensate() {},
@@ -358,7 +358,7 @@ export const compensationModelAcceptanceWorkflow = defineWorkflow({
     // @ts-expect-error general ad hoc compensation registration is removed
     ctx.addCompensation(async () => undefined);
 
-    const child = ctx.childWorkflows.childWorkflow({});
+    const child = ctx.children.attached.childWorkflow({});
     // @ts-expect-error child compensation is no longer call-site-bound
     child.compensate(async () => undefined);
 

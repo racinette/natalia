@@ -111,7 +111,7 @@ export const executionModelAcceptanceWorkflow = defineWorkflow({
   name: "executionModelAcceptance",
   steps: { noopStep },
   requests: { noopRequest },
-  childWorkflows: { childWorkflow },
+  children: { attached: { childWorkflow } },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx) {
     // Step entry: dispatched, awaitable, resolves to T.
@@ -138,7 +138,7 @@ export const executionModelAcceptanceWorkflow = defineWorkflow({
     // success-or-failure union. Step 01 only verifies it is an AwaitableEntry
     // and the awaited type contains the success branch; the exact shape of
     // the union (and the channel-send surface) is step 03.
-    const childEntry = ctx.childWorkflows.childWorkflow({ args: { value: 21 } });
+    const childEntry = ctx.children.attached.childWorkflow({ args: { value: 21 } });
     type _ChildEntryIsAwaitable = Assert<
       typeof childEntry extends AwaitableEntry<any> ? true : false
     >;
@@ -158,7 +158,7 @@ export const executionModelAcceptanceWorkflow = defineWorkflow({
     //      - ctx.channels.X.send (when the parent has channels — covered by
     //        the child-workflow handle channel-send surface in step 03)
     //
-    //    Queues, topics, attributes, startDetached, and the scope/match
+    //    Queues, topics, attributes, detached children, and the scope/match
     //    surface are covered by their own steps (13, 12 / 15, 13, 03, 07).
     // =========================================================================
 
