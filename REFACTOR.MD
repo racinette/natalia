@@ -15,7 +15,7 @@ The changes are organized into two categories:
 3. **Topics** — global ordered per-topic append logs with named consumers
 4. **Attributes** — workflow-instance-bound observable single current value
 5. **Streams extension** — non-blocking read variant on the external handle
-6. **Search query refactoring** — generalize `WorkflowSearchQueryBuilder` into `SearchQuery<TNamespaces>`
+6. **Search query refactoring** — replace namespace builders with a row-scoped predicate DSL (`WhereScope<TRowTemplate> -> Predicate`)
 7. **Scheduled delivery** — `delay`/`scheduledAt` option on queue message enqueue and workflow starts
 
 **Architectural changes** — corrections and redesigns to existing engine behavior:
@@ -325,19 +325,12 @@ type FindUniqueResult<T> =
   | { readonly status: "missing" }
   | { readonly status: "ambiguous"; readonly count: number };
 
-// Query namespaces for compensation block instances. Each top-level key is a
-// distinct namespace addressable in the predicate builder.
-type CompensationBlockQueryNamespaces<TArgs, TResult> = {
-  // Flat scalar columns of the compensation block's row.
-  row: CompensationBlockRow<TArgs, TResult>;
-  // JSONB columns, navigable by path.
-  args: TArgs;
-  result: TResult;
-  info: CompensationInfo<unknown>;
-};
+// Single row-shaped predicate template.
+type CompensationBlockWhereTemplate<TStep, TArgs, TResult> =
+  CompensationBlockRow<TStep, TArgs, TResult>;
 
 // The full row shape, including JSONB columns as opaque values for fetchRow / prefetch.
-interface CompensationBlockRow<TArgs, TResult> {
+interface CompensationBlockRow<TStep, TArgs, TResult> {
   readonly id: CompensationId<TStep>;
   readonly definitionName: string;
   readonly status: CompensationBlockStatus;
@@ -354,9 +347,9 @@ interface CompensationBlockRow<TArgs, TResult> {
 
 interface CompensationBlockNamespace<TStep, TArgs, TResult, TPrim> extends
   QueryableNamespace<
-    CompensationBlockUniqueHandle<TArgs, TResult, TPrim>,
-    CompensationBlockQueryNamespaces<TArgs, TResult>,
-    CompensationBlockRow<TArgs, TResult>,
+    CompensationBlockUniqueHandle<TStep, TArgs, TResult, TPrim>,
+    CompensationBlockWhereTemplate<TStep, TArgs, TResult>,
+    CompensationBlockRow<TStep, TArgs, TResult>,
     CompensationId<TStep>
   > {}
 ```
@@ -364,8 +357,8 @@ interface CompensationBlockNamespace<TStep, TArgs, TResult, TPrim> extends
 A unique handle exposes per-instance reads and operator actions. `findMany` returns a result that is both awaitable (resolves to an array of handles) and async-iterable (yields handles lazily). Bulk operator actions are expressed by mapping over the iterable.
 
 ```typescript
-interface CompensationBlockUniqueHandle<TArgs, TResult, TPrim>
-  extends FetchableHandle<CompensationBlockRow<TArgs, TResult>> {
+interface CompensationBlockUniqueHandle<TStep, TArgs, TResult, TPrim>
+  extends FetchableHandle<CompensationBlockRow<TStep, TArgs, TResult>> {
   readonly id: CompensationId<TStep>;
 
   // skip IS abandonment for compensation block instances. There is no
@@ -542,8 +535,8 @@ The result must conform to the workflow's `defineWorkflow.result` schema. If the
 For compensation block instances, `skip(result)` takes the result and nothing else — no `opts`, no strategy. The result argument is required when the compensation declared a `result` schema; only when the schema was omitted (effectively `TResult = void`) does `skip()` accept zero arguments. It abandons the running `undo`, sets the operator-supplied result, and transitions the block to `'skipped'`:
 
 ```typescript
-const halted = workflowInstance.compensations.bookHotel.findUnique((q) =>
-  q.args.firstName.eq("Bob"),
+const halted = workflowInstance.compensations.bookHotel.findUnique(({ args }) =>
+  eq(args.firstName, "Bob"),
 );
 
 await halted.skip({
@@ -558,7 +551,7 @@ Bulk skipping is expressed by iterating over `findMany(...)` with a `fields` pre
 await using tx = await client.transaction();
 
 for await (const block of workflowInstance.compensations.bookHotel.findMany(
-  (q) => q.row.status.eq("halted"),
+  ({ status }) => eq(status, "halted"),
   { fields: { args: true }, txOrConn: tx },
 )) {
   // block.row.args is typed as TArgs (prefetched); no extra fetch needed.
@@ -1117,16 +1110,10 @@ interface WorkflowRow<TArgs, TResult, TMetadata> {
   readonly deadlineAt: Date | null;
 }
 
-// Query namespaces. Each top-level key is a separate namespace with its own
-// path machinery. JSONB columns (args, result, metadata, error) are exposed as
-// their own namespaces because they have nested structure.
-type WorkflowQueryNamespaces<TArgs, TResult, TMetadata> = {
-  row: WorkflowRow<TArgs, TResult, TMetadata>;
-  args: TArgs;
-  result: TResult;
-  metadata: TMetadata;
-  error: WorkflowErrorEnvelope;
-};
+// Single query template. Predicates see one row-shaped scope where scalar
+// columns and JSONB-backed fields are siblings.
+type WorkflowWhereTemplate<TArgs, TResult, TMetadata> =
+  WorkflowRow<TArgs, TResult, TMetadata>;
 ```
 
 `WorkflowHandleExternal<W>` extends the fetchable handle with operator-action verbs and the full primitive plane:
@@ -1192,7 +1179,7 @@ client.workflows.<def>:
   & Omit<
       QueryableNamespace<
         WorkflowHandleExternal<W>,
-        WorkflowQueryNamespaces<InferWorkflowArgs<W>, InferWorkflowResult<W>, InferWorkflowMetadata<W>>,
+        WorkflowWhereTemplate<InferWorkflowArgs<W>, InferWorkflowResult<W>, InferWorkflowMetadata<W>>,
         WorkflowRow<InferWorkflowArgs<W>, InferWorkflowResult<W>, InferWorkflowMetadata<W>>,
         never
       >,
@@ -1214,7 +1201,7 @@ The `Omit<..., "get">` reflects that the identity-based `.get` is replaced by th
 await using tx = await client.transaction();
 
 const halted = await client.workflows.processOrder.findMany(
-  (q) => q.row.status.eq("halted").and(q.row.createdAt.lt(sevenDaysAgo)),
+  ({ status, createdAt }) => and(eq(status, "halted"), lt(createdAt, sevenDaysAgo)),
   { fields: { id: true, args: true, idempotencyKey: true }, txOrConn: tx },
 );
 
@@ -1228,7 +1215,7 @@ for await (const wf of halted) {
 await tx.commit();
 ```
 
-Predicate uses `q.row.status` (engine-managed row column) and `q.row.createdAt` (Date column on the row); prefetch hoists `id`, `args`, `idempotencyKey` into `wf.row` so no extra reads happen during the loop; the entire scan + N skips run in one transaction.
+Predicate uses direct row fields (`status`, `createdAt`) from one scope template; prefetch hoists `id`, `args`, `idempotencyKey` into `wf.row` so no extra reads happen during the loop; the entire scan + N skips run in one transaction.
 
 ### Requests
 
@@ -1772,70 +1759,52 @@ The existing `src/types/search-query.ts` implements a typed query AST parameteri
 ### Task
 
 ```typescript
-type SearchQueryNode<TNamespaces extends Record<string, SearchNamespaceRecord>>
-type SearchQuery<TNamespaces extends Record<string, SearchNamespaceRecord>>
-type SearchSort<TNamespaces extends Record<string, SearchNamespaceRecord>>
+type Predicate = /* opaque */
+type WhereScope<TRowTemplate> = /* recursive row-shaped mirror */
+type QueryPredicate<TRowTemplate> = (scope: WhereScope<TRowTemplate>) => Predicate
 
-type WorkflowSearchQueryNode<TMetadata extends SearchMetadataRecord> =
-  SearchQueryNode<WorkflowQueryNamespaces<TArgs, TResult, TMetadata>>
-
-type WorkflowSearchQueryBuilder<TMetadata extends SearchMetadataRecord> =
-  SearchQuery<WorkflowQueryNamespaces<TArgs, TResult, TMetadata>>
-
-type WorkflowSearchSort<TMetadata extends SearchMetadataRecord> =
-  SearchSort<WorkflowQueryNamespaces<TArgs, TResult, TMetadata>>
+type SearchSort<TTemplate> = {
+  path: ComparablePath<TTemplate>;
+  direction: "asc" | "desc";
+}
 ```
 
-The `SearchQuery<TNamespaces>` builder exposes one sub-builder per namespace key, each using the existing predicate machinery (`eq`, `ne`, `in`, `notIn`, `gt`, `gte`, `lt`, `lte`, `exists`, `contains`, `containsAny`, `containsAll`) typed to that namespace's field record. The `and`, `or`, `not` combinators remain top-level.
-
-`SearchSort<TNamespaces>` is the generalization of the existing `WorkflowSearchSort<TMeta>`. Each sort term is `{ namespace: N; path: SortablePath<TNamespaces[N]>; direction: "asc" | "desc" }` for some `N` in `TNamespaces`. `SortablePath<T>` is the generalized form of the existing `MetaSortablePath<T>` — paths whose value resolves to purely `string` or purely `number` (no booleans, no unions, no arrays). For row namespaces, the rule additionally allows `bigint` and `Date` — sortable in both contexts because they carry total ordering.
-
-### Two namespace shapes: row and JSONB
-
-Each top-level namespace in `TNamespaces` is one of two shapes:
-
-- **Row namespace** (`RowNamespaceRecord`) — a flat record of scalar columns from the entity's database row. Allowed scalar types: `string | number | boolean | bigint | Date | null | undefined`. No nesting. Used by the `row` namespace on every queryable entity.
-- **JSONB namespace** (`SearchMetadataRecord`) — a nested record representing a JSONB column's content. Allowed leaf types: `string | number | boolean | null | undefined`, plus arrays of those, plus nested records. No `bigint`/`Date` (those don't survive JSONB serialization without convention). Used by JSONB columns: `args`, `result`, `metadata`, `info`, `payload`, `error`.
+Public predicate authoring is function-based and row-scoped:
 
 ```typescript
-type RowNamespaceScalar =
-  | string | number | boolean | bigint | Date | null | undefined;
+import { and, eq, gt, every, some } from "natalia/search";
 
-interface RowNamespaceRecord {
-  readonly [key: string]: RowNamespaceScalar;
-}
-
-type SearchNamespaceRecord = RowNamespaceRecord | SearchMetadataRecord;
+findMany(({ args, metadata, createdAt }) =>
+  and(
+    eq(args.provider, "metamask"),
+    eq(metadata.tenant.id, "acme"),
+    gt(createdAt, yesterday),
+    every(args.providers, (provider) => eq(provider, "metamask")),
+    some(args.providers, (provider) => eq(provider, "bybit")),
+  ),
+);
 ```
 
-Both shapes go through the same path-derivation machinery to produce `MetaScalarPath` / `MetaComparablePath` / `MetaArrayPath` (with `bigint` and `Date` admitted by the comparable-path predicate for row namespaces). Range comparisons remain restricted to homogeneously typed paths in both shapes.
+No author-facing namespace split (`row`, `args`, `metadata`, etc.) and no
+public builder object.
 
-Existing aliases (`WorkflowSearchQueryNode`, `WorkflowSearchQueryBuilder`, `WorkflowSearchSort`) are kept so no call sites break.
+### Type model
 
-### Range comparison restriction for union types
+```typescript
+type WorkflowWhereTemplate<TArgs, TResult, TMetadata> =
+  WorkflowRow<TArgs, TResult, TMetadata>;
+```
 
-Range comparisons (`gt`, `gte`, `lt`, `lte`) and sorting are now restricted to fields where the non-null/non-undefined value resolves to purely `string` or purely `number` — not a union of both, and not a union with non-comparable types.
+Field capability is decided only by each declared property type:
 
-**Rationale:** Postgres JSONB has a total ordering across types (`null < boolean < number < string < array < object`), but this ordering is opaque and backend-specific. "Is `[1,2,3]` greater than `{"a": 1}`?" is answerable in Postgres but not meaningfully answerable in client-side filtering or in other storage backends. Restricting range comparisons to homogeneously typed fields ensures:
+| Field type | Equality | Range | Sort | Quantifiers |
+| ---------- | -------- | ----- | ---- | ----------- |
+| `string` / `number` / `bigint` / `Date` | yes | yes (homogeneous only) | yes (homogeneous only) | n/a |
+| `boolean` | yes | no | no | n/a |
+| heterogeneous union (e.g. `string \| number`) | yes | no | no | n/a |
+| arrays | membership via `contains` | no | no | `every` / `some` |
 
-1. **Client-side filterability** — queries can be evaluated in-process with trivial JavaScript comparisons.
-2. **Storage portability** — no dependency on Postgres's JSONB type ordering semantics.
-3. **Developer clarity** — `field.gt(42)` on a field that might hold a string is confusing, regardless of what the database does.
-
-Equality comparisons (`eq`, `ne`, `in`, `notIn`) remain available for all scalar types including unions — equality is universally well-defined.
-
-**Sorting** follows the same rule: only fields with a homogeneous comparable type can appear in `sort` clauses. `MetaSortablePath` is now `MetaComparablePath` (was `MetaAnyPath`).
-
-| Field type          | Equality (`eq`/`ne`/`in`/`notIn`)      | Range (`gt`/`gte`/`lt`/`lte`) | Sort |
-| ------------------- | -------------------------------------- | ----------------------------- | ---- | --- |
-| `string`            | yes                                    | yes                           | yes  |
-| `number`            | yes                                    | yes                           | yes  |
-| `boolean`           | yes                                    | no                            | no   |
-| `null`              | yes                                    | no                            | no   |
-| `string             | null`                                  | yes                           | no   | no  |
-| `string             | number`                                | yes                           | no   | no  |
-| `string             | object`                                | yes                           | no   | no  |
-| `readonly string[]` | `contains`/`containsAny`/`containsAll` | no                            | no   |
+Legacy public builder/node aliases are removed.
 
 ---
 
@@ -2246,12 +2215,8 @@ type RequestCompensationStatus =
 ### Request compensation query surface
 
 ```typescript
-type RequestCompensationQueryNamespaces<TPayload, TCompResult> = {
-  row: RequestCompensationRow<TPayload, TCompResult>;
-  payload: TPayload;
-  result: TCompResult;
-  info: RequestCompensationInfo<unknown>;
-};
+type RequestCompensationWhereTemplate<TPayload, TCompResult> =
+  RequestCompensationRow<TPayload, TCompResult>;
 
 interface RequestCompensationRow<TPayload, TCompResult> {
   readonly id: RequestCompensationInstanceId;
@@ -2270,7 +2235,7 @@ interface RequestCompensationRow<TPayload, TCompResult> {
 interface RequestCompensationNamespace<TPayload, TCompResult> extends
   QueryableNamespace<
     RequestCompensationUniqueHandle<TPayload, TCompResult>,
-    RequestCompensationQueryNamespaces<TPayload, TCompResult>,
+    RequestCompensationWhereTemplate<TPayload, TCompResult>,
     RequestCompensationRow<TPayload, TCompResult>,
     RequestCompensationInstanceId
   > {}
@@ -3118,7 +3083,8 @@ await using tx = await client.transaction();
 
 // 1. Read: find halted bookings with prefetched args.
 const halted = await client.workflows.processOrder.findMany(
-  (q) => q.row.status.eq("halted").and(q.row.createdAt.lt(sevenDaysAgo)),
+  ({ status, createdAt }) =>
+    and(eq(status, "halted"), lt(createdAt, sevenDaysAgo)),
   { fields: { id: true, args: true }, txOrConn: tx },
 );
 
@@ -3149,7 +3115,7 @@ const orderRow = await order.fetchRow({ status: true, args: true }, { txOrConn: 
 if (orderRow.status === "unique" && orderRow.value.status === "halted") {
   // Read related compensations in same tx.
   for await (const block of order.compensations.bookHotel.findMany(
-    (q) => q.row.status.eq("halted"),
+    ({ status }) => eq(status, "halted"),
     { txOrConn: tx },
   )) {
     await block.skip({ kind: "abandoned" }, { txOrConn: tx });
@@ -3264,14 +3230,13 @@ Removed context APIs:
 ### New exports
 
 - `defineQueue`, `defineRequest`, `defineTopic`.
-- `SearchQueryNode`, `SearchQuery`, `SearchSort`.
+- `Predicate`, `WhereScope`, `SearchQuery`, `SearchSort`.
 - `DeadLetterRecordFields`, `DeadLetterSort`, `DeadLetterCursor`, `DeadLetteredMessage`, `DeadLetterHandle`.
 - `AttemptAccessor`, `Failure`, `Attempt`, `AttemptError`.
 - `ExplicitError`, `ErrorValue`, `FailureInfo`.
 - `CompensationInfo`, `CompensationBlockStatus`, `CompensationId`, `FindUniqueResult`, `FindManyResult`, `FindManyOptions`, `FindUniqueOptions`, `CountOptions`.
 - `FieldsMask`, `ProjectedKeys`, `HandleWithRow`, `FetchableHandle`.
-- `WorkflowRow`, `WorkflowQueryNamespaces`, `CompensationBlockRow`, `CompensationBlockQueryNamespaces`, `RequestCompensationRow`, `RequestCompensationQueryNamespaces`.
-- `RowNamespaceRecord`, `SearchNamespaceRecord`.
+- `WorkflowRow`, `WorkflowWhereTemplate`, `CompensationBlockRow`, `CompensationBlockWhereTemplate`, `RequestCompensationRow`, `RequestCompensationWhereTemplate`.
 - `RequestCompensationInfo`, `RequestCompensationStatus`, `RequestCompensationInstanceId`.
 - `StepBoundary`, `MANUAL`, `UnrecoverableError`.
 - `ForeignWorkflowHandle`, `AttachedChildWorkflowEntry`, `AttachedChildWorkflowHandle`, `AttachedChildWorkflowExternalHandle`, `AttachedChildWorkflowId`.
@@ -3322,7 +3287,7 @@ Removed context APIs:
 - Every queryable namespace shares the same surface: `.get(id)` → handle (synchronous, query-grounding, no fetch); `findUnique(query, opts?)` → `Promise<FindUniqueResult<Handle>>` (predicate-based, asserts cardinality); `findMany(query, opts?)` → `FindManyResult<Handle>` (awaitable + async-iterable); `count(query, opts?)` → `Promise<number>`.
 - `findUnique` does not have an id overload. `.get(id)` is the identity-based path; `findUnique(query)` is the predicate-based path. They have different shapes because `.get` does no I/O and `findUnique` does.
 - `FindManyResult<T>` is `PromiseLike<readonly T[]> & AsyncIterable<T>`. Awaiting materializes the array; iterating streams handles lazily with internal pagination.
-- `FindManyOptions<TNamespaces>` is parameterized by the predicate's namespaces, so sort paths get the same type-level safety as filter paths (`SearchSort<TNamespaces>` from Part 9 — only homogeneous comparable paths are sortable).
+- `FindManyOptions<TWhereTemplate>` is parameterized by the same row-shaped predicate template, so sort paths and predicates are checked against one type (`SearchSort<TWhereTemplate>` from Part 9 — only homogeneous comparable paths are sortable).
 - Subset handles (`CompensationBlockSubsetHandle`, `RequestCompensationSubsetHandle`) are removed. Bulk operator actions are expressed by mapping over the iterable handles, with each handle producing its own per-row result.
 - `client.workflows.<def>` adds `findUnique(query, opts?)`, `findMany(query, opts?)`, `count(query, opts?)` alongside `.start(...)` and `.get(idempotencyKey | args)`. `findMany` excludes attached children automatically.
 - `workflowInstance.compensations.<step>`, `workflowInstance.attachedChildWorkflows.<name>`, and `workflowInstance.requestCompensations.<request>` now expose `.get(id)` (with their respective branded ids) in addition to `findUnique` / `findMany` / `count`.
@@ -3337,12 +3302,12 @@ Removed context APIs:
 - JSONB columns (`args`, `result`, `metadata`, `info`, `payload`) are first-class row fields for `fetchRow` / prefetch — they are returned as whole opaque values.
 - `RequestCompensationUniqueHandle.attempts()` is preserved as a separate method (it returns an `AttemptAccessor`, not a row column).
 
-#### Query namespaces renamed
+#### Query predicates
 
-- `q.engine` → `q.row` everywhere. The flat scalar columns of an entity's row.
-- JSONB columns are first-class top-level namespaces: `q.args`, `q.result`, `q.metadata`, `q.info`, `q.payload`, `q.error`. Each has its own path machinery for filtering and sorting.
-- `q.metadata` only exists on entities that have user-attached metadata (workflows, topic records). It is no longer used for engine-managed row columns.
-- For workflows, `args` and `result` are no longer separate top-level namespaces flattening the workflow's args/result schemas — they remain top-level namespaces but the `row` namespace also contains them as opaque fields for fetch/prefetch.
+- Predicate callbacks now receive one row-scoped `WhereScope<TRowTemplate>` object.
+- Authoring uses functional combinators from `natalia/search` (`and`, `or`, `eq`, `gt`, `every`, `some`, ...).
+- There is no public namespace split (`q.row`, `q.args`, `q.metadata`, etc.) and no public builder object.
+- Scalar columns and JSON-backed fields are siblings on the same template; operator availability follows each field's declared type.
 
 #### Connection and transaction model
 

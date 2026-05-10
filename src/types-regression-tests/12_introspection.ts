@@ -5,6 +5,7 @@ import {
   defineWorkflow,
   defineWorkflowHeader,
 } from "../workflow";
+import { and } from "../search";
 import type {
   AttachedChildWorkflowExternalHandle,
   AttachedChildWorkflowId,
@@ -233,7 +234,7 @@ type _GetWithFieldsRow = Assert<
 
 // `findUnique` resolves to FindUniqueResult<Handle>.
 async function _findUniqueShape(): Promise<void> {
-  const result = await ns.findUnique(() => ({ kind: "and", nodes: [] }));
+  const result = await ns.findUnique(() => and());
   if (result.status === "unique") {
     type _UniqueValue = Assert<
       IsEqual<
@@ -245,7 +246,7 @@ async function _findUniqueShape(): Promise<void> {
 }
 
 // `findMany` returns FindManyResult; awaitable + async-iterable.
-const manyResult = ns.findMany(() => ({ kind: "and", nodes: [] }));
+const manyResult = ns.findMany(() => and());
 type _FindManyType = Assert<
   typeof manyResult extends FindManyResult<
     AttachedChildWorkflowExternalHandle<typeof followUpHeader>
@@ -256,7 +257,7 @@ type _FindManyType = Assert<
 
 // `count` resolves to a number.
 async function _countShape(): Promise<void> {
-  const c = await ns.count(() => ({ kind: "and", nodes: [] }));
+  const c = await ns.count(() => and());
   type _CountType = Assert<IsEqual<typeof c, number>>;
 }
 
@@ -472,7 +473,7 @@ async function _exerciseClient(): Promise<void> {
   >;
 
   // findUnique / findMany / count from the unified queryable surface.
-  const found = await clientAcc.findUnique(() => ({ kind: "and", nodes: [] }));
+  const found = await clientAcc.findUnique(() => and());
   if (found.status === "unique") {
     type _FoundValue = Assert<
       IsEqual<
@@ -482,14 +483,14 @@ async function _exerciseClient(): Promise<void> {
     >;
   }
 
-  const many = clientAcc.findMany(() => ({ kind: "and", nodes: [] }));
+  const many = clientAcc.findMany(() => and());
   type _ManyAwaited = Assert<
     typeof many extends FindManyResult<WorkflowHandleExternal<typeof orderWorkflow>>
       ? true
       : false
   >;
 
-  const total = await clientAcc.count(() => ({ kind: "and", nodes: [] }));
+  const total = await clientAcc.count(() => and());
   type _CountReturn = Assert<IsEqual<typeof total, number>>;
 }
 void _exerciseClient;

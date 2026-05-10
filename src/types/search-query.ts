@@ -1,614 +1,349 @@
 // =============================================================================
-// SEARCH QUERY — SHARED TYPE SYSTEM
+// SEARCH QUERY — ROW-SCOPED PREDICATE DSL
 //
-// `REFACTOR.MD` Part 9 replaces the old workflow-only query shape (historically
-// described as engine + metadata namespaces) with a reusable
-// `SearchQuery<TNamespaces>` over an arbitrary record of namespaces.
-//
-// Two namespace shapes participate:
-//
-//   - `RowNamespaceRecord` — flat record of scalar columns drawn from
-//     `string | number | boolean | bigint | Date | null | undefined`. No
-//     nesting. Used by the `row` namespace on every queryable entity (the
-//     flat columns of an SQL row).
-//   - `SearchMetadataRecord` — nested record whose leaves are
-//     `string | number | boolean | null | undefined`, plus arrays of those,
-//     plus nested records. No `bigint`/`Date` (those don't survive JSONB
-//     serialisation without a convention). Used for JSONB columns: `args`,
-//     `result`, `metadata`, `info`, `payload`, `error`.
-//
-// Both shapes go through the same path-derivation machinery; range
-// comparisons and sorting are restricted to homogeneous comparable paths.
-// Row namespaces additionally admit `bigint` and `Date` paths because they
-// carry total ordering.
+// Public predicates are authored against one row-shaped template type:
+// `WhereScope<TRowTemplate>`. There is no author-facing namespace split
+// (`row` / `args` / `metadata`), and no builder object.
 // =============================================================================
 
-// =============================================================================
-// NAMESPACE-SHAPE PRIMITIVES
-// =============================================================================
+export type WhereTemplateRecord = object;
 
-/**
- * Scalar values admitted in a row namespace (a flat record of SQL row
- * columns). Includes `bigint` and `Date` because row columns carry total
- * ordering and survive across storage backends.
- */
-export type RowNamespaceScalar =
-  | string
-  | number
-  | boolean
-  | bigint
-  | Date
-  | null
-  | undefined;
+// -----------------------------------------------------------------------------
+// Field references and scope projection
+// -----------------------------------------------------------------------------
 
-/**
- * Marker for a row namespace — a flat record whose values are
- * `RowNamespaceScalar`. The constraint is **structural**: any object type
- * whose every property value type is assignable to `RowNamespaceScalar`
- * satisfies it. We do not require an `[key: string]` index signature so that
- * explicit column-typed shapes (e.g. `WorkflowRow`) can be used as
- * namespaces without redeclaration.
- */
-export type RowNamespaceRecord = {
-  readonly [key: string]: RowNamespaceScalar;
-};
+declare const __predicateBrand: unique symbol;
+declare const __fieldRefBrand: unique symbol;
+declare const __arrayRefBrand: unique symbol;
 
-/**
- * Test whether `T` structurally fits the row-namespace shape: every
- * property is a `RowNamespaceScalar`, AND at least one column carries
- * `bigint` or `Date` (the row-only types — `RowNamespaceRecord` admits
- * them, `SearchMetadataRecord` does not). The `bigint`/`Date` discriminator
- * is necessary because a flat record of `string | number | boolean | null`
- * values structurally satisfies both shapes; without the discriminator the
- * dispatch would be ambiguous.
- *
- * Practical implication: a row namespace declaration is expected to include
- * timestamp / count / id columns of type `Date` / `bigint`. The published
- * `WorkflowRow` and `RequestCompensationRow` (step 10) both do.
- *
- * Used internally; user code does not call this.
- */
-type IsRowNamespace<T> = T extends object
-  ? T extends readonly unknown[]
-    ? false
-    : keyof T extends string
-      ? {
-          [K in keyof T]: T[K] extends RowNamespaceScalar ? true : false;
-        }[keyof T] extends true
-        ? // All values are row-scalar shaped. Now discriminate vs metadata
-          // by requiring at least one bigint or Date column.
-          true extends {
-            [K in keyof T]: T[K] extends bigint | Date | null | undefined
-              ? T[K] extends null | undefined
-                ? false
-                : true
-              : false;
-          }[keyof T]
-          ? true
-          : false
-        : false
-      : false
-  : false;
-
-/**
- * Scalar leaves admitted in a JSONB metadata namespace.
- */
-export type SearchMetadataScalar = string | number | boolean | null;
-
-/** Array form admitted as a JSONB leaf. */
-export type SearchMetadataPrimitiveArray = readonly SearchMetadataScalar[];
-
-/** Nested value admitted inside a JSONB metadata namespace. */
-export type SearchMetadataValue =
-  | SearchMetadataScalar
-  | SearchMetadataPrimitiveArray
-  | undefined
-  | SearchMetadataRecord;
-
-/** Nested record of JSONB-friendly values. */
-export interface SearchMetadataRecord {
-  readonly [key: string]: SearchMetadataValue;
+export interface Predicate {
+  readonly [__predicateBrand]: true;
 }
 
-/**
- * Umbrella namespace constraint — every key in `TNamespaces` of a
- * `SearchQuery<TNamespaces>` must be either a row namespace (flat
- * `RowNamespaceScalar` values) or a metadata namespace (nested JSONB
- * record). The constraint is intentionally permissive (`unknown`) so that
- * any user-supplied namespace shape (including JSONB columns inferred from
- * schemas as primitive types) is accepted at the constraint layer; the
- * dispatch in `NamespacePredicateNode` / `NamespaceBuilder` discriminates
- * row vs metadata at use time.
- */
-export type SearchNamespaceRecord = unknown;
+export interface FieldRef<TValue> {
+  readonly [__fieldRefBrand]: TValue;
+  readonly __kind: "field";
+  readonly path: string;
+}
 
-type SearchMetadataValueFromInput<T> = T extends unknown
-  ? T extends readonly (infer E)[]
-    ? E extends SearchMetadataScalar
-      ? readonly E[]
-      : never
-    : T extends SearchMetadataScalar | undefined
-      ? T
-      : T extends object
-        ? SearchMetadataFromInput<T>
-        : never
-  : never;
+export interface ArrayRef<TElement> {
+  readonly [__arrayRefBrand]: TElement;
+  readonly __kind: "array";
+  readonly path: string;
+}
 
-/**
- * Normalise schema-input metadata into the constrained searchable metadata
- * model: nested objects + arrays of primitives.
- */
-export type SearchMetadataFromInput<T> = T extends object
-  ? {
-      [K in Extract<keyof T, string>]: SearchMetadataValueFromInput<T[K]>;
-    }
-  : Record<string, never>;
-
-// =============================================================================
-// PATH MACHINERY — shared between row and metadata namespaces.
-//
-// Row namespaces are flat records, so their "paths" are just keys (no `.`
-// joins). Metadata namespaces support nested paths via `JoinPath`.
-// =============================================================================
-
-type JoinPath<L extends string, R extends string> = `${L}.${R}`;
-
-type MetadataObjectKeys<T> = T extends unknown
+type ScopeObject<T> = T extends object
   ? T extends readonly unknown[]
     ? never
-    : T extends object
-      ? Extract<keyof T, string>
-      : never
+    : T extends Date
+      ? never
+      : T
   : never;
 
-type MetadataDescend<T, K extends string> = T extends unknown
-  ? T extends readonly unknown[]
-    ? undefined
-    : T extends object
-      ? K extends keyof T
-        ? T[K]
-        : undefined
-      : undefined
-  : never;
+type StripNullish<T> = Exclude<T, null | undefined>;
 
-type MetaAnyPath<T> = {
-  [K in MetadataObjectKeys<T>]:
-    | K
-    | (MetaAnyPath<MetadataDescend<T, K>> extends infer R
-        ? R extends string
-          ? JoinPath<K, R>
-          : never
-        : never);
-}[MetadataObjectKeys<T>];
+type ObjectScope<T> = [ScopeObject<StripNullish<T>>] extends [never]
+  ? never
+  : {
+      readonly [K in keyof ScopeObject<StripNullish<T>>]-?: WhereScope<
+        ScopeObject<StripNullish<T>>[K]
+      >;
+    };
 
-type MetaPathValue<T, P extends string> = P extends `${infer K}.${infer Rest}`
-  ? MetaPathValue<MetadataDescend<T, K>, Rest>
-  : MetadataDescend<T, P>;
+export type WhereScope<TValue> = [StripNullish<TValue>] extends [
+  readonly (infer TElement)[],
+]
+  ? ArrayRef<TElement>
+  : [ObjectScope<TValue>] extends [never]
+    ? FieldRef<TValue>
+    : ObjectScope<TValue>;
+
+export type WhereFn<TRowTemplate extends WhereTemplateRecord> = (
+  scope: WhereScope<TRowTemplate>,
+) => Predicate;
 
 // -----------------------------------------------------------------------------
-// METADATA NAMESPACE — scalar / comparable / array path predicates.
+// Type-level operator capabilities
 // -----------------------------------------------------------------------------
 
-// Path machinery without `T extends SearchMetadataRecord` constraint —
-// works on any object shape. Used by the predicate / builder dispatch when
-// we've already ruled out a row-namespace shape.
+type ComparableScalar = string | number | bigint | Date;
 
-type MetaScalarBranchAtPathOf<T, P extends string> = Extract<
-  MetaPathValue<T, P>,
-  SearchMetadataScalar | undefined
->;
-
-/**
- * Comparable branch at a path — only admits the path if the non-null/undefined
- * value resolves to purely `string` or purely `number`. Range comparisons
- * (`gt`/`gte`/`lt`/`lte`) require unambiguous ordering.
- */
-type MetaComparableBranchAtPathOf<T, P extends string> = Extract<
-  MetaPathValue<T, P>,
-  string | number
-> extends infer C
-  ? [C] extends [never]
+type HomogeneousComparable<TValue> = Extract<
+  TValue,
+  ComparableScalar
+> extends infer TComparable
+  ? [TComparable] extends [never]
     ? never
-    : [C] extends [string]
+    : [TComparable] extends [string]
       ? string
-      : [C] extends [number]
+      : [TComparable] extends [number]
         ? number
-        : never
-  : never;
-
-type MetaArrayElementBranchAtPathOf<T, P extends string> = MetaPathValue<
-  T,
-  P
-> extends infer V
-  ? V extends readonly (infer E)[]
-    ? E
-    : never
-  : never;
-
-type MetaScalarPathOf<T> = MetaAnyPath<T> extends infer P
-  ? P extends string
-    ? [MetaScalarBranchAtPathOf<T, P>] extends [never]
-      ? never
-      : P
-    : never
-  : never;
-
-type MetaComparablePathOf<T> = MetaAnyPath<T> extends infer P
-  ? P extends string
-    ? [MetaComparableBranchAtPathOf<T, P>] extends [never]
-      ? never
-      : P
-    : never
-  : never;
-
-type MetaArrayPathOf<T> = MetaAnyPath<T> extends infer P
-  ? P extends string
-    ? [MetaArrayElementBranchAtPathOf<T, P>] extends [never]
-      ? never
-      : P
-    : never
-  : never;
-
-
-
-// -----------------------------------------------------------------------------
-// ROW NAMESPACE — flat keys, comparable paths admit Date / bigint.
-// -----------------------------------------------------------------------------
-
-type RowKey<T> = Extract<keyof T, string>;
-
-/**
- * Comparable row column — admits `string | number | bigint | Date`, but only
- * when the column resolves to a single one of those (not a heterogeneous
- * union).
- */
-type RowComparableValueAt<T, K extends RowKey<T>> = Extract<
-  T[K],
-  string | number | bigint | Date
-> extends infer C
-  ? [C] extends [never]
-    ? never
-    : [C] extends [string]
-      ? string
-      : [C] extends [number]
-        ? number
-        : [C] extends [bigint]
+        : [TComparable] extends [bigint]
           ? bigint
-          : [C] extends [Date]
+          : [TComparable] extends [Date]
             ? Date
             : never
   : never;
 
-type RowComparableKey<T> = {
-  [K in RowKey<T>]: [RowComparableValueAt<T, K>] extends [never] ? never : K;
-}[RowKey<T>];
+type FieldValue<TField extends FieldRef<unknown>> =
+  TField extends FieldRef<infer TValue> ? TValue : never;
 
-// =============================================================================
-// PER-NAMESPACE NODE EMISSION
-//
-// For each namespace key in TNamespaces, emit the predicate AST nodes that
-// apply to that namespace's shape. Row namespaces produce flat-key nodes
-// with bigint/Date support; metadata namespaces produce nested-path nodes
-// with array-containment support.
-// =============================================================================
+type ArrayElement<TArray extends ArrayRef<unknown>> =
+  TArray extends ArrayRef<infer TElement> ? TElement : never;
 
-type RowNamespacePredicateNode<TNamespaceKey extends string, T> =
+// -----------------------------------------------------------------------------
+// Internal AST carrier + helpers
+// -----------------------------------------------------------------------------
+
+type PredicateNode =
+  | { readonly kind: "and"; readonly nodes: readonly PredicateNode[] }
+  | { readonly kind: "or"; readonly nodes: readonly PredicateNode[] }
+  | { readonly kind: "not"; readonly node: PredicateNode }
   | {
-      kind: "exists";
-      namespace: TNamespaceKey;
-      path: RowKey<T>;
-      value: boolean;
+      readonly kind:
+        | "eq"
+        | "ne"
+        | "in"
+        | "notIn"
+        | "gt"
+        | "gte"
+        | "lt"
+        | "lte"
+        | "contains";
+      readonly path: string;
+      readonly value: unknown;
     }
   | {
-      [K in RowKey<T>]: {
-        kind: "eq" | "ne";
-        namespace: TNamespaceKey;
-        path: K;
-        value: T[K];
-      };
-    }[RowKey<T>]
-  | {
-      [K in RowKey<T>]: {
-        kind: "in" | "notIn";
-        namespace: TNamespaceKey;
-        path: K;
-        value: readonly T[K][];
-      };
-    }[RowKey<T>]
-  | {
-      [K in RowComparableKey<T>]: {
-        kind: "gt" | "gte" | "lt" | "lte";
-        namespace: TNamespaceKey;
-        path: K;
-        value: RowComparableValueAt<T, K>;
-      };
-    }[RowComparableKey<T>];
+      readonly kind: "some" | "every";
+      readonly path: string;
+      readonly node: PredicateNode;
+    };
 
-type MetadataNamespacePredicateNode<TNamespaceKey extends string, T> =
-  | {
-      kind: "exists";
-      namespace: TNamespaceKey;
-      path: MetaAnyPath<T>;
-      value: boolean;
-    }
-  | {
-      [P in MetaScalarPathOf<T>]: {
-        kind: "eq" | "ne";
-        namespace: TNamespaceKey;
-        path: P;
-        value: Extract<MetaPathValue<T, P>, SearchMetadataScalar | undefined>;
-      };
-    }[MetaScalarPathOf<T>]
-  | {
-      [P in MetaScalarPathOf<T>]: {
-        kind: "in" | "notIn";
-        namespace: TNamespaceKey;
-        path: P;
-        value: readonly Extract<
-          MetaPathValue<T, P>,
-          SearchMetadataScalar | undefined
-        >[];
-      };
-    }[MetaScalarPathOf<T>]
-  | {
-      [P in MetaComparablePathOf<T>]: {
-        kind: "gt" | "gte" | "lt" | "lte";
-        namespace: TNamespaceKey;
-        path: P;
-        value: Extract<MetaPathValue<T, P>, string | number>;
-      };
-    }[MetaComparablePathOf<T>]
-  | {
-      [P in MetaArrayPathOf<T>]: {
-        kind: "contains";
-        namespace: TNamespaceKey;
-        path: P;
-        value: MetaArrayElementBranchAtPathOf<T, P>;
-      };
-    }[MetaArrayPathOf<T>]
-  | {
-      [P in MetaArrayPathOf<T>]: {
-        kind: "containsAny" | "containsAll";
-        namespace: TNamespaceKey;
-        path: P;
-        value: readonly MetaArrayElementBranchAtPathOf<T, P>[];
-      };
-    }[MetaArrayPathOf<T>];
+const asNode = (predicate: Predicate): PredicateNode =>
+  (predicate as Predicate & { readonly __node: PredicateNode }).__node;
 
-/**
- * Emit predicate nodes for one namespace, dispatching on whether it's a row
- * namespace (flat record of `RowNamespaceScalar`) or a metadata namespace
- * (nested record of JSONB-friendly values).
- */
-type NamespacePredicateNode<
-  TNamespaceKey extends string,
-  T,
-> = IsRowNamespace<T> extends true
-  ? RowNamespacePredicateNode<TNamespaceKey, T>
-  : MetadataNamespacePredicateNode<TNamespaceKey, T>;
+const wrapNode = (node: PredicateNode): Predicate =>
+  ({ [__predicateBrand]: true, __node: node } as const) as Predicate;
 
-// =============================================================================
-// SEARCH QUERY NODE — generic AST over multiple namespaces.
-// =============================================================================
+// -----------------------------------------------------------------------------
+// Public combinators and operators
+// -----------------------------------------------------------------------------
 
-export type SearchQueryNode<
-  TNamespaces extends Record<string, SearchNamespaceRecord>,
-> =
-  | { kind: "and"; nodes: readonly SearchQueryNode<TNamespaces>[] }
-  | { kind: "or"; nodes: readonly SearchQueryNode<TNamespaces>[] }
-  | { kind: "not"; node: SearchQueryNode<TNamespaces> }
-  | {
-      [K in Extract<keyof TNamespaces, string>]: NamespacePredicateNode<
-        K,
-        TNamespaces[K]
-      >;
-    }[Extract<keyof TNamespaces, string>];
+export const and = (...predicates: readonly Predicate[]): Predicate =>
+  wrapNode({ kind: "and", nodes: predicates.map(asNode) });
 
-// =============================================================================
-// SORT — SearchSort<TNamespaces>
-//
-// Only paths whose value resolves to purely `string`, `number`, `bigint`, or
-// `Date` are sortable. Row namespaces additionally admit `bigint`/`Date`;
-// metadata namespaces are limited to `string`/`number`.
-// =============================================================================
+export const or = (...predicates: readonly Predicate[]): Predicate =>
+  wrapNode({ kind: "or", nodes: predicates.map(asNode) });
+
+export const not = (predicate: Predicate): Predicate =>
+  wrapNode({ kind: "not", node: asNode(predicate) });
+
+export const eq = <TField extends FieldRef<unknown>>(
+  field: TField,
+  value: FieldValue<TField>,
+): Predicate =>
+  wrapNode({ kind: "eq", path: field.path, value });
+
+export const ne = <TField extends FieldRef<unknown>>(
+  field: TField,
+  value: FieldValue<TField>,
+): Predicate =>
+  wrapNode({ kind: "ne", path: field.path, value });
+
+export const in_ = <TField extends FieldRef<unknown>>(
+  field: TField,
+  values: readonly FieldValue<TField>[],
+): Predicate =>
+  wrapNode({ kind: "in", path: field.path, value: values });
+
+export const notIn = <TField extends FieldRef<unknown>>(
+  field: TField,
+  values: readonly FieldValue<TField>[],
+): Predicate =>
+  wrapNode({ kind: "notIn", path: field.path, value: values });
+
+export const gt = <TField extends FieldRef<unknown>>(
+  field: TField,
+  value: HomogeneousComparable<FieldValue<TField>>,
+): Predicate =>
+  wrapNode({ kind: "gt", path: field.path, value });
+
+export const gte = <TField extends FieldRef<unknown>>(
+  field: TField,
+  value: HomogeneousComparable<FieldValue<TField>>,
+): Predicate =>
+  wrapNode({ kind: "gte", path: field.path, value });
+
+export const lt = <TField extends FieldRef<unknown>>(
+  field: TField,
+  value: HomogeneousComparable<FieldValue<TField>>,
+): Predicate =>
+  wrapNode({ kind: "lt", path: field.path, value });
+
+export const lte = <TField extends FieldRef<unknown>>(
+  field: TField,
+  value: HomogeneousComparable<FieldValue<TField>>,
+): Predicate =>
+  wrapNode({ kind: "lte", path: field.path, value });
+
+export const isNull = <TField extends FieldRef<unknown>>(
+  field: TField & (null extends FieldValue<TField> ? unknown : never),
+): Predicate => eq(field, null as FieldValue<TField>);
+
+export const isMissing = <TField extends FieldRef<unknown>>(
+  field: TField & (undefined extends FieldValue<TField> ? unknown : never),
+): Predicate => eq(field, undefined as FieldValue<TField>);
+
+export const isNullish = <TField extends FieldRef<unknown>>(
+  field: TField &
+    (null extends FieldValue<TField> ? unknown : never) &
+    (undefined extends FieldValue<TField> ? unknown : never),
+): Predicate =>
+  in_(
+    field,
+    [undefined, null] as unknown as readonly FieldValue<TField>[],
+  );
+
+export const contains = <TArray extends ArrayRef<unknown>>(
+  arrayField: TArray,
+  value: ArrayElement<TArray>,
+): Predicate =>
+  wrapNode({ kind: "contains", path: arrayField.path, value });
+
+export const some = <TArray extends ArrayRef<unknown>>(
+  arrayField: TArray,
+  predicate: (item: WhereScope<ArrayElement<TArray>>) => Predicate,
+): Predicate => {
+  const itemScope = createWhereScopeProxy("") as WhereScope<ArrayElement<TArray>>;
+  return wrapNode({
+    kind: "some",
+    path: arrayField.path,
+    node: asNode(predicate(itemScope)),
+  });
+};
+
+export const every = <TArray extends ArrayRef<unknown>>(
+  arrayField: TArray,
+  predicate: (item: WhereScope<ArrayElement<TArray>>) => Predicate,
+): Predicate => {
+  const itemScope = createWhereScopeProxy("") as WhereScope<ArrayElement<TArray>>;
+  return wrapNode({
+    kind: "every",
+    path: arrayField.path,
+    node: asNode(predicate(itemScope)),
+  });
+};
+
+// -----------------------------------------------------------------------------
+// Sort
+// -----------------------------------------------------------------------------
 
 export type SearchSortDirection = "asc" | "desc";
 
-type RowSortableKey<T> = RowComparableKey<T>;
-
-type NamespaceSortTerm<TNamespaceKey extends string, T> =
-  IsRowNamespace<T> extends true
-    ? {
-        namespace: TNamespaceKey;
-        path: RowSortableKey<T>;
-        direction: SearchSortDirection;
-      }
-    : {
-        namespace: TNamespaceKey;
-        path: MetaComparablePathOf<T>;
-        direction: SearchSortDirection;
-      };
-
-export type SearchSort<
-  TNamespaces extends Record<string, SearchNamespaceRecord>,
-> = {
-  [K in Extract<keyof TNamespaces, string>]: NamespaceSortTerm<K, TNamespaces[K]>;
-}[Extract<keyof TNamespaces, string>];
-
-// =============================================================================
-// QUERY ENVELOPE
-// =============================================================================
-
-export interface SearchQuery<
-  TNamespaces extends Record<string, SearchNamespaceRecord>,
-> {
-  where?: SearchQueryNode<TNamespaces>;
-  sort?: readonly SearchSort<TNamespaces>[];
-  limit?: number;
-}
-
-// =============================================================================
-// BUILDER TYPES — generic over TNamespaces.
-//
-// The builder exposes one sub-builder per namespace key. Sub-builders dispatch
-// on namespace shape: row namespaces produce flat-key accessors with eq/ne/in/
-// notIn/exists plus range on comparable columns; metadata namespaces produce
-// nested-path accessors with the same scalar capabilities plus array
-// contains/containsAny/containsAll on array paths.
-// =============================================================================
-
-type EqInBuilder<
-  TNamespaces extends Record<string, SearchNamespaceRecord>,
-  TValue,
-> = {
-  eq(value: TValue): SearchQueryNode<TNamespaces>;
-  ne(value: TValue): SearchQueryNode<TNamespaces>;
-  in(values: readonly TValue[]): SearchQueryNode<TNamespaces>;
-  notIn(values: readonly TValue[]): SearchQueryNode<TNamespaces>;
-};
-
-type RangeBuilder<
-  TNamespaces extends Record<string, SearchNamespaceRecord>,
-  TValue,
-> = [TValue] extends [string | number | bigint | Date]
-  ? {
-      gt(value: TValue): SearchQueryNode<TNamespaces>;
-      gte(value: TValue): SearchQueryNode<TNamespaces>;
-      lt(value: TValue): SearchQueryNode<TNamespaces>;
-      lte(value: TValue): SearchQueryNode<TNamespaces>;
-    }
-  : {};
-
-type ExistsBuilder<
-  TNamespaces extends Record<string, SearchNamespaceRecord>,
-> = {
-  exists(value: boolean): SearchQueryNode<TNamespaces>;
-};
-
-// -----------------------------------------------------------------------------
-// METADATA SUB-BUILDER — recurses through nested object structure.
-// -----------------------------------------------------------------------------
-
-type MetaScalarCapabilityValue<TValue> = Extract<
-  TValue,
-  SearchMetadataScalar | undefined
->;
-
-type MetaComparableCapabilityValue<TValue> = Extract<
-  TValue,
-  string | number
-> extends infer C
-  ? [C] extends [never]
+type SortComparablePath<TTemplate, TPath extends string> = PathValue<
+  TTemplate,
+  TPath
+> extends infer TValue
+  ? [HomogeneousComparable<TValue>] extends [never]
     ? never
-    : [C] extends [string]
-      ? string
-      : [C] extends [number]
-        ? number
-        : never
+    : TPath
   : never;
 
-type MetaArrayCapabilityElement<TValue> = TValue extends unknown
-  ? TValue extends readonly (infer E)[]
-    ? E extends SearchMetadataScalar
-      ? E
-      : never
+type JoinPath<L extends string, R extends string> = `${L}.${R}`;
+
+type ObjectKeys<T> = T extends object
+  ? T extends readonly unknown[]
+    ? never
+    : T extends Date
+      ? never
+      : Extract<keyof T, string>
+  : never;
+
+type Descend<T, K extends string> = T extends object
+  ? K extends keyof T
+    ? T[K]
     : never
   : never;
 
-type ScalarCapabilityBuilder<
-  TNamespaces extends Record<string, SearchNamespaceRecord>,
-  TValue,
-> = [MetaScalarCapabilityValue<TValue>] extends [never]
-  ? {}
-  : EqInBuilder<TNamespaces, MetaScalarCapabilityValue<TValue>> &
-      RangeBuilder<TNamespaces, MetaComparableCapabilityValue<TValue>>;
+type AnyPath<T> = {
+  [K in ObjectKeys<T>]:
+    | K
+    | (AnyPath<Descend<T, K>> extends infer R
+        ? R extends string
+          ? JoinPath<K, R>
+          : never
+        : never);
+}[ObjectKeys<T>];
 
-type ArrayCapabilityBuilder<
-  TNamespaces extends Record<string, SearchNamespaceRecord>,
-  TValue,
-> = [MetaArrayCapabilityElement<TValue>] extends [never]
-  ? {}
-  : {
-      contains(
-        value: MetaArrayCapabilityElement<TValue>,
-      ): SearchQueryNode<TNamespaces>;
-      containsAny(
-        values: readonly MetaArrayCapabilityElement<TValue>[],
-      ): SearchQueryNode<TNamespaces>;
-      containsAll(
-        values: readonly MetaArrayCapabilityElement<TValue>[],
-      ): SearchQueryNode<TNamespaces>;
-    };
+type PathValue<T, P extends string> = P extends `${infer K}.${infer R}`
+  ? PathValue<Descend<T, K>, R>
+  : Descend<T, P>;
 
-type ObjectCapabilityBuilder<
-  TNamespaces extends Record<string, SearchNamespaceRecord>,
-  TValue,
-> = [MetadataObjectKeys<TValue>] extends [never]
-  ? {}
-  : {
-      [K in MetadataObjectKeys<TValue>]-?: MetadataBuilderNode<
-        TNamespaces,
-        MetadataDescend<TValue, K>
-      >;
-    };
+type ComparablePath<TTemplate> = AnyPath<TTemplate> extends infer TPath
+  ? TPath extends string
+    ? SortComparablePath<TTemplate, TPath>
+    : never
+  : never;
 
-type MetadataBuilderNode<
-  TNamespaces extends Record<string, SearchNamespaceRecord>,
-  TValue,
-> = ExistsBuilder<TNamespaces> &
-  ObjectCapabilityBuilder<TNamespaces, TValue> &
-  ArrayCapabilityBuilder<TNamespaces, TValue> &
-  ScalarCapabilityBuilder<TNamespaces, TValue>;
-
-
-
-// -----------------------------------------------------------------------------
-// ROW SUB-BUILDER — flat-key accessors over a row namespace.
-// -----------------------------------------------------------------------------
-
-type RowBuilderColumn<
-  TNamespaces extends Record<string, SearchNamespaceRecord>,
-  TValue,
-> = EqInBuilder<TNamespaces, TValue> &
-  RangeBuilder<
-    TNamespaces,
-    Extract<TValue, string | number | bigint | Date>
-  > &
-  ExistsBuilder<TNamespaces>;
-
-type RowBuilderNamespace<
-  TNamespaces extends Record<string, SearchNamespaceRecord>,
-  T,
-> = {
-  [K in RowKey<T>]-?: RowBuilderColumn<TNamespaces, T[K]>;
+export type SearchSort<TTemplate extends WhereTemplateRecord> = {
+  readonly path: ComparablePath<TTemplate>;
+  readonly direction: SearchSortDirection;
 };
 
+export interface SearchQuery<TTemplate extends WhereTemplateRecord> {
+  readonly where?: Predicate;
+  readonly sort?: readonly SearchSort<TTemplate>[];
+  readonly limit?: number;
+}
+
+export const asc = <TField extends FieldRef<unknown>>(
+  field: TField,
+): { readonly path: string; readonly direction: "asc" } => ({
+  path: field.path,
+  direction: "asc",
+});
+
+export const desc = <TField extends FieldRef<unknown>>(
+  field: TField,
+): { readonly path: string; readonly direction: "desc" } => ({
+  path: field.path,
+  direction: "desc",
+});
+
 // -----------------------------------------------------------------------------
-// NAMESPACE SUB-BUILDER — dispatch on shape.
+// Scope proxy helper for runtime builders (internal).
 // -----------------------------------------------------------------------------
 
-type NamespaceBuilder<
-  TNamespaces extends Record<string, SearchNamespaceRecord>,
-  T,
-> = IsRowNamespace<T> extends true
-  ? RowBuilderNamespace<TNamespaces, T>
-  : MetadataBuilderNode<TNamespaces, T>;
-
-export type SearchQueryBuilder<
-  TNamespaces extends Record<string, SearchNamespaceRecord>,
-> = {
-  readonly [K in Extract<keyof TNamespaces, string>]: NamespaceBuilder<
-    TNamespaces,
-    TNamespaces[K]
-  >;
-} & {
-  and(
-    ...nodes: readonly SearchQueryNode<TNamespaces>[]
-  ): SearchQueryNode<TNamespaces>;
-  or(
-    ...nodes: readonly SearchQueryNode<TNamespaces>[]
-  ): SearchQueryNode<TNamespaces>;
-  not(node: SearchQueryNode<TNamespaces>): SearchQueryNode<TNamespaces>;
-};
+export const createWhereScopeProxy = (basePath = ""): unknown =>
+  new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        if (typeof prop !== "string") {
+          return undefined;
+        }
+        const path = basePath.length === 0 ? prop : `${basePath}.${prop}`;
+        return new Proxy(
+          {
+            __kind: "field",
+            path,
+          } as const,
+          {
+            get(innerTarget, innerProp) {
+              if (innerProp === "__kind" || innerProp === "path") {
+                return innerTarget[innerProp];
+              }
+              if (typeof innerProp !== "string") {
+                return undefined;
+              }
+              return (createWhereScopeProxy(path) as Record<string, unknown>)[
+                innerProp
+              ];
+            },
+          },
+        );
+      },
+    },
+  );
 
 

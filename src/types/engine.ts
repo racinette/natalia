@@ -14,10 +14,10 @@ import type { AnyWorkflowDefinition } from "./definitions/workflow-definition";
 import type {
   AttachedChildWorkflowId,
   CompensationBlockRow,
-  CompensationBlockQueryNamespaces,
+  CompensationBlockWhereTemplate,
   RequestCompensationRow,
-  RequestCompensationQueryNamespaces,
-  WorkflowQueryNamespaces,
+  RequestCompensationWhereTemplate,
+  WorkflowWhereTemplate,
   WorkflowRow,
 } from "./schema";
 import type {
@@ -186,7 +186,7 @@ export interface CompensationBlockNamespaceExternal<
   TResult = unknown,
 > extends QueryableNamespace<
     CompensationBlockUniqueHandleExternal<TStep, TArgs, TResult>,
-    CompensationBlockQueryNamespaces<TStep, TArgs, TResult>,
+    CompensationBlockWhereTemplate<TStep, TArgs, TResult>,
     CompensationBlockRow<TStep, TArgs, TResult>,
     CompensationId<TStep>
   > {}
@@ -230,7 +230,7 @@ export interface RequestCompensationNamespaceExternal<
   TCompResult = unknown,
 > extends QueryableNamespace<
     RequestCompensationUniqueHandleExternal<TPayload, TCompResult>,
-    RequestCompensationQueryNamespaces<TPayload, TCompResult>,
+    RequestCompensationWhereTemplate<TPayload, TCompResult>,
     RequestCompensationRow<TPayload, TCompResult>,
     RequestCompensationInstanceId
   > {}
@@ -287,7 +287,7 @@ export interface AttachedChildWorkflowNamespaceExternal<
   W extends AnyPublicWorkflowHeader,
 > extends QueryableNamespace<
     AttachedChildWorkflowExternalHandle<W>,
-    WorkflowQueryNamespaces<
+    WorkflowWhereTemplate<
       InferWorkflowArgs<W>,
       InferWorkflowResult<W>,
       InferWorkflowMetadata<W>
@@ -411,7 +411,7 @@ export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader>
   extends Omit<
     QueryableNamespace<
       WorkflowHandleExternal<W>,
-      WorkflowQueryNamespaces<
+      WorkflowWhereTemplate<
         InferWorkflowArgs<W>,
         InferWorkflowResult<W>,
         InferWorkflowMetadata<W>

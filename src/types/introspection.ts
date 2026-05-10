@@ -3,9 +3,9 @@ import type {
   IWorkflowTransaction,
 } from "./results";
 import type {
-  SearchNamespaceRecord,
-  SearchQueryNode,
   SearchSort,
+  WhereFn,
+  WhereTemplateRecord,
 } from "./search-query";
 
 // =============================================================================
@@ -102,9 +102,9 @@ export interface FetchOptions {
  * Common option bag for findMany. Adds sort and limit to the IO options.
  */
 export interface FindManyOptions<
-  TNamespaces extends Record<string, SearchNamespaceRecord>,
+  TWhereTemplate extends WhereTemplateRecord,
 > {
-  readonly sort?: readonly SearchSort<TNamespaces>[];
+  readonly sort?: readonly SearchSort<TWhereTemplate>[];
   readonly limit?: number;
   readonly txOrConn?: IWorkflowConnection | IWorkflowTransaction;
 }
@@ -144,24 +144,21 @@ export interface FetchableHandle<TRow> {
 /**
  * Predicate callback type for `findUnique` / `findMany` / `count`.
  *
- * The callback receives a `SearchQueryBuilder<TNamespaces>` (step 11). Its
- * return value is a `SearchQueryNode<TNamespaces>` (the AST). Step 11's
- * builder shape is parameterised by the same `TNamespaces` map, so the
- * predicate is fully typed against the entity's namespace surface.
+ * The callback receives a `WhereScope<TWhereTemplate>` (destructure-friendly).
+ * Its return value is an opaque `Predicate` assembled through `natalia/search`
+ * combinators (`and`, `eq`, `gt`, `every`, `some`, ...).
  */
 export type QueryPredicate<
-  TNamespaces extends Record<string, SearchNamespaceRecord>,
-> = (q: import("./search-query").SearchQueryBuilder<TNamespaces>) =>
-  SearchQueryNode<TNamespaces>;
+  TWhereTemplate extends WhereTemplateRecord,
+> = WhereFn<TWhereTemplate>;
 
 /**
  * Unified queryable namespace shape.
  *
  * @typeParam THandle        - The handle type returned by `.get` /
  *                             `findUnique` / `findMany`.
- * @typeParam TNamespaces    - The query namespace map driving predicates.
- *                             Step 11 shapes this as a record of row /
- *                             metadata namespaces.
+ * @typeParam TWhereTemplate - The single row-shaped template driving
+ *                             predicates and sorting.
  * @typeParam TRow           - The flat-row shape for `fetchRow` / prefetch.
  * @typeParam TId            - Branded id for `.get(id)`. Use `never` to
  *                             disable the identity-based path (e.g.
@@ -170,7 +167,7 @@ export type QueryPredicate<
  */
 export interface QueryableNamespace<
   THandle,
-  TNamespaces extends Record<string, SearchNamespaceRecord>,
+  TWhereTemplate extends WhereTemplateRecord,
   TRow,
   TId,
 > {
@@ -189,11 +186,11 @@ export interface QueryableNamespace<
    * Predicate-based lookup that asserts cardinality at fetch time.
    */
   findUnique(
-    query: QueryPredicate<TNamespaces>,
+    query: QueryPredicate<TWhereTemplate>,
     opts?: FindUniqueOptions,
   ): Promise<FindUniqueResult<THandle>>;
   findUnique<F extends FieldsMask<TRow>>(
-    query: QueryPredicate<TNamespaces>,
+    query: QueryPredicate<TWhereTemplate>,
     opts: FindUniqueOptions & { fields: F },
   ): Promise<
     FindUniqueResult<HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>>
@@ -204,17 +201,17 @@ export interface QueryableNamespace<
    * AND async-iterable.
    */
   findMany(
-    query: QueryPredicate<TNamespaces>,
-    opts?: FindManyOptions<TNamespaces>,
+    query: QueryPredicate<TWhereTemplate>,
+    opts?: FindManyOptions<TWhereTemplate>,
   ): FindManyResult<THandle>;
   findMany<F extends FieldsMask<TRow>>(
-    query: QueryPredicate<TNamespaces>,
-    opts: FindManyOptions<TNamespaces> & { fields: F },
+    query: QueryPredicate<TWhereTemplate>,
+    opts: FindManyOptions<TWhereTemplate> & { fields: F },
   ): FindManyResult<HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>>;
 
   /** Aggregate count over the same predicate. */
   count(
-    query: QueryPredicate<TNamespaces>,
+    query: QueryPredicate<TWhereTemplate>,
     opts?: CountOptions,
   ): Promise<number>;
 }

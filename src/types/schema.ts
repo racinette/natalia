@@ -153,7 +153,7 @@ export type StepType =
  * legacy non-explicit serialisation path.
  *
  * Step 12 may extend this with per-workflow declared error typing
- * (`ErrorValue<TErrors>`) when consumed via `WorkflowQueryNamespaces`.
+ * (`ErrorValue<TErrors>`) when consumed via `WorkflowWhereTemplate`.
  */
 export interface WorkflowErrorEnvelope {
   readonly type: string | null;
@@ -215,92 +215,26 @@ export interface RequestCompensationRow<
 }
 
 // =============================================================================
-// WORKFLOW QUERY NAMESPACES (REFACTOR.MD Part 5 §"Workflow row, query
-// namespaces, and `WorkflowHandleExternal`")
-//
-// Query namespaces for workflow rows. Each top-level key is a separate
-// namespace addressable in a `SearchQuery<TNamespaces>` predicate. JSONB
-// columns are exposed as their own namespaces with nested-path machinery;
-// the flat scalar columns of a workflow row come from the `row` namespace.
+// WHERE TEMPLATES (single row-shaped predicate scope)
 // =============================================================================
 
 /**
- * Flat scalar projection of `WorkflowRow` — the columns that participate in
- * the `row` query namespace. JSONB columns (`args`, `result`, `metadata`,
- * `error`) are exposed as their own top-level namespaces with nested-path
- * machinery; they are not part of the `row` namespace.
- *
- * `WorkflowRow` itself remains the full row shape for `fetchRow` /
- * prefetch — JSONB columns survive there as whole opaque values.
+ * Predicate template for workflows. Authors write predicates against this full
+ * row shape directly (`{ status, args, metadata, createdAt, ... }`).
  */
-export interface WorkflowRowFlat {
-  readonly id: WorkflowId;
-  readonly definitionName: string;
-  readonly idempotencyKey: string | null;
-  readonly status: WorkflowStatus;
-  readonly attached: boolean;
-  readonly isCompensation: boolean;
-  readonly compensationStepName: string | null;
-  readonly createdAt: Date;
-  readonly startedAt: Date | null;
-  readonly completedAt: Date | null;
-  readonly failedAt: Date | null;
-  readonly terminatedAt: Date | null;
-  readonly scheduledAt: Date | null;
-  readonly deadlineAt: Date | null;
-}
-
-/**
- * Query namespaces for workflow rows.
- *
- * - `row`      — flat scalar columns from `WorkflowRowFlat`.
- * - `args`     — JSONB args column; nested-path queryable.
- * - `result`   — JSONB result column.
- * - `metadata` — JSONB metadata column.
- * - `error`    — JSONB error envelope column.
- *
- * Used in `client.workflows.<def>.findUnique/findMany/count` predicates and
- * in the per-parent attached/detached child workflow query namespaces
- * (step 12).
- */
-export type WorkflowQueryNamespaces<
+export type WorkflowWhereTemplate<
   TArgs = unknown,
   TResult = unknown,
   TMetadata = unknown,
-> = {
-  row: WorkflowRowFlat;
-  args: TArgs;
-  result: TResult;
-  metadata: TMetadata;
-  error: WorkflowErrorEnvelope;
-};
+> = WorkflowRow<TArgs, TResult, TMetadata>;
 
 /**
- * Flat scalar projection of `RequestCompensationRow` — the columns that
- * participate in the `row` query namespace.
+ * Predicate template for request compensation rows.
  */
-export interface RequestCompensationRowFlat {
-  readonly id: RequestCompensationInstanceId;
-  readonly requestName: string;
-  readonly status: RequestCompensationStatus;
-  readonly createdAt: Date;
-  readonly startedAt: Date | null;
-  readonly completedAt: Date | null;
-  readonly manualAt: Date | null;
-  readonly skippedAt: Date | null;
-}
-
-/**
- * Query namespaces for request compensation invocation rows.
- */
-export type RequestCompensationQueryNamespaces<
+export type RequestCompensationWhereTemplate<
   TPayload = unknown,
   TCompResult = unknown,
-> = {
-  row: RequestCompensationRowFlat;
-  payload: TPayload;
-  result: TCompResult;
-};
+> = RequestCompensationRow<TPayload, TCompResult>;
 
 // =============================================================================
 // COMPENSATION BLOCK INSTANCE ROW + QUERY NAMESPACES
@@ -332,30 +266,10 @@ export interface CompensationBlockRow<TStep, TArgs = unknown, TResult = unknown>
 }
 
 /**
- * Flat scalar projection of `CompensationBlockRow` — the columns that
- * participate in the `row` query namespace.
+ * Predicate template for compensation block instance rows.
  */
-export interface CompensationBlockRowFlat<TStep> {
-  readonly id: CompensationId<TStep>;
-  readonly definitionName: string;
-  readonly status: CompensationBlockStatus;
-  readonly createdAt: Date;
-  readonly startedAt: Date | null;
-  readonly completedAt: Date | null;
-  readonly haltedAt: Date | null;
-  readonly skippedAt: Date | null;
-}
-
-/**
- * Query namespaces for compensation block instance rows.
- */
-export type CompensationBlockQueryNamespaces<
+export type CompensationBlockWhereTemplate<
   TStep,
   TArgs = unknown,
   TResult = unknown,
-> = {
-  row: CompensationBlockRowFlat<TStep>;
-  args: TArgs;
-  result: TResult;
-  info: CompensationInfo<unknown>;
-};
+> = CompensationBlockRow<TStep, TArgs, TResult>;
