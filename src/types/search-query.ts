@@ -188,20 +188,20 @@ export const lte = <TField extends FieldRef<unknown>>(
 
 export const isNull = <TField extends FieldRef<unknown>>(
   field: TField & (null extends FieldValue<TField> ? unknown : never),
-): Predicate => eq(field, null as FieldValue<TField>);
+): Predicate => wrapNode({ kind: "eq", path: field.path, value: null });
 
 export const isMissing = <TField extends FieldRef<unknown>>(
   field: TField & (undefined extends FieldValue<TField> ? unknown : never),
-): Predicate => eq(field, undefined as FieldValue<TField>);
+): Predicate => wrapNode({ kind: "eq", path: field.path, value: undefined });
 
 export const isNullish = <TField extends FieldRef<unknown>>(
   field: TField &
     (null extends FieldValue<TField> ? unknown : never) &
     (undefined extends FieldValue<TField> ? unknown : never),
 ): Predicate =>
-  in_(
-    field,
-    [undefined, null] as unknown as readonly FieldValue<TField>[],
+  or(
+    wrapNode({ kind: "eq", path: field.path, value: null }),
+    wrapNode({ kind: "eq", path: field.path, value: undefined }),
   );
 
 export const contains = <TArray extends ArrayRef<unknown>>(
