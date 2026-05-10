@@ -59,14 +59,22 @@ import type {
 import type {
   InferWorkflowArgs,
   InferWorkflowArgsInput,
+  InferWorkflowChildWorkflows,
   InferWorkflowChannels,
   InferWorkflowErrors,
   InferWorkflowEvents,
   InferWorkflowMetadata,
   InferWorkflowMetadataInput,
+  InferWorkflowRequests,
   InferWorkflowResult,
+  InferWorkflowSteps,
   InferWorkflowStreams,
 } from "./helpers";
+import type { StepCompensationDefinition, StepDefinition } from "./definitions/steps";
+import type {
+  RequestCompensationConfig,
+  RequestDefinition,
+} from "./definitions/requests";
 
 // =============================================================================
 // PRIMITIVE PLANE — channel/stream/event/attribute accessors at engine level.
@@ -178,7 +186,7 @@ export interface CompensationBlockUniqueHandleExternal<
 
 /**
  * Per-parent compensation block instance namespace, keyed by step name on
- * `workflowInstance.compensations.<step>`.
+ * `workflowInstance.compensations.steps.<step>`.
  */
 export interface CompensationBlockNamespaceExternal<
   TStep,
@@ -223,7 +231,7 @@ export interface RequestCompensationUniqueHandleExternal<
 
 /**
  * Per-parent request compensation namespace, keyed by request name on
- * `workflowInstance.requestCompensations.<request>`.
+ * `workflowInstance.compensations.requests.<request>`.
  */
 export interface RequestCompensationNamespaceExternal<
   TPayload = unknown,
@@ -300,6 +308,194 @@ export interface AttachedChildWorkflowNamespaceExternal<
     AttachedChildWorkflowId<W>
   > {}
 
+/**
+ * Per-parent detached child workflow namespace.
+ *
+ * Detached children are globally addressable root workflows; the parent-scoped
+ * namespace is a convenience filter that returns the standard
+ * `WorkflowHandleExternal<W>`.
+ */
+export interface DetachedChildWorkflowNamespaceExternal<
+  W extends AnyPublicWorkflowHeader,
+> extends QueryableNamespace<
+    WorkflowHandleExternal<W>,
+    WorkflowWhereTemplate<
+      InferWorkflowArgs<W>,
+      InferWorkflowResult<W>,
+      InferWorkflowMetadata<W>
+    >,
+    WorkflowRow<
+      InferWorkflowArgs<W>,
+      InferWorkflowResult<W>,
+      InferWorkflowMetadata<W>
+    >,
+    AttachedChildWorkflowId<W>
+  > {}
+
+type IsAny<T> = 0 extends (1 & T) ? true : false;
+
+type WorkflowHandleLooseChildWorkflows = Record<
+  string,
+  AttachedChildWorkflowNamespaceExternal<AnyPublicWorkflowHeader>
+>;
+
+type WorkflowHandleLooseDetachedChildWorkflows = Record<
+  string,
+  DetachedChildWorkflowNamespaceExternal<AnyPublicWorkflowHeader>
+>;
+
+type WorkflowHandleLooseCompensations = Record<
+  string,
+  CompensationBlockNamespaceExternal<unknown>
+>;
+
+type WorkflowHandleLooseRequestCompensations = Record<
+  string,
+  RequestCompensationNamespaceExternal
+>;
+
+type CompensableStepKeys<TSteps extends Record<string, unknown>> = {
+  [K in keyof TSteps & string]: TSteps[K] extends { compensation: unknown } ? K : never;
+}[keyof TSteps & string];
+
+type StepArgsForCompensationNamespace<TStep> =
+  TStep extends StepDefinition<any, infer TArgsSchema, any, any>
+    ? StandardSchemaV1.InferOutput<TArgsSchema>
+    : unknown;
+
+type StepCompensationResultForNamespace<TStep> =
+  TStep extends StepDefinition<any, any, any, infer TCompensation>
+    ? TCompensation extends StepCompensationDefinition<
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        infer TResultSchema
+      >
+      ? TResultSchema extends StandardSchemaV1<unknown, unknown>
+        ? StandardSchemaV1.InferOutput<TResultSchema>
+        : void
+      : never
+    : unknown;
+
+type WorkflowHandleCompensationNamespaces<TSteps extends Record<string, unknown>> = {
+  [K in CompensableStepKeys<TSteps>]: CompensationBlockNamespaceExternal<
+    K,
+    StepArgsForCompensationNamespace<TSteps[K]>,
+    StepCompensationResultForNamespace<TSteps[K]>
+  >;
+};
+
+type CompensableRequestKeys<TRequests extends Record<string, unknown>> = {
+  [K in keyof TRequests & string]: TRequests[K] extends { compensation: unknown }
+    ? K
+    : never;
+}[keyof TRequests & string];
+
+type RequestPayloadForCompensationNamespace<TRequest> =
+  TRequest extends RequestDefinition<any, infer TPayloadSchema, any, any>
+    ? StandardSchemaV1.InferOutput<TPayloadSchema>
+    : unknown;
+
+type RequestCompensationResultForNamespace<TRequest> =
+  TRequest extends RequestDefinition<any, any, any, infer TCompensation>
+    ? TCompensation extends RequestCompensationConfig<infer TResultSchema>
+      ? TResultSchema extends StandardSchemaV1<unknown, unknown>
+        ? StandardSchemaV1.InferOutput<TResultSchema>
+        : void
+      : TCompensation extends true
+        ? void
+        : never
+    : unknown;
+
+type WorkflowHandleRequestCompensationNamespaces<
+  TRequests extends Record<string, unknown>,
+> = {
+  [K in CompensableRequestKeys<TRequests>]: RequestCompensationNamespaceExternal<
+    RequestPayloadForCompensationNamespace<TRequests[K]>,
+    RequestCompensationResultForNamespace<TRequests[K]>
+  >;
+};
+
+type WorkflowHandleChildWorkflowNamespaces<
+  TChildWorkflows extends Record<string, unknown>,
+> = {
+  [K in keyof TChildWorkflows & string]: AttachedChildWorkflowNamespaceExternal<
+    TChildWorkflows[K] extends AnyPublicWorkflowHeader
+      ? TChildWorkflows[K]
+      : AnyPublicWorkflowHeader
+  >;
+};
+
+type WorkflowHandleDetachedChildWorkflowNamespaces<
+  TChildWorkflows extends Record<string, unknown>,
+> = {
+  [K in keyof TChildWorkflows & string]: DetachedChildWorkflowNamespaceExternal<
+    TChildWorkflows[K] extends AnyPublicWorkflowHeader
+      ? TChildWorkflows[K]
+      : AnyPublicWorkflowHeader
+  >;
+};
+
+type WorkflowHandleCompensations<W extends AnyPublicWorkflowHeader> =
+  InferWorkflowSteps<W> extends infer TSteps
+    ? [TSteps] extends [never]
+      ? WorkflowHandleLooseCompensations
+      : IsAny<TSteps> extends true
+        ? WorkflowHandleLooseCompensations
+        : TSteps extends Record<string, unknown>
+          ? WorkflowHandleCompensationNamespaces<TSteps>
+          : WorkflowHandleLooseCompensations
+    : WorkflowHandleLooseCompensations;
+
+type WorkflowHandleRequestCompensations<W extends AnyPublicWorkflowHeader> =
+  InferWorkflowRequests<W> extends infer TRequests
+    ? [TRequests] extends [never]
+      ? WorkflowHandleLooseRequestCompensations
+      : IsAny<TRequests> extends true
+        ? WorkflowHandleLooseRequestCompensations
+        : TRequests extends Record<string, unknown>
+          ? WorkflowHandleRequestCompensationNamespaces<TRequests>
+          : WorkflowHandleLooseRequestCompensations
+    : WorkflowHandleLooseRequestCompensations;
+
+type WorkflowHandleCompensationsTree<W extends AnyPublicWorkflowHeader> = {
+  readonly steps: WorkflowHandleCompensations<W>;
+  readonly requests: WorkflowHandleRequestCompensations<W>;
+};
+
+type WorkflowHandleCompensationsRoot<W extends AnyPublicWorkflowHeader> =
+  WorkflowHandleCompensationsTree<W>;
+
+type WorkflowHandleChildWorkflows<W extends AnyPublicWorkflowHeader> =
+  InferWorkflowChildWorkflows<W> extends infer TChildWorkflows
+    ? [TChildWorkflows] extends [never]
+      ? WorkflowHandleLooseChildWorkflows
+      : IsAny<TChildWorkflows> extends true
+        ? WorkflowHandleLooseChildWorkflows
+        : TChildWorkflows extends Record<string, unknown>
+          ? WorkflowHandleChildWorkflowNamespaces<TChildWorkflows>
+          : WorkflowHandleLooseChildWorkflows
+    : WorkflowHandleLooseChildWorkflows;
+
+type WorkflowHandleDetachedChildWorkflows<W extends AnyPublicWorkflowHeader> =
+  InferWorkflowChildWorkflows<W> extends infer TChildWorkflows
+    ? [TChildWorkflows] extends [never]
+      ? WorkflowHandleLooseDetachedChildWorkflows
+      : IsAny<TChildWorkflows> extends true
+        ? WorkflowHandleLooseDetachedChildWorkflows
+        : TChildWorkflows extends Record<string, unknown>
+          ? WorkflowHandleDetachedChildWorkflowNamespaces<TChildWorkflows>
+          : WorkflowHandleLooseDetachedChildWorkflows
+    : WorkflowHandleLooseDetachedChildWorkflows;
+
 // =============================================================================
 // WORKFLOW HANDLE — globally addressable workflows.
 //
@@ -341,22 +537,9 @@ export interface WorkflowHandleExternal<W extends AnyPublicWorkflowHeader>
   readonly halts: HaltsNamespaceExternal;
 
   // Per-parent introspection namespaces.
-  readonly attachedChildWorkflows: Record<
-    string,
-    AttachedChildWorkflowNamespaceExternal<AnyPublicWorkflowHeader>
-  >;
-  readonly detachedChildWorkflows: Record<
-    string,
-    AttachedChildWorkflowNamespaceExternal<AnyPublicWorkflowHeader>
-  >;
-  readonly compensations: Record<
-    string,
-    CompensationBlockNamespaceExternal<unknown>
-  >;
-  readonly requestCompensations: Record<
-    string,
-    RequestCompensationNamespaceExternal
-  >;
+  readonly attachedChildWorkflows: WorkflowHandleChildWorkflows<W>;
+  readonly detachedChildWorkflows: WorkflowHandleDetachedChildWorkflows<W>;
+  readonly compensations: WorkflowHandleCompensationsRoot<W>;
 
   /**
    * Wait for the workflow to reach a terminal state. Resolves to a typed

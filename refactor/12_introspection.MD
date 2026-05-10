@@ -93,8 +93,13 @@ Single-generic shape parameterised over the workflow header. Wires:
 - **Parent-scoped namespaces** —
   `attachedChildWorkflows.<name>` /
   `detachedChildWorkflows.<name>` /
-  `compensations.<step>` /
-  `requestCompensations.<request>`.
+  `compensations.steps.<step>` /
+  `compensations.requests.<request>`.
+  On full workflow definitions these are key-narrowed from
+  `childWorkflows`, compensable `steps`, and compensable `requests`.
+  On header-only `W` (or widened `W` that erases those maps), these
+  intentionally fall back to loose `Record<string, ...>` namespaces
+  because definition-level maps are not present in the type.
 - **`wait(opts?)`** — terminal-outcome wait returning
   `WorkflowResult<TResult, ErrorValue<TErrors>>`. Useful for
   already-started workflows; `client.workflows.X.execute(opts)` is
@@ -167,12 +172,11 @@ works the same way as the global `client.workflows.<def>.get(...)`.
 
 For step 12's surface we publish
 `AttachedChildWorkflowNamespaceExternal` and reuse the same shape
-for detached (modulo `THandle`). Step 12's
-`workflowInstance.detachedChildWorkflows.<name>` is typed against
-`Record<string, AttachedChildWorkflowNamespaceExternal<...>>` for
-brevity; step 18 (idempotency-key factory) and step 17 (scheduled
-delivery) refine the detached `.get(args | idempotencyKey)`
-overloads.
+for detached (modulo `THandle`). Keys are now derived from the parent
+workflow's declared `childWorkflows` map when available; otherwise
+header-only / widened workflows keep the loose `Record<string, ...>`
+fallback. Step 18 (idempotency-key factory) and step 17 (scheduled
+delivery) refine the detached `.get(args | idempotencyKey)` overloads.
 
 ### Client workflow accessor (`WorkflowClientAccessor<W>`)
 

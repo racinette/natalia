@@ -535,7 +535,7 @@ The result must conform to the workflow's `defineWorkflow.result` schema. If the
 For compensation block instances, `skip(result)` takes the result and nothing else — no `opts`, no strategy. The result argument is required when the compensation declared a `result` schema; only when the schema was omitted (effectively `TResult = void`) does `skip()` accept zero arguments. It abandons the running `undo`, sets the operator-supplied result, and transitions the block to `'skipped'`:
 
 ```typescript
-const halted = workflowInstance.compensations.bookHotel.findUnique(({ args }) =>
+const halted = workflowInstance.compensations.steps.bookHotel.findUnique(({ args }) =>
   eq(args.firstName, "Bob"),
 );
 
@@ -550,7 +550,7 @@ Bulk skipping is expressed by iterating over `findMany(...)` with a `fields` pre
 ```typescript
 await using tx = await client.transaction();
 
-for await (const block of workflowInstance.compensations.bookHotel.findMany(
+for await (const block of workflowInstance.compensations.steps.bookHotel.findMany(
   ({ status }) => eq(status, "halted"),
   { fields: { args: true }, txOrConn: tx },
 )) {
@@ -730,7 +730,7 @@ There is no outer discriminant for error categories. The external caller discrim
 
 Compensation `undo` callbacks do not receive `ctx.errors`. They report intended outcomes by returning values through the optional `result` schema declared on the compensation definition. Unexpected throws halt the compensation block instance.
 
-`CompensationFailureInfo` and `handle.compensation.wait()` are removed. Operators observe compensation block instances through `workflowInstance.compensations.<step>.findUnique(...)` + `fetchRow(...)`, declared events, and `skip()`.
+`CompensationFailureInfo` and `handle.compensation.wait()` are removed. Operators observe compensation block instances through `workflowInstance.compensations.steps.<step>.findUnique(...)` + `fetchRow(...)`, declared events, and `skip()`.
 
 ### Rationale recap
 
@@ -1154,8 +1154,10 @@ interface WorkflowHandleExternal<W extends AnyWorkflowHeader>
   // Per-parent-scoped namespaces.
   attachedChildWorkflows: { /* see "External introspection of children" */ };
   detachedChildWorkflows: { /* see "External introspection of children" */ };
-  compensations:          { /* see Part 2 */ };
-  requestCompensations:   { /* see Part 11 */ };
+  compensations: {
+    steps:    { /* see Part 2 */ };
+    requests: { /* see Part 11 */ };
+  };
 }
 ```
 
@@ -1661,7 +1663,7 @@ CREATE TABLE workflow_attributes (
 );
 ```
 
-`channel_message`, `stream_record`, and `workflow_event` follow the same pattern. There is no `compensation_block_id` discriminator on these tables: when an operator queries `workflowInstance.compensations.bookHotel.findUnique(...).attributes.progress.get()`, the engine resolves that to a `workflow_id` (the compensation block instance) and reads from `workflow_attributes` directly.
+`channel_message`, `stream_record`, and `workflow_event` follow the same pattern. There is no `compensation_block_id` discriminator on these tables: when an operator queries `workflowInstance.compensations.steps.bookHotel.findUnique(...).attributes.progress.get()`, the engine resolves that to a `workflow_id` (the compensation block instance) and reads from `workflow_attributes` directly.
 
 ### Request compensation tables
 
@@ -1712,7 +1714,7 @@ CREATE TABLE halt (
 
 There is no `branch_halt` table because there are no branches. There is no separate `compensation_block_halt` table because compensation block instances are themselves workflows — their halts are halts on a workflow row, indistinguishable at the table layer.
 
-The differences between operator-facing halt resolution surfaces (`workflowInstance.halts.list()` for execution-workflow halts, `workflowInstance.compensations.X.findUnique(...).halt()` for compensation-block-instance halts) are implemented as views/queries over this single table, joined against the `workflow` row's kind columns (`is_compensation`, `compensation_step_name`) when needed.
+The differences between operator-facing halt resolution surfaces (`workflowInstance.halts.list()` for execution-workflow halts, `workflowInstance.compensations.steps.X.findUnique(...).halt()` for compensation-block-instance halts) are implemented as views/queries over this single table, joined against the `workflow` row's kind columns (`is_compensation`, `compensation_step_name`) when needed.
 
 Implementation details below this level — indexes, retention, and exact FK choices — should be finalized with the public API implementation.
 
@@ -2270,7 +2272,7 @@ interface RequestCompensationUniqueHandle<TPayload, TCompResult>
 Usage:
 
 ```typescript
-const found = await workflowInstance.requestCompensations.refundCharge
+const found = await workflowInstance.compensations.requests.refundCharge
   .findUnique((q) => q.payload.chargeId.eq("ch_123"));
 
 if (found.status === "unique") {
@@ -3262,7 +3264,7 @@ Removed context APIs:
 #### Compensation
 
 - Compensation moves from call sites to `defineStep.compensation` and `defineRequest.compensation`.
-- Step compensation invocations become queryable compensation block instances. At the storage layer they are workflow rows; at the public API layer they remain addressable via `workflowInstance.compensations.<step>` with their own per-instance primitives.
+- Step compensation invocations become queryable compensation block instances. At the storage layer they are workflow rows; at the public API layer they remain addressable via `workflowInstance.compensations.steps.<step>` with their own per-instance primitives.
 - Request compensation invocations are lightweight observable entities with manual-mode support.
 - Compensation reports typed results by return value, not by throwing declared compensation errors.
 - Compensation block halts are skippable per instance via `skip(result)` (no opts, no strategy choice).
@@ -3290,7 +3292,7 @@ Removed context APIs:
 - `FindManyOptions<TWhereTemplate>` is parameterized by the same row-shaped predicate template, so sort paths and predicates are checked against one type (`SearchSort<TWhereTemplate>` from Part 9 — only homogeneous comparable paths are sortable).
 - Subset handles (`CompensationBlockSubsetHandle`, `RequestCompensationSubsetHandle`) are removed. Bulk operator actions are expressed by mapping over the iterable handles, with each handle producing its own per-row result.
 - `client.workflows.<def>` adds `findUnique(query, opts?)`, `findMany(query, opts?)`, `count(query, opts?)` alongside `.start(...)` and `.get(idempotencyKey | args)`. `findMany` excludes attached children automatically.
-- `workflowInstance.compensations.<step>`, `workflowInstance.attachedChildWorkflows.<name>`, and `workflowInstance.requestCompensations.<request>` now expose `.get(id)` (with their respective branded ids) in addition to `findUnique` / `findMany` / `count`.
+- `workflowInstance.compensations.steps.<step>`, `workflowInstance.compensations.requests.<request>`, and `workflowInstance.attachedChildWorkflows.<name>` now expose `.get(id)` (with their respective branded ids) in addition to `findUnique` / `findMany` / `count`.
 - `client.workflows.<def>.get(args)` is a new overload available when the workflow declares `idempotencyKeyFactory`. The engine derives the key from args at call time. The same overload is added to `ctx.foreignWorkflows.<W>.get(...)` inside workflow logic and to `workflowInstance.detachedChildWorkflows.<name>.get(...)`.
 
 #### Row prefetch and `fetchRow`

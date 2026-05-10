@@ -1,6 +1,9 @@
 import type { StandardSchemaV1 } from "./standard-schema";
 import type { ChannelDefinitions, EventDefinitions, StreamDefinitions } from "./definitions/primitives";
 import type { ErrorDefinitions } from "./definitions/errors";
+import type { RequestDefinitions } from "./definitions/requests";
+import type { StepDefinitions } from "./definitions/steps";
+import type { WorkflowDefinitions } from "./definitions/workflow-headers";
 
 // =============================================================================
 // TYPE HELPERS
@@ -96,4 +99,42 @@ export type InferWorkflowErrors<W> = W extends { errors?: infer TErrors }
     ? TErrors
     : Record<string, never>
   : Record<string, never>;
+
+/**
+ * Extract declared workflow steps from a full workflow definition.
+ *
+ * Header-only workflow descriptors do not carry this field and resolve to
+ * `never` so callers can choose an explicit fallback policy.
+ */
+export type InferWorkflowSteps<W> = W extends { steps?: infer TSteps }
+  ? TSteps extends StepDefinitions
+    ? TSteps
+    : never
+  : never;
+
+/**
+ * Extract declared workflow requests from a full workflow definition.
+ *
+ * Header-only workflow descriptors do not carry this field and resolve to
+ * `never` so callers can choose an explicit fallback policy.
+ */
+export type InferWorkflowRequests<W> = W extends { requests?: infer TRequests }
+  ? TRequests extends RequestDefinitions
+    ? TRequests
+    : never
+  : never;
+
+/**
+ * Extract declared child workflows from a full workflow definition.
+ *
+ * Header-only workflow descriptors do not carry this field and resolve to
+ * `never` so callers can choose an explicit fallback policy.
+ */
+export type InferWorkflowChildWorkflows<W> = W extends {
+  childWorkflows?: infer TChildWorkflows;
+}
+  ? TChildWorkflows extends WorkflowDefinitions
+    ? TChildWorkflows
+    : never
+  : never;
 
