@@ -482,7 +482,7 @@ export interface WorkflowContext<
  * as `WorkflowContext` minus `schedule`; the scope path is extended by the
  * scope name.
  */
-export interface WorkflowConcurrencyContext<
+export type WorkflowConcurrencyContext<
   TChannels extends ChannelDefinitions,
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
@@ -495,25 +495,23 @@ export interface WorkflowConcurrencyContext<
   TRng extends RngDefinitions = Record<string, never>,
   TScopePath extends ScopePath = [],
   TErrors extends ErrorDefinitions = Record<string, never>,
->
-  extends
-    Omit<
-      WorkflowContext<
-        TChannels,
-        TStreams,
-        TEvents,
-        TSteps,
-        TRequests,
-        TAttachedChildren,
-        TDetachedChildren,
-        TExternalWorkflows,
-        TPatches,
-        TRng,
-        TScopePath,
-        TErrors
-      >,
-      "schedule"
-    > {}
+> = Omit<
+  WorkflowContext<
+    TChannels,
+    TStreams,
+    TEvents,
+    TSteps,
+    TRequests,
+    TAttachedChildren,
+    TDetachedChildren,
+    TExternalWorkflows,
+    TPatches,
+    TRng,
+    TScopePath,
+    TErrors
+  >,
+  "schedule"
+>;
 
 // =============================================================================
 // COMPENSATION CONCURRENCY CONTEXT

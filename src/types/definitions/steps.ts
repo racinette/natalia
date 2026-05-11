@@ -11,6 +11,7 @@ import type {
 } from "./primitives";
 import type { RetryPolicyOptions } from "./policies";
 import type { NonCompensableRequestDefinitions } from "./requests";
+import type { NoDefinitionExtension } from "./type-augmentation";
 import type { WorkflowDefinitions } from "./workflow-headers";
 
 // =============================================================================
@@ -24,6 +25,10 @@ import type { WorkflowDefinitions } from "./workflow-headers";
  *
  * Use your own application logger (console.log, Winston, Pino, etc.) inside
  * step implementations — workflow-level logging is separate via ctx.logger.
+ *
+ * The trailing `& ([TCompensation] extends [undefined] ? NoDefinitionExtension : { … })` uses
+ * {@link NoDefinitionExtension} so “no compensation” is spelled explicitly at the type level
+ * (see `type-augmentation.ts`).
  */
 export type StepDefinition<
   TName extends string = string,
@@ -68,7 +73,7 @@ export type StepDefinition<
   /** Default retry policy */
   readonly retryPolicy?: RetryPolicyOptions;
 } & ([TCompensation] extends [undefined]
-  ? {}
+  ? NoDefinitionExtension
   : {
       /** Isolated compensation block definition for this step. */
       readonly compensation: TCompensation;

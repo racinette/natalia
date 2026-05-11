@@ -5,6 +5,7 @@ import type {
   RequestHandlerContext,
   Unsubscribe,
 } from "./handlers";
+import type { NoDefinitionExtension } from "./type-augmentation";
 
 /**
  * Optional compensation payload schema for a compensable request (`compensation`
@@ -30,6 +31,10 @@ export type RequestCompensationDefinition<
  * `registerHandler` remains on the definition for early API shaping; durable
  * registration moves to the engine/client per `REFACTOR.MD` (alongside queues
  * and topics). The authoring helper currently returns a no-op unsubscribe.
+ *
+ * The trailing `& ([TCompensation] extends [undefined] ? NoDefinitionExtension : { … })` uses
+ * {@link NoDefinitionExtension} so “no compensation” is spelled explicitly at the type level
+ * (see `type-augmentation.ts`).
  */
 export type RequestDefinition<
   TName extends string = string,
@@ -55,7 +60,7 @@ export type RequestDefinition<
     },
   ): Unsubscribe;
 } & ([TCompensation] extends [undefined]
-  ? {}
+  ? NoDefinitionExtension
   : {
       readonly compensation: TCompensation;
     });

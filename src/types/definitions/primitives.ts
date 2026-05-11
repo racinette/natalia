@@ -67,4 +67,4 @@ export type PatchDefinitions = Record<string, boolean>;
  * }
  * ```
  */
-export interface PatchAccessor extends AtomicResult<boolean> {}
+export type PatchAccessor = AtomicResult<boolean>;

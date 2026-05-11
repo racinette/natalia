@@ -33,6 +33,8 @@ export default defineConfig(
       "**/dist/**",
       // Spec / scratch TS under refactor — not part of main tsconfig project
       "refactor/**",
+      // Vendored Standard Schema spec — must match upstream verbatim
+      "src/types/standard-schema.ts",
     ],
   },
 );

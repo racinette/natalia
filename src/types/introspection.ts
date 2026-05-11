@@ -113,13 +113,13 @@ export interface FindManyOptions<
  * `count` accepts the same `txOrConn?` IO option as the other one-shot
  * methods.
  */
-export interface CountOptions extends FetchOptions {}
+export type CountOptions = FetchOptions;
 
 /**
  * `findUnique` accepts the same `txOrConn?` IO option as the other one-shot
  * methods.
  */
-export interface FindUniqueOptions extends FetchOptions {}
+export type FindUniqueOptions = FetchOptions;
 
 /**
  * A handle that can re-fetch its row on demand.

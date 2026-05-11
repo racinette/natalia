@@ -16,17 +16,17 @@ export interface HandlerContext {
 /**
  * Queue handler context.
  */
-export interface QueueHandlerContext extends HandlerContext {}
+export type QueueHandlerContext = HandlerContext;
 
 /**
  * Request handler context.
  */
-export interface RequestHandlerContext extends HandlerContext {}
+export type RequestHandlerContext = HandlerContext;
 
 /**
  * Topic consumer context.
  */
-export interface TopicConsumerContext extends HandlerContext {}
+export type TopicConsumerContext = HandlerContext;
 
 /**
  * Options for external retried handlers.

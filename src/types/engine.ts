@@ -176,16 +176,16 @@ export interface CompensationBlockUniqueHandleExternal<
  * Per-parent compensation block instance namespace, keyed by step name on
  * `workflowInstance.compensations.steps.<step>`.
  */
-export interface CompensationBlockNamespaceExternal<
+export type CompensationBlockNamespaceExternal<
   TStep,
   TArgs = unknown,
   TResult = unknown,
-> extends QueryableNamespace<
-    CompensationBlockUniqueHandleExternal<TStep, TArgs, TResult>,
-    CompensationBlockWhereTemplate<TStep, TArgs, TResult>,
-    CompensationBlockRow<TStep, TArgs, TResult>,
-    CompensationId<TStep>
-  > {}
+> = QueryableNamespace<
+  CompensationBlockUniqueHandleExternal<TStep, TArgs, TResult>,
+  CompensationBlockWhereTemplate<TStep, TArgs, TResult>,
+  CompensationBlockRow<TStep, TArgs, TResult>,
+  CompensationId<TStep>
+>;
 
 // =============================================================================
 // REQUEST COMPENSATION INSTANCE HANDLE
@@ -221,15 +221,15 @@ export interface RequestCompensationUniqueHandleExternal<
  * Per-parent request compensation namespace, keyed by request name on
  * `workflowInstance.compensations.requests.<request>`.
  */
-export interface RequestCompensationNamespaceExternal<
+export type RequestCompensationNamespaceExternal<
   TPayload = unknown,
   TCompResult = unknown,
-> extends QueryableNamespace<
-    RequestCompensationUniqueHandleExternal<TPayload, TCompResult>,
-    RequestCompensationWhereTemplate<TPayload, TCompResult>,
-    RequestCompensationRow<TPayload, TCompResult>,
-    RequestCompensationInstanceId
-  > {}
+> = QueryableNamespace<
+  RequestCompensationUniqueHandleExternal<TPayload, TCompResult>,
+  RequestCompensationWhereTemplate<TPayload, TCompResult>,
+  RequestCompensationRow<TPayload, TCompResult>,
+  RequestCompensationInstanceId
+>;
 
 // =============================================================================
 // ATTACHED / DETACHED CHILD WORKFLOW NAMESPACES
@@ -283,22 +283,22 @@ export interface AttachedChildWorkflowExternalHandle<W extends AnyPublicWorkflow
  * Per-parent attached child workflow namespace, keyed by child workflow name
  * on `workflowInstance.children.attached.<name>`.
  */
-export interface AttachedChildWorkflowNamespaceExternal<
+export type AttachedChildWorkflowNamespaceExternal<
   W extends AnyPublicWorkflowHeader,
-> extends QueryableNamespace<
-    AttachedChildWorkflowExternalHandle<W>,
-    WorkflowWhereTemplate<
-      InferWorkflowArgs<W>,
-      InferWorkflowResult<W>,
-      InferWorkflowMetadata<W>
-    >,
-    WorkflowRow<
-      InferWorkflowArgs<W>,
-      InferWorkflowResult<W>,
-      InferWorkflowMetadata<W>
-    >,
-    AttachedChildWorkflowId<W>
-  > {}
+> = QueryableNamespace<
+  AttachedChildWorkflowExternalHandle<W>,
+  WorkflowWhereTemplate<
+    InferWorkflowArgs<W>,
+    InferWorkflowResult<W>,
+    InferWorkflowMetadata<W>
+  >,
+  WorkflowRow<
+    InferWorkflowArgs<W>,
+    InferWorkflowResult<W>,
+    InferWorkflowMetadata<W>
+  >,
+  AttachedChildWorkflowId<W>
+>;
 
 /**
  * Per-parent detached child workflow namespace.
@@ -307,22 +307,22 @@ export interface AttachedChildWorkflowNamespaceExternal<
  * namespace is a convenience filter that returns the standard
  * `WorkflowHandleExternal<W>`.
  */
-export interface DetachedChildWorkflowNamespaceExternal<
+export type DetachedChildWorkflowNamespaceExternal<
   W extends AnyPublicWorkflowHeader,
-> extends QueryableNamespace<
-    WorkflowHandleExternal<W>,
-    WorkflowWhereTemplate<
-      InferWorkflowArgs<W>,
-      InferWorkflowResult<W>,
-      InferWorkflowMetadata<W>
-    >,
-    WorkflowRow<
-      InferWorkflowArgs<W>,
-      InferWorkflowResult<W>,
-      InferWorkflowMetadata<W>
-    >,
-    AttachedChildWorkflowId<W>
-  > {}
+> = QueryableNamespace<
+  WorkflowHandleExternal<W>,
+  WorkflowWhereTemplate<
+    InferWorkflowArgs<W>,
+    InferWorkflowResult<W>,
+    InferWorkflowMetadata<W>
+  >,
+  WorkflowRow<
+    InferWorkflowArgs<W>,
+    InferWorkflowResult<W>,
+    InferWorkflowMetadata<W>
+  >,
+  AttachedChildWorkflowId<W>
+>;
 
 type IsAny<T> = 0 extends (1 & T) ? true : false;
 
@@ -669,5 +669,5 @@ export interface WorkflowClient<
  * Workflow accessor specialization used by the executable engine.
  * Restricts registrations to full workflow definitions.
  */
-export interface EngineWorkflowAccessor<W extends AnyWorkflowDefinition>
-  extends WorkflowClientAccessor<W> {}
+export type EngineWorkflowAccessor<W extends AnyWorkflowDefinition> =
+  WorkflowClientAccessor<W>;
