@@ -10,7 +10,9 @@ import type { ChannelHandle, ChannelReceiveCall } from "./io-accessors";
  * Listen is channel-only. Use `ctx.match` on the workflow body / scope body
  * for entry coordination over scope handles.
  */
+/* eslint-disable @typescript-eslint/no-explicit-any -- listen accepts heterogeneous channel/receive futures */
 export type ListenableHandle = ChannelHandle<any> | ChannelReceiveCall<any>;
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 // =============================================================================
 // LISTENER — for ctx.listen() (all contexts)

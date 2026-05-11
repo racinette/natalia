@@ -141,7 +141,7 @@ export const executionModelAcceptanceWorkflow = defineWorkflow({
     // the union; channel send on attached children is step 03 / scope handles.
     const childEntry = ctx.children.attached.childWorkflow({ args: { value: 21 } });
     type _ChildEntryIsAwaitable = Assert<
-      typeof childEntry extends AwaitableEntry<any> ? true : false
+      typeof childEntry extends AwaitableEntry<infer _> ? true : false
     >;
     // Direct attached entry is await-only — no channel-send surface (use `ctx.scope`).
     // @ts-expect-error channels are not on AttachedChildWorkflowEntry outside scope handles

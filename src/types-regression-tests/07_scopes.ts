@@ -242,7 +242,7 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
       async (scopeCtx, handles) => {
         for await (const event of scopeCtx.match(handles)) {
           type _MatchEventShape = Assert<
-            typeof event extends MatchEvent<any, any> ? true : false
+            typeof event extends MatchEvent<infer _K, infer _R> ? true : false
           >;
 
           if (event.key === "normalize") {

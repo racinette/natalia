@@ -269,7 +269,7 @@ type _HandleWithRow = Assert<
 
 declare const ns: QueryableNamespace<
   AttachedChildWorkflowExternalHandle<typeof followUpHeader>,
-  any,
+  object,
   WorkflowRow<{ orderId: string }, { ok: boolean }, { tenantId: string }>,
   AttachedChildWorkflowId<typeof followUpHeader>
 >;
@@ -361,13 +361,17 @@ void workflowHandle.events.typo;
 
 // Operator-action verbs (from step 09).
 type _HandleHasSigkill = Assert<
-  typeof workflowHandle extends { sigkill(...args: any[]): any } ? true : false
+  typeof workflowHandle extends { sigkill(...args: never[]): unknown }
+    ? true
+    : false
 >;
 type _HandleHasSigterm = Assert<
-  typeof workflowHandle extends { sigterm(...args: any[]): any } ? true : false
+  typeof workflowHandle extends { sigterm(...args: never[]): unknown }
+    ? true
+    : false
 >;
 type _HandleHasSkip = Assert<
-  typeof workflowHandle extends { skip(...args: any[]): any } ? true : false
+  typeof workflowHandle extends { skip(...args: never[]): unknown } ? true : false
 >;
 
 // `skip` requires a result argument because the workflow has a non-void result.
@@ -426,7 +430,7 @@ async function _exerciseWait(): Promise<void> {
   type _WaitReturn = Assert<
     IsEqual<
       typeof r,
-      WorkflowResult<{ ok: boolean }, ErrorValue<{ OrderInvalid: any }>>
+      WorkflowResult<{ ok: boolean }, ErrorValue<{ OrderInvalid: unknown }>>
     > extends boolean
       ? true
       : false
@@ -789,7 +793,9 @@ async function _detachedFindUniqueShape(): Promise<void> {
       IsEqual<typeof found.value, WorkflowHandleExternal<typeof auditHeader>>
     >;
     type _DetachedHasLifecycle = Assert<
-      typeof found.value extends { sigkill(...args: any[]): any } ? true : false
+      typeof found.value extends { sigkill(...args: never[]): unknown }
+        ? true
+        : false
     >;
     type _DetachedHasIdempotencyKey = Assert<
       IsEqual<typeof found.value.idempotencyKey, string>
@@ -820,7 +826,7 @@ type _OpsChildDetachedEventTyped = Assert<
   IsEqual<typeof opsChildDetachedHandle.events.childReady, EventAccessorExternal>
 >;
 type _OpsChildDetachedHasSigkill = Assert<
-  typeof opsChildDetachedHandle extends { sigkill(...args: any[]): any }
+  typeof opsChildDetachedHandle extends { sigkill(...args: never[]): unknown }
     ? true
     : false
 >;
@@ -958,7 +964,7 @@ async function _exerciseClient(): Promise<void> {
     metadata: { tenantId: "acme" },
   });
   type _ExecuteReturn = Assert<
-    typeof result extends WorkflowResult<{ ok: boolean }, any> ? true : false
+    typeof result extends WorkflowResult<{ ok: boolean }, unknown> ? true : false
   >;
 
   const synchronousHandle = clientAcc.get("wf-3");

@@ -350,6 +350,7 @@ type CompensableStepKeys<TSteps extends Record<string, unknown>> = {
   [K in keyof TSteps & string]: TSteps[K] extends { compensation: unknown } ? K : never;
 }[keyof TSteps & string];
 
+/* eslint-disable @typescript-eslint/no-explicit-any -- schema slots unconstrained so compensation namespaces match concrete steps */
 type StepArgsForCompensationNamespace<TStep> =
   TStep extends StepDefinition<string, infer TArgsSchema, any, infer _Comp>
     ? StandardSchemaV1.InferOutput<TArgsSchema>
@@ -408,6 +409,7 @@ type RequestCompensationResultForNamespace<TRequest> =
         ? void
         : never
     : unknown;
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 type WorkflowHandleRequestCompensationNamespaces<
   TRequests extends Record<string, unknown>,

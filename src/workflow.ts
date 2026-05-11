@@ -2,6 +2,7 @@ import type { StandardSchemaV1 } from "./types/standard-schema";
 import type {
   StepDefinition,
   StepCompensationDefinition,
+  MaximalStepCompensationDefinition,
   NonCompensableStepDefinitions,
   RequestDefinition,
   RequestCompensationConfig,
@@ -221,24 +222,10 @@ export function defineStep(config: {
   name: string;
   args: JsonSchemaConstraint;
   result: JsonSchemaConstraint;
-  compensation?: StepCompensationDefinition<
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any,
-    any
-  >;
+  compensation?: MaximalStepCompensationDefinition;
   execute: (context: { signal: AbortSignal }, args: unknown) => Promise<unknown>;
   retryPolicy?: RetryPolicyOptions;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- widened return for runtime-checked overload
 }): StepDefinition<any, any, any, any> {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Step name must be a non-empty string");
@@ -278,6 +265,7 @@ export function defineStep(config: {
     result: config.result,
     retryPolicy: config.retryPolicy,
     compensation: config.compensation,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- matches widened overload return
   } as StepDefinition<any, any, any, any>;
 }
 

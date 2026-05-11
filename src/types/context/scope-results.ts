@@ -34,6 +34,7 @@ type InvalidScopeEntryStructure = [
   "Scope input must be a top-level object whose properties are typed entries, arrays/tuples of entries, or maps of entries",
 ];
 
+/* eslint-disable @typescript-eslint/no-explicit-any -- `AwaitableEntry` / map key-value positions are not covariant in `unknown` */
 type ScopeEntryPropertyValidation<E> =
   E extends AwaitableEntry<any>
     ? []
@@ -47,6 +48,7 @@ type ScopeEntryPropertyValidation<E> =
           : InvalidScopeEntryStructure
         : InvalidScopeEntryStructure;
 
+/** Reject plain functions as scope entries (must match every function arity). */
 export type ScopeEntryValidation<E> = E extends (...args: any[]) => any
   ? InvalidScopeEntryStructure
   : E extends AwaitableEntry<any> | readonly unknown[] | ReadonlyMap<any, any>
@@ -58,6 +60,7 @@ export type ScopeEntryValidation<E> = E extends (...args: any[]) => any
         ? []
         : InvalidScopeEntryStructure
       : InvalidScopeEntryStructure;
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 type TupleIndexKeys<T extends readonly unknown[]> = Exclude<
   keyof T,
@@ -68,6 +71,7 @@ type TupleIndex<K> = K extends `${infer N extends number}` ? N : never;
 
 type TupleIndexes<T extends readonly unknown[]> = TupleIndex<TupleIndexKeys<T>>;
 
+/* eslint-disable @typescript-eslint/no-explicit-any -- peel `{ ok: true; result: … }` without fixing `result` prematurely */
 type EntrySuccessFromValue<T> = [
   Extract<T, { ok: true; result: any }>,
 ] extends [never]
@@ -75,6 +79,7 @@ type EntrySuccessFromValue<T> = [
   : Extract<T, { ok: true; result: any }> extends { ok: true; result: infer R }
     ? R
     : never;
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 export type ScopeSuccessResults<E> =
   E extends AwaitableEntry<infer T>
@@ -111,6 +116,7 @@ type TupleKeyedFailure<
     : never;
 }[TupleIndexKeys<E>];
 
+/* eslint-disable @typescript-eslint/no-explicit-any -- same variance constraint as `ScopeEntryPropertyValidation` */
 type KeyedSuccessForProperty<TKey extends PropertyKey, TValue> =
   TValue extends AwaitableEntry<any>
     ? { key: TKey; value: ScopeSuccessResults<TValue> }
@@ -127,6 +133,7 @@ type KeyedSuccessForProperty<TKey extends PropertyKey, TValue> =
       : TValue extends ReadonlyMap<infer K extends PropertyKey, infer V>
         ? { key: TKey; mapKey: K; value: ScopeSuccessResults<V> }
         : never;
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 type KeyedFailureForProperty<TKey extends PropertyKey, TValue> =
   TValue extends AwaitableEntry<infer T>

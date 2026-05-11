@@ -157,7 +157,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     });
 
     type _ChildEntryAwaitable = Assert<
-      typeof childEntry extends AwaitableEntry<any> ? true : false
+      typeof childEntry extends AwaitableEntry<infer _> ? true : false
     >;
     type _ChildEntryNoChannelsKey = Assert<
       "channels" extends keyof typeof childEntry ? false : true
@@ -228,7 +228,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
       args: { id: "d-1" },
     });
     type _DetachedIsForeignHandle = Assert<
-      typeof detached extends ForeignWorkflowHandle<any> ? true : false
+      typeof detached extends ForeignWorkflowHandle<infer _> ? true : false
     >;
     type _DetachedHasIdempotencyKey = Assert<
       typeof detached.idempotencyKey extends string ? true : false
@@ -248,7 +248,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     // -------------------------------------------------------------------------
     const externalHandle = ctx.external.ops.get("external-1");
     type _ExternalHandle = Assert<
-      typeof externalHandle extends ForeignWorkflowHandle<any> ? true : false
+      typeof externalHandle extends ForeignWorkflowHandle<infer _> ? true : false
     >;
     externalHandle.channels.ping.send({ at: "2027-01-01T00:00:00.000Z" });
 

@@ -116,6 +116,7 @@ export const haltModelAcceptanceWorkflow = defineWorkflow({
   async execute(ctx, args) {
     type _Factories = Assert<
       typeof ctx.errors extends ErrorFactories<{
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ZodObject `Config` slot; matches z.object() default
         WorkflowError: z.ZodObject<{ id: z.ZodString }, any>;
       }>
         ? true

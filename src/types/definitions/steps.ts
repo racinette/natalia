@@ -29,10 +29,13 @@ export type StepDefinition<
   TName extends string = string,
   TArgsSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TResultSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+  /* `any` in dependency slots: upper bound must not force contravariant `undo` ctx
+   * to accept the maximal surface (breaks real compensations). */
   TCompensation extends
     | StepCompensationDefinition<
         TArgsSchema,
         TResultSchema,
+        /* eslint-disable @typescript-eslint/no-explicit-any -- see block comment above */
         any,
         any,
         any,
@@ -45,6 +48,7 @@ export type StepDefinition<
         any,
         any,
         any
+        /* eslint-enable @typescript-eslint/no-explicit-any */
       >
     | undefined = undefined,
 > = {
@@ -70,9 +74,11 @@ export type StepDefinition<
       readonly compensation: TCompensation;
     });
 
+/* eslint-disable @typescript-eslint/no-explicit-any -- heterogeneous non-compensable steps; schema slots must stay top-like for nested definitions */
 export type NonCompensableStepDefinition = StepDefinition<string, any, any, undefined> & {
   readonly compensation?: never;
 };
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 export type NonCompensableStepDefinitions = Record<
   string,
@@ -217,12 +223,14 @@ export type MaximalStepCompensationDefinition = StepCompensationDefinition<
 >;
 
 /** Upper-bound step shape used by compensation block typing. */
+/* eslint-disable @typescript-eslint/no-explicit-any -- supertype of all concrete steps; `JsonSchemaConstraint` narrows `execute` args to `unknown` and breaks heterogeneous maps */
 export type WidestStepDefinition = StepDefinition<string, any, any, any>;
 
 /**
  * Map of step definitions.
  */
-export type StepDefinitions = Record<string, StepDefinition<any, any, any, any>>;
+export type StepDefinitions = Record<string, StepDefinition<string, any, any, any>>;
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 export type CompensationBlockStatus =
   | "pending"
@@ -242,7 +250,12 @@ type DistributeStatusResult<T> = T extends { status: infer TStatus }
   : T;
 
 type StepCompensationResultSchema<TStep> =
-  TStep extends StepDefinition<string, any, any, infer TCompensation>
+  TStep extends StepDefinition<
+    string,
+    JsonSchemaConstraint,
+    JsonSchemaConstraint,
+    infer TCompensation
+  >
     ? TCompensation extends StepCompensationDefinition<
         infer _A,
         infer _FR,

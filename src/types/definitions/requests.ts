@@ -60,14 +60,11 @@ export type RequestDefinition<
       readonly compensation: TCompensation;
     });
 
-export type NonCompensableRequestDefinition = RequestDefinition<
-  string,
-  any,
-  any,
-  undefined
-> & {
+/* eslint-disable @typescript-eslint/no-explicit-any -- heterogeneous non-compensable requests; schema slots stay top-like */
+export type NonCompensableRequestDefinition = RequestDefinition<string, any, any, undefined> & {
   readonly compensation?: never;
 };
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 export type NonCompensableRequestDefinitions = Record<
   string,
@@ -77,4 +74,6 @@ export type NonCompensableRequestDefinitions = Record<
 /**
  * Map of request definitions.
  */
+/* eslint-disable @typescript-eslint/no-explicit-any -- heterogeneous request map */
 export type RequestDefinitions = Record<string, RequestDefinition<string, any, any, any>>;
+/* eslint-enable @typescript-eslint/no-explicit-any */

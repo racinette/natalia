@@ -141,6 +141,7 @@ export interface CompensationContext<
   /**
    * Steps for durable operations.
    */
+  /* eslint-disable @typescript-eslint/no-explicit-any -- infer args/result; name/compensation slots are intentionally unconstrained */
   readonly steps: {
     [K in keyof TSteps]: TSteps[K] extends StepDefinition<
       any,
@@ -165,6 +166,7 @@ export interface CompensationContext<
       ? RequestAccessor<TPayload, StandardSchemaV1.InferOutput<TResponseSchema>>
       : never;
   };
+  /* eslint-enable @typescript-eslint/no-explicit-any */
 
   /**
    * Child workflows.
@@ -195,7 +197,9 @@ export interface CompensationContext<
   // join — observe a single dispatched entry
   // ---------------------------------------------------------------------------
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- join accepts any awaitable entry shape
   join<H extends AwaitableEntry<any>>(handle: H): Promise<JoinResult<H>>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   join<H extends AwaitableEntry<any>>(
     handle: H,
     opts: JoinOptions,
@@ -313,6 +317,7 @@ export interface WorkflowContext<
   /**
    * Steps for durable operations.
    */
+  /* eslint-disable @typescript-eslint/no-explicit-any -- infer args/result; name/compensation slots are intentionally unconstrained */
   readonly steps: {
     [K in keyof TSteps]: TSteps[K] extends StepDefinition<
       any,
@@ -337,6 +342,7 @@ export interface WorkflowContext<
       ? RequestAccessor<TPayload, StandardSchemaV1.InferOutput<TResponseSchema>>
       : never;
   };
+  /* eslint-enable @typescript-eslint/no-explicit-any */
 
   /**
    * Child workflow accessors — structured invocation (lifecycle managed by parent).
@@ -368,7 +374,9 @@ export interface WorkflowContext<
   // join — observe a single dispatched entry
   // ---------------------------------------------------------------------------
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- join accepts any awaitable entry shape
   join<H extends AwaitableEntry<any>>(handle: H): Promise<JoinResult<H>>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   join<H extends AwaitableEntry<any>>(
     handle: H,
     opts: JoinOptions,
