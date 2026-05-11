@@ -343,21 +343,7 @@ export interface WorkflowContext<
    */
   readonly children: {
     readonly attached: {
-      [K in keyof TAttachedChildren]: ChildWorkflowAccessor<
-        TAttachedChildren[K],
-        CompensationContext<
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TRequests,
-          TAttachedChildren,
-          TDetachedChildren,
-          TExternalWorkflows,
-          TPatches,
-          TRng
-        >
-      >;
+      [K in keyof TAttachedChildren]: ChildWorkflowAccessor<TAttachedChildren[K]>;
     };
     readonly detached: {
       [K in keyof TDetachedChildren]: DetachedChildWorkflowAccessor<

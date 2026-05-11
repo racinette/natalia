@@ -164,13 +164,8 @@ export type AttachedChildWorkflowScopeHandle<
  * the child workflow definition level if needed.
  *
  * @typeParam W - The child workflow definition.
- * @typeParam Tctx - The parent workflow's CompensationContext type
- *   (preserved for callsite type inference).
  */
-export interface ChildWorkflowAccessor<
-  W extends AnyWorkflowHeader,
-  Tctx = unknown,
-> {
+export interface ChildWorkflowAccessor<W extends AnyWorkflowHeader> {
   (
     options: AttachedChildWorkflowStartOptions<W>,
   ): AttachedChildWorkflowEntry<
