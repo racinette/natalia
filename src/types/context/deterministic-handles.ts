@@ -2,8 +2,8 @@
 // ROOT SCOPE BRANDING
 // =============================================================================
 
-declare const executionRoot: unique symbol;
-declare const compensationRoot: unique symbol;
+declare const _executionRoot: unique symbol;
+declare const _compensationRoot: unique symbol;
 
 /**
  * Discriminates whether a context is an execution-phase context or a
@@ -11,13 +11,13 @@ declare const compensationRoot: unique symbol;
  *
  * Used by the resolver marker interfaces below.
  */
-export type RootScope = typeof executionRoot | typeof compensationRoot;
+export type RootScope = typeof _executionRoot | typeof _compensationRoot;
 
 /** @internal Used as the `TRoot` type parameter on execution-context handles. */
-export type ExecutionRoot = typeof executionRoot;
+export type ExecutionRoot = typeof _executionRoot;
 
 /** @internal Used as the `TRoot` type parameter on compensation-context handles. */
-export type CompensationRoot = typeof compensationRoot;
+export type CompensationRoot = typeof _compensationRoot;
 
 // =============================================================================
 // RESOLVER MARKER INTERFACES

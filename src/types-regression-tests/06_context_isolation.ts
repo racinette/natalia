@@ -67,13 +67,13 @@ const compensableStep = defineStep({
 
       // The workflow body's steps / requests are NOT visible here.
       // @ts-expect-error compensation undo only sees its own declared dependencies
-      ctx.steps.workflowOnlyStep;
+      void ctx.steps.workflowOnlyStep;
       // @ts-expect-error compensation undo only sees its own declared dependencies
-      ctx.requests.workflowOnlyRequest;
+      void ctx.requests.workflowOnlyRequest;
 
       // No `ctx.errors` on the compensation context.
       // @ts-expect-error compensation undo has no ctx.errors
-      ctx.errors;
+      void ctx.errors;
     },
   },
   async execute() {
@@ -161,9 +161,9 @@ export const contextIsolationAcceptanceWorkflow = defineWorkflow({
 
     // Removed surfaces stay removed.
     // @ts-expect-error global mutable workflow state was removed
-    ctx.state;
+    void ctx.state;
     // @ts-expect-error general LIFO compensation registration was removed
-    ctx.addCompensation;
+    void ctx.addCompensation;
 
     return { ok: true };
   },

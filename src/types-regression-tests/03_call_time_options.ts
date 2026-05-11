@@ -112,15 +112,15 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     //   - (args, { retry?, timeout })            → timeout union
     // -------------------------------------------------------------------------
 
-    const directStep = await ctx.steps.timedStep({ id: "s-1" });
-    type _DirectStepNoAny = Assert<IsAny<typeof directStep> extends false ? true : false>;
-    type _DirectStepResult = Assert<IsEqual<typeof directStep, { value: string }>>;
+    const _directStep = await ctx.steps.timedStep({ id: "s-1" });
+    type _DirectStepNoAny = Assert<IsAny<typeof _directStep> extends false ? true : false>;
+    type _DirectStepResult = Assert<IsEqual<typeof _directStep, { value: string }>>;
 
-    const retryOnlyStep = await ctx.steps.timedStep(
+    const _retryOnlyStep = await ctx.steps.timedStep(
       { id: "s-1r" },
       { retry: { intervalSeconds: 1, backoffRate: 2 } },
     );
-    type _RetryOnlyStepResult = Assert<IsEqual<typeof retryOnlyStep, { value: string }>>;
+    type _RetryOnlyStepResult = Assert<IsEqual<typeof _retryOnlyStep, { value: string }>>;
 
     const timedStepResult = await ctx.steps.timedStep(
       { id: "s-2" },
@@ -170,19 +170,19 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     });
 
     // The entry is awaitable for the success/failure union:
-    const child = await childEntry;
+    const _child = await childEntry;
     type _ChildHasSuccessBranch = Assert<
-      Extract<typeof child, { ok: true; result: { childValue: string } }> extends never
+      Extract<typeof _child, { ok: true; result: { childValue: string } }> extends never
         ? false
         : true
     >;
     type _ChildHasFailedBranch = Assert<
-      Extract<typeof child, { ok: false; status: "failed" }> extends never
+      Extract<typeof _child, { ok: false; status: "failed" }> extends never
         ? false
         : true
     >;
     type _ChildHasNoTimeoutBranch = Assert<
-      Extract<typeof child, { ok: false; status: "timeout" }> extends never
+      Extract<typeof _child, { ok: false; status: "timeout" }> extends never
         ? true
         : false
     >;
@@ -200,9 +200,9 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     );
 
     // Timeout overload adds `{ ok: false; status: "timeout" }`.
-    const timedChild = await ctx.children.attached.child({ args: { id: "c-2" } }, { timeout: 60 });
+    const _timedChild = await ctx.children.attached.child({ args: { id: "c-2" } }, { timeout: 60 });
     type _TimedChildHasTimeout = Assert<
-      Extract<typeof timedChild, { ok: false; status: "timeout" }> extends never
+      Extract<typeof _timedChild, { ok: false; status: "timeout" }> extends never
         ? false
         : true
     >;
@@ -241,7 +241,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
       typeof detached extends PromiseLike<unknown> ? false : true
     >;
     // @ts-expect-error detached starts are exposed on ctx.children.detached only
-    ctx.children.attached.child.startDetached;
+    void ctx.children.attached.child.startDetached;
 
     // -------------------------------------------------------------------------
     // EXTERNAL WORKFLOW ACCESSORS
@@ -263,16 +263,16 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     // and exhaustion-fallbacks lives on the handler registration, not here.
     // -------------------------------------------------------------------------
 
-    const request = await ctx.requests.humanReview({ documentId: "d-1" });
-    type _RequestDirect = Assert<IsEqual<typeof request, { approved: boolean }>>;
+    const _request = await ctx.requests.humanReview({ documentId: "d-1" });
+    type _RequestDirect = Assert<IsEqual<typeof _request, { approved: boolean }>>;
 
-    const timedRequest = await ctx.requests.humanReview(
+    const _timedRequest = await ctx.requests.humanReview(
       { documentId: "d-2" },
       { priority: 1, timeout: new Date("2027-01-01T00:00:00.000Z") },
     );
     type _TimedRequest = Assert<
       IsEqual<
-        typeof timedRequest,
+        typeof _timedRequest,
         | { ok: true; result: { approved: boolean } }
         | { ok: false; status: "timeout" }
       >
@@ -288,13 +288,13 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
 
     const stepEntry = ctx.steps.timedStep({ id: "s-3" });
     // @ts-expect-error retry is a call option, not a builder
-    stepEntry.retry({ intervalSeconds: 1 });
+    void stepEntry.retry({ intervalSeconds: 1 });
     // @ts-expect-error timeout is a call option, not a builder
-    stepEntry.timeout(30);
+    void stepEntry.timeout(30);
     // @ts-expect-error priority does not apply to steps
-    ctx.steps.timedStep({ id: "s-4" }, { priority: 1 });
+    void ctx.steps.timedStep({ id: "s-4" }, { priority: 1 });
     // @ts-expect-error request priority is a call option, not a builder
-    ctx.requests.humanReview({ documentId: "d-3" }).priority;
+    void ctx.requests.humanReview({ documentId: "d-3" }).priority;
 
     return { ok: true };
   },

@@ -8,7 +8,6 @@ import {
 import type { MatchEvent } from "../types";
 
 type Assert<T extends true> = T;
-type IsAny<T> = 0 extends 1 & T ? true : false;
 type IsEqual<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
     ? true
@@ -84,46 +83,46 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
         // introduced.
         // -----------------------------------------------------------------
 
-        const stepResult = await scopeCtx.join(handles.normalize);
+        const _stepResult = await scopeCtx.join(handles.normalize);
         type _StepJoin = Assert<
-          IsEqual<typeof stepResult, { normalized: string }>
+          IsEqual<typeof _stepResult, { normalized: string }>
         >;
 
-        const requestResult = await scopeCtx.join(handles.approval);
+        const _requestResult = await scopeCtx.join(handles.approval);
         type _RequestJoin = Assert<
-          IsEqual<typeof requestResult, { approved: boolean }>
+          IsEqual<typeof _requestResult, { approved: boolean }>
         >;
 
-        const childResult = await scopeCtx.join(handles.followUp);
+        const _childResult = await scopeCtx.join(handles.followUp);
         type _ChildJoinHasOkBranch = Assert<
-          Extract<typeof childResult, { ok: true; result: { ok: boolean } }> extends never
+          Extract<typeof _childResult, { ok: true; result: { ok: boolean } }> extends never
             ? false
             : true
         >;
         type _ChildJoinHasFailedBranch = Assert<
-          Extract<typeof childResult, { ok: false; status: "failed" }> extends never
+          Extract<typeof _childResult, { ok: false; status: "failed" }> extends never
             ? false
             : true
         >;
         // No "halted" or "skipped" variants observed by workflow code.
         type _ChildJoinHasNoHalted = Assert<
-          Extract<typeof childResult, { status: "halted" }> extends never
+          Extract<typeof _childResult, { status: "halted" }> extends never
             ? true
             : false
         >;
         type _ChildJoinHasNoSkipped = Assert<
-          Extract<typeof childResult, { status: "skipped" }> extends never
+          Extract<typeof _childResult, { status: "skipped" }> extends never
             ? true
             : false
         >;
 
         // Observation timeout adds a `join_timeout` failure variant. It does
         // NOT cancel the underlying work; the entry can be joined again later.
-        const observedChild = await scopeCtx.join(handles.followUp, {
+        const _observedChild = await scopeCtx.join(handles.followUp, {
           timeout: 5,
         });
         type _ObservedChildHasJoinTimeout = Assert<
-          Extract<typeof observedChild, { status: "join_timeout" }> extends never
+          Extract<typeof _observedChild, { status: "join_timeout" }> extends never
             ? false
             : true
         >;
@@ -176,19 +175,19 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
       },
       async (scopeCtx, handles) => {
         // The handle for an array property is an array of handles.
-        const first = await scopeCtx.join(handles.quotes[0]);
+        const _first = await scopeCtx.join(handles.quotes[0]);
         type _FirstJoin = Assert<
-          IsEqual<typeof first, { normalized: string }>
+          IsEqual<typeof _first, { normalized: string }>
         >;
 
         // ctx.match yields events keyed by top-level property; tuple
         // properties add `index`.
-        for await (const event of scopeCtx.match(handles)) {
+        for await (const _event of scopeCtx.match(handles)) {
           type _TupleMatchEvent = Assert<
-            (typeof event)["key"] extends "quotes" ? true : false
+            (typeof _event)["key"] extends "quotes" ? true : false
           >;
           type _TupleMatchHasIndex = Assert<
-            "index" extends keyof typeof event ? true : false
+            "index" extends keyof typeof _event ? true : false
           >;
         }
 
@@ -212,16 +211,16 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
         // The handle for a map property is a map of handles.
         const east = handles.regions.get("east");
         if (east) {
-          const eastResult = await scopeCtx.join(east);
-          type _MapJoin = Assert<IsEqual<typeof eastResult, { normalized: string }>>;
+          const _eastResult = await scopeCtx.join(east);
+          type _MapJoin = Assert<IsEqual<typeof _eastResult, { normalized: string }>>;
         }
 
-        for await (const event of scopeCtx.match(handles)) {
+        for await (const _event of scopeCtx.match(handles)) {
           type _MapMatchEvent = Assert<
-            (typeof event)["key"] extends "regions" ? true : false
+            (typeof _event)["key"] extends "regions" ? true : false
           >;
           type _MapMatchHasMapKey = Assert<
-            "mapKey" extends keyof typeof event ? true : false
+            "mapKey" extends keyof typeof _event ? true : false
           >;
         }
 
@@ -259,7 +258,7 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
 
         // Handler-form `match` is removed (Part 7).
         // @ts-expect-error scope match no longer accepts handler maps
-        scopeCtx.match(handles, { normalize: () => 1 });
+        void scopeCtx.match(handles, { normalize: () => 1 });
 
         return undefined;
       },
@@ -321,22 +320,22 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
     }
 
     // `atMost` — return up to N successful entries; no failure case.
-    const atMostResult = await ctx.atMost("AtMostScope", 2, {
+    const _atMostResult = await ctx.atMost("AtMostScope", 2, {
       a: ctx.steps.normalize({ orderId: "a" }),
       b: ctx.steps.normalize({ orderId: "b" }),
       c: ctx.steps.normalize({ orderId: "c" }),
     });
     type _AtMostNoFailure = Assert<
-      typeof atMostResult extends readonly unknown[] ? true : false
+      typeof _atMostResult extends readonly unknown[] ? true : false
     >;
 
     // `some` — return as many successful entries as possible; no failure case.
-    const someResult = await ctx.some("SomeScope", {
+    const _someResult = await ctx.some("SomeScope", {
       a: ctx.steps.normalize({ orderId: "a" }),
       b: ctx.steps.normalize({ orderId: "b" }),
     });
     type _SomeNoFailure = Assert<
-      typeof someResult extends readonly unknown[] ? true : false
+      typeof _someResult extends readonly unknown[] ? true : false
     >;
 
     return { ok: true };

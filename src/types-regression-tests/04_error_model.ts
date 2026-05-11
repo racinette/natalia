@@ -50,14 +50,14 @@ export const errorModelAcceptanceWorkflow = defineWorkflow({
   result: z.object({ ok: z.boolean() }),
   async execute(ctx, args) {
     // Factory produces a typed throwable.
-    const declined = ctx.errors.PaymentDeclined("Payment declined", {
+    const _declined = ctx.errors.PaymentDeclined("Payment declined", {
       reason: "card_declined",
       amount: args.amount,
     });
 
-    type _DeclinedNoAny = Assert<IsAny<typeof declined> extends false ? true : false>;
+    type _DeclinedNoAny = Assert<IsAny<typeof _declined> extends false ? true : false>;
     type _DeclinedShape = Assert<
-      typeof declined extends ExplicitError<
+      typeof _declined extends ExplicitError<
         "PaymentDeclined",
         { reason: "card_declined" | "fraud_check"; amount: number }
       >
@@ -66,9 +66,9 @@ export const errorModelAcceptanceWorkflow = defineWorkflow({
     >;
 
     // `true`-valued errors take only `message`; details inferred as `undefined`.
-    const missing = ctx.errors.MissingApproval("Approval was not recorded");
+    const _missing = ctx.errors.MissingApproval("Approval was not recorded");
     type _TrueErrorHasUndefinedDetails = Assert<
-      typeof missing extends ExplicitError<"MissingApproval", undefined>
+      typeof _missing extends ExplicitError<"MissingApproval", undefined>
         ? true
         : false
     >;
@@ -96,12 +96,12 @@ export const errorModelAcceptanceWorkflow = defineWorkflow({
       { audit: ctx.steps.noopStep({ id: "audit-1" }) },
       async (scopeCtx) => {
         // The workflow's errors are reachable from the scope body.
-        const fromScope = scopeCtx.errors.PaymentDeclined("From scope", {
+        const _fromScope = scopeCtx.errors.PaymentDeclined("From scope", {
           reason: "fraud_check",
           amount: 0,
         });
         type _ScopeFactorySameAsWorkflow = Assert<
-          IsEqual<typeof fromScope, typeof declined>
+          IsEqual<typeof _fromScope, typeof _declined>
         >;
 
         // @ts-expect-error scope body cannot reference an unknown error code
@@ -222,7 +222,7 @@ defineStep({
   compensation: {
     async undo(ctx, _args, _info) {
       // @ts-expect-error compensation undo has no ctx.errors
-      ctx.errors;
+      void ctx.errors;
     },
   },
   async execute() {},

@@ -124,16 +124,16 @@ export const executionModelAcceptanceWorkflow = defineWorkflow({
     type _StepEntryAwaited = Assert<
       IsEqual<AwaitedValue<typeof stepEntry>, { normalized: string }>
     >;
-    const stepResult = await stepEntry;
-    type _StepResult = Assert<IsEqual<typeof stepResult, { normalized: string }>>;
+    const _stepResult = await stepEntry;
+    type _StepResult = Assert<IsEqual<typeof _stepResult, { normalized: string }>>;
 
     // Request entry: dispatched, awaitable, resolves to TResponse.
     const requestEntry = ctx.requests.noopRequest({ value: "v" });
     type _RequestEntryIsBranded = Assert<
       typeof requestEntry extends RequestEntry<{ ok: boolean }> ? true : false
     >;
-    const requestResult = await requestEntry;
-    type _RequestResult = Assert<IsEqual<typeof requestResult, { ok: boolean }>>;
+    const _requestResult = await requestEntry;
+    type _RequestResult = Assert<IsEqual<typeof _requestResult, { ok: boolean }>>;
 
     // Attached child workflow entry: dispatched, awaitable, resolves to a
     // success-or-failure union. Step 01 only verifies it is an AwaitableEntry
@@ -147,9 +147,9 @@ export const executionModelAcceptanceWorkflow = defineWorkflow({
     // @ts-expect-error channels are not on AttachedChildWorkflowEntry outside scope handles
     void childEntry.channels;
 
-    const childResult = await childEntry;
+    const _childResult = await childEntry;
     type _ChildResultHasSuccessBranch = Assert<
-      Extract<typeof childResult, { ok: true; result: { doubled: number } }> extends never
+      Extract<typeof _childResult, { ok: true; result: { doubled: number } }> extends never
         ? false
         : true
     >;
@@ -159,9 +159,9 @@ export const executionModelAcceptanceWorkflow = defineWorkflow({
       { ch: ctx.children.attached.childWorkflow({ args: { value: 3 } }) },
       async (scopeCtx, { ch }) => {
         ch.channels.noopCh.send({ token: "scope" });
-        const joined = await scopeCtx.join(ch);
+        const _joined = await scopeCtx.join(ch);
         type _ScopeAttachedJoin = Assert<
-          Extract<typeof joined, { ok: true; result: { doubled: number } }> extends never
+          Extract<typeof _joined, { ok: true; result: { doubled: number } }> extends never
             ? false
             : true
         >;
@@ -200,16 +200,16 @@ export const executionModelAcceptanceWorkflow = defineWorkflow({
 declare const someStepEntry: StepEntry<{ normalized: string }>;
 
 // @ts-expect-error .resolve(ctx) is no longer part of entries
-someStepEntry.resolve;
+void someStepEntry.resolve;
 // @ts-expect-error .retry is no longer part of entries (call-time options live in step 03)
-someStepEntry.retry;
+void someStepEntry.retry;
 // @ts-expect-error .complete is no longer part of entries
-someStepEntry.complete;
+void someStepEntry.complete;
 // @ts-expect-error .failure is no longer part of entries
-someStepEntry.failure;
+void someStepEntry.failure;
 // @ts-expect-error .compensate is no longer part of entries (compensation is definition-bound)
-someStepEntry.compensate;
+void someStepEntry.compensate;
 // @ts-expect-error .timeout(boundary, cb) builder is replaced by call-time `{ timeout }` (step 03)
-someStepEntry.timeout;
+void someStepEntry.timeout;
 // @ts-expect-error .priority builder is replaced by call-time `{ priority }` for requests (step 03)
-someStepEntry.priority;
+void someStepEntry.priority;

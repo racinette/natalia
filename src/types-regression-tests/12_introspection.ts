@@ -17,14 +17,10 @@ import type {
   CompensationBlockRow,
   CompensationBlockUniqueHandleExternal,
   CompensationId,
-  CountOptions,
   ErrorValue,
   FetchableHandle,
-  FetchOptions,
   FieldsMask,
-  FindManyOptions,
   FindManyResult,
-  FindUniqueOptions,
   FindUniqueResult,
   HandleWithRow,
   HaltsNamespaceExternal,
@@ -41,7 +37,6 @@ import type {
   WorkflowClientAccessor,
   WorkflowHandleExternal,
   WorkflowId,
-  WorkflowOperatorActions,
   WorkflowResult,
   WorkflowRow,
 } from "../types";
@@ -147,7 +142,7 @@ const opsChildWorkflow = defineWorkflow({
   },
 });
 
-const orderWorkflow = defineWorkflow({
+const _orderWorkflow = defineWorkflow({
   name: "introspectionOrder",
   args: z.object({ orderId: z.string() }),
   result: z.object({ ok: z.boolean() }),
@@ -200,16 +195,16 @@ declare const findManyResult: FindManyResult<{ id: string }>;
 
 // PromiseLike — awaiting materialises the array.
 async function _materialise(): Promise<void> {
-  const arr = await findManyResult;
+  const _arr = await findManyResult;
   type _MaterialisedArr = Assert<
-    IsEqual<typeof arr, readonly { id: string }[]>
+    IsEqual<typeof _arr, readonly { id: string }[]>
   >;
 }
 
 // AsyncIterable — iterating streams handles lazily.
 async function _stream(): Promise<void> {
-  for await (const handle of findManyResult) {
-    type _StreamedHandle = Assert<IsEqual<typeof handle, { id: string }>>;
+  for await (const _handle of findManyResult) {
+    type _StreamedHandle = Assert<IsEqual<typeof _handle, { id: string }>>;
   }
 }
 
@@ -228,14 +223,14 @@ declare const fetchable: FetchableHandle<ExampleRow>;
 
 async function _fetchRow(): Promise<void> {
   // No fields → entire row.
-  const full = await fetchable.fetchRow();
-  type _FullShape = Assert<IsEqual<typeof full, FindUniqueResult<ExampleRow>>>;
+  const _full = await fetchable.fetchRow();
+  type _FullShape = Assert<IsEqual<typeof _full, FindUniqueResult<ExampleRow>>>;
 
   // With fields mask → typed projection.
-  const projected = await fetchable.fetchRow({ id: true, status: true });
+  const _projected = await fetchable.fetchRow({ id: true, status: true });
   type _ProjectedShape = Assert<
     IsEqual<
-      typeof projected,
+      typeof _projected,
       FindUniqueResult<Pick<ExampleRow, "id" | "status">>
     >
   >;
@@ -276,19 +271,19 @@ declare const ns: QueryableNamespace<
 
 // `.get(id)` — synchronous, no I/O.
 declare const someAttachedId: AttachedChildWorkflowId<typeof followUpHeader>;
-const handleFromGet = ns.get(someAttachedId);
+const _handleFromGet = ns.get(someAttachedId);
 type _GetReturn = Assert<
   IsEqual<
-    typeof handleFromGet,
+    typeof _handleFromGet,
     AttachedChildWorkflowExternalHandle<typeof followUpHeader>
   >
 >;
 
 // `.get(id, fields)` — adds prefetched `.row`.
-const handleWithRow = ns.get(someAttachedId, { id: true, status: true });
+const _handleWithRow = ns.get(someAttachedId, { id: true, status: true });
 type _GetWithFieldsRow = Assert<
   IsEqual<
-    typeof handleWithRow.row,
+    typeof _handleWithRow.row,
     Pick<
       WorkflowRow<{ orderId: string }, { ok: boolean }, { tenantId: string }>,
       "id" | "status"
@@ -310,9 +305,9 @@ async function _findUniqueShape(): Promise<void> {
 }
 
 // `findMany` returns FindManyResult; awaitable + async-iterable.
-const manyResult = ns.findMany(() => and());
+const _manyResult = ns.findMany(() => and());
 type _FindManyType = Assert<
-  typeof manyResult extends FindManyResult<
+  typeof _manyResult extends FindManyResult<
     AttachedChildWorkflowExternalHandle<typeof followUpHeader>
   >
     ? true
@@ -321,15 +316,15 @@ type _FindManyType = Assert<
 
 // `count` resolves to a number.
 async function _countShape(): Promise<void> {
-  const c = await ns.count(() => and());
-  type _CountType = Assert<IsEqual<typeof c, number>>;
+  const _c = await ns.count(() => and());
+  type _CountType = Assert<IsEqual<typeof _c, number>>;
 }
 
 // =============================================================================
 // WORKFLOW HANDLE — operator-action verbs from step 09 are wired.
 // =============================================================================
 
-declare const workflowHandle: WorkflowHandleExternal<typeof orderWorkflow>;
+declare const workflowHandle: WorkflowHandleExternal<typeof _orderWorkflow>;
 
 // Branded id.
 type _WorkflowHandleId = Assert<IsEqual<typeof workflowHandle.id, WorkflowId>>;
@@ -376,8 +371,8 @@ type _HandleHasSkip = Assert<
 
 // `skip` requires a result argument because the workflow has a non-void result.
 async function _exerciseSkip(): Promise<void> {
-  const r = await workflowHandle.skip({ ok: true });
-  type _SkipReturn = Assert<IsEqual<typeof r, SkipOutcome>>;
+  const _r = await workflowHandle.skip({ ok: true });
+  type _SkipReturn = Assert<IsEqual<typeof _r, SkipOutcome>>;
 
   await workflowHandle.skip({ ok: true }, { strategy: "sigterm" });
   await workflowHandle.skip({ ok: true }, { strategy: "sigkill" });
@@ -426,10 +421,10 @@ void _exerciseFetchRow;
 
 // Wait for terminal outcome.
 async function _exerciseWait(): Promise<void> {
-  const r = await workflowHandle.wait();
+  const _r = await workflowHandle.wait();
   type _WaitReturn = Assert<
     IsEqual<
-      typeof r,
+      typeof _r,
       WorkflowResult<{ ok: boolean }, ErrorValue<{ OrderInvalid: unknown }>>
     > extends boolean
       ? true
@@ -447,7 +442,7 @@ async function _exerciseHalts(): Promise<void> {
 
   // No `skip()` on halts namespace — execution halts are not directly skippable.
   // @ts-expect-error halts namespace exposes only list(); resolution is patch+replay or skip on the workflow itself
-  workflowHandle.halts.skip;
+  void workflowHandle.halts.skip;
 }
 void _exerciseHalts;
 
@@ -462,10 +457,10 @@ type _CompensationKeys = Assert<
   >
 >;
 
-const chargeCompensationNs = workflowHandle.compensations.steps.chargeStep;
+const _chargeCompensationNs = workflowHandle.compensations.steps.chargeStep;
 type _ChargeCompensationNamespace = Assert<
   IsEqual<
-    typeof chargeCompensationNs,
+    typeof _chargeCompensationNs,
     CompensationBlockNamespaceExternal<
       "chargeStep",
       { customerId: string; amount: number },
@@ -474,11 +469,11 @@ type _ChargeCompensationNamespace = Assert<
   >
 >;
 
-const noResultCompensationNs =
+const _noResultCompensationNs =
   workflowHandle.compensations.steps.noResultCompensableStep;
 type _NoResultCompensationNamespace = Assert<
   IsEqual<
-    typeof noResultCompensationNs,
+    typeof _noResultCompensationNs,
     CompensationBlockNamespaceExternal<
       "noResultCompensableStep",
       { id: string },
@@ -494,11 +489,11 @@ void workflowHandle.compensations.steps["chrage"];
 void workflowHandle.compensations.steps.notifyStep;
 
 declare const chargeCompensationId: CompensationId<"chargeStep">;
-const chargeCompHandleFromGet =
+const _chargeCompHandleFromGet =
   workflowHandle.compensations.steps.chargeStep.get(chargeCompensationId);
 type _ChargeCompGetReturn = Assert<
   IsEqual<
-    typeof chargeCompHandleFromGet,
+    typeof _chargeCompHandleFromGet,
     CompensationBlockUniqueHandleExternal<
       "chargeStep",
       { customerId: string; amount: number },
@@ -507,13 +502,13 @@ type _ChargeCompGetReturn = Assert<
   >
 >;
 
-const chargeCompHandleWithRow = workflowHandle.compensations.steps.chargeStep.get(
+const _chargeCompHandleWithRow = workflowHandle.compensations.steps.chargeStep.get(
   chargeCompensationId,
   { id: true, args: true },
 );
 type _ChargeCompGetWithRow = Assert<
   IsEqual<
-    typeof chargeCompHandleWithRow.row,
+    typeof _chargeCompHandleWithRow.row,
     Pick<
       CompensationBlockRow<
         "chargeStep",
@@ -541,10 +536,10 @@ async function _exerciseChargeCompensationNamespace(): Promise<void> {
       >
     >;
 
-    const row = await found.value.fetchRow({ id: true, result: true });
+    const _row = await found.value.fetchRow({ id: true, result: true });
     type _FetchedRow = Assert<
       IsEqual<
-        typeof row,
+        typeof _row,
         FindUniqueResult<
           Pick<
             CompensationBlockRow<
@@ -559,12 +554,12 @@ async function _exerciseChargeCompensationNamespace(): Promise<void> {
     >;
   }
 
-  const many = workflowHandle.compensations.steps.chargeStep.findMany(
+  const _many = workflowHandle.compensations.steps.chargeStep.findMany(
     () => and(),
     { fields: { id: true, status: true } },
   );
   type _ManyWithFields = Assert<
-    typeof many extends FindManyResult<
+    typeof _many extends FindManyResult<
       HandleWithRow<
         CompensationBlockUniqueHandleExternal<
           "chargeStep",
@@ -591,11 +586,11 @@ type _RequestCompensationKeys = Assert<
   IsEqual<keyof typeof workflowHandle.compensations.requests, "approvalRequest">
 >;
 
-const approvalRequestCompensationNs =
+const _approvalRequestCompensationNs =
   workflowHandle.compensations.requests.approvalRequest;
 type _ApprovalRequestCompensationNamespace = Assert<
   IsEqual<
-    typeof approvalRequestCompensationNs,
+    typeof _approvalRequestCompensationNs,
     RequestCompensationNamespaceExternal<
       { chargeId: string },
       { cancelled: boolean }
@@ -625,10 +620,10 @@ async function _exerciseRequestCompensationNamespace(): Promise<void> {
       >
     >;
 
-    const row = await found.value.fetchRow({ id: true, payload: true });
+    const _reqRow = await found.value.fetchRow({ id: true, payload: true });
     type _FetchedRow = Assert<
       IsEqual<
-        typeof row,
+        typeof _reqRow,
         FindUniqueResult<
           Pick<
             RequestCompensationRow<
@@ -642,12 +637,12 @@ async function _exerciseRequestCompensationNamespace(): Promise<void> {
     >;
   }
 
-  const many = workflowHandle.compensations.requests.approvalRequest.findMany(
+  const _reqMany = workflowHandle.compensations.requests.approvalRequest.findMany(
     () => and(),
     { fields: { id: true, status: true } },
   );
   type _ManyWithFields = Assert<
-    typeof many extends FindManyResult<
+    typeof _reqMany extends FindManyResult<
       HandleWithRow<
         RequestCompensationUniqueHandleExternal<
           { chargeId: string },
@@ -681,10 +676,10 @@ type _DetachedChildrenKeys = Assert<
   >
 >;
 
-const followUpAttached = workflowHandle.children.attached.followUp;
+const _followUpAttached = workflowHandle.children.attached.followUp;
 type _FollowUpAttachedType = Assert<
   IsEqual<
-    typeof followUpAttached,
+    typeof _followUpAttached,
     AttachedChildWorkflowNamespaceExternal<typeof followUpHeader>
   >
 >;
@@ -700,9 +695,9 @@ async function _attachedFindUniqueShape(): Promise<void> {
       >
     >;
     // @ts-expect-error attached child handle has no lifecycle verbs
-    found.value.sigkill;
+    void found.value.sigkill;
     // @ts-expect-error attached children are not globally addressable
-    found.value.idempotencyKey;
+    void found.value.idempotencyKey;
   }
 }
 void _attachedFindUniqueShape;
@@ -740,14 +735,14 @@ type _FollowUpEventsFallback = Assert<
 // @ts-expect-error undeclared followUp channel should be absent
 void followUpAttachedHandle.channels.typo;
 
-const followUpAttachedHandleWithRow =
+const _followUpAttachedHandleWithRow =
   workflowHandle.children.attached.followUp.get(followUpAttachedId, {
     id: true,
     args: true,
   });
 type _FollowUpAttachedGetWithRow = Assert<
   IsEqual<
-    typeof followUpAttachedHandleWithRow.row,
+    typeof _followUpAttachedHandleWithRow.row,
     Pick<WorkflowRow<{ orderId: string }, { ok: boolean }, void>, "id" | "args">
   >
 >;
@@ -777,10 +772,10 @@ void opsChildAttachedHandle.streams.typo;
 // @ts-expect-error undeclared ops child event should be absent
 void opsChildAttachedHandle.events.typo;
 
-const auditDetached = workflowHandle.children.detached.audit;
+const _auditDetached = workflowHandle.children.detached.audit;
 type _AuditDetachedType = Assert<
   IsEqual<
-    typeof auditDetached,
+    typeof _auditDetached,
     DetachedChildWorkflowNamespaceExternal<typeof auditHeader>
   >
 >;
@@ -846,22 +841,22 @@ void workflowHandle.attachedChildWorkflows;
 // @ts-expect-error legacy namespace removed
 void workflowHandle.detachedChildWorkflows;
 
-declare const headerOnlyHandle: WorkflowHandleExternal<typeof followUpHeader>;
+declare const _headerOnlyHandle: WorkflowHandleExternal<typeof followUpHeader>;
 type _HeaderOnlyCompensationsFallback = Assert<
   IsEqual<
-    typeof headerOnlyHandle.compensations.steps,
+    typeof _headerOnlyHandle.compensations.steps,
     Record<string, CompensationBlockNamespaceExternal<unknown>>
   >
 >;
 type _HeaderOnlyRequestCompensationsFallback = Assert<
   IsEqual<
-    typeof headerOnlyHandle.compensations.requests,
+    typeof _headerOnlyHandle.compensations.requests,
     Record<string, RequestCompensationNamespaceExternal>
   >
 >;
 type _HeaderOnlyAttachedChildrenFallback = Assert<
   IsEqual<
-    typeof headerOnlyHandle.children.attached,
+    typeof _headerOnlyHandle.children.attached,
     Record<
       string,
       AttachedChildWorkflowNamespaceExternal<AnyPublicWorkflowHeader>
@@ -870,7 +865,7 @@ type _HeaderOnlyAttachedChildrenFallback = Assert<
 >;
 type _HeaderOnlyDetachedChildrenFallback = Assert<
   IsEqual<
-    typeof headerOnlyHandle.children.detached,
+    typeof _headerOnlyHandle.children.detached,
     Record<
       string,
       DetachedChildWorkflowNamespaceExternal<AnyPublicWorkflowHeader>
@@ -905,13 +900,13 @@ type _CompensationPrimitiveChannels = Assert<
 >;
 
 async function _exerciseCompSkip(): Promise<void> {
-  const r = await compHandle.skip({ status: "refunded" });
-  type _SkipReturn = Assert<IsEqual<typeof r, SkipOutcome>>;
+  const _r = await compHandle.skip({ status: "refunded" });
+  type _SkipReturn = Assert<IsEqual<typeof _r, SkipOutcome>>;
 
   // @ts-expect-error compensation blocks have no sigkill
-  compHandle.sigkill;
+  void compHandle.sigkill;
   // @ts-expect-error compensation blocks have no sigterm
-  compHandle.sigterm;
+  void compHandle.sigterm;
   // @ts-expect-error compensation skip has no strategy option
   await compHandle.skip({ status: "refunded" }, { strategy: "sigkill" });
 }
@@ -931,14 +926,14 @@ type _ReqCompId = Assert<
 >;
 
 async function _exerciseReqCompAttempts(): Promise<void> {
-  const a = await reqCompHandle.attempts();
-  type _Attempts = Assert<IsEqual<typeof a, FindUniqueResult<AttemptAccessor>>>;
+  const _a = await reqCompHandle.attempts();
+  type _Attempts = Assert<IsEqual<typeof _a, FindUniqueResult<AttemptAccessor>>>;
 }
 void _exerciseReqCompAttempts;
 
 async function _exerciseReqCompSkip(): Promise<void> {
-  const r = await reqCompHandle.skip({ cancelled: true });
-  type _Return = Assert<IsEqual<typeof r, SkipOutcome>>;
+  const _r = await reqCompHandle.skip({ cancelled: true });
+  type _Return = Assert<IsEqual<typeof _r, SkipOutcome>>;
 }
 void _exerciseReqCompSkip;
 
@@ -946,32 +941,32 @@ void _exerciseReqCompSkip;
 // CLIENT-LEVEL WORKFLOW ACCESSOR — start, execute, get, findUnique, findMany, count.
 // =============================================================================
 
-declare const clientAcc: WorkflowClientAccessor<typeof orderWorkflow>;
+declare const clientAcc: WorkflowClientAccessor<typeof _orderWorkflow>;
 
 async function _exerciseClient(): Promise<void> {
-  const handle = await clientAcc.start({
+  const _handle = await clientAcc.start({
     idempotencyKey: "wf-1",
     args: { orderId: "o-1" },
     metadata: { tenantId: "acme" },
   });
   type _StartReturn = Assert<
-    IsEqual<typeof handle, WorkflowHandleExternal<typeof orderWorkflow>>
+    IsEqual<typeof _handle, WorkflowHandleExternal<typeof _orderWorkflow>>
   >;
 
-  const result = await clientAcc.execute({
+  const _result = await clientAcc.execute({
     idempotencyKey: "wf-2",
     args: { orderId: "o-2" },
     metadata: { tenantId: "acme" },
   });
   type _ExecuteReturn = Assert<
-    typeof result extends WorkflowResult<{ ok: boolean }, unknown> ? true : false
+    typeof _result extends WorkflowResult<{ ok: boolean }, unknown> ? true : false
   >;
 
-  const synchronousHandle = clientAcc.get("wf-3");
+  const _synchronousHandle = clientAcc.get("wf-3");
   type _GetReturn = Assert<
     IsEqual<
-      typeof synchronousHandle,
-      WorkflowHandleExternal<typeof orderWorkflow>
+      typeof _synchronousHandle,
+      WorkflowHandleExternal<typeof _orderWorkflow>
     >
   >;
 
@@ -979,21 +974,21 @@ async function _exerciseClient(): Promise<void> {
   const found = await clientAcc.findUnique(() => and());
   if (found.status === "unique") {
     type _FoundValue = Assert<
-      IsEqual<typeof found.value, WorkflowHandleExternal<typeof orderWorkflow>>
+      IsEqual<typeof found.value, WorkflowHandleExternal<typeof _orderWorkflow>>
     >;
   }
 
-  const many = clientAcc.findMany(() => and());
+  const _many = clientAcc.findMany(() => and());
   type _ManyAwaited = Assert<
-    typeof many extends FindManyResult<
-      WorkflowHandleExternal<typeof orderWorkflow>
+    typeof _many extends FindManyResult<
+      WorkflowHandleExternal<typeof _orderWorkflow>
     >
       ? true
       : false
   >;
 
-  const total = await clientAcc.count(() => and());
-  type _CountReturn = Assert<IsEqual<typeof total, number>>;
+  const _total = await clientAcc.count(() => and());
+  type _CountReturn = Assert<IsEqual<typeof _total, number>>;
 }
 void _exerciseClient;
 

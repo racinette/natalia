@@ -69,22 +69,22 @@ type _AttemptShape = Assert<
 declare const attempts: AttemptAccessor;
 
 async function inspectAttempts(): Promise<void> {
-  const last = await attempts.last();
-  type _Last = Assert<IsEqual<typeof last, Attempt>>;
+  const _last = await attempts.last();
+  type _Last = Assert<IsEqual<typeof _last, Attempt>>;
 
-  const all = await attempts.all();
-  type _All = Assert<IsEqual<typeof all, Attempt[]>>;
+  const _all = await attempts.all();
+  type _All = Assert<IsEqual<typeof _all, Attempt[]>>;
 
   // `count` is an async method, not a property.
-  const count = await attempts.count();
-  type _Count = Assert<IsEqual<typeof count, number>>;
+  const _count = await attempts.count();
+  type _Count = Assert<IsEqual<typeof _count, number>>;
 
-  for await (const item of attempts) {
-    type _Item = Assert<IsEqual<typeof item, Attempt>>;
+  for await (const _item of attempts) {
+    type _Item = Assert<IsEqual<typeof _item, Attempt>>;
   }
 
-  for await (const item of attempts.reverse()) {
-    type _ReverseItem = Assert<IsEqual<typeof item, Attempt>>;
+  for await (const _item of attempts.reverse()) {
+    type _ReverseItem = Assert<IsEqual<typeof _item, Attempt>>;
   }
 
   // @ts-expect-error count is async-callable, not a number property
@@ -101,12 +101,12 @@ void inspectAttempts;
 // as `JsonInput` at the throw site so non-JSON values are rejected.
 // =============================================================================
 
-const structured = new AttemptError({
+const _structured = new AttemptError({
   type: "ValidationError",
   message: "payload was invalid",
   details: { field: "email", reason: "missing" },
 });
-type _AttemptErrorIsError = Assert<typeof structured extends Error ? true : false>;
+type _AttemptErrorIsError = Assert<typeof _structured extends Error ? true : false>;
 
 // `details` defaults to `JsonInput | undefined`.
 const noDetails = new AttemptError({ type: "RemoteSystemDown" });

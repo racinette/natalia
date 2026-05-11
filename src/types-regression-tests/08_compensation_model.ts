@@ -109,7 +109,7 @@ const chargeStep = defineStep({
         >;
         // Timed-out forward outcomes do not expose a `result`.
         // @ts-expect-error timed-out forward outcomes do not expose a result
-        info.result;
+        void info.result;
 
         // `attempts` is still available — Part 2 says compensation must
         // inspect attempts when the engine never observed completion.
@@ -118,7 +118,7 @@ const chargeStep = defineStep({
 
       if (info.status === "terminated") {
         // @ts-expect-error terminated forward outcomes do not expose a result
-        info.result;
+        void info.result;
         await info.attempts.last();
       }
 
@@ -127,13 +127,13 @@ const chargeStep = defineStep({
       // ---------------------------------------------------------------------
 
       // @ts-expect-error compensation undo has no `ctx.errors`
-      ctx.errors;
+      void ctx.errors;
 
       // @ts-expect-error compensation undo cannot see workflow-only steps
-      ctx.steps.workflowOnlyStep;
+      void ctx.steps.workflowOnlyStep;
 
       // @ts-expect-error compensation undo cannot see workflow-only requests
-      ctx.requests.workflowOnlyRequest;
+      void ctx.requests.workflowOnlyRequest;
 
       return { status: "manual_review" as const };
     },
@@ -147,17 +147,17 @@ const chargeStep = defineStep({
 // COMPENSATION-ID BRAND — distinct per compensable step at the type level.
 // =============================================================================
 
-declare const chargeCompensationId: CompensationId<typeof chargeStep>;
+declare const _chargeCompensationId: CompensationId<typeof chargeStep>;
 
 type _CompensationIdIsString = Assert<
-  typeof chargeCompensationId extends string ? true : false
+  typeof _chargeCompensationId extends string ? true : false
 >;
 
 // Branded ids from different compensable steps are not interchangeable.
-declare const otherCompensableStep: typeof refundStep;
-declare const otherId: CompensationId<typeof otherCompensableStep>;
+declare const _otherCompensableStep: typeof refundStep;
+declare const _otherId: CompensationId<typeof _otherCompensableStep>;
 type _BrandSeparation = Assert<
-  IsEqual<typeof chargeCompensationId, typeof otherId> extends false
+  IsEqual<typeof _chargeCompensationId, typeof _otherId> extends false
     ? true
     : false
 >;
@@ -235,7 +235,7 @@ const unregisterManualReviewCompensation = registerRequestCompensationHandler(
         IsEqual<typeof info.reason, "attempts_exhausted" | "deadline">
       >;
       // @ts-expect-error timed-out request outcomes do not expose a response
-      info.response;
+      void info.response;
     }
 
     return MANUAL;
@@ -243,10 +243,10 @@ const unregisterManualReviewCompensation = registerRequestCompensationHandler(
   {
     retryPolicy: { timeoutSeconds: 30, totalTimeoutSeconds: 120 },
     onExhausted: {
-      async callback(_ctx, payload, info) {
+      async callback(_ctx, payload, _info) {
         type _ExhaustPayload = Assert<IsEqual<typeof payload, { chargeId: string }>>;
         type _ExhaustInfo = Assert<
-          typeof info extends RequestCompensationInfo<{ accepted: boolean }>
+          typeof _info extends RequestCompensationInfo<{ accepted: boolean }>
             ? true
             : false
         >;
@@ -354,13 +354,13 @@ export const compensationModelAcceptanceWorkflow = defineWorkflow({
 
     const entry = ctx.steps.chargeStep({ customerId: "cust-2", amount: 20 });
     // @ts-expect-error compensation is definition-bound, not call-site-bound
-    entry.compensate(async () => undefined);
+    void entry.compensate(async () => undefined);
     // @ts-expect-error general ad hoc compensation registration is removed
-    ctx.addCompensation(async () => undefined);
+    void ctx.addCompensation(async () => undefined);
 
     const child = ctx.children.attached.childWorkflow({});
     // @ts-expect-error child compensation is no longer call-site-bound
-    child.compensate(async () => undefined);
+    void child.compensate(async () => undefined);
 
     return { ok: true };
   },

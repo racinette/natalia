@@ -45,25 +45,25 @@ type _CompensationBlockHaltStatus = Assert<
 // HALT RECORD — durable row shape
 // =============================================================================
 
-declare const haltRecord: HaltRecord;
+declare const _haltRecord: HaltRecord;
 
 type _HaltRecordHasIds = Assert<
-  IsEqual<typeof haltRecord.id, number>
+  IsEqual<typeof _haltRecord.id, number>
 >;
 type _HaltRecordWorkflowId = Assert<
-  IsEqual<typeof haltRecord.workflowId, string>
+  IsEqual<typeof _haltRecord.workflowId, string>
 >;
 type _HaltRecordAfterStepId = Assert<
-  IsEqual<typeof haltRecord.afterStepId, number | null>
+  IsEqual<typeof _haltRecord.afterStepId, number | null>
 >;
 type _HaltRecordStatusUnion = Assert<
   IsEqual<
-    typeof haltRecord.status,
+    typeof _haltRecord.status,
     WorkflowHaltStatus | CompensationBlockHaltStatus
   >
 >;
 type _HaltRecordTimestamps = Assert<
-  IsEqual<typeof haltRecord.createdAt, Date>
+  IsEqual<typeof _haltRecord.createdAt, Date>
 >;
 
 // =============================================================================
@@ -152,22 +152,22 @@ declare const voidCompBlockActions: CompensationBlockOperatorActions<void>;
 
 // `sigkill()` returns a SigkillOutcome; takes optional opts.
 async function _exerciseSigkill(): Promise<void> {
-  const k1 = await workflowActions.sigkill();
-  type _K1 = Assert<IsEqual<typeof k1, SigkillOutcome>>;
+  const _k1 = await workflowActions.sigkill();
+  type _K1 = Assert<IsEqual<typeof _k1, SigkillOutcome>>;
   await workflowActions.sigkill({});
   await workflowActions.sigkill({ txOrConn: undefined });
 }
 
 // `sigterm()` returns a SigtermOutcome union (`completed` | `failed`).
 async function _exerciseSigterm(): Promise<void> {
-  const t1 = await workflowActions.sigterm();
-  type _T1 = Assert<IsEqual<typeof t1, SigtermOutcome>>;
+  const _t1 = await workflowActions.sigterm();
+  type _T1 = Assert<IsEqual<typeof _t1, SigtermOutcome>>;
 }
 
 // `skip(result, opts?)` for non-void result requires the result argument.
 async function _exerciseSkipWithResult(): Promise<void> {
-  const s1 = await workflowActions.skip({ orderId: "x" });
-  type _S1 = Assert<IsEqual<typeof s1, SkipOutcome>>;
+  const _s1 = await workflowActions.skip({ orderId: "x" });
+  type _S1 = Assert<IsEqual<typeof _s1, SkipOutcome>>;
 
   await workflowActions.skip(
     { orderId: "x" },
@@ -188,8 +188,8 @@ async function _exerciseSkipWithResult(): Promise<void> {
 
 // `skip(opts?)` for void result skips the result argument.
 async function _exerciseSkipVoid(): Promise<void> {
-  const s1 = await voidWorkflowActions.skip();
-  type _S1 = Assert<IsEqual<typeof s1, SkipOutcome>>;
+  const _s1 = await voidWorkflowActions.skip();
+  type _S1 = Assert<IsEqual<typeof _s1, SkipOutcome>>;
 
   await voidWorkflowActions.skip({ strategy: "sigkill" });
 }
@@ -197,8 +197,8 @@ async function _exerciseSkipVoid(): Promise<void> {
 // Compensation block actions: `skip(result)` only; no opts beyond txOrConn,
 // no strategy choice, no sigkill / sigterm.
 async function _exerciseCompensationSkip(): Promise<void> {
-  const s1 = await compBlockActions.skip({ kind: "refunded" });
-  type _S1 = Assert<IsEqual<typeof s1, SkipOutcome>>;
+  const _s1 = await compBlockActions.skip({ kind: "refunded" });
+  type _S1 = Assert<IsEqual<typeof _s1, SkipOutcome>>;
 
   await compBlockActions.skip({ kind: "manual" }, {});
 
@@ -206,9 +206,9 @@ async function _exerciseCompensationSkip(): Promise<void> {
   await voidCompBlockActions.skip();
 
   // @ts-expect-error compensation blocks cannot be sigkill-ed
-  compBlockActions.sigkill;
+  void compBlockActions.sigkill;
   // @ts-expect-error compensation blocks cannot be sigterm-ed
-  compBlockActions.sigterm;
+  void compBlockActions.sigterm;
   // @ts-expect-error compensation skip has no strategy option
   await compBlockActions.skip({ kind: "refunded" }, { strategy: "sigkill" });
 }

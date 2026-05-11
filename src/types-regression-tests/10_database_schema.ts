@@ -37,10 +37,10 @@ type IsEqual<A, B> =
 // without the brand.
 // =============================================================================
 
-declare const workflowId: WorkflowId;
-declare const requestCompId: RequestCompensationInstanceId;
+declare const _workflowId: WorkflowId;
+declare const _requestCompId: RequestCompensationInstanceId;
 
-type _WorkflowIdIsString = Assert<typeof workflowId extends string ? true : false>;
+type _WorkflowIdIsString = Assert<typeof _workflowId extends string ? true : false>;
 type _PlainStringNotAssignableToWorkflowId = Assert<
   string extends WorkflowId ? false : true
 >;
@@ -49,34 +49,34 @@ type _PlainStringNotAssignableToRequestCompId = Assert<
 >;
 
 // AttachedChildWorkflowId<W> is parameterised by the workflow header.
-const childHeader = defineWorkflowHeader({
+const _childHeader = defineWorkflowHeader({
   name: "schemaChild",
   args: z.object({ id: z.string() }),
   result: z.object({ ok: z.boolean() }),
 });
 
-declare const attachedId: AttachedChildWorkflowId<typeof childHeader>;
+declare const _attachedId: AttachedChildWorkflowId<typeof _childHeader>;
 type _AttachedIdIsString = Assert<
-  typeof attachedId extends string ? true : false
+  typeof _attachedId extends string ? true : false
 >;
 
 // Brand separation: ids from different definitions are not interchangeable.
 // Even structurally identical headers are distinguishable because the
 // `defineWorkflowHeader` factory captures `name` as a literal — see
 // `00_name_literals.ts`.
-const otherHeader = defineWorkflowHeader({
+const _otherHeader = defineWorkflowHeader({
   name: "schemaOther",
   args: z.object({ id: z.string() }),
   result: z.object({ ok: z.boolean() }),
 });
-declare const otherAttachedId: AttachedChildWorkflowId<typeof otherHeader>;
+declare const _otherAttachedId: AttachedChildWorkflowId<typeof _otherHeader>;
 type _AttachedBrandSeparation = Assert<
-  IsEqual<typeof attachedId, typeof otherAttachedId> extends false ? true : false
+  IsEqual<typeof _attachedId, typeof _otherAttachedId> extends false ? true : false
 >;
 
 // CompensationId<TStep> brand separation already covered in step 08.
-declare const compId: CompensationId<{ name: "exampleStep" }>;
-type _CompensationIdIsString = Assert<typeof compId extends string ? true : false>;
+declare const _compId: CompensationId<{ name: "exampleStep" }>;
+type _CompensationIdIsString = Assert<typeof _compId extends string ? true : false>;
 
 // =============================================================================
 // STATUS UNIONS — schema check-constraint domains.
@@ -160,72 +160,72 @@ const _badStepType: StepType = "start_branch";
 // ROW RECORD TYPES — JSONB columns are typed; flat columns mirror SQL types.
 // =============================================================================
 
-declare const workflowRow: WorkflowRow<
+declare const _workflowRow: WorkflowRow<
   { orderId: string },
   { confirmed: boolean },
   { tenantId: string }
 >;
 
 type _WorkflowRowIdIsBranded = Assert<
-  IsEqual<typeof workflowRow.id, WorkflowId>
+  IsEqual<typeof _workflowRow.id, WorkflowId>
 >;
 type _WorkflowRowDefinitionName = Assert<
-  IsEqual<typeof workflowRow.definitionName, string>
+  IsEqual<typeof _workflowRow.definitionName, string>
 >;
 type _WorkflowRowIdempotencyKey = Assert<
-  IsEqual<typeof workflowRow.idempotencyKey, string | null>
+  IsEqual<typeof _workflowRow.idempotencyKey, string | null>
 >;
 type _WorkflowRowStatus = Assert<
-  IsEqual<typeof workflowRow.status, WorkflowStatus>
+  IsEqual<typeof _workflowRow.status, WorkflowStatus>
 >;
 type _WorkflowRowArgsTyped = Assert<
-  IsEqual<typeof workflowRow.args, { orderId: string }>
+  IsEqual<typeof _workflowRow.args, { orderId: string }>
 >;
 type _WorkflowRowResultNullable = Assert<
-  IsEqual<typeof workflowRow.result, { confirmed: boolean } | null>
+  IsEqual<typeof _workflowRow.result, { confirmed: boolean } | null>
 >;
 type _WorkflowRowMetadata = Assert<
-  IsEqual<typeof workflowRow.metadata, { tenantId: string }>
+  IsEqual<typeof _workflowRow.metadata, { tenantId: string }>
 >;
 type _WorkflowRowErrorNullable = Assert<
-  IsEqual<typeof workflowRow.error, WorkflowErrorEnvelope | null>
+  IsEqual<typeof _workflowRow.error, WorkflowErrorEnvelope | null>
 >;
 type _WorkflowRowAttachedFlag = Assert<
-  IsEqual<typeof workflowRow.attached, boolean>
+  IsEqual<typeof _workflowRow.attached, boolean>
 >;
 type _WorkflowRowIsCompensation = Assert<
-  IsEqual<typeof workflowRow.isCompensation, boolean>
+  IsEqual<typeof _workflowRow.isCompensation, boolean>
 >;
 type _WorkflowRowCompensationStepNameNullable = Assert<
-  IsEqual<typeof workflowRow.compensationStepName, string | null>
+  IsEqual<typeof _workflowRow.compensationStepName, string | null>
 >;
 type _WorkflowRowCreatedAt = Assert<
-  IsEqual<typeof workflowRow.createdAt, Date>
+  IsEqual<typeof _workflowRow.createdAt, Date>
 >;
 
 // Default unknowns for unparameterised consumption.
-declare const workflowRowDefault: WorkflowRow;
+declare const _workflowRowDefault: WorkflowRow;
 type _DefaultWorkflowRowArgs = Assert<
-  IsEqual<typeof workflowRowDefault.args, unknown>
+  IsEqual<typeof _workflowRowDefault.args, unknown>
 >;
 
 // Request compensation row.
-declare const requestCompRow: RequestCompensationRow<
+declare const _requestCompRow: RequestCompensationRow<
   { chargeId: string },
   { kind: "refunded" | "manual" }
 >;
 type _RequestCompRowIdBranded = Assert<
-  IsEqual<typeof requestCompRow.id, RequestCompensationInstanceId>
+  IsEqual<typeof _requestCompRow.id, RequestCompensationInstanceId>
 >;
 type _RequestCompRowStatus = Assert<
-  IsEqual<typeof requestCompRow.status, RequestCompensationStatus>
+  IsEqual<typeof _requestCompRow.status, RequestCompensationStatus>
 >;
 type _RequestCompRowPayload = Assert<
-  IsEqual<typeof requestCompRow.payload, { chargeId: string }>
+  IsEqual<typeof _requestCompRow.payload, { chargeId: string }>
 >;
 type _RequestCompRowResult = Assert<
   IsEqual<
-    typeof requestCompRow.result,
+    typeof _requestCompRow.result,
     { kind: "refunded" | "manual" } | null
   >
 >;
@@ -234,15 +234,15 @@ type _RequestCompRowResult = Assert<
 // HALT RECORD CARRIES STATUS UNION OF BOTH HALT KINDS
 // =============================================================================
 
-declare const halt: HaltRecord;
+declare const _halt: HaltRecord;
 type _HaltStatusUnion = Assert<
   IsEqual<
-    typeof halt.status,
+    typeof _halt.status,
     WorkflowHaltStatus | CompensationBlockHaltStatus
   >
 >;
 type _HaltErrorDetailsNullable = Assert<
-  typeof halt.errorDetails extends null | undefined ? false : true
+  typeof _halt.errorDetails extends null | undefined ? false : true
 >;
 
 // =============================================================================
