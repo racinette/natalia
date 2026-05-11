@@ -93,6 +93,7 @@ const childWorkflow = defineWorkflow({
   name: "execModelChild",
   args: z.object({ value: z.number() }),
   result: z.object({ doubled: z.number() }),
+  channels: { noopCh: z.object({ token: z.string() }) },
   async execute(_ctx, args) {
     return { doubled: args.value * 2 };
   },
@@ -137,17 +138,36 @@ export const executionModelAcceptanceWorkflow = defineWorkflow({
     // Attached child workflow entry: dispatched, awaitable, resolves to a
     // success-or-failure union. Step 01 only verifies it is an AwaitableEntry
     // and the awaited type contains the success branch; the exact shape of
-    // the union (and the channel-send surface) is step 03.
+    // the union; channel send on attached children is step 03 / scope handles.
     const childEntry = ctx.children.attached.childWorkflow({ args: { value: 21 } });
     type _ChildEntryIsAwaitable = Assert<
       typeof childEntry extends AwaitableEntry<any> ? true : false
     >;
+    // Direct attached entry is await-only — no channel-send surface (use `ctx.scope`).
+    // @ts-expect-error channels are not on AttachedChildWorkflowEntry outside scope handles
+    void childEntry.channels;
+
     const childResult = await childEntry;
     type _ChildResultHasSuccessBranch = Assert<
       Extract<typeof childResult, { ok: true; result: { doubled: number } }> extends never
         ? false
         : true
     >;
+
+    await ctx.scope(
+      "execModelAttachedScope",
+      { ch: ctx.children.attached.childWorkflow({ args: { value: 3 } }) },
+      async (scopeCtx, { ch }) => {
+        ch.channels.noopCh.send({ token: "scope" });
+        const joined = await scopeCtx.join(ch);
+        type _ScopeAttachedJoin = Assert<
+          Extract<typeof joined, { ok: true; result: { doubled: number } }> extends never
+            ? false
+            : true
+        >;
+        return undefined;
+      },
+    );
 
     // =========================================================================
     // 3. Buffered operations return void synchronously and produce no entry.

@@ -16,14 +16,22 @@ import type { RequestEntry, SchemaInvocationInput, StepBoundary, TimeoutResult, 
 // Send-only — no awaitable result, no lifecycle control.
 // =============================================================================
 
+declare const nataliaAttachedChildWorkflowEntryBrand: unique symbol;
+
 /**
  * Channel-send surface on a handle to a running workflow.
  *
- * Every kind of handle that points at a running workflow exposes this surface
- * (attached child entries inside the workflow body, detached / foreign
- * workflow handles outside it). Send is a buffered operation — returns plain
- * `void`; the message is visible to the receiving workflow only after the
- * caller's next batch commit.
+ * Exposed on **detached / foreign** handles (`ForeignWorkflowHandle`), on
+ * **`AttachedChildWorkflowScopeHandle`** inside `ctx.scope` bodies, and on
+ * operator introspection handles where the type allows.
+ *
+ * The **direct** return value of `ctx.children.attached.X(...)` in the workflow
+ * body is await-only (`AttachedChildWorkflowEntry`) — it intentionally does
+ * **not** intersect this surface; message the child from the parent body only
+ * via a scope entry + `handles.*.channels.*.send` while the child runs.
+ *
+ * Send is a buffered operation — returns plain `void`; the message is visible
+ * to the receiving workflow only after the caller's next batch commit.
  */
 export interface ChannelSendSurface<
   TChannels extends ChannelDefinitions = Record<string, never>,
@@ -51,13 +59,11 @@ export interface ForeignWorkflowHandle<
 // =============================================================================
 // CHILD WORKFLOW ACCESSORS
 //
-// Child workflow accessors live on `ctx.children.attached` (in execution
-// context) and `ctx.children.attached` (in compensation context). They produce
-// `WorkflowEntry<T>` for attached starts or `ForeignWorkflowHandle<W>` for
-// detached starts via `ctx.children.detached`.
-//
-// Step 01 keeps the existing accessor shapes; step 03 will revisit the
-// attached-entry channel-send surface and call-time options.
+// Child workflow accessors live on `ctx.children.attached` (execution +
+// compensation) and `ctx.children.detached`. Attached execution calls return
+// `AttachedChildWorkflowEntry` (await-only). Scope bodies receive
+// `AttachedChildWorkflowScopeHandle` (await + channels). Detached starts return
+// `ForeignWorkflowHandle<W>`.
 // =============================================================================
 
 /**
@@ -80,9 +86,14 @@ export interface ChildWorkflowTimeoutCallOptions extends ChildWorkflowCallOption
 /**
  * Attached child workflow start options. Retention is inherited from the
  * parent workflow.
+ *
+ * `idempotencyKey` is omitted — attached children are parent-scoped, not
+ * globally keyed.
  */
-export type AttachedChildWorkflowStartOptions<W extends AnyWorkflowHeader> =
-  ChildWorkflowStartOptions<W>;
+export type AttachedChildWorkflowStartOptions<W extends AnyWorkflowHeader> = Omit<
+  ChildWorkflowStartOptions<W>,
+  "idempotencyKey"
+>;
 
 /**
  * Detached child workflow start options. Detached children may override
@@ -115,15 +126,29 @@ export type AttachedChildWorkflowResult<T, TError = unknown> =
  * The unstarted attached child workflow entry returned by
  * `ctx.children.attached.X(startOpts, opts?)`.
  *
- * Awaitable for the success/failure (and optionally timeout) union AND
- * exposes the child's declared channel-send surface — the parent body may
- * push messages while the child is running. Attached children have no
- * `idempotencyKey` (they are not globally addressable).
+ * **Await-only** in the parent body: use `await entry` (or pass the entry into
+ * `ctx.scope` / join it from there) for the success/failure (and optional
+ * timeout) union. Channel send to the child while it runs belongs on
+ * `AttachedChildWorkflowScopeHandle` inside `ctx.scope`, not on this type.
  */
-export type AttachedChildWorkflowEntry<
+export interface AttachedChildWorkflowEntry<
   W extends AnyWorkflowHeader,
   TAwaited,
-> = WorkflowEntry<TAwaited> & ChannelSendSurface<InferWorkflowChannels<W>>;
+> extends WorkflowEntry<TAwaited> {
+  readonly [nataliaAttachedChildWorkflowEntryBrand]?: InferWorkflowChannels<W>;
+}
+
+/**
+ * Handle for an attached child passed as a scope entry — the child is
+ * intentionally running for the scope body. Observe completion with
+ * `ctx.join(handle)` from the scope callback (not `await handle` on this
+ * surface). `channels.*.send` is available for the scope duration.
+ */
+export type AttachedChildWorkflowScopeHandle<
+  W extends AnyWorkflowHeader,
+  TAwaited,
+> = AttachedChildWorkflowEntry<W, TAwaited> &
+  ChannelSendSurface<InferWorkflowChannels<W>>;
 
 /**
  * Callable child workflow accessor on `ctx.children.attached` in

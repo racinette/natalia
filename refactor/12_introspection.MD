@@ -149,13 +149,14 @@ Single-generic shape parameterised over the workflow header. Wires:
 ### Attached child workflow handle
 (`AttachedChildWorkflowExternalHandle<W>`)
 
-- `FetchableHandle<WorkflowRow<TArgs, TResult, TMetadata>>`
-- `id: AttachedChildWorkflowId<W>` — branded per child workflow
-  definition.
-- Primitive plane (per the parent's child workflow declaration).
-- **No** terminal-action verbs (no `sigkill`, no `sigterm`, no
-  `skip`). Attached children are subordinate to the parent's
-  lifecycle; the parent's verbs cascade down.
+**Non-lifecycle** operator surface (do not describe as blanket “read-only”):
+lifecycle verbs are absent; messaging / introspection may still exist where typed.
+
+- **Present:** `FetchableHandle<WorkflowRow<...>>`, branded `id`,
+  declared `channels` / `streams` / `events` / `attributes` (per child
+  definition), `fetchRow`.
+- **Absent:** `idempotencyKey`, `sigkill`, `sigterm`, `skip` — attached
+  rows are parent-coupled; operators do not treat them as independent roots.
 
 ### Attached child workflow namespace
 (`AttachedChildWorkflowNamespaceExternal<W>`)
@@ -165,20 +166,19 @@ Single-generic shape parameterised over the workflow header. Wires:
 `AttachedChildWorkflowId<W>`.
 
 ### Detached child workflow namespace
+(`DetachedChildWorkflowNamespaceExternal<W>`)
 
-Returns the **standard** `WorkflowHandleExternal<W>` (detached
-children are real root workflows). The parent-scoped namespace is a
-convenience filter; identity-based `.get(idempotencyKey | args)`
-works the same way as the global `client.workflows.<def>.get(...)`.
+Returns **`WorkflowHandleExternal<W>`** through `findUnique` / `findMany` /
+`get` — the **full root** operator handle (including lifecycle actions and
+`idempotencyKey`), same family as `client.workflows.<def>`. The parent-scoped
+namespace only **filters** to detached children of this parent; it does **not**
+reuse the attached-child handle type or “non-lifecycle” wording.
 
-For step 12's surface we publish
-`AttachedChildWorkflowNamespaceExternal` and reuse the same shape
-for detached (modulo `THandle`). Keys are now derived from the parent
-workflow's declared `children.attached` / `children.detached` maps when
-available; otherwise
-header-only / widened workflows keep the loose `Record<string, ...>`
-fallback. Step 18 (idempotency-key factory) and step 17 (scheduled
-delivery) refine the detached `.get(args | idempotencyKey)` overloads.
+Keys are derived from the parent workflow's declared `children.attached` /
+`children.detached` maps when available; otherwise header-only / widened
+workflows keep the loose `Record<string, ...>` fallback. Step 18
+(idempotency-key factory) and step 17 (scheduled delivery) refine the detached
+`.get(args | idempotencyKey)` overloads.
 
 ### Client workflow accessor (`WorkflowClientAccessor<W>`)
 

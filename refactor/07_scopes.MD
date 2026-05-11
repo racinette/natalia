@@ -32,11 +32,14 @@ A scope entry is one of:
 - `StepEntry<T>` — produced by `ctx.steps.X(args, opts?)`.
 - `RequestEntry<T>` — produced by `ctx.requests.X(payload, opts?)`.
 - `AttachedChildWorkflowEntry<W, T>` — produced by
-  `ctx.childWorkflows.X(startOpts, opts?)`.
+  `ctx.children.attached.X(startOpts, opts?)`.
 
 All three are awaitable brands over `T` (`AwaitableEntry<T>` from step 01).
+Inside the scope body, attached child properties become
+`AttachedChildWorkflowScopeHandle` (await + `channels.*.send`); completion is
+observed with `ctx.join(handle)` per `WorkflowContext.join`.
 
-`startDetached(opts)` is a buffered op that returns a
+`ctx.children.detached.X(opts)` is a buffered op that returns a
 `ForeignWorkflowHandle<W>` synchronously. **It is not a scope entry**;
 attempting to pass it to `ctx.scope` / `ctx.all` / etc. is rejected at
 compile time.
@@ -55,7 +58,9 @@ Scope input is always a top-level object. Each top-level property may be:
 The body callback receives a typed mirror of that object where each
 entry has been replaced with its corresponding handle:
 
-- `Entry → Handle (AwaitableEntry<T>)`
+- `StepEntry` / `RequestEntry` → same `AwaitableEntry<T>` join shape
+- `AttachedChildWorkflowEntry<W, T>` → `AttachedChildWorkflowScopeHandle<W, T>`
+  (`AwaitableEntry<T>` plus `channels.*.send`)
 - `Entry[]` → `Handle[]`
 - `ReadonlyMap<K, Entry>` → `ReadonlyMap<K, Handle>`
 

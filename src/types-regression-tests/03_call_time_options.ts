@@ -7,7 +7,6 @@ import {
 } from "../workflow";
 import type {
   AwaitableEntry,
-  ChannelSendSurface,
   ForeignWorkflowHandle,
   RetryPolicyOptions,
   StepBoundary,
@@ -149,24 +148,26 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     // Children are not retried by the parent; there is no `retry`-only call
     // overload.
     //
-    // The returned entry is an AttachedChildWorkflowEntry: awaitable AND
-    // exposes the child's declared `channels.X.send` surface. It has NO
-    // `idempotencyKey` (attached children are not globally addressable).
+    // AttachedChildWorkflowEntry: awaitable for the success/failure union only
+    // (no `channels.*.send` on the direct entry; no `idempotencyKey` on start opts).
     // -------------------------------------------------------------------------
 
     const childEntry = ctx.children.attached.child({
-      idempotencyKey: "child-1",
       args: { id: "c-1" },
     });
 
     type _ChildEntryAwaitable = Assert<
       typeof childEntry extends AwaitableEntry<any> ? true : false
     >;
-    type _ChildEntryHasChannelSend = Assert<
-      typeof childEntry extends ChannelSendSurface<any> ? true : false
+    type _ChildEntryNoChannelsKey = Assert<
+      "channels" extends keyof typeof childEntry ? false : true
     >;
-    // @ts-expect-error attached child entries have NO idempotencyKey
-    childEntry.idempotencyKey;
+
+    ctx.children.attached.child({
+      // @ts-expect-error attached start options omit idempotencyKey
+      idempotencyKey: "child-1",
+      args: { id: "c-1-bad" },
+    });
 
     // The entry is awaitable for the success/failure union:
     const child = await childEntry;
@@ -186,17 +187,20 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
         : false
     >;
 
-    // The entry can also have messages sent to it while it runs (buffered;
-    // returns plain `void` per Part 1.2).
-    const sendReturn: void = childEntry.channels.cancel.send({ reason: "user" });
-    void sendReturn;
-    childEntry.channels.nudge.send({ at: "2027-01-01T00:00:00.000Z" });
+    await ctx.scope(
+      "callTimeChildChannels",
+      { c: ctx.children.attached.child({ args: { id: "c-1b" } }) },
+      async (sctx, { c }) => {
+        const sendReturn: void = c.channels.cancel.send({ reason: "user" });
+        void sendReturn;
+        c.channels.nudge.send({ at: "2027-01-01T00:00:00.000Z" });
+        await sctx.join(c);
+        return undefined;
+      },
+    );
 
     // Timeout overload adds `{ ok: false; status: "timeout" }`.
-    const timedChild = await ctx.children.attached.child(
-      { idempotencyKey: "child-2", args: { id: "c-2" } },
-      { timeout: 60 },
-    );
+    const timedChild = await ctx.children.attached.child({ args: { id: "c-2" } }, { timeout: 60 });
     type _TimedChildHasTimeout = Assert<
       Extract<typeof timedChild, { ok: false; status: "timeout" }> extends never
         ? false
@@ -207,7 +211,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     // `timeout` is rejected because the only options-bag overload requires
     // `timeout`.
     ctx.children.attached.child(
-      { idempotencyKey: "child-3", args: { id: "c-3" } },
+      { args: { id: "c-3" } },
       // @ts-expect-error child workflows require `timeout` when an options bag is supplied
       { retry: { intervalSeconds: 1 } },
     );

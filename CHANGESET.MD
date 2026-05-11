@@ -14,6 +14,7 @@ This document records **proposed** changes and open questions for the **public**
 8. New primitive: **stream aggregator** (working name) — denormalized aggregate over a stream, possibly related to long-running workflows, topic consumption, continue-as-new, etc. Use cases and global-state concerns are still fuzzy.
 9. **Real cron-like workflow starts** — external scheduling that creates new instances (see §19). Distinct from in-workflow `ctx.schedule()` ticks.
 10. **List / browse ergonomics** for operators — see §20.
+11. introduce scope hierarchies. effectively `{scope1: { scope11: true, scope12: { scope121: true } }, scope2: true }`
 
 If we land the above coherently, the public API is close to “feature complete” for the product vision.
 

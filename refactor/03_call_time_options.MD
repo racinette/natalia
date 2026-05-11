@@ -9,9 +9,10 @@ provided. Failure recovery happens in ordinary sequential code by
 inspecting the returned union — no `.failure(cb)` builder.
 
 This step also formalises the buffered-op return-type rule: every buffered
-operation in the public API returns plain `void`. The new attached child
-workflow entry exposes a `channels.X.send` surface (a buffered op) and is
-no longer just a bare `WorkflowEntry`.
+operation in the public API returns plain `void`. The direct attached child
+call returns **`AttachedChildWorkflowEntry`** (await-only). Channel send to an
+attached child is **`AttachedChildWorkflowScopeHandle`** inside `ctx.scope`
+(see step 07), not on the bare entry returned in the workflow body.
 
 ## Source Coverage
 
@@ -57,11 +58,11 @@ a timeout is supplied) the parent observation times out.
 - `(startOpts, { retry?, timeout })` — adds `{ ok: false; status: "timeout" }`.
 
 The returned entry is an `AttachedChildWorkflowEntry<W, TAwaited>` —
-awaitable for the union AND exposing the child's declared `channels.X.send`
-surface as a buffered op. Attached children deliberately have **no**
-`idempotencyKey`: they are not globally addressable.
+awaitable for the success/failure union only (no `channels.X.send` on this
+type). **`AttachedChildWorkflowStartOptions<W>` omits `idempotencyKey`** —
+attached children are parent-scoped, not globally keyed on start options.
 
-`startDetached(opts)` is a buffered operation that returns a
+`ctx.children.detached.X(opts)` is a buffered operation that returns a
 `ForeignWorkflowHandle<W>` synchronously. Detached children are
 globally-addressable root workflows with their own `idempotencyKey`.
 
@@ -88,8 +89,8 @@ synchronously. Step 03 sweeps the existing buffered surfaces:
 - `streams.X.write(data)` — `void` (the assigned offset is observable
   externally via the stream's read APIs, not on the write call).
 - `events.X.set()` — `void`.
-- `channels.X.send(payload)` on attached child entries, foreign
-  workflow handles, and detached child handles — `void`.
+- `channels.X.send(payload)` on **scope-local attached child handles**,
+  foreign workflow handles, and detached child handles — `void`.
 
 Awaitable reads (`channel.receiveNowait`, `patch`) keep their existing
 shape — they belong to a different category in Part 1.2 ("awaitable
@@ -106,13 +107,14 @@ read") and resolve to a value rather than dispatching work.
 ## Affected Areas
 
 - `src/types/context/call-builders.ts` — `ChildWorkflowAccessor` (2 call
-  overloads + `startDetached`), `RequestAccessor` (2 overloads),
-  `AttachedChildWorkflowEntry`, `ChannelSendSurface`,
-  `ForeignWorkflowHandle`.
+  overloads), `RequestAccessor` (2 overloads),
+  `AttachedChildWorkflowEntry`, `AttachedChildWorkflowScopeHandle`,
+  `ChannelSendSurface`, `ForeignWorkflowHandle`.
 - `src/types/context/io-accessors.ts` — `StreamAccessor.write`,
   `EventAccessor.set` return `void`.
 - `src/types.ts` — exports `AttachedChildWorkflowEntry`,
-  `ChannelSendSurface`; drops `RequestTimeoutCallOptions`.
+  `AttachedChildWorkflowScopeHandle`, `ChannelSendSurface`; drops
+  `RequestTimeoutCallOptions`.
 
 ## Acceptance Contract
 
@@ -129,10 +131,12 @@ verifies:
 4. Child workflow accessors expose two call overloads — without timeout
    the awaited value is the success-or-failure union; with timeout it
    adds the `timeout` variant.
-5. The attached child entry is awaitable AND extends `ChannelSendSurface`;
-   it has no `idempotencyKey`.
-6. `channels.X.send(...)` on the attached entry returns plain `void`.
-7. `startDetached(opts)` returns a `ForeignWorkflowHandle<W>` with
+5. The attached child entry is awaitable for the union; it does **not**
+   expose `channels` on the direct entry; `idempotencyKey` is rejected on
+   `startOpts`.
+6. Inside `ctx.scope`, the scope mirror for an attached child extends
+   `ChannelSendSurface`; `channels.X.send(...)` returns plain `void`.
+7. `ctx.children.detached.X(opts)` returns a `ForeignWorkflowHandle<W>` with
    `idempotencyKey` and `channels`. The handle is not awaitable.
 8. Request accessors expose two overloads — the second requires
    `timeout` when supplied; `priority` alone is rejected.

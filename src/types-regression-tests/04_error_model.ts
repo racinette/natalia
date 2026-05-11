@@ -117,7 +117,6 @@ export const errorModelAcceptanceWorkflow = defineWorkflow({
     // ----------------------------------------------------------------------
 
     const child = await ctx.children.attached.child({
-      idempotencyKey: "child-1",
       args: { id: "c-1" },
     });
     if (!child.ok) {

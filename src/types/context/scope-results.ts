@@ -1,3 +1,7 @@
+import type {
+  AttachedChildWorkflowEntry,
+  AttachedChildWorkflowScopeHandle,
+} from "./call-builders";
 import type { AwaitableEntry, RequestEntry, StepEntry, WorkflowEntry } from "./entries";
 
 // =============================================================================
@@ -193,11 +197,14 @@ export interface QuorumNotMet<E> {
 
 /**
  * Maps an entry structure to its corresponding handle structure inside a scope
- * body. Each entry is replaced by its `AwaitableEntry<T>` form; the structural
- * shape (objects, arrays, maps) is preserved.
+ * body. Each entry is replaced by its awaitable handle form; attached child
+ * entries additionally gain `channels.*.send`. The structural shape (objects,
+ * arrays, maps) is preserved.
  */
 export type ScopeHandles<E> =
-  E extends AwaitableEntry<infer T>
+  E extends AttachedChildWorkflowEntry<infer W, infer TAwaited>
+    ? AttachedChildWorkflowScopeHandle<W, TAwaited>
+    : E extends AwaitableEntry<infer T>
     ? AwaitableEntry<T>
     : E extends readonly unknown[]
       ? { readonly [K in keyof E]: ScopeHandles<E[K]> }

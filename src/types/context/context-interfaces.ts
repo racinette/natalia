@@ -287,6 +287,11 @@ export interface CompensationContext<
  * directly `await` or pass through `ctx.scope` / `ctx.all` / `ctx.first` /
  * `ctx.atLeast` / `ctx.atMost` / `ctx.some` for structured-concurrency
  * orchestration.
+ *
+ * Attached child calls (`ctx.children.attached`) return an await-only entry in
+ * the body; use `ctx.scope` + `ctx.join` when the parent must
+ * `channels.*.send` while the child runs (see `AttachedChildWorkflowScopeHandle`
+ * in `call-builders.ts`).
  */
 export interface WorkflowContext<
   TChannels extends ChannelDefinitions,

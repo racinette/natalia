@@ -21,9 +21,11 @@
  *   an awaitable entry; `{ timeout }` adds a timeout variant to the result.
  * - Requests: typed request-response delegated to a registered handler or
  *   resolved manually.
- * - Child workflows: `ctx.children.attached.X(startOpts, opts?)` for attached
- *   children (lifecycle bound to parent), `ctx.children.detached.X(opts)` for
- *   detached starts. External workflows are addressable via `ctx.external.X.get`.
+ * - Child workflows: `ctx.children.attached.X(startOpts, opts?)` returns an
+ *   await-only entry (outcome via `await`); message an attached child while it
+ *   runs only inside `ctx.scope` using the scope handle plus `ctx.join`.
+ *   `ctx.children.detached.X(opts)` is a buffered start (`ForeignWorkflowHandle`).
+ *   External workflows: `ctx.external.X.get`.
  * - Engine / static client: `WorkflowEngine` and `createWorkflowClient` expose
  *   the same per-workflow accessors (`start`, `execute`, `get`, introspection
  *   queries) on `engine.workflows.<name>` / `client.workflows.<name>`.

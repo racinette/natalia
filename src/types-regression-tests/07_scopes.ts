@@ -37,6 +37,7 @@ const followUpHeader = defineWorkflowHeader({
   name: "scopesFollowUp",
   args: z.object({ orderId: z.string() }),
   result: z.object({ ok: z.boolean() }),
+  channels: { notify: z.object({ msg: z.string() }) },
   errors: { FollowUpFailed: z.object({ orderId: z.string() }) },
 });
 
@@ -69,11 +70,11 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
         normalize: ctx.steps.normalize({ orderId: args.orderId }),
         approval: ctx.requests.approval({ orderId: args.orderId }),
         followUp: ctx.children.attached.followUp({
-          idempotencyKey: "f-1",
           args: { orderId: args.orderId },
         }),
       },
       async (scopeCtx, handles) => {
+        handles.followUp.channels.notify.send({ msg: "from-scope" });
         // -----------------------------------------------------------------
         // ctx.join — observe a single handle.
         //

@@ -250,18 +250,22 @@ export interface RequestCompensationNamespaceExternal<
 //
 // Per `REFACTOR.MD` Part 5 §"External introspection of children" — operators
 // inspect a parent's children through two namespaces. Attached children are
-// queryable only via the parent (parent-scoped) and have a read-only handle
-// (no terminal-action verbs). Detached children are real root workflows
-// addressable globally; the parent-scoped namespace is a convenience filter
-// that returns the standard `WorkflowHandleExternal<W>`.
+// queryable only via the parent (parent-scoped) and use a **non-lifecycle**
+// handle: no `sigkill` / `sigterm` / `skip`, no `idempotencyKey`, while
+// channels / streams / events / `fetchRow` remain available where typed.
+// Detached children are real root workflows; the parent-scoped namespace
+// returns `WorkflowHandleExternal<W>` (full root semantics).
 // =============================================================================
 
 /**
- * Read-only external handle for an attached child workflow row.
+ * Operator handle for an attached child workflow row (**non-lifecycle**).
  *
- * Attached children are subordinate to the parent's lifecycle — operators
- * inspect them but do not terminate them. `idempotencyKey` is absent because
- * attached children are not globally addressable.
+ * Attached children are subordinate to the parent's lifecycle — operators do
+ * not drive terminal actions on them. There is no `idempotencyKey` (not
+ * globally addressable). Introspection and messaging surfaces (`channels`,
+ * streams, events, `fetchRow`) follow the declared child workflow where the
+ * type exposes them — this is not a blanket "read-only" surface; it excludes
+ * lifecycle verbs, not channel send when present on the type.
  */
 export interface AttachedChildWorkflowExternalHandle<W extends AnyPublicWorkflowHeader>
   extends FetchableHandle<
