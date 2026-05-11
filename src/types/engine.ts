@@ -1,10 +1,5 @@
 import type { StandardSchemaV1 } from "./standard-schema";
 import type {
-  ChannelDefinitions,
-  EventDefinitions,
-  StreamDefinitions,
-} from "./definitions/primitives";
-import type {
   DeadlineOptions,
   RetentionSetter,
   WorkflowInvocationBaseOptions,
@@ -40,21 +35,12 @@ import type {
   SkipOutcome,
   OperatorActionOptions,
 } from "./results";
-import type { RequestCompensationInfo } from "./definitions/steps";
 import type { RequestCompensationInstanceId } from "./schema";
 import type {
-  CountOptions,
   FetchableHandle,
   FetchOptions,
-  FieldsMask,
-  FindManyOptions,
-  FindManyResult,
-  FindUniqueOptions,
   FindUniqueResult,
-  HandleWithRow,
-  ProjectedKeys,
   QueryableNamespace,
-  QueryPredicate,
 } from "./introspection";
 import type {
   InferWorkflowArgs,
@@ -365,26 +351,26 @@ type CompensableStepKeys<TSteps extends Record<string, unknown>> = {
 }[keyof TSteps & string];
 
 type StepArgsForCompensationNamespace<TStep> =
-  TStep extends StepDefinition<any, infer TArgsSchema, any, any>
+  TStep extends StepDefinition<string, infer TArgsSchema, any, infer _Comp>
     ? StandardSchemaV1.InferOutput<TArgsSchema>
     : unknown;
 
 type StepCompensationResultForNamespace<TStep> =
-  TStep extends StepDefinition<any, any, any, infer TCompensation>
+  TStep extends StepDefinition<string, any, any, infer TCompensation>
     ? TCompensation extends StepCompensationDefinition<
-        any,
-        any,
-        any,
-        any,
-        any,
-        any,
-        any,
-        any,
-        any,
-        any,
-        any,
-        any,
-        any,
+        infer _A,
+        infer _FR,
+        infer _Ch,
+        infer _St,
+        infer _Ev,
+        infer _At,
+        infer _Stp,
+        infer _Req,
+        infer _Qu,
+        infer _To,
+        infer _Att,
+        infer _Det,
+        infer _Ext,
         infer TResultSchema
       >
       ? TResultSchema extends StandardSchemaV1<unknown, unknown>
@@ -408,12 +394,12 @@ type CompensableRequestKeys<TRequests extends Record<string, unknown>> = {
 }[keyof TRequests & string];
 
 type RequestPayloadForCompensationNamespace<TRequest> =
-  TRequest extends RequestDefinition<any, infer TPayloadSchema, any, any>
+  TRequest extends RequestDefinition<string, infer TPayloadSchema, any, infer _Comp>
     ? StandardSchemaV1.InferOutput<TPayloadSchema>
     : unknown;
 
 type RequestCompensationResultForNamespace<TRequest> =
-  TRequest extends RequestDefinition<any, any, any, infer TCompensation>
+  TRequest extends RequestDefinition<string, any, any, infer TCompensation>
     ? TCompensation extends RequestCompensationConfig<infer TResultSchema>
       ? TResultSchema extends StandardSchemaV1<unknown, unknown>
         ? StandardSchemaV1.InferOutput<TResultSchema>

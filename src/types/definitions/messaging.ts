@@ -37,7 +37,10 @@ export interface QueueDefinition<
 /**
  * Map of queue definitions.
  */
-export type QueueDefinitions = Record<string, QueueDefinition<any, any>>;
+export type QueueDefinitions = Record<
+  string,
+  QueueDefinition<string, JsonSchemaConstraint>
+>;
 
 /**
  * Topic definition — created via `defineTopic()`.
@@ -72,4 +75,7 @@ export interface TopicDefinition<
 /**
  * Map of topic definitions.
  */
-export type TopicDefinitions = Record<string, TopicDefinition<any, any, any>>;
+export type TopicDefinitions = Record<
+  string,
+  TopicDefinition<string, JsonSchemaConstraint, JsonSchemaConstraint | undefined>
+>;

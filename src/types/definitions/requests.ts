@@ -36,7 +36,7 @@ export type RequestDefinition<
   TPayloadSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TResponseSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TCompensation extends
-    | RequestCompensationDefinition<any>
+    | RequestCompensationDefinition<JsonSchemaConstraint | undefined>
     | undefined = undefined,
 > = {
   readonly name: TName;
@@ -77,4 +77,4 @@ export type NonCompensableRequestDefinitions = Record<
 /**
  * Map of request definitions.
  */
-export type RequestDefinitions = Record<string, RequestDefinition<any, any, any, any>>;
+export type RequestDefinitions = Record<string, RequestDefinition<string, any, any, any>>;

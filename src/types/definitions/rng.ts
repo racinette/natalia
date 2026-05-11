@@ -21,7 +21,7 @@
  */
 export type RngDefinitions = Record<
   string,
-  true | ((...args: any[]) => string)
+  true | ((...args: unknown[]) => string)
 >;
 
 // =============================================================================

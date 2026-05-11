@@ -2,7 +2,12 @@ import type { StandardSchemaV1 } from "../standard-schema";
 import type { JsonObjectSchemaConstraint, JsonSchemaConstraint } from "../json-input";
 import type { CompensationContext, WorkflowContext } from "../context/context-interfaces";
 import type { WorkflowErrorDefinitions } from "./errors";
-import type { PatchDefinitions, ChannelDefinitions, EventDefinitions, StreamDefinitions } from "./primitives";
+import type {
+  PatchDefinitions,
+  ChannelDefinitions,
+  EventDefinitions,
+  StreamDefinitions,
+} from "./primitives";
 import type { RequestDefinitions } from "./requests";
 import type { RetentionSetter } from "./policies";
 import type { RngDefinitions } from "./rng";
@@ -11,24 +16,25 @@ import type { PublicWorkflowHeader, WorkflowDefinitions } from "./workflow-heade
 
 /**
  * Any workflow definition shape.
- * Useful for avoiding repeated `WorkflowDefinition<any, ...>` constraints.
+ * Useful for avoiding repeated `WorkflowDefinition<...>` constraints at each
+ * type parameter's upper bound.
  */
 export type AnyWorkflowDefinition = WorkflowDefinition<
   string,
-  any,
-  any,
-  any,
-  any,
-  any,
-  any,
-  any,
-  any,
-  any,
-  any,
-  any,
-  any,
-  any,
-  any
+  ChannelDefinitions,
+  StreamDefinitions,
+  EventDefinitions,
+  StepDefinitions,
+  RequestDefinitions,
+  WorkflowDefinitions,
+  WorkflowDefinitions,
+  WorkflowDefinitions,
+  JsonSchemaConstraint,
+  JsonSchemaConstraint,
+  JsonObjectSchemaConstraint,
+  WorkflowErrorDefinitions,
+  PatchDefinitions,
+  RngDefinitions
 >;
 
 // =============================================================================

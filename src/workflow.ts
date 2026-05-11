@@ -61,7 +61,10 @@ function validateErrorDefinitions(
 
 const noopUnsubscribe = (): void => undefined;
 
-export const MANUAL: unique symbol = Symbol("MANUAL") as any;
+declare const _manualCompensationSentinel: unique symbol;
+/** Sentinel return for request compensation handlers that defer to manual resolution. */
+export const MANUAL: typeof _manualCompensationSentinel =
+  Symbol("MANUAL") as typeof _manualCompensationSentinel;
 
 type RequestCompensationHandlerResult<TCompensation> =
   TCompensation extends { readonly result?: infer TResultSchema }
@@ -327,8 +330,15 @@ export function defineRequest(config: {
   name: string;
   payload: JsonSchemaConstraint;
   response: JsonSchemaConstraint;
-  compensation?: RequestCompensationDefinition<any>;
-}): RequestDefinition<any, any, any, any> {
+  compensation?: RequestCompensationDefinition<JsonSchemaConstraint | undefined>;
+}): RequestDefinition<
+  string,
+  JsonSchemaConstraint,
+  JsonSchemaConstraint,
+  | RequestCompensationDefinition<JsonSchemaConstraint | undefined>
+  | true
+  | undefined
+> {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Request name must be a non-empty string");
   }
@@ -362,13 +372,20 @@ export function defineRequest(config: {
     response: config.response,
     compensation: config.compensation,
     registerHandler: () => noopUnsubscribe,
-  } as RequestDefinition<any, any, any, any>;
+  } as RequestDefinition<
+    string,
+    JsonSchemaConstraint,
+    JsonSchemaConstraint,
+    | RequestCompensationDefinition<JsonSchemaConstraint | undefined>
+    | true
+    | undefined
+  >;
 }
 
 export function registerRequestCompensationHandler<
   TPayloadSchema extends JsonSchemaConstraint,
   TResponseSchema extends JsonSchemaConstraint,
-  TCompensation extends RequestCompensationDefinition<any>,
+  TCompensation extends RequestCompensationDefinition<JsonSchemaConstraint | undefined>,
 >(
   definition: RequestDefinition<string, TPayloadSchema, TResponseSchema, TCompensation>,
   handler: (
@@ -416,7 +433,7 @@ export function defineQueue(config: {
   name: string;
   message: JsonSchemaConstraint;
   ttlSeconds?: number;
-}): QueueDefinition<any, any> {
+}): QueueDefinition<string, JsonSchemaConstraint> {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Queue name must be a non-empty string");
   }
@@ -456,7 +473,7 @@ export function defineTopic(config: {
   record: JsonSchemaConstraint;
   metadata?: JsonSchemaConstraint;
   retentionSeconds?: number;
-}): TopicDefinition<any, any, any> {
+}): TopicDefinition<string, JsonSchemaConstraint, JsonSchemaConstraint | undefined> {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Topic name must be a non-empty string");
   }

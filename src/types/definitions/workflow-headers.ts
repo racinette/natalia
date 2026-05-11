@@ -58,13 +58,13 @@ export interface PublicWorkflowHeader<
  */
 export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
   string,
-  any,
-  any,
-  any,
-  any,
-  any,
-  any,
-  any
+  ChannelDefinitions,
+  StreamDefinitions,
+  EventDefinitions,
+  JsonSchemaConstraint,
+  JsonObjectSchemaConstraint,
+  JsonSchemaConstraint,
+  WorkflowErrorDefinitions
 >;
 
 /**
@@ -143,4 +143,11 @@ export interface WorkflowHeader<
  * both full `WorkflowDefinition` objects and lightweight `WorkflowHeader`
  * descriptors satisfy this type.
  */
-export type AnyWorkflowHeader = WorkflowHeader<string, any, any, any, any, any>;
+export type AnyWorkflowHeader = WorkflowHeader<
+  string,
+  ChannelDefinitions,
+  JsonSchemaConstraint,
+  JsonObjectSchemaConstraint,
+  JsonSchemaConstraint,
+  WorkflowErrorDefinitions
+>;

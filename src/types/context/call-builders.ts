@@ -2,10 +2,9 @@ import type { StandardSchemaV1 } from "../standard-schema";
 import type { ChannelDefinitions } from "../definitions/primitives";
 import type { ErrorDefinitions } from "../definitions/errors";
 import type { RetentionSetter, WorkflowInvocationBaseOptions } from "../definitions/policies";
-import type { AnyWorkflowHeader, WorkflowDefinitions } from "../definitions/workflow-headers";
+import type { AnyWorkflowHeader } from "../definitions/workflow-headers";
 import type { RetryPolicyOptions } from "../definitions/policies";
 import type { ErrorValue, WorkflowResult } from "../results";
-import type { AtomicResult } from "./deterministic-handles";
 import type { RequestEntry, SchemaInvocationInput, StepBoundary, TimeoutResult, WorkflowEntry } from "./entries";
 
 // =============================================================================

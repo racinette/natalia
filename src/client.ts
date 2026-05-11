@@ -21,14 +21,17 @@ export abstract class AbstractWorkflowClient<
   };
 
   constructor(workflows: TWfs) {
-    const workflowAccessors: Record<string, WorkflowClientAccessor<any>> = {};
+    const workflowAccessors: Record<
+      string,
+      WorkflowClientAccessor<AnyPublicWorkflowHeader>
+    > = {};
     for (const [name] of Object.entries(workflows)) {
       workflowAccessors[name] = {
-        start: async (_options: any) => {
+        start: async (_options: unknown) => {
           this.assertClientAvailable();
           throw new Error("Not implemented");
         },
-        execute: async (_options: any) => {
+        execute: async (_options: unknown) => {
           this.assertClientAvailable();
           throw new Error("Not implemented");
         },
@@ -36,19 +39,19 @@ export abstract class AbstractWorkflowClient<
           this.assertClientAvailable();
           throw new Error("Not implemented");
         },
-        findUnique: async (_query: any, _opts?: any) => {
+        findUnique: async (_query: unknown, _opts?: unknown) => {
           this.assertClientAvailable();
           throw new Error("Not implemented");
         },
-        findMany: ((_query: any, _opts?: any) => {
+        findMany: ((_query: unknown, _opts?: unknown) => {
           this.assertClientAvailable();
           throw new Error("Not implemented");
-        }) as any,
-        count: async (_query: any, _opts?: any) => {
+        }) as WorkflowClientAccessor<AnyPublicWorkflowHeader>["findMany"],
+        count: async (_query: unknown, _opts?: unknown) => {
           this.assertClientAvailable();
           throw new Error("Not implemented");
         },
-      } as WorkflowClientAccessor<any>;
+      } as WorkflowClientAccessor<AnyPublicWorkflowHeader>;
     }
 
     this.workflows = workflowAccessors as unknown as {

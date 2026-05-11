@@ -4,6 +4,7 @@ import type { JsonSchemaConstraint } from "../json-input";
 import type { CompensationContext } from "../context/context-interfaces";
 import type { QueueDefinitions, TopicDefinitions } from "./messaging";
 import type {
+  AttributeDefinitions,
   ChannelDefinitions,
   EventDefinitions,
   StreamDefinitions,
@@ -133,7 +134,7 @@ export interface StepCompensationDefinition<
   TChannels extends ChannelDefinitions = Record<string, never>,
   TStreams extends StreamDefinitions = Record<string, never>,
   TEvents extends EventDefinitions = Record<string, never>,
-  TAttributes extends import("./primitives").AttributeDefinitions = Record<string, never>,
+  TAttributes extends AttributeDefinitions = Record<string, never>,
   TSteps extends NonCompensableStepDefinitions = Record<string, never>,
   TRequests extends NonCompensableRequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
@@ -196,6 +197,29 @@ export interface StepCompensationDefinition<
 }
 
 /**
+ * Widest `StepCompensationDefinition` — upper bound for maps and loose authoring.
+ */
+export type MaximalStepCompensationDefinition = StepCompensationDefinition<
+  JsonSchemaConstraint,
+  JsonSchemaConstraint,
+  ChannelDefinitions,
+  StreamDefinitions,
+  EventDefinitions,
+  AttributeDefinitions,
+  NonCompensableStepDefinitions,
+  NonCompensableRequestDefinitions,
+  QueueDefinitions,
+  TopicDefinitions,
+  WorkflowDefinitions,
+  WorkflowDefinitions,
+  WorkflowDefinitions,
+  JsonSchemaConstraint | undefined
+>;
+
+/** Upper-bound step shape used by compensation block typing. */
+export type WidestStepDefinition = StepDefinition<string, any, any, any>;
+
+/**
  * Map of step definitions.
  */
 export type StepDefinitions = Record<string, StepDefinition<any, any, any, any>>;
@@ -218,21 +242,21 @@ type DistributeStatusResult<T> = T extends { status: infer TStatus }
   : T;
 
 type StepCompensationResultSchema<TStep> =
-  TStep extends StepDefinition<any, any, any, infer TCompensation>
+  TStep extends StepDefinition<string, any, any, infer TCompensation>
     ? TCompensation extends StepCompensationDefinition<
-        any,
-        any,
-        any,
-        any,
-        any,
-        any,
-        any,
-        any,
-        any,
-        any,
-        any,
-        any,
-        any,
+        infer _A,
+        infer _FR,
+        infer _Ch,
+        infer _St,
+        infer _Ev,
+        infer _At,
+        infer _Stp,
+        infer _Req,
+        infer _Qu,
+        infer _To,
+        infer _Att,
+        infer _Det,
+        infer _Ext,
         infer TResultSchema
       >
       ? TResultSchema
@@ -240,27 +264,23 @@ type StepCompensationResultSchema<TStep> =
     : undefined;
 
 export type CompensationBlockResult<
-  TStep extends StepDefinition<any, any, any, any>,
+  TStep extends WidestStepDefinition,
 > = StepCompensationResultSchema<TStep> extends JsonSchemaConstraint
   ? DistributeStatusResult<
       StandardSchemaV1.InferOutput<StepCompensationResultSchema<TStep>>
     >
   : void;
 
-type CompensationBlockStoredResult<TStep extends StepDefinition<any, any, any, any>> =
+type CompensationBlockStoredResult<TStep extends WidestStepDefinition> =
   CompensationBlockResult<TStep> extends void
     ? null
     : CompensationBlockResult<TStep> | null;
 
-export interface CompensationBlockUniqueHandle<
-  TStep extends StepDefinition<any, any, any, any>,
-> {
+export interface CompensationBlockUniqueHandle<TStep extends WidestStepDefinition> {
   status(): Promise<FindUniqueResult<CompensationBlockStatus>>;
   result(): Promise<FindUniqueResult<CompensationBlockStoredResult<TStep>>>;
 }
 
-export interface CompensationBlockHandle<
-  TStep extends StepDefinition<any, any, any, any>,
-> {
+export interface CompensationBlockHandle<TStep extends WidestStepDefinition> {
   findUnique(id: string): CompensationBlockUniqueHandle<TStep>;
 }
