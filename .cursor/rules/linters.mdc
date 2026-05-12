@@ -1,0 +1,5 @@
+---
+alwaysApply: true
+---
+
+To run project's linters use `pnpm lint`.

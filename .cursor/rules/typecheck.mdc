@@ -1,0 +1,5 @@
+---
+alwaysApply: true
+---
+
+Typecheck of the project can be performed by running `pnpm typecheck`.

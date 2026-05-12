@@ -42,6 +42,8 @@ export default defineConfig(
     files: ["src/types-regression-tests/**/*.ts"],
     rules: {
       "@typescript-eslint/no-unsafe-type-assertion": "error",
+      // `IsEqual` helpers intentionally use a dummy type parameter (see `13_workflow_interface.ts`).
+      "@typescript-eslint/no-unnecessary-type-parameters": "off",
     },
   },
 );

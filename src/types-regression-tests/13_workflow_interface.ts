@@ -26,8 +26,25 @@ import {
 import { createWorkflowClient } from "../client";
 import type { StandardSchemaV1 } from "../types/standard-schema";
 import type {
+  AttachedChildWorkflowEntry,
   AttachedChildWorkflowExternalHandle,
+  AttachedChildWorkflowResult,
+  ChannelReceiveCall,
+  ErrorValue,
+  FirstResult,
+  ForeignWorkflowHandle,
+  InferWorkflowChannels,
+  InferWorkflowErrors,
   IsHeaderAuthoringKind,
+  JoinResult,
+  KeyedSuccess,
+  Listener,
+  MatchEvents,
+  NoEntryCompleted,
+  QuorumNotMet,
+  ScheduleHandle,
+  ScopeSuccessResults,
+  SomeEntriesFailed,
   StepEntry,
   StepInterface,
   WorkflowInterface,
@@ -237,9 +254,12 @@ const ctx13FullWorkflow = ctx13FullInterface.implement({
       _PlainCall extends { factor: number } ? true : false
     >;
 
-    const _plainEntry: StepEntry<{ ok: boolean }> = ctx.steps.plain({
+    const _plainEntry = ctx.steps.plain({
       factor: 2,
     });
+    type _PlainEntry = Assert<
+      IsEqual<typeof _plainEntry, StepEntry<{ ok: boolean }>>
+    >;
     void _plainEntry;
 
     void ctx.requests.rpc;
@@ -247,16 +267,32 @@ const ctx13FullWorkflow = ctx13FullInterface.implement({
     void ctx.children.attached.childA;
     void ctx.children.detached.childD;
 
-    void ctx.external.partner.get("idem-1").channels.extOut.send({ n: 1 });
+    const _extPartner = ctx.external.partner.get("idem-1");
+    type _ExtPartner = Assert<
+      IsEqual<
+        typeof _extPartner,
+        ForeignWorkflowHandle<InferWorkflowChannels<typeof ctx13ExtWorkflow>>
+      >
+    >;
+    void _extPartner.channels.extOut.send({ n: 1 });
 
-    void ctx.sleep(1);
-    void ctx.sleepUntil(Date.now());
+    const _sleep1 = ctx.sleep(1);
+    type _Sleep1 = Assert<typeof _sleep1 extends PromiseLike<void> ? true : false>;
+    const _sleepUntil1 = ctx.sleepUntil(Date.now());
+    type _SleepUntil1 = Assert<
+      typeof _sleepUntil1 extends PromiseLike<void> ? true : false
+    >;
 
-    void ctx.schedule("*/5 * * * *");
+    const _sched13 = ctx.schedule("*/5 * * * *");
+    type _Sched13 = Assert<IsEqual<typeof _sched13, ScheduleHandle>>;
 
-    void ctx.listen({ a: ctx.channels.cIn });
+    const _listen13 = ctx.listen({ a: ctx.channels.cIn });
+    type _Listen13 = Assert<
+      IsEqual<typeof _listen13, Listener<{ a: typeof ctx.channels.cIn }>>
+    >;
+    void _listen13;
 
-    await ctx.scope(
+    const _scope13Out = await ctx.scope(
       "scope13",
       { pe: ctx.steps.plain({ factor: args.wid.length }) },
       async (sctx, handles) => {
@@ -271,27 +307,90 @@ const ctx13FullWorkflow = ctx13FullInterface.implement({
         void sctx.children.attached.childA;
         void sctx.children.detached.childD;
         void sctx.external.partner;
-        void sctx.join(handles.pe);
+        const _joinPe = await sctx.join(handles.pe);
+        type _JoinPe = Assert<
+          IsEqual<typeof _joinPe, JoinResult<(typeof handles)["pe"]>>
+        >;
+        void _joinPe;
         // @ts-expect-error — scope context omits `schedule` vs root `WorkflowContext`
         void sctx.schedule;
         return 0;
       },
     );
+    type _Scope13Out = Assert<IsEqual<typeof _scope13Out, number>>;
 
-    await ctx.all("all13", { pe: ctx.steps.plain({ factor: 3 }) });
-    await ctx.first("first13", { pe: ctx.steps.plain({ factor: 4 }) });
-    await ctx.atLeast("al13", 1, { pe: ctx.steps.plain({ factor: 5 }) });
-    await ctx.atMost("am13", 2, { pe: ctx.steps.plain({ factor: 6 }) });
-    await ctx.some("sm13", { pe: ctx.steps.plain({ factor: 7 }) });
+    type _Orchestrate13Entries = { pe: StepEntry<{ ok: boolean }> };
+
+    const _all13 = await ctx.all("all13", { pe: ctx.steps.plain({ factor: 3 }) });
+    type _All13 = Assert<
+      IsEqual<
+        typeof _all13,
+        | { ok: true; result: ScopeSuccessResults<_Orchestrate13Entries> }
+        | { ok: false; error: SomeEntriesFailed<_Orchestrate13Entries> }
+      >
+    >;
+    void _all13;
+
+    const _first13 = await ctx.first("first13", {
+      pe: ctx.steps.plain({ factor: 4 }),
+    });
+    type _First13 = Assert<
+      IsEqual<
+        typeof _first13,
+        | { ok: true; result: FirstResult<_Orchestrate13Entries> }
+        | { ok: false; error: NoEntryCompleted<_Orchestrate13Entries> }
+      >
+    >;
+    void _first13;
+
+    const _al13 = await ctx.atLeast("al13", 1, {
+      pe: ctx.steps.plain({ factor: 5 }),
+    });
+    type _Al13 = Assert<
+      IsEqual<
+        typeof _al13,
+        | { ok: true; result: KeyedSuccess<_Orchestrate13Entries>[] }
+        | { ok: false; error: QuorumNotMet<_Orchestrate13Entries> }
+      >
+    >;
+    void _al13;
+
+    const _am13 = await ctx.atMost("am13", 2, {
+      pe: ctx.steps.plain({ factor: 6 }),
+    });
+    type _Am13 = Assert<
+      IsEqual<typeof _am13, KeyedSuccess<_Orchestrate13Entries>[]>
+    >;
+    void _am13;
+
+    const _sm13 = await ctx.some("sm13", { pe: ctx.steps.plain({ factor: 7 }) });
+    type _Sm13 = Assert<
+      IsEqual<typeof _sm13, KeyedSuccess<_Orchestrate13Entries>[]>
+    >;
+    void _sm13;
 
     for await (const _ev of ctx.match({ pe: ctx.steps.plain({ factor: 8 }) })) {
+      type _MatchEv = Assert<
+        IsEqual<typeof _ev, MatchEvents<_Orchestrate13Entries>>
+      >;
       void _ev;
       break;
     }
 
-    void ctx.children.attached.childA({
+    const _childAEntry = ctx.children.attached.childA({
       args: { seed: 1 },
     });
+    type _ChildAResult = AttachedChildWorkflowResult<
+      string,
+      ErrorValue<InferWorkflowErrors<typeof ctx13ChildWorkflow>>
+    >;
+    type _ChildAEntry = Assert<
+      IsEqual<
+        typeof _childAEntry,
+        AttachedChildWorkflowEntry<typeof ctx13ChildWorkflow, _ChildAResult>
+      >
+    >;
+    void _childAEntry;
     type _RpcPayload = Parameters<(typeof ctx)["requests"]["rpc"]>[0];
     type _RpcPayloadOk = Assert<
       _RpcPayload extends { v: number } ? true : false
@@ -322,7 +421,11 @@ const ctx13NarrowIface = defineWorkflowInterface({
 
 const ctx13NarrowWf = ctx13NarrowIface.implement({
   async execute(ctx) {
-    void ctx.channels.sole.receive();
+    const soleRecv = ctx.channels.sole.receive();
+    type _SoleRecv = Assert<
+      IsEqual<typeof soleRecv, ChannelReceiveCall<number>>
+    >;
+    void soleRecv;
     // @ts-expect-error — channel not declared on this workflow
     void ctx.channels.missing;
     return undefined;
@@ -725,6 +828,13 @@ declare const fulfillmentChildFromGraph: AttachedChildWorkflowExternalHandle<
 const fulfillmentStrong =
   fulfillmentChildFromGraph.extend(fulfillmentInterface);
 
+type _FulfillmentStrong = Assert<
+  IsEqual<
+    typeof fulfillmentStrong,
+    AttachedChildWorkflowExternalHandle<typeof fulfillmentInterface>
+  >
+>;
+
 void fulfillmentStrong.streams.metrics.read(0);
 
 const fulfillmentWorkflow = fulfillmentInterface.implement({
@@ -754,4 +864,11 @@ type _HeaderMarkedForExtend = Assert<
 // Client registry prefers interface / definition (not header-only)
 // =============================================================================
 
-void createWorkflowClient({ order: orderInterface, full: ctx13FullInterface });
+const _ctx13Client = createWorkflowClient({
+  order: orderInterface,
+  full: ctx13FullInterface,
+});
+type _Ctx13ClientKeys = Assert<
+  IsEqual<keyof typeof _ctx13Client.workflows, "order" | "full">
+>;
+void _ctx13Client;
