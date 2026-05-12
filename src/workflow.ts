@@ -23,7 +23,6 @@ import type {
   RequestDefinitions,
   WorkflowDefinitions,
   WorkflowDefinition,
-  WorkflowHeader,
   JsonSchemaConstraint,
   JsonObjectSchemaConstraint,
   WorkflowContext,
@@ -638,6 +637,82 @@ export function defineTopic(config: {
 // DEFINE WORKFLOW HEADER
 // =============================================================================
 
+const WORKFLOW_HEADER_LOCKED_IN_EXTEND = [
+  "name",
+  "channels",
+  "args",
+  "metadata",
+  "result",
+  "errors",
+] as const;
+
+type ExtStreamsSel<Ext> = Ext extends { streams?: infer St }
+  ? St extends StreamDefinitions
+    ? St
+    : Record<string, never>
+  : Record<string, never>;
+
+type ExtEventsSel<Ext> = Ext extends { events?: infer Ev }
+  ? Ev extends EventDefinitions
+    ? Ev
+    : Record<string, never>
+  : Record<string, never>;
+
+type ExtStepsSel<Ext> = Ext extends { steps?: infer S }
+  ? S extends StepInterfaces
+    ? S
+    : Record<string, never>
+  : Record<string, never>;
+
+type ExtRequestsSel<Ext> = Ext extends { requests?: infer R }
+  ? R extends RequestInterfaces
+    ? R
+    : Record<string, never>
+  : Record<string, never>;
+
+type ExtAttachedSel<Ext> = Ext extends { children?: { attached?: infer A } }
+  ? A extends WorkflowDefinitions
+    ? A
+    : Record<string, never>
+  : Record<string, never>;
+
+type ExtDetachedSel<Ext> = Ext extends { children?: { detached?: infer D } }
+  ? D extends WorkflowDefinitions
+    ? D
+    : Record<string, never>
+  : Record<string, never>;
+
+type ExtPatchesSel<Ext> = Ext extends { patches?: infer P }
+  ? P extends PatchDefinitions
+    ? P
+    : Record<string, never>
+  : Record<string, never>;
+
+type ExtRngSel<Ext> = Ext extends { rng?: infer G }
+  ? G extends RngDefinitions
+    ? G
+    : Record<string, never>
+  : Record<string, never>;
+
+type ForbidWorkflowHeaderOverrides = {
+  readonly name?: never;
+  readonly channels?: never;
+  readonly args?: never;
+  readonly metadata?: never;
+  readonly result?: never;
+  readonly errors?: never;
+};
+
+function assertWorkflowHeaderExtendHasNoLockedKeys(extension: object): void {
+  for (const k of WORKFLOW_HEADER_LOCKED_IN_EXTEND) {
+    if (Object.prototype.hasOwnProperty.call(extension, k)) {
+      throw new Error(
+        `defineWorkflowHeader(...).extend() must not receive header field "${k}" — it is fixed on the header.`,
+      );
+    }
+  }
+}
+
 /**
  * Define a minimal workflow descriptor for use in `children` and
  * `external` references before the full workflow is defined.
@@ -648,10 +723,10 @@ export function defineTopic(config: {
  * self-referential definitions while keeping declarations as a single source
  * of truth.
  *
- * For external/client-facing contracts (including streams/events), use the
- * `PublicWorkflowHeader` type.
- * Spread it into `defineWorkflow({ ...header, ... })` so the full definition
- * re-uses the same name and schema declarations without duplication.
+ * For the **header → interface** step, call **`.extend({ ... })`** so streams,
+ * events, steps, and other public fields are additive only (header fields cannot
+ * be overridden). You can still spread the header into **`defineWorkflow({ ... })`**
+ * when you prefer a single-shot definition without declaring an interface.
  *
  * The primary use case is breaking circular references between workflows that
  * reference each other, and enabling self-referential (recursive) workflows.
@@ -671,9 +746,18 @@ export function defineTopic(config: {
  * });
  *
  * const managerWorkflow = defineWorkflow({
- *   ...managerHeader,           // spreads name + channels
- *   args: ManagerArgs,          // adds implementation-only fields
+ *   ...managerHeader,
  *   children: { attached: { worker: workerWorkflow } },
+ *   execute: async (ctx, args) => { ... },
+ * });
+ *
+ * // Header → public interface → implementation
+ * const publicIface = managerHeader.extend({
+ *   streams: { audit: AuditRow },
+ *   steps: { notify: notifyStepInterface },
+ * });
+ * const managerWorkflow2 = publicIface.implement({
+ *   steps: { notify: notifyStep },
  *   execute: async (ctx, args) => { ... },
  * });
  *
@@ -700,9 +784,7 @@ export function defineWorkflowHeader<
   metadata?: TMetadata;
   result?: TResult;
   errors?: TErrors;
-}): WorkflowHeader<TName, TChannels, TArgs, TMetadata, TResult, TErrors> & {
-  readonly __nataliaAuthoringKind: "header";
-} {
+}) {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Workflow name must be a non-empty string");
   }
@@ -746,12 +828,50 @@ export function defineWorkflowHeader<
   if (config.errors !== undefined) {
     validateErrorDefinitions(config.errors, "errors");
   }
-  return {
+  const headerAuthoring = {
     ...config,
     __nataliaAuthoringKind: "header" as const,
-  } as WorkflowHeader<TName, TChannels, TArgs, TMetadata, TResult, TErrors> & {
-    readonly __nataliaAuthoringKind: "header";
+    extend: <const Ext extends object>(
+      extension: Ext & ForbidWorkflowHeaderOverrides,
+    ) => {
+      assertWorkflowHeaderExtendHasNoLockedKeys(extension);
+      return defineWorkflowInterface<
+        TName,
+        TChannels,
+        ExtStreamsSel<Ext>,
+        ExtEventsSel<Ext>,
+        ExtStepsSel<Ext>,
+        ExtRequestsSel<Ext>,
+        ExtAttachedSel<Ext>,
+        ExtDetachedSel<Ext>,
+        TResult,
+        TArgs,
+        TMetadata,
+        TErrors,
+        ExtPatchesSel<Ext>,
+        ExtRngSel<Ext>
+      >({
+        ...config,
+        ...extension,
+      } as WorkflowInterface<
+        TName,
+        TChannels,
+        ExtStreamsSel<Ext>,
+        ExtEventsSel<Ext>,
+        ExtStepsSel<Ext>,
+        ExtRequestsSel<Ext>,
+        ExtAttachedSel<Ext>,
+        ExtDetachedSel<Ext>,
+        TResult,
+        TArgs,
+        TMetadata,
+        TErrors,
+        ExtPatchesSel<Ext>,
+        ExtRngSel<Ext>
+      >);
+    },
   };
+  return headerAuthoring;
 }
 
 // =============================================================================
@@ -760,9 +880,10 @@ export function defineWorkflowHeader<
 
 /**
  * Declare the full workflow contract (streams, events, children, requests, step
- * interfaces, …) without `execute` or step bodies. Combine with
- * `...defineWorkflowHeader(...)` for cycle-safe names, then call `.implement()`
- * for a type-checked `WorkflowDefinition`.
+ * interfaces, …) without `execute` or step bodies. Prefer
+ * **`defineWorkflowHeader(...).extend({ ... })`** for the header → interface step
+ * so header fields stay fixed, then call **`.implement()`** for a type-checked
+ * `WorkflowDefinition`.
  *
  * **`external`** workflows are **not** part of this public contract — pass them on
  * **`.implement({ external, execute, … })`** so `ctx.external` is typed for the

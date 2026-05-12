@@ -45,11 +45,10 @@ const catalogHeader = defineWorkflowHeader({
   name: "client14Catalog",
   args: z.object({ sku: z.string(), qty: z.number() }),
   result: z.object({ lineId: z.string() }),
+  metadata: z.object({ region: z.string() }),
 });
 
-const catalogInterface = defineWorkflowInterface({
-  ...catalogHeader,
-  metadata: z.object({ region: z.string() }),
+const catalogInterface = catalogHeader.extend({
   streams: { out: z.object({ seq: z.number() }) },
 });
 
@@ -77,8 +76,7 @@ const workerHeader = defineWorkflowHeader({
   result: z.number(),
 });
 
-const workerInterface = defineWorkflowInterface({
-  ...workerHeader,
+const workerInterface = workerHeader.extend({
   streams: { progress: z.object({ pct: z.number() }) },
   events: { done: true },
 });

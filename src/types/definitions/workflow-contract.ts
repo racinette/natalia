@@ -171,8 +171,9 @@ export type WorkflowImplementInput<
 /**
  * Full declarative workflow contract without `execute` or step bodies.
  *
- * Built from `...defineWorkflowHeader(...)` plus additive fields the graph and
- * clients need (streams, events, children, requests, step interfaces, …).
+ * Prefer `defineWorkflowHeader(...).extend({ ... })` for the header → interface
+ * transition so header fields cannot be overridden. Additive fields (streams,
+ * events, children, requests, step interfaces, …) complete the public contract.
  *
  * Declaring **`external`** workflows belongs on **`.implement({ external, … })`** only
  * — they wire `ctx.external` for the implementation and are not part of this public surface.
@@ -219,6 +220,57 @@ export interface WorkflowInterface<
       };
   readonly evictAfterSeconds?: number | null;
 }
+
+/**
+ * Header-locked keys: not allowed on `defineWorkflowHeader(...).extend({ ... })` so
+ * callers cannot override the header slice when moving to a `WorkflowInterface`.
+ */
+export type WorkflowHeaderLockedForExtend =
+  | "name"
+  | "channels"
+  | "args"
+  | "metadata"
+  | "result"
+  | "errors";
+
+/**
+ * Additive interface fields layered on top of an existing `WorkflowHeader` (streams,
+ * events, steps, children, …). Header-locked keys are omitted from this shape.
+ */
+export type WorkflowInterfaceExtendFromHeader<
+  TName extends string,
+  TChannels extends ChannelDefinitions,
+  TArgs extends JsonSchemaConstraint,
+  TMetadata extends JsonObjectSchemaConstraint,
+  TResult extends JsonSchemaConstraint,
+  TErrors extends WorkflowErrorDefinitions,
+> = Pick<
+  WorkflowInterface<
+    TName,
+    TChannels,
+    StreamDefinitions,
+    EventDefinitions,
+    StepInterfaces,
+    RequestInterfaces,
+    WorkflowDefinitions,
+    WorkflowDefinitions,
+    TResult,
+    TArgs,
+    TMetadata,
+    TErrors,
+    PatchDefinitions,
+    RngDefinitions
+  >,
+  | "streams"
+  | "events"
+  | "steps"
+  | "requests"
+  | "children"
+  | "patches"
+  | "rng"
+  | "retention"
+  | "evictAfterSeconds"
+>;
 
 export type AnyWorkflowInterface = WorkflowInterface<
   string,

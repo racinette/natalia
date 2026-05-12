@@ -165,6 +165,7 @@ const ctx13MainHeader = defineWorkflowHeader({
   name: "ctx13FullSurface",
   args: z.object({ wid: z.string() }),
   result: z.number(),
+  metadata: z.object({ region: z.string() }),
   channels: {
     cIn: z.object({ a: z.number() }),
     cAux: z.string(),
@@ -175,9 +176,7 @@ const ctx13MainHeader = defineWorkflowHeader({
   },
 });
 
-const ctx13FullInterface = defineWorkflowInterface({
-  ...ctx13MainHeader,
-  metadata: z.object({ region: z.string() }),
+const ctx13FullInterface = ctx13MainHeader.extend({
   streams: {
     slog: z.object({ line: z.string() }),
     slog2: z.object({ n: z.number() }),
@@ -497,13 +496,15 @@ const chargeStep = chargeStepInterface.implement({
   },
 });
 
-const orderInterface = defineWorkflowInterface({
-  ...orderHeader,
+const orderInterface = orderHeader.extend({
   streams: { audit: z.object({ line: z.string() }) },
   events: { paid: true },
   steps: { charge: chargeStepInterface },
   children: { attached: {}, detached: {} },
 });
+
+// @ts-expect-error — header-locked keys cannot be passed to `.extend()`
+void orderHeader.extend({ name: "badName" });
 
 const orderWorkflow = orderInterface.implement({
   steps: { charge: chargeStep },
@@ -596,12 +597,15 @@ const tripleStep = tripleStepIface.implement({
   },
 });
 
-const tripleImplementation = defineWorkflow({
-  ...tripleHeader,
+const triplePublicFromHeader = tripleHeader.extend({
   streams: tripleInterfaceOnly.streams,
   events: tripleInterfaceOnly.events,
-  steps: { work: tripleStep },
+  steps: { work: tripleStepIface },
   children: tripleInterfaceOnly.children,
+});
+
+const tripleImplementation = triplePublicFromHeader.implement({
+  steps: { work: tripleStep },
   external: { ext: tripleHeader },
   async execute() {
     return 1;
@@ -613,20 +617,14 @@ const _structuralOk: AssertAssignable<
   typeof tripleImplementation
 > = tripleImplementation;
 
-const _badStreamType = defineWorkflow({
-  ...tripleHeader,
+// @ts-expect-error — wrong stream payload schema vs `triplePublicFromHeader`
+const _badStreamFromHeader: typeof triplePublicFromHeader = tripleHeader.extend({
   streams: { log: z.object({ line: z.number() }) },
   events: tripleInterfaceOnly.events,
-  steps: { work: tripleStep },
+  steps: { work: tripleStepIface },
   children: tripleInterfaceOnly.children,
-  external: { ext: tripleHeader },
-  async execute() {
-    return 1;
-  },
 });
-// @ts-expect-error — wrong stream payload schema vs `TripleContractSurface`
-const _badStreamAssign: AssertAssignable<TripleContractSurface, typeof _badStreamType> =
-  _badStreamType;
+void _badStreamFromHeader;
 
 type TripleExternalSlot = Pick<typeof tripleImplementation, "external">;
 // @ts-expect-error — wrong `external` key vs `TripleExternalSlot`
@@ -697,9 +695,7 @@ const transformWorkflowHeader = defineWorkflowHeader({
   result: transformWorkflowResult,
 });
 
-const transformWorkflowInterface = defineWorkflowInterface({
-  ...transformWorkflowHeader,
-});
+const transformWorkflowInterface = transformWorkflowHeader.extend({});
 
 const transformWorkflowFromInterface = transformWorkflowInterface.implement({
   async execute(_ctx, args) {
@@ -816,8 +812,7 @@ const fulfillmentHeader = defineWorkflowHeader({
   result: z.void(),
 });
 
-const fulfillmentInterface = defineWorkflowInterface({
-  ...fulfillmentHeader,
+const fulfillmentInterface = fulfillmentHeader.extend({
   streams: { metrics: z.object({ units: z.number() }) },
 });
 

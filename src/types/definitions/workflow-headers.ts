@@ -75,6 +75,8 @@ export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
  *
  * - Spread into `defineWorkflow({ ...header, ... })` so the full definition
  *   inherits the same name and schema declarations — single source of truth.
+ * - Call **`header.extend({ ... })`** to add streams, events, steps, and other
+ *   public interface fields without restating the header slice.
  * - Pass directly to `external` or `children.{attached,detached}` in any workflow
  *   that needs to reference this one.
  *
