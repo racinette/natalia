@@ -307,3 +307,105 @@ async function _client14ExtendSurface(
 }
 
 void _client14ExtendSurface(client14);
+
+// =============================================================================
+// `extend` — incompatible `TW` (name / channel keys / nested args / stream schema)
+// =============================================================================
+
+const extendWrongNameHeader = defineWorkflowHeader({
+  name: "extContractWN",
+  args: z.void(),
+  result: z.void(),
+});
+
+const extendWrongNameIface = defineWorkflowInterface({
+  name: "extContractWN_Other",
+  args: z.void(),
+  result: z.void(),
+});
+
+const extendChHeader = defineWorkflowHeader({
+  name: "extContractCh",
+  args: z.void(),
+  result: z.void(),
+  channels: { ch1: z.object({ a: z.string() }) },
+});
+
+const extendChIfaceWrongKey = defineWorkflowInterface({
+  name: "extContractCh",
+  args: z.void(),
+  result: z.void(),
+  channels: { ch2: z.object({ a: z.string() }) },
+});
+
+const extendChIfaceOk = defineWorkflowInterface({
+  name: "extContractCh",
+  args: z.void(),
+  result: z.void(),
+  channels: {
+    ch1: z.object({ a: z.string() }),
+    chAux: z.boolean(),
+  },
+});
+
+const extendArgsHeader = defineWorkflowHeader({
+  name: "extContractArgs",
+  args: z.object({ a: z.array(z.object({ b: z.string() })) }),
+  result: z.void(),
+});
+
+const extendArgsIfaceWrong = defineWorkflowInterface({
+  name: "extContractArgs",
+  args: z.object({ a: z.array(z.object({ b: z.number() })) }),
+  result: z.void(),
+});
+
+/** Same channel key as the header, but incompatible decoded payload (easy to miss vs a wrong key). */
+const extendChPayloadHeader = defineWorkflowHeader({
+  name: "extContractChPayload",
+  args: z.void(),
+  result: z.void(),
+  channels: { ch1: z.object({ n: z.number() }) },
+});
+
+const extendChPayloadIfaceWrong = defineWorkflowInterface({
+  name: "extContractChPayload",
+  args: z.void(),
+  result: z.void(),
+  channels: { ch1: z.object({ n: z.string() }) },
+});
+
+const extendContractClient = createWorkflowClient({
+  wrongName: extendWrongNameHeader,
+  wrongCh: extendChHeader,
+  wrongArgs: extendArgsHeader,
+  wrongChPayload: extendChPayloadHeader,
+});
+
+async function _client14ExtendWrongContract(
+  cx: WorkflowClient<{
+    wrongName: typeof extendWrongNameHeader;
+    wrongCh: typeof extendChHeader;
+    wrongArgs: typeof extendArgsHeader;
+    wrongChPayload: typeof extendChPayloadHeader;
+  }>,
+) {
+  const hN = cx.workflows.wrongName.get("idem-wn");
+  // @ts-expect-error — widen target must share the same `name` literal as the header
+  void hN.extend(extendWrongNameIface);
+
+  const hC = cx.workflows.wrongCh.get("idem-ch");
+  void hC.extend(extendChIfaceOk);
+  // @ts-expect-error — header exposes `ch1`; widen target replaces the slot with `ch2`
+  void hC.extend(extendChIfaceWrongKey);
+
+  const hA = cx.workflows.wrongArgs.get("idem-args");
+  // @ts-expect-error — decoded `args` disagree on nested `b` (`string` vs `number`)
+  void hA.extend(extendArgsIfaceWrong);
+
+  const hP = cx.workflows.wrongChPayload.get("idem-p");
+  // @ts-expect-error — same channel key `ch1` but incompatible nested field type (`number` vs `string`)
+  void hP.extend(extendChPayloadIfaceWrong);
+}
+
+void _client14ExtendWrongContract(extendContractClient);

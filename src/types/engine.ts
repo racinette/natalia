@@ -286,9 +286,11 @@ type HeaderOnlyExtendForAttachedChildHandle<W extends AnyPublicWorkflowHeader> =
         /**
          * Widen static knowledge when the child handle type parameter is a graph-minimal
          * `WorkflowHeader` from `defineWorkflowHeader`.
+         *
+         * Same compatibility rules as {@link WorkflowHandleExternalBase.extend}.
          */
         extend<const TW extends AnyPublicWorkflowHeader>(
-          contract: TW,
+          contract: TW & ExtendPublicContract<W, TW>,
         ): AttachedChildWorkflowExternalHandleBase<TW> & HeaderOnlyExtendForAttachedChildHandle<TW>;
       }
     : { extend?: never };
@@ -596,6 +598,123 @@ interface WorkflowHandleExternalBase<W extends AnyPublicWorkflowHeader>
   ): Promise<void>;
 }
 
+/** JSON-ish maps keyed by string (channels, streams, …). */
+type WorkflowPrimitiveSchemaMap = Record<string, unknown>;
+
+type MutuallyAssignable<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+
+type SameWorkflowIdentityName<
+  W extends AnyPublicWorkflowHeader,
+  TW extends AnyPublicWorkflowHeader,
+> = W extends { readonly name: infer NW }
+  ? TW extends { readonly name: infer NTW }
+    ? [NW] extends [NTW]
+      ? [NTW] extends [NW]
+        ? true
+        : false
+      : false
+    : false
+  : false;
+
+/** True when the map carries at least one concrete string key (not `Record<string, never>`). */
+type HasConcreteStringKeys<M extends WorkflowPrimitiveSchemaMap> = string extends keyof M
+  ? false
+  : [keyof M] extends [never]
+    ? false
+    : true;
+
+/** Every **concrete** key on `narrower` exists on `wider`. */
+type KeysAreSubsetOf<
+  Narrower extends WorkflowPrimitiveSchemaMap,
+  Wider extends WorkflowPrimitiveSchemaMap,
+> = HasConcreteStringKeys<Narrower> extends false
+  ? true
+  : Exclude<keyof Narrower, keyof Wider> extends never
+    ? true
+    : false;
+
+/** For each **concrete** key in `narrower`, schema slots must be mutually assignable. */
+type SchemaSlotsMutuallyCompatible<
+  Narrower extends WorkflowPrimitiveSchemaMap,
+  Wider extends WorkflowPrimitiveSchemaMap,
+> = HasConcreteStringKeys<Narrower> extends false
+  ? true
+  : {
+      [K in keyof Narrower]: Narrower[K] extends Wider[K & keyof Wider]
+        ? Wider[K & keyof Wider] extends Narrower[K]
+          ? true
+          : false
+        : false;
+    }[keyof Narrower] extends true
+    ? true
+    : false;
+
+type ChannelsCompatibleForExtend<
+  W extends AnyPublicWorkflowHeader,
+  TW extends AnyPublicWorkflowHeader,
+> =
+  KeysAreSubsetOf<InferWorkflowChannels<W>, InferWorkflowChannels<TW>> extends true
+    ? SchemaSlotsMutuallyCompatible<
+        InferWorkflowChannels<W>,
+        InferWorkflowChannels<TW>
+      > extends true
+      ? true
+      : false
+    : false;
+
+type StreamsCompatibleForExtend<
+  W extends AnyPublicWorkflowHeader,
+  TW extends AnyPublicWorkflowHeader,
+> =
+  KeysAreSubsetOf<InferWorkflowStreams<W>, InferWorkflowStreams<TW>> extends true
+    ? SchemaSlotsMutuallyCompatible<InferWorkflowStreams<W>, InferWorkflowStreams<TW>> extends true
+      ? true
+      : false
+    : false;
+
+type EventsKeysSubsetForExtend<
+  W extends AnyPublicWorkflowHeader,
+  TW extends AnyPublicWorkflowHeader,
+> = HasConcreteStringKeys<InferWorkflowEvents<W>> extends false
+  ? true
+  : Exclude<keyof InferWorkflowEvents<W>, keyof InferWorkflowEvents<TW>> extends never
+    ? true
+    : false;
+
+type MetadataCompatibleForExtend<
+  W extends AnyPublicWorkflowHeader,
+  TW extends AnyPublicWorkflowHeader,
+> = [InferWorkflowMetadata<W>] extends [void]
+  ? true
+  : MutuallyAssignable<InferWorkflowMetadata<W>, InferWorkflowMetadata<TW>>;
+
+/**
+ * True when `TW` is a safe static widen of the graph-minimal header `W`
+ * (same `name`, mutually assignable args/result/metadata where present, and
+ * every channel/stream key on `W` exists on `TW` with mutually assignable schemas).
+ */
+type VerifyExtendPublicContract<
+  W extends AnyPublicWorkflowHeader,
+  TW extends AnyPublicWorkflowHeader,
+> = SameWorkflowIdentityName<W, TW> extends true
+  ? MutuallyAssignable<InferWorkflowArgs<W>, InferWorkflowArgs<TW>> extends true
+    ? MutuallyAssignable<InferWorkflowResult<W>, InferWorkflowResult<TW>> extends true
+      ? MetadataCompatibleForExtend<W, TW> extends true
+        ? ChannelsCompatibleForExtend<W, TW> extends true
+          ? StreamsCompatibleForExtend<W, TW> extends true
+            ? EventsKeysSubsetForExtend<W, TW> extends true
+              ? true
+              : false
+            : false
+          : false
+        : false
+      : false
+    : false
+  : false;
+
+type ExtendPublicContract<W extends AnyPublicWorkflowHeader, TW extends AnyPublicWorkflowHeader> =
+  VerifyExtendPublicContract<W, TW> extends true ? unknown : never;
+
 type HeaderOnlyExtendForWorkflowHandle<W extends AnyPublicWorkflowHeader> =
   IsHeaderAuthoringKind<W> extends true
     ? {
@@ -603,9 +722,13 @@ type HeaderOnlyExtendForWorkflowHandle<W extends AnyPublicWorkflowHeader> =
          * Widen static knowledge when the handle type parameter is a graph-minimal
          * `WorkflowHeader` from `defineWorkflowHeader`. Pass a `WorkflowInterface` or
          * full `WorkflowDefinition` for the same workflow identity.
+         *
+         * `TW` must match `W` on **`name`**, decoded **`args` / `result` / `metadata`**
+         * (when the header carries metadata), and every **`channels` / `streams` /
+         * `events`** key on `W` must exist on `TW` with mutually assignable schemas.
          */
         extend<const TW extends AnyPublicWorkflowHeader>(
-          contract: TW,
+          contract: TW & ExtendPublicContract<W, TW>,
         ): WorkflowHandleExternalBase<TW> & HeaderOnlyExtendForWorkflowHandle<TW>;
       }
     : { extend?: never };
