@@ -1,12 +1,8 @@
 import { z } from "zod";
 import { defineStep, defineWorkflow } from "../workflow";
+import type { Assert, IsEqual } from "./type-assertions";
 
-type Assert<T extends true> = T;
 type IsAny<T> = 0 extends 1 & T ? true : false;
-type IsEqual<A, B> =
-  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
-    ? true
-    : false;
 
 // =============================================================================
 // SCHEMA-BACKED STEP DEFINITION

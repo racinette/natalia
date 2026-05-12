@@ -19,12 +19,7 @@ import {
   some,
 } from "../search";
 import type { Predicate, SearchQuery, SearchSort, WhereScope } from "../types";
-
-type Assert<T extends true> = T;
-type IsEqual<A, B> =
-  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
-    ? true
-    : false;
+import type { Assert, IsEqual } from "./type-assertions";
 
 interface ExampleWhereTemplate {
   readonly id: string;

@@ -74,7 +74,7 @@ class StaticWorkflowClient<
 /**
  * Create a typed client surface from workflow public contracts.
  *
- * Accepts either lightweight `PublicWorkflowHeader` maps or full
+ * Accepts `PublicWorkflowHeader`, **`WorkflowInterface`**, or full
  * `WorkflowDefinition` maps (structural typing). Use when callers need the
  * typed client API (start/execute/get and introspection) without owning engine
  * lifecycle; method bodies are stubs until wired to a real runtime.

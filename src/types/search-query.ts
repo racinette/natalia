@@ -296,15 +296,15 @@ export interface SearchQuery<TTemplate extends WhereTemplateRecord> {
   readonly limit?: number;
 }
 
-export const asc = <TField extends FieldRef<unknown>>(
-  field: TField,
+export const asc = (
+  field: FieldRef<unknown>,
 ): { readonly path: string; readonly direction: "asc" } => ({
   path: field.path,
   direction: "asc",
 });
 
-export const desc = <TField extends FieldRef<unknown>>(
-  field: TField,
+export const desc = (
+  field: FieldRef<unknown>,
 ): { readonly path: string; readonly direction: "desc" } => ({
   path: field.path,
   direction: "desc",

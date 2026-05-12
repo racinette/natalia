@@ -46,9 +46,11 @@ export {
   defineQueue,
   defineRequest,
   defineStep,
+  defineStepInterface,
   defineTopic,
   defineWorkflow,
   defineWorkflowHeader,
+  defineWorkflowInterface,
   MANUAL,
   registerRequestCompensationHandler,
 } from "./workflow";

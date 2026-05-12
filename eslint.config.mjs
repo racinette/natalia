@@ -17,6 +17,7 @@ export default defineConfig(
     rules: {
       // Turn off the base rule; use the TS version only
       "no-unused-vars": "off",
+      "@typescript-eslint/no-unnecessary-type-parameters": "error",
       "@typescript-eslint/no-unused-vars": [
         "error",
         {
@@ -36,5 +37,11 @@ export default defineConfig(
       // Vendored Standard Schema spec — must match upstream verbatim
       "src/types/standard-schema.ts",
     ],
+  },
+  {
+    files: ["src/types-regression-tests/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-unsafe-type-assertion": "error",
+    },
   },
 );

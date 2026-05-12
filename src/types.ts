@@ -7,6 +7,8 @@ export * from "./types/definitions/handlers";
 export * from "./types/definitions/requests";
 export * from "./types/definitions/messaging";
 export * from "./types/definitions/workflow-headers";
+export * from "./types/definitions/authoring-kind";
+export * from "./types/definitions/workflow-contract";
 export * from "./types/definitions/workflow-definition";
 export * from "./types/results";
 export * from "./types/schema";

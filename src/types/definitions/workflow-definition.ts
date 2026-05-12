@@ -1,6 +1,6 @@
 import type { StandardSchemaV1 } from "../standard-schema";
 import type { JsonObjectSchemaConstraint, JsonSchemaConstraint } from "../json-input";
-import type { CompensationContext, WorkflowContext } from "../context/context-interfaces";
+import type { WorkflowContext } from "../context/context-interfaces";
 import type { WorkflowErrorDefinitions } from "./errors";
 import type {
   PatchDefinitions,
@@ -143,46 +143,6 @@ export interface WorkflowDefinition<
    * Passivation threshold for this workflow definition.
    */
   readonly evictAfterSeconds?: number | null;
-
-  /**
-   * Called once before final workflow status is settled.
-   */
-  readonly beforeSettle?: (params:
-    | {
-        status: "complete";
-        ctx: WorkflowContext<
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TRequests,
-          TAttachedChildren,
-          TDetachedChildren,
-          TExternalWorkflows,
-          TPatches,
-          TRng,
-          [],
-          TErrors
-        >;
-        args: StandardSchemaV1.InferOutput<TArgs>;
-        result: StandardSchemaV1.InferOutput<TResultSchema>;
-      }
-    | {
-        status: "failed" | "terminated";
-        ctx: CompensationContext<
-          TChannels,
-          TStreams,
-          TEvents,
-          TSteps,
-          TRequests,
-          TAttachedChildren,
-          TDetachedChildren,
-          TExternalWorkflows,
-          TPatches,
-          TRng
-        >;
-        args: StandardSchemaV1.InferOutput<TArgs>;
-      }) => Promise<void>;
 
   /**
    * Workflow execution function.

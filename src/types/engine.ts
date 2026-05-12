@@ -63,6 +63,7 @@ import type {
   RequestCompensationConfig,
   RequestDefinition,
 } from "./definitions/requests";
+import type { IsHeaderAuthoringKind } from "./definitions/authoring-kind";
 
 // =============================================================================
 // PRIMITIVE PLANE — channel/stream/event/attribute accessors at engine level.
@@ -253,7 +254,7 @@ export type RequestCompensationNamespaceExternal<
  * type exposes them — this is not a blanket "read-only" surface; it excludes
  * lifecycle verbs, not channel send when present on the type.
  */
-export interface AttachedChildWorkflowExternalHandle<W extends AnyPublicWorkflowHeader>
+interface AttachedChildWorkflowExternalHandleBase<W extends AnyPublicWorkflowHeader>
   extends FetchableHandle<
     WorkflowRow<
       InferWorkflowArgs<W>,
@@ -278,6 +279,22 @@ export interface AttachedChildWorkflowExternalHandle<W extends AnyPublicWorkflow
     >;
   };
 }
+
+type HeaderOnlyExtendForAttachedChildHandle<W extends AnyPublicWorkflowHeader> =
+  IsHeaderAuthoringKind<W> extends true
+    ? {
+        /**
+         * Widen static knowledge when the child handle type parameter is a graph-minimal
+         * `WorkflowHeader` from `defineWorkflowHeader`.
+         */
+        extend<const TW extends AnyPublicWorkflowHeader>(
+          contract: TW,
+        ): AttachedChildWorkflowExternalHandleBase<TW> & HeaderOnlyExtendForAttachedChildHandle<TW>;
+      }
+    : { extend?: never };
+
+export type AttachedChildWorkflowExternalHandle<W extends AnyPublicWorkflowHeader> =
+  AttachedChildWorkflowExternalHandleBase<W> & HeaderOnlyExtendForAttachedChildHandle<W>;
 
 /**
  * Per-parent attached child workflow namespace, keyed by child workflow name
@@ -517,7 +534,7 @@ type WorkflowHandleExternalNamespaces<W extends AnyPublicWorkflowHeader> =
 // errors) flow from one source. Replaces the earlier 5-generic shape.
 // =============================================================================
 
-export interface WorkflowHandleExternal<W extends AnyPublicWorkflowHeader>
+interface WorkflowHandleExternalBase<W extends AnyPublicWorkflowHeader>
   extends FetchableHandle<
       WorkflowRow<
         InferWorkflowArgs<W>,
@@ -578,6 +595,23 @@ export interface WorkflowHandleExternal<W extends AnyPublicWorkflowHeader>
     opts?: { txOrConn?: IWorkflowConnection | IWorkflowTransaction },
   ): Promise<void>;
 }
+
+type HeaderOnlyExtendForWorkflowHandle<W extends AnyPublicWorkflowHeader> =
+  IsHeaderAuthoringKind<W> extends true
+    ? {
+        /**
+         * Widen static knowledge when the handle type parameter is a graph-minimal
+         * `WorkflowHeader` from `defineWorkflowHeader`. Pass a `WorkflowInterface` or
+         * full `WorkflowDefinition` for the same workflow identity.
+         */
+        extend<const TW extends AnyPublicWorkflowHeader>(
+          contract: TW,
+        ): WorkflowHandleExternalBase<TW> & HeaderOnlyExtendForWorkflowHandle<TW>;
+      }
+    : { extend?: never };
+
+export type WorkflowHandleExternal<W extends AnyPublicWorkflowHeader> =
+  WorkflowHandleExternalBase<W> & HeaderOnlyExtendForWorkflowHandle<W>;
 
 // =============================================================================
 // START WORKFLOW OPTIONS

@@ -27,11 +27,16 @@ import type {
   JsonSchemaConstraint,
   JsonObjectSchemaConstraint,
   WorkflowContext,
-  CompensationContext,
   PatchDefinitions,
   RngDefinitions,
   WorkflowErrorDefinitions,
   Unsubscribe,
+  WorkflowInterface,
+  WorkflowImplementInput,
+  StepInterfaces,
+  RequestInterfaces,
+  StepInterface,
+  StepCompensationInterface,
 } from "./types";
 
 export { AttemptError } from "./types/results";
@@ -267,6 +272,154 @@ export function defineStep(config: {
     compensation: config.compensation,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- matches widened overload return
   } as StepDefinition<any, any, any, any>;
+}
+
+// =============================================================================
+// DEFINE STEP INTERFACE
+// =============================================================================
+
+/**
+ * Declare a step contract without `execute` / `undo`, then call `.implement()`
+ * for a type-checked `StepDefinition`.
+ */
+export function defineStepInterface<
+  TName extends string,
+  TArgsSchema extends JsonSchemaConstraint,
+  TResultSchema extends JsonSchemaConstraint,
+  TCompensation extends StepCompensationInterface | undefined = undefined,
+>(
+  config: StepInterface<TName, TArgsSchema, TResultSchema, TCompensation>,
+): StepInterface<TName, TArgsSchema, TResultSchema, TCompensation> & {
+  readonly __nataliaAuthoringKind: "step-interface";
+  implement: (
+    impl: TCompensation extends undefined
+      ? {
+          execute: (
+            context: { signal: AbortSignal },
+            args: StandardSchemaV1.InferOutput<TArgsSchema>,
+          ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
+          retryPolicy?: RetryPolicyOptions;
+        }
+      : {
+          execute: (
+            context: { signal: AbortSignal },
+            args: StandardSchemaV1.InferOutput<TArgsSchema>,
+          ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
+          retryPolicy?: RetryPolicyOptions;
+          compensation: StepCompensationDefinition<
+            TArgsSchema,
+            TResultSchema,
+            ChannelDefinitions,
+            StreamDefinitions,
+            EventDefinitions,
+            AttributeDefinitions,
+            NonCompensableStepDefinitions,
+            NonCompensableRequestDefinitions,
+            QueueDefinitions,
+            TopicDefinitions,
+            WorkflowDefinitions,
+            WorkflowDefinitions,
+            WorkflowDefinitions,
+            JsonSchemaConstraint | undefined
+          >;
+        },
+  ) =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors widened `defineStep` compensation slot for heterogeneous `implement` payloads
+    StepDefinition<TName, TArgsSchema, TResultSchema, TCompensation extends undefined ? undefined : any>;
+} {
+  if (!config.name || typeof config.name !== "string") {
+    throw new Error("Step name must be a non-empty string");
+  }
+  if (typeof (config as { execute?: unknown }).execute === "function") {
+    throw new Error("Step interface must not include execute — use implement()");
+  }
+  if (!config.result || !("~standard" in config.result)) {
+    throw new Error("Step result must be a standard schema");
+  }
+  if (!config.args || !("~standard" in config.args)) {
+    throw new Error("Step args must be a standard schema");
+  }
+  if (config.compensation !== undefined) {
+    if (
+      typeof config.compensation !== "object" ||
+      config.compensation === null ||
+      Array.isArray(config.compensation)
+    ) {
+      throw new Error("Step compensation must be an object");
+    }
+    if (typeof (config.compensation as { undo?: unknown }).undo === "function") {
+      throw new Error("Step interface compensation must not include undo — add it in implement()");
+    }
+    if ((config.compensation as { external?: unknown }).external !== undefined) {
+      throw new Error(
+        "Step interface compensation must not include external — add it in implement()",
+      );
+    }
+  }
+
+  return {
+    ...config,
+    __nataliaAuthoringKind: "step-interface" as const,
+    implement: (impl) => {
+      const mergedComp =
+        config.compensation === undefined
+          ? undefined
+          : {
+              ...config.compensation,
+              ...(impl as { compensation?: object }).compensation,
+            };
+      return defineStep({
+        name: config.name,
+        args: config.args,
+        result: config.result,
+        retryPolicy: (impl as { retryPolicy?: RetryPolicyOptions }).retryPolicy ?? config.retryPolicy,
+        execute: (impl as {
+          execute: (
+            context: { signal: AbortSignal },
+            args: StandardSchemaV1.InferOutput<TArgsSchema>,
+          ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
+        }).execute,
+        compensation: mergedComp,
+      } as Parameters<typeof defineStep>[0]);
+    },
+  } as StepInterface<TName, TArgsSchema, TResultSchema, TCompensation> & {
+    readonly __nataliaAuthoringKind: "step-interface";
+    implement: (
+      impl: TCompensation extends undefined
+        ? {
+            execute: (
+              context: { signal: AbortSignal },
+              args: StandardSchemaV1.InferOutput<TArgsSchema>,
+            ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
+            retryPolicy?: RetryPolicyOptions;
+          }
+        : {
+            execute: (
+              context: { signal: AbortSignal },
+              args: StandardSchemaV1.InferOutput<TArgsSchema>,
+            ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
+            retryPolicy?: RetryPolicyOptions;
+            compensation: StepCompensationDefinition<
+              TArgsSchema,
+              TResultSchema,
+              ChannelDefinitions,
+              StreamDefinitions,
+              EventDefinitions,
+              AttributeDefinitions,
+              NonCompensableStepDefinitions,
+              NonCompensableRequestDefinitions,
+              QueueDefinitions,
+              TopicDefinitions,
+              WorkflowDefinitions,
+              WorkflowDefinitions,
+              WorkflowDefinitions,
+              JsonSchemaConstraint | undefined
+            >;
+          },
+    ) =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- cast return mirrors widened `defineStep` compensation slot
+      StepDefinition<TName, TArgsSchema, TResultSchema, TCompensation extends undefined ? undefined : any>;
+  };
 }
 
 // =============================================================================
@@ -547,7 +700,9 @@ export function defineWorkflowHeader<
   metadata?: TMetadata;
   result?: TResult;
   errors?: TErrors;
-}): WorkflowHeader<TName, TChannels, TArgs, TMetadata, TResult, TErrors> {
+}): WorkflowHeader<TName, TChannels, TArgs, TMetadata, TResult, TErrors> & {
+  readonly __nataliaAuthoringKind: "header";
+} {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Workflow name must be a non-empty string");
   }
@@ -591,7 +746,438 @@ export function defineWorkflowHeader<
   if (config.errors !== undefined) {
     validateErrorDefinitions(config.errors, "errors");
   }
-  return config as WorkflowHeader<TName, TChannels, TArgs, TMetadata, TResult, TErrors>;
+  return {
+    ...config,
+    __nataliaAuthoringKind: "header" as const,
+  } as WorkflowHeader<TName, TChannels, TArgs, TMetadata, TResult, TErrors> & {
+    readonly __nataliaAuthoringKind: "header";
+  };
+}
+
+// =============================================================================
+// DEFINE WORKFLOW INTERFACE
+// =============================================================================
+
+/**
+ * Declare the full workflow contract (streams, events, children, requests, step
+ * interfaces, …) without `execute` or step bodies. Combine with
+ * `...defineWorkflowHeader(...)` for cycle-safe names, then call `.implement()`
+ * for a type-checked `WorkflowDefinition`.
+ *
+ * **`external`** workflows are **not** part of this public contract — pass them on
+ * **`.implement({ external, execute, … })`** so `ctx.external` is typed for the
+ * implementation only.
+ *
+ * Teams that prefer a single object can still use `defineWorkflow({ ...header, execute, ... })`.
+ */
+export function defineWorkflowInterface<
+  TName extends string,
+  TChannels extends ChannelDefinitions = Record<string, never>,
+  TStreams extends StreamDefinitions = Record<string, never>,
+  TEvents extends EventDefinitions = Record<string, never>,
+  TSteps extends StepInterfaces = Record<string, never>,
+  TRequests extends RequestInterfaces = Record<string, never>,
+  TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
+  TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
+  TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<void, void>,
+  TErrors extends WorkflowErrorDefinitions = Record<string, never>,
+  TPatches extends PatchDefinitions = Record<string, never>,
+  TRng extends RngDefinitions = Record<string, never>,
+>(
+  config: WorkflowInterface<
+    TName,
+    TChannels,
+    TStreams,
+    TEvents,
+    TSteps,
+    TRequests,
+    TAttachedChildren,
+    TDetachedChildren,
+    TResultSchema,
+    TArgs,
+    TMetadata,
+    TErrors,
+    TPatches,
+    TRng
+  >,
+): WorkflowInterface<
+  TName,
+  TChannels,
+  TStreams,
+  TEvents,
+  TSteps,
+  TRequests,
+  TAttachedChildren,
+  TDetachedChildren,
+  TResultSchema,
+  TArgs,
+  TMetadata,
+  TErrors,
+  TPatches,
+  TRng
+> & {
+  readonly __nataliaAuthoringKind: "interface";
+  implement: <TExternalWorkflows extends WorkflowDefinitions = Record<string, never>>(
+    impl: WorkflowImplementInput<
+      TName,
+      TChannels,
+      TStreams,
+      TEvents,
+      TSteps,
+      TRequests,
+      TAttachedChildren,
+      TDetachedChildren,
+      TExternalWorkflows,
+      TResultSchema,
+      TArgs,
+      TMetadata,
+      TErrors,
+      TPatches,
+      TRng
+    >,
+  ) => WorkflowDefinition<
+    TName,
+    TChannels,
+    TStreams,
+    TEvents,
+    import("./types/definitions/workflow-contract").StepsFromInterfaces<TSteps>,
+    import("./types/definitions/workflow-contract").RequestsFromInterfaces<TRequests>,
+    TAttachedChildren,
+    TDetachedChildren,
+    TExternalWorkflows,
+    TResultSchema,
+    TArgs,
+    TMetadata,
+    TErrors,
+    TPatches,
+    TRng
+  > & { readonly __nataliaAuthoringKind: "definition" };
+} {
+  if (!config.name || typeof config.name !== "string") {
+    throw new Error("Workflow name must be a non-empty string");
+  }
+  if (config.result !== undefined) {
+    if (!config.result || !("~standard" in config.result)) {
+      throw new Error("result must be a standard schema");
+    }
+  }
+  if (config.channels !== undefined) {
+    if (typeof config.channels !== "object" || Array.isArray(config.channels)) {
+      throw new Error("channels must be an object");
+    }
+    for (const [name, schema] of Object.entries(config.channels)) {
+      if (!schema || typeof schema !== "object" || !("~standard" in schema)) {
+        throw new Error(`Channel '${name}' must have a standard schema`);
+      }
+    }
+  }
+  if (config.streams !== undefined) {
+    if (typeof config.streams !== "object" || Array.isArray(config.streams)) {
+      throw new Error("streams must be an object");
+    }
+    for (const [name, schema] of Object.entries(config.streams)) {
+      if (!schema || typeof schema !== "object" || !("~standard" in schema)) {
+        throw new Error(`Stream '${name}' must have a standard schema`);
+      }
+    }
+  }
+  if (config.events !== undefined) {
+    if (typeof config.events !== "object" || Array.isArray(config.events)) {
+      throw new Error("events must be an object");
+    }
+    for (const [name, value] of Object.entries(config.events)) {
+      if (value !== true) {
+        throw new Error(`Event '${name}' must be true`);
+      }
+    }
+  }
+  if (config.steps !== undefined) {
+    if (typeof config.steps !== "object" || Array.isArray(config.steps)) {
+      throw new Error("steps must be an object");
+    }
+    for (const [name, step] of Object.entries(config.steps)) {
+      if (!step || typeof step !== "object") {
+        throw new Error(`Step interface '${name}' must be an object`);
+      }
+      if (typeof (step as { execute?: unknown }).execute === "function") {
+        throw new Error(
+          `Step interface '${name}' must not include execute — use defineStepInterface(...).implement(...)`,
+        );
+      }
+      if (!(step as { name?: unknown }).name || typeof (step as { name: string }).name !== "string") {
+        throw new Error(`Step interface '${name}' must have a name`);
+      }
+      if (
+        !(step as { args?: unknown }).args ||
+        typeof (step as { args: object }).args !== "object" ||
+        !("~standard" in (step as { args: object }).args)
+      ) {
+        throw new Error(`Step interface '${name}' must have a standard args schema`);
+      }
+      if (
+        !(step as { result?: unknown }).result ||
+        typeof (step as { result: object }).result !== "object" ||
+        !("~standard" in (step as { result: object }).result)
+      ) {
+        throw new Error(`Step interface '${name}' must have a standard result schema`);
+      }
+      const comp = (step as { compensation?: { undo?: unknown } }).compensation;
+      if (comp !== undefined && typeof comp === "object" && comp !== null && typeof comp.undo === "function") {
+        throw new Error(
+          `Step interface '${name}' compensation must not include undo — add it in implement()`,
+        );
+      }
+      if (
+        comp !== undefined &&
+        typeof comp === "object" &&
+        comp !== null &&
+        (comp as { external?: unknown }).external !== undefined
+      ) {
+        throw new Error(
+          `Step interface '${name}' compensation must not include external — add it in implement()`,
+        );
+      }
+    }
+  }
+  if (config.requests !== undefined) {
+    if (typeof config.requests !== "object" || Array.isArray(config.requests)) {
+      throw new Error("requests must be an object");
+    }
+    for (const [name, request] of Object.entries(config.requests)) {
+      if (!request || typeof request !== "object") {
+        throw new Error(`Request interface '${name}' must be an object`);
+      }
+      if (typeof (request as { registerHandler?: unknown }).registerHandler === "function") {
+        throw new Error(
+          `Request interface '${name}' must not include registerHandler — use defineRequest() inside implement()`,
+        );
+      }
+      if (!(request as { name?: unknown }).name || typeof (request as { name: string }).name !== "string") {
+        throw new Error(`Request interface '${name}' must have a name`);
+      }
+      if (
+        !(request as { payload?: unknown }).payload ||
+        typeof (request as { payload: object }).payload !== "object" ||
+        !("~standard" in (request as { payload: object }).payload)
+      ) {
+        throw new Error(`Request interface '${name}' must have a standard payload schema`);
+      }
+      if (
+        !(request as { response?: unknown }).response ||
+        typeof (request as { response: object }).response !== "object" ||
+        !("~standard" in (request as { response: object }).response)
+      ) {
+        throw new Error(`Request interface '${name}' must have a standard response schema`);
+      }
+    }
+  }
+  if (config.children !== undefined) {
+    if (typeof config.children !== "object" || Array.isArray(config.children)) {
+      throw new Error("children must be an object");
+    }
+    if (
+      config.children.attached !== undefined &&
+      (typeof config.children.attached !== "object" || Array.isArray(config.children.attached))
+    ) {
+      throw new Error("children.attached must be an object");
+    }
+    if (
+      config.children.detached !== undefined &&
+      (typeof config.children.detached !== "object" || Array.isArray(config.children.detached))
+    ) {
+      throw new Error("children.detached must be an object");
+    }
+    for (const [name, wf] of Object.entries(config.children.attached ?? {})) {
+      if (!wf || typeof wf !== "object") {
+        throw new Error(`Attached child workflow '${name}' must be a valid workflow definition or header`);
+      }
+      if (!(wf as { name?: unknown }).name || typeof (wf as { name: string }).name !== "string") {
+        throw new Error(`Attached child workflow '${name}' must have a name`);
+      }
+    }
+    for (const [name, wf] of Object.entries(config.children.detached ?? {})) {
+      if (!wf || typeof wf !== "object") {
+        throw new Error(`Detached child workflow '${name}' must be a valid workflow definition or header`);
+      }
+      if (!(wf as { name?: unknown }).name || typeof (wf as { name: string }).name !== "string") {
+        throw new Error(`Detached child workflow '${name}' must have a name`);
+      }
+    }
+  }
+  if (config.args !== undefined) {
+    if (!config.args || typeof config.args !== "object" || !("~standard" in config.args)) {
+      throw new Error("args must be a standard schema");
+    }
+  }
+  if (config.metadata !== undefined) {
+    if (!config.metadata || typeof config.metadata !== "object" || !("~standard" in config.metadata)) {
+      throw new Error("metadata must be a standard schema");
+    }
+  }
+  if (config.errors !== undefined) {
+    validateErrorDefinitions(config.errors, "errors");
+  }
+  if (config.patches !== undefined) {
+    if (typeof config.patches !== "object" || Array.isArray(config.patches)) {
+      throw new Error("patches must be an object");
+    }
+    for (const [name, value] of Object.entries(config.patches)) {
+      if (typeof value !== "boolean") {
+        throw new Error(`Patch '${name}' must be a boolean (true = active, false = deprecated)`);
+      }
+    }
+  }
+  if (config.rng !== undefined) {
+    if (typeof config.rng !== "object" || Array.isArray(config.rng)) {
+      throw new Error("rng must be an object");
+    }
+    for (const [name, value] of Object.entries(config.rng)) {
+      if (value !== true && typeof value !== "function") {
+        throw new Error(`RNG '${name}' must be true (simple) or a key derivation function (parametrized)`);
+      }
+    }
+  }
+  if (config.retention !== undefined) {
+    if (typeof config.retention === "number") {
+      if (config.retention < 0) {
+        throw new Error("retention must be a non-negative number (seconds)");
+      }
+    } else if (typeof config.retention === "object") {
+      const r = config.retention;
+      if (
+        (r.complete !== null && (typeof r.complete !== "number" || r.complete < 0)) ||
+        (r.failed !== null && (typeof r.failed !== "number" || r.failed < 0)) ||
+        (r.terminated !== null && (typeof r.terminated !== "number" || r.terminated < 0))
+      ) {
+        throw new Error(
+          "retention settings must have complete, failed, and terminated as non-negative numbers or null",
+        );
+      }
+    } else {
+      throw new Error("retention must be a number or RetentionSetter object");
+    }
+  }
+  if (config.evictAfterSeconds !== undefined && config.evictAfterSeconds !== null) {
+    if (typeof config.evictAfterSeconds !== "number" || config.evictAfterSeconds <= 0) {
+      throw new Error("evictAfterSeconds must be a positive number or null");
+    }
+  }
+
+  return {
+    ...config,
+    __nataliaAuthoringKind: "interface" as const,
+    implement: <TExternalWorkflows extends WorkflowDefinitions = Record<string, never>>(
+      impl: WorkflowImplementInput<
+        TName,
+        TChannels,
+        TStreams,
+        TEvents,
+        TSteps,
+        TRequests,
+        TAttachedChildren,
+        TDetachedChildren,
+        TExternalWorkflows,
+        TResultSchema,
+        TArgs,
+        TMetadata,
+        TErrors,
+        TPatches,
+        TRng
+      >,
+    ) => {
+      if (impl.external !== undefined) {
+        if (typeof impl.external !== "object" || Array.isArray(impl.external)) {
+          throw new Error("external must be an object");
+        }
+        for (const [name, wf] of Object.entries(impl.external)) {
+          if (!wf || typeof wf !== "object") {
+            throw new Error(`External workflow '${name}' must be a valid workflow definition or header`);
+          }
+          if (!(wf as { name?: unknown }).name || typeof (wf as { name: string }).name !== "string") {
+            throw new Error(`External workflow '${name}' must have a name`);
+          }
+        }
+      }
+      const merged = {
+        ...config,
+        ...impl,
+        steps: impl.steps ?? ({} as import("./types/definitions/workflow-contract").StepsFromInterfaces<TSteps>),
+        requests: impl.requests ?? ({} as import("./types/definitions/workflow-contract").RequestsFromInterfaces<TRequests>),
+        __nataliaAuthoringKind: "definition" as const,
+      };
+      return defineWorkflow(merged as unknown as Parameters<typeof defineWorkflow>[0]) as unknown as WorkflowDefinition<
+        TName,
+        TChannels,
+        TStreams,
+        TEvents,
+        import("./types/definitions/workflow-contract").StepsFromInterfaces<TSteps>,
+        import("./types/definitions/workflow-contract").RequestsFromInterfaces<TRequests>,
+        TAttachedChildren,
+        TDetachedChildren,
+        TExternalWorkflows,
+        TResultSchema,
+        TArgs,
+        TMetadata,
+        TErrors,
+        TPatches,
+        TRng
+      > & { readonly __nataliaAuthoringKind: "definition" };
+    },
+  } as WorkflowInterface<
+    TName,
+    TChannels,
+    TStreams,
+    TEvents,
+    TSteps,
+    TRequests,
+    TAttachedChildren,
+    TDetachedChildren,
+    TResultSchema,
+    TArgs,
+    TMetadata,
+    TErrors,
+    TPatches,
+    TRng
+  > & {
+    readonly __nataliaAuthoringKind: "interface";
+    implement: <TExternalWorkflows extends WorkflowDefinitions = Record<string, never>>(
+      impl: WorkflowImplementInput<
+        TName,
+        TChannels,
+        TStreams,
+        TEvents,
+        TSteps,
+        TRequests,
+        TAttachedChildren,
+        TDetachedChildren,
+        TExternalWorkflows,
+        TResultSchema,
+        TArgs,
+        TMetadata,
+        TErrors,
+        TPatches,
+        TRng
+      >,
+    ) => WorkflowDefinition<
+      TName,
+      TChannels,
+      TStreams,
+      TEvents,
+      import("./types/definitions/workflow-contract").StepsFromInterfaces<TSteps>,
+      import("./types/definitions/workflow-contract").RequestsFromInterfaces<TRequests>,
+      TAttachedChildren,
+      TDetachedChildren,
+      TExternalWorkflows,
+      TResultSchema,
+      TArgs,
+      TMetadata,
+      TErrors,
+      TPatches,
+      TRng
+    > & { readonly __nataliaAuthoringKind: "definition" };
+  };
 }
 
 // =============================================================================
@@ -656,44 +1242,6 @@ export function defineWorkflow<
         terminated: number | null;
       };
   evictAfterSeconds?: number | null;
-  beforeSettle?: (
-    params:
-      | {
-          status: "complete";
-          ctx: WorkflowContext<
-            TChannels,
-            TStreams,
-            TEvents,
-            TSteps,
-            TRequests,
-            TAttachedChildren,
-            TDetachedChildren,
-            TExternalWorkflows,
-            TPatches,
-            TRng,
-            [],
-            TErrors
-          >;
-          args: StandardSchemaV1.InferOutput<TArgs>;
-          result: StandardSchemaV1.InferOutput<TResultSchema>;
-        }
-      | {
-          status: "failed" | "terminated";
-          ctx: CompensationContext<
-            TChannels,
-            TStreams,
-            TEvents,
-            TSteps,
-            TRequests,
-            TAttachedChildren,
-            TDetachedChildren,
-            TExternalWorkflows,
-            TPatches,
-            TRng
-          >;
-          args: StandardSchemaV1.InferOutput<TArgs>;
-        },
-  ) => Promise<void>;
   execute: (
     ctx: WorkflowContext<
       TChannels,
@@ -975,13 +1523,6 @@ export function defineWorkflow<
     }
   }
 
-  if (
-    config.beforeSettle !== undefined &&
-    typeof config.beforeSettle !== "function"
-  ) {
-    throw new Error("beforeSettle must be a function");
-  }
-
   const patches = config.patches ?? ({} as TPatches);
   const rng = config.rng ?? ({} as TRng);
 
@@ -997,6 +1538,7 @@ export function defineWorkflow<
     errors,
     patches,
     rng,
+    __nataliaAuthoringKind: "definition" as const,
   } as WorkflowDefinition<
     TName,
     TChannels,

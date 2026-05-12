@@ -16,12 +16,7 @@ import type {
   WorkflowRow,
   WorkflowStatus,
 } from "../types";
-
-type Assert<T extends true> = T;
-type IsEqual<A, B> =
-  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
-    ? true
-    : false;
+import type { Assert, IsEqual } from "./type-assertions";
 
 // =============================================================================
 // BRANDED IDS — symmetry across the four id kinds in the public surface.

@@ -9,6 +9,7 @@ import type {
 } from "../types";
 import type { SchemaInvocationInput } from "../types/context/entries";
 import type { StandardSchemaV1 } from "../types/standard-schema";
+import type { Assert, IsEqual } from "./type-assertions";
 
 // =============================================================================
 // STANDARD SCHEMA × JSON — compile-time regression
@@ -21,12 +22,6 @@ import type { StandardSchemaV1 } from "../types/standard-schema";
 // statically reject e.g. `bigint` in step args — libraries and runtime validation
 // own that story. This file does not claim coverage for those weaker slots.
 // =============================================================================
-
-type Assert<T extends true> = T;
-type IsEqual<A, B> =
-  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
-    ? true
-    : false;
 
 // -----------------------------------------------------------------------------
 // 1. JsonInput — structural sanity
