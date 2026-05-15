@@ -28,7 +28,7 @@ const bookSerializableFlight = defineStep({
   name: "bookSerializableFlight",
   args: SerializableStepArgs,
   result: SerializableStepResult,
-  async execute(_ctx, args) {
+  async execute(args, _opts) {
     type _ExecuteArgsNoAny = Assert<IsAny<typeof args> extends false ? true : false>;
     type _ExecuteArgsAreDecoded = Assert<
       IsEqual<

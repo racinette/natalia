@@ -7,7 +7,7 @@ import type { RequestCompensationInfo } from "./steps";
 export type Unsubscribe = () => void;
 
 /**
- * Runtime context passed to external handlers.
+ * Runtime opts passed to external handlers (abort signal per attempt).
  */
 export interface HandlerContext {
   readonly signal: AbortSignal;
@@ -55,9 +55,9 @@ export interface RequestCompensationHandlerOptions<
   readonly retryPolicy: RequestCompensationRetryOptions;
   readonly onExhausted?: {
     readonly callback: (
-      ctx: { signal: AbortSignal },
       payload: TPayload,
       info: RequestCompensationInfo<TResponse>,
+      opts: { signal: AbortSignal },
     ) => Promise<TResult | TManual>;
     readonly retryPolicy: RequestCompensationOnExhaustedRetryOptions;
   };

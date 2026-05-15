@@ -51,8 +51,8 @@ export type RequestDefinition<
   readonly response: TResponseSchema;
   registerHandler(
     handler: (
-      context: RequestHandlerContext,
       payload: StandardSchemaV1.InferOutput<TPayloadSchema>,
+      opts: RequestHandlerContext,
     ) => Promise<StandardSchemaV1.InferInput<TResponseSchema>>,
     options?: {
       readonly retryPolicy?: HandlerRetryOptions;

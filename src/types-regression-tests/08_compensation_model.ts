@@ -22,7 +22,7 @@ const refundStep = defineStep({
   name: "compRefundStep",
   args: z.object({ chargeId: z.string() }),
   result: z.object({ refundId: z.string() }),
-  async execute(_ctx, args) {
+  async execute(args, _opts) {
     return { refundId: `refund:${args.chargeId}` };
   },
 });
@@ -133,7 +133,7 @@ const chargeStep = defineStep({
       return { status: "manual_review" as const };
     },
   },
-  async execute(_ctx, args) {
+  async execute(args, _opts) {
     return { chargeId: `charge:${args.customerId}`, amount: args.amount };
   },
 });
@@ -194,7 +194,7 @@ const approvalRequest = defineRequest({
 
 const unregisterApprovalCompensation = registerRequestCompensationHandler(
   approvalRequest,
-  async (_ctx, payload, info) => {
+  async (payload, info, _opts) => {
     type _Payload = Assert<IsEqual<typeof payload, { chargeId: string }>>;
     type _Info = Assert<
       typeof info extends RequestCompensationInfo<{ approved: boolean }>
@@ -217,7 +217,7 @@ const manualReviewRequest = defineRequest({
 
 const unregisterManualReviewCompensation = registerRequestCompensationHandler(
   manualReviewRequest,
-  async (_ctx, payload, info) => {
+  async (payload, info, _opts) => {
     type _Payload = Assert<IsEqual<typeof payload, { chargeId: string }>>;
 
     if (info.status === "completed") {
@@ -238,7 +238,7 @@ const unregisterManualReviewCompensation = registerRequestCompensationHandler(
   {
     retryPolicy: { timeoutSeconds: 30, totalTimeoutSeconds: 120 },
     onExhausted: {
-      async callback(_ctx, payload, _info) {
+      async callback(payload, _info, _opts) {
         type _ExhaustPayload = Assert<IsEqual<typeof payload, { chargeId: string }>>;
         type _ExhaustInfo = Assert<
           typeof _info extends RequestCompensationInfo<{ accepted: boolean }>

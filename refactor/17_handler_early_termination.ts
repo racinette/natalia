@@ -21,7 +21,7 @@ const manualRequest = defineRequest({
   response: z.object({ ok: z.boolean() }),
 });
 
-manualRequest.registerHandler(async (_ctx, payload) => {
+manualRequest.registerHandler(async (payload, _opts) => {
   if (payload.externalId === "wait") {
     return MANUAL;
   }
@@ -40,7 +40,7 @@ const earlyQueue = defineQueue({
   message: z.object({ id: z.string(), valid: z.boolean() }),
 });
 
-earlyQueue.registerHandler(async (_ctx, message) => {
+earlyQueue.registerHandler(async (message, _opts) => {
   if (!message.valid) {
     throw new UnrecoverableError("invalid message");
   }
@@ -61,7 +61,7 @@ const earlyTopic = defineTopic({
 
 earlyTopic.registerConsumer(
   "consumer",
-  async (_ctx, record) => {
+  async (record, _opts) => {
     if (!record.payload.valid) {
       throw new UnrecoverableError("invalid record");
     }

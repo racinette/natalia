@@ -24,8 +24,8 @@ export interface QueueDefinition<
   readonly ttlSeconds?: number;
   registerHandler(
     handler: (
-      context: QueueHandlerContext,
       message: StandardSchemaV1.InferOutput<TMessageSchema>,
+      opts: QueueHandlerContext,
     ) => Promise<void>,
     options?: {
       readonly retryPolicy?: HandlerRetryOptions;
@@ -62,8 +62,8 @@ export interface TopicDefinition<
   registerConsumer(
     name: string,
     handler: (
-      context: TopicConsumerContext,
       record: StandardSchemaV1.InferOutput<TRecordSchema>,
+      opts: TopicConsumerContext,
     ) => Promise<void>,
     options?: {
       readonly retryPolicy?: HandlerRetryOptions;

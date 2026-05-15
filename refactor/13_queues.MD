@@ -18,7 +18,7 @@ Add global durable queues for workflow-produced work and client-registered handl
 - Enqueue is a synchronous buffered workflow operation.
 - Queue options include TTL, priority, delay, and scheduled delivery.
 - Client APIs register one active handler per queue where appropriate.
-- Handler callbacks receive `{ signal }` and decoded messages.
+- Handler callbacks receive decoded messages and opts (`{ signal }`).
 - Handler retry policies use durable seconds-based fields.
 - Exhausted messages move to dead letter storage.
 - Dead-letter client APIs can search, inspect, retry, and purge messages.

@@ -74,7 +74,7 @@ const noopStep = defineStep({
   name: "execModelNoopStep",
   args: z.object({ value: z.string() }),
   result: z.object({ normalized: z.string() }),
-  async execute(_ctx, args) {
+  async execute(args, _opts) {
     return { normalized: args.value.trim() };
   },
 });

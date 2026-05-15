@@ -63,8 +63,8 @@ export type StepDefinition<
    * Use your own application logger for step-level logging.
    */
   readonly execute: (
-    context: { signal: AbortSignal },
     args: StandardSchemaV1.InferOutput<TArgsSchema>,
+    opts: { signal: AbortSignal },
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
   /** Argument schema for observable, serializable step input. */
   readonly args: TArgsSchema;

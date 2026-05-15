@@ -76,9 +76,9 @@ const client = createWorkflowClient({ queuesAcceptance: queuesAcceptanceWorkflow
 
 const unregister = client.registerQueueHandler(
   emailQueue,
-  async (handlerCtx, message) => {
-    type _HandlerCtx = Assert<
-      typeof handlerCtx extends QueueHandlerContext ? true : false
+  async (message, handlerOpts) => {
+    type _HandlerOpts = Assert<
+      typeof handlerOpts extends QueueHandlerContext ? true : false
     >;
     type _MessageNoAny = Assert<IsAny<typeof message> extends false ? true : false>;
     type _MessageDecoded = Assert<

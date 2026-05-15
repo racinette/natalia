@@ -191,8 +191,8 @@ interface StepDefinition<TArgs, TResult, TComp = undefined> {
   args: TArgs;
   result: TResult;
   execute: (
-    ctx: { signal: AbortSignal },
     args: InferOutput<TArgs>,
+    opts: { signal: AbortSignal },
   ) => Promise<InferInput<TResult>>;
   retryPolicy?: RetryPolicyOptions;
   compensation?: StepCompensation<TArgs, TResult, TComp>;
@@ -254,7 +254,7 @@ const cancelHotelStep = defineStep({
   name: "cancelHotelStep",
   args: z.object({ confirmationId: z.string() }),
   result: z.void(),
-  execute: async ({ signal }, args) => {
+  execute: async (args, { signal }) => {
     await hotelAPI.cancel(args.confirmationId, { signal });
   },
 });
@@ -268,7 +268,7 @@ const bookHotel = defineStep({
     checkOut: z.string(),
   }),
   result: z.object({ confirmationId: z.string() }),
-  execute: async ({ signal }, args) => {
+  execute: async (args, { signal }) => {
     return { confirmationId: await hotelAPI.book(args, { signal }) };
   },
 
@@ -1876,7 +1876,7 @@ ctx.queues.notifications.enqueue(
 ```typescript
 const unregister = client.registerQueueHandler(
   notificationsQueue,
-  async ({ signal }, message) => {
+  async (message, { signal }) => {
     await sendEmail(message.userId, message.body, { signal });
   },
   {
@@ -1894,7 +1894,7 @@ const unregister = client.registerQueueHandler(
 unregister();
 ```
 
-The handler receives `{ signal: AbortSignal }` as its first argument. The signal fires after `retryPolicy.timeoutSeconds` per attempt. `maxAttempts` is meaningful for queues: after exhaustion, the message is dead-lettered with `max_attempts`. Failed attempts are written to `queue_message_attempt` — only failures are recorded, successful processing writes the result directly. All retry policy fields are in seconds (durable, persisted to DB). Throwing `UnrecoverableError` dead-letters the message immediately, bypassing remaining retry attempts (see Part 15b).
+The handler receives the decoded message and opts `{ signal: AbortSignal }`. The signal fires after `retryPolicy.timeoutSeconds` per attempt. `maxAttempts` is meaningful for queues: after exhaustion, the message is dead-lettered with `max_attempts`. Failed attempts are written to `queue_message_attempt` — only failures are recorded, successful processing writes the result directly. All retry policy fields are in seconds (durable, persisted to DB). Throwing `UnrecoverableError` dead-letters the message immediately, bypassing remaining retry attempts (see Part 15b).
 
 `maxConcurrent` controls the maximum number of messages this consumer instance handles concurrently. When omitted (`undefined`), there is no limit — the consumer claims messages as fast as they arrive. When set, the consumer claims at most `maxConcurrent` messages at a time and waits for a slot to open before claiming the next. This prevents overwhelming downstream services and controls resource usage per consumer instance.
 
@@ -2088,7 +2088,7 @@ The handler registration supports an eager attempt -> exhaustion fallback patter
 ```typescript
 const unregister = client.registerRequestHandler(
   humanReview,
-  async ({ signal }, request) => {
+  async (request, { signal }) => {
     const decision = await routeToHumanUI(request, { signal });
     return { decision, note: "reviewed" };
   },
@@ -2103,7 +2103,7 @@ const unregister = client.registerRequestHandler(
       maxIntervalSeconds: 120,
     },
     onExhausted: {
-      callback: async ({ signal }, request) => {
+      callback: async (request, { signal }) => {
         await notifyOpsTeam(request, { signal });
         return MANUAL;
       },
@@ -2150,9 +2150,9 @@ declare function registerRequestCompensationHandler<TReq, TRes, TCompResult>(
     compensation: true | { result?: TCompResult };
   },
   handler: (
-    ctx: { signal: AbortSignal },
     payload: InferOutput<TReq>,
     info: RequestCompensationInfo<InferOutput<TRes>>,
+    opts: { signal: AbortSignal },
   ) => Promise<
     | (TCompResult extends undefined ? void : InferInput<TCompResult>)
     | typeof MANUAL
@@ -2169,9 +2169,9 @@ declare function registerRequestCompensationHandler<TReq, TRes, TCompResult>(
     };
     onExhausted?: {
       callback: (
-        ctx: { signal: AbortSignal },
         payload: InferOutput<TReq>,
         info: RequestCompensationInfo<InferOutput<TRes>>,
+        opts: { signal: AbortSignal },
       ) => Promise<
         | (TCompResult extends undefined ? void : InferInput<TCompResult>)
         | typeof MANUAL
@@ -2348,7 +2348,7 @@ Synchronous buffered operation — returns `void`, not awaited. Publish only, ne
 const unregister = client.registerTopicConsumer(
   auditTopic,
   "analyticsConsumer",
-  async ({ signal }, record) => {
+  async (record, { signal }) => {
     await ingestToWarehouse(record, { signal });
   },
   {
@@ -2376,7 +2376,7 @@ const unregister = client.registerTopicConsumer(
       },
     },
     onConsumeError: {
-      callback: async ({ signal }, event) => {
+      callback: async (event, { signal }) => {
         if (event.type === "attemptsExhausted") {
           // event.attempts: AttemptAccessor — inspect error history
           return "skip";
@@ -2396,7 +2396,7 @@ const unregister = client.registerTopicConsumer(
 
 **Consumer handler:**
 
-The consumer callback receives `{ signal: AbortSignal }` as its first argument. The signal fires after `retryPolicy.timeoutSeconds` per attempt. Failed attempts are written to a `topic_consumer_attempt` table (FK on consumer + record) — only failures are recorded, successful processing advances the offset. All retry policy fields are in seconds (durable, persisted to DB).
+The consumer callback receives the decoded record and opts `{ signal: AbortSignal }`. The signal fires after `retryPolicy.timeoutSeconds` per attempt. Failed attempts are written to a `topic_consumer_attempt` table (FK on consumer + record) — only failures are recorded, successful processing advances the offset. All retry policy fields are in seconds (durable, persisted to DB).
 
 **Metadata filter (`filter`):**
 
@@ -2467,7 +2467,7 @@ The `onConsumeError` event type is narrowed at the type level based on `neverExp
 
 When record processing exhausts its `retryPolicy.maxAttempts` or (when `neverExpire` is not set) the consumer's offset has expired, the engine needs a decision: `"skip"` (advance past the record) or `"halt"` (stop consuming). The `onConsumeError` callback makes this decision.
 
-- `onConsumeError.callback` — receives `{ signal: AbortSignal }` (fires on consumer shutdown) and an event. Returns `"skip"` or `"halt"`.
+- `onConsumeError.callback` — receives the event and opts `{ signal: AbortSignal }` (fires on consumer shutdown). Returns `"skip"` or `"halt"`.
   - `event.type === "attemptsExhausted"`: record processing failed after all retry attempts. `event.attempts: AttemptAccessor` provides the error history for informed decisions.
   - `event.type === "offsetExpired"` (only when `neverExpire` is not `true`): the consumer's offset points to records that have been purged by retention. The consumer must skip ahead.
 - `onConsumeError.retryPolicy` — runtime-level retry policy (milliseconds, infinite) for when the callback throws. `intervalMs`, `backoffRate`, `maxIntervalMs`. If the callback keeps failing, the consumer halts (safe default — don't silently skip messages).
@@ -2493,7 +2493,7 @@ For bulk processing use cases (warehouse sync, analytics ingestion, batch API ca
 const unregister = client.registerBatchTopicConsumer(
   auditTopic,
   "warehouseSync",
-  async ({ signal }, records) => {
+  async (records, { signal }) => {
     // records: readonly TopicRecord<TPayload, TMetadata>[] — guaranteed non-empty
     await bulkInsertToWarehouse(records, { signal });
   },
@@ -2517,7 +2517,7 @@ const unregister = client.registerBatchTopicConsumer(
       /* same as single-record consumer */
     },
     onConsumeError: {
-      callback: async ({ signal }, event) => {
+      callback: async (event, { signal }) => {
         if (event.type === "attemptsExhausted") return "skip"; // skip entire batch
         // if (event.type === "offsetExpired") return "skip";  // is not an option, since neverExpire: true
         return "halt";
@@ -2799,7 +2799,7 @@ class UnrecoverableError extends Error {
 
 ```typescript
 // Queue handler — dead-letter a malformed message immediately
-client.registerQueueHandler(notificationsQueue, async ({ signal }, message) => {
+client.registerQueueHandler(notificationsQueue, async (message, { signal }) => {
   if (!isValidPayload(message)) {
     throw new UnrecoverableError("Malformed payload, retrying will not help");
   }
@@ -2807,7 +2807,7 @@ client.registerQueueHandler(notificationsQueue, async ({ signal }, message) => {
 }, { retryPolicy: { ... } });
 
 // Topic consumer — skip an unprocessable record immediately
-client.registerTopicConsumer(auditTopic, "analyticsConsumer", async ({ signal }, record) => {
+client.registerTopicConsumer(auditTopic, "analyticsConsumer", async (record, { signal }) => {
   if (!isSupportedEventType(record.payload.type)) {
     throw new UnrecoverableError(`Unsupported event type: ${record.payload.type}`);
   }
@@ -2962,7 +2962,7 @@ const bookFlight = defineStep({
   name: "bookFlight",
   args: z.object({ destination: z.string(), passengerId: z.string() }),
   result: z.object({ confirmationId: z.string() }),
-  execute: async ({ signal }, args) => {
+  execute: async (args, { signal }) => {
     const booking = await flightAPI.book(args.destination, args.passengerId, {
       signal,
     });
@@ -2984,7 +2984,7 @@ The `args` field is a `JsonSchemaConstraint` — the same constraint as everythi
 The codebase follows a strict encode-on-write, decode-on-read discipline using `StandardSchemaV1`'s two type parameters. Standard Schema does not support bidirectional transforms (there is no `encode(Output) → Input`), so the write side must always accept `InferInput` (the JSON-serializable form):
 
 - **Call sites** (write side) accept `InferInput`: `ctx.steps.X(args)`, `ctx.children.attached.X({ args })`, `ctx.errors.X(message, details)`, `channel.send(data)`, `stream.write(data)`. The developer provides the serializable form.
-- **Callbacks** (read side) receive `InferOutput`: `execute({ signal }, args)`, compensation `undo` callbacks, `idempotencyKeyFactory(args)`. The engine deserializes from the database and validates through the schema, producing the decoded form.
+- **Callbacks** (read side) receive `InferOutput`: `execute(args, { signal })`, queue/request/topic handlers `(payload, { signal })`, compensation `undo` callbacks, `idempotencyKeyFactory(args)`. The engine deserializes from the database and validates through the schema, producing the decoded form.
 - **External results** (read side) are typed as `InferOutput`: step results, workflow results, error details, operation results and compensation info. The external caller receives the decoded form.
 
 For most schemas (no transforms), `InferInput` and `InferOutput` are identical and the distinction is invisible. The distinction only matters for schemas with transforms (e.g., `z.string().datetime()` where input is `string` and output is `Date`).
@@ -3164,7 +3164,7 @@ defineStep({
   name: string,
   args: JsonSchemaConstraint,
   result: JsonSchemaConstraint,
-  execute: ({ signal }, args) => Promise<Result>,
+  execute: (args, opts) => Promise<Result>,
   retryPolicy?: RetryPolicyOptions,
   compensation?: {
     channels?:       { [name: string]: JsonSchemaConstraint },

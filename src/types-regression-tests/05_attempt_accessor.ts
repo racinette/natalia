@@ -128,7 +128,7 @@ defineStep({
   name: "attemptAccessorStep",
   args: z.object({ id: z.string() }),
   result: z.object({ ok: z.boolean() }),
-  async execute(_ctx, args) {
+  async execute(args, _opts) {
     if (args.id === "bad") {
       throw new AttemptError({
         type: "StepFailed",

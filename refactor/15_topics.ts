@@ -74,7 +74,7 @@ const filter: TopicRecordFilter<
 const unregister = client.registerTopicConsumer(
   auditTopic,
   "analytics",
-  async (_ctx, record) => {
+  async (record, _opts) => {
     type _RecordNoAny = Assert<IsAny<typeof record> extends false ? true : false>;
     type _Record = Assert<
       typeof record extends TopicRecord<
@@ -124,7 +124,7 @@ client.registerTopicConsumer(auditTopic, "normal", async () => undefined, {
 const unregisterBatch = client.registerBatchTopicConsumer(
   auditTopic,
   "warehouse",
-  async (_ctx, records) => {
+  async (records, _opts) => {
     type _Records = Assert<
       typeof records extends NonEmptyReadonlyArray<
         TopicRecord<

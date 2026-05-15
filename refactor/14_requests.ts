@@ -81,7 +81,7 @@ const client = createWorkflowClient({ requestsAcceptance: requestsAcceptanceWork
 
 const unregister = client.registerRequestHandler(
   approvalRequest,
-  async ({ signal }, payload) => {
+  async (payload, { signal }) => {
     type _Payload = Assert<
       IsEqual<typeof payload, { documentId: string; tenantId: string }>
     >;
