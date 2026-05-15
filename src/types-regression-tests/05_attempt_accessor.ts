@@ -55,9 +55,9 @@ type _AttemptShape = Assert<
 // =============================================================================
 // `AttemptAccessor`
 //
-// Lazy, async-iterable accessor over a retried operation's attempt history.
-// Same shape across every attempt-bearing context: steps, queue handlers,
-// request handlers, topic consumers, and `CompensationInfo.attempts` /
+// Lazy, async-iterable accessor over execution attempt records. Same shape
+// across every attempt-bearing context: steps (one row per try), queue/request/
+// topic handlers (failed tries only), and `CompensationInfo.attempts` /
 // `RequestCompensationInfo.attempts`.
 // =============================================================================
 

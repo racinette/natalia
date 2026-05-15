@@ -73,7 +73,11 @@ export type CompensationId<TStep> = string & {
 };
 
 /**
- * Base captured-throw record for non-explicit failures.
+ * Per-try outcome record for a retried operation.
+ *
+ * Error fields (`message`, `type`, `details`) are nullable — a try may end
+ * without structured error info (for example a successful step `execute`
+ * return, or a throw with no message).
  */
 export interface Failure {
   readonly startedAt: Date;
@@ -84,7 +88,7 @@ export interface Failure {
 }
 
 /**
- * Retried operations extend `Failure` with an attempt number.
+ * A single execution attempt on a retried operation (1-indexed `attempt`).
  */
 export interface Attempt extends Failure {
   readonly attempt: number;
@@ -110,14 +114,23 @@ export class AttemptError extends Error {
 }
 
 /**
- * Lazy, async-iterable accessor over a retried operation's attempt history.
+ * Lazy, async-iterable accessor over execution attempt records for a retried
+ * operation (step, request handler, queue message, topic consumer, forward
+ * step observed from compensation `undo`, and similar).
+ *
+ * **Steps** persist one row per execution attempt (including attempts whose
+ * `execute` returned successfully). **Queues, requests, and topics** persist
+ * rows for failed tries only; successful handling writes the outcome directly.
+ *
+ * When `undo` runs for a compensable step, the forward step was attempted at
+ * least once, so `count()` is always at least `1` on `CompensationInfo.attempts`.
  */
 export interface AttemptAccessor {
-  /** Get the most recent failed attempt. */
+  /** Most recent attempt record. */
   last(): Promise<Attempt>;
-  /** Get all failed attempts, ordered by attempt. */
+  /** All attempt records, oldest first (by attempt number). */
   all(): Promise<Attempt[]>;
-  /** Get the number of recorded failed attempts. */
+  /** Number of persisted attempt records exposed by this accessor. */
   count(): Promise<number>;
   /** Async iterate over attempts, oldest first. */
   [Symbol.asyncIterator](): AsyncIterableIterator<Attempt>;

@@ -90,6 +90,12 @@ export type NonCompensableStepDefinitions = Record<
   NonCompensableStepDefinition
 >;
 
+/**
+ * Forward step outcome passed to compensation `undo` as `info`.
+ *
+ * `attempts` lists every persisted execution attempt on that forward step. At
+ * least one attempt exists whenever `undo` runs (see `AttemptAccessor`).
+ */
 export type CompensationInfo<TResult> =
   | {
       readonly status: "completed";
@@ -103,6 +109,12 @@ export type CompensationInfo<TResult> =
     }
   | { readonly status: "terminated"; readonly attempts: AttemptAccessor };
 
+/**
+ * Forward request outcome passed to request compensation handlers as `info`.
+ *
+ * `attempts` lists handler tries the engine persisted for that request
+ * (failed tries only for request handlers — see `AttemptAccessor`).
+ */
 export type RequestCompensationInfo<TResponse> =
   | {
       readonly status: "completed";
