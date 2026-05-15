@@ -126,7 +126,7 @@ type RequestCompensationHandlerResult<TCompensation> =
  *     });
  *     return res.json();
  *   },
- *   retryPolicy: { maxAttempts: 3, intervalSeconds: 2 },
+ *   retryPolicy: { intervalSeconds: 2, backoffRate: 1.5 },
  * });
  *
  * const cancelFlight = defineStep({
@@ -141,7 +141,7 @@ type RequestCompensationHandlerResult<TCompensation> =
  *     });
  *     return { ok: true };
  *   },
- *   retryPolicy: { maxAttempts: 20, intervalSeconds: 5 },
+ *   retryPolicy: { intervalSeconds: 5, backoffRate: 1.2 },
  * });
  * ```
  */

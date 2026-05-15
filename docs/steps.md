@@ -4,7 +4,11 @@
 
 A **step** is a **named unit of side-effecting work** the engine runs **outside** the workflow’s `execute` coroutine: talk to APIs, databases, queues, subprocesses—anything that must not be re-simulated line-by-line on every replay. You define it once with **schemas for arguments and result**, plus an **`execute` function** that receives an **abort signal** and the decoded args, and returns a value matching the result schema.
 
-The workflow **does not** embed that implementation in its body. Instead it **dispatches** a step: `ctx.steps.<name>(...)` yields an **entry** you **await** (or hand to structured helpers such as `ctx.scope`). The engine records the call; **the same worker that is executing the workflow runs the step’s `execute`**, persists the outcome, and on replay **replays the recorded result** instead of calling your integration again. Optional **retry** defaults on the definition control how transient failures are retried before the call is considered failed.
+The workflow **does not** embed that implementation in its body. Instead it **dispatches** a step: `ctx.steps.<name>(...)` yields an **entry** you **await** (or hand to structured helpers such as `ctx.scope`). The engine records the call; **the same worker that is executing the workflow runs the step’s `execute`**, persists the outcome, and on replay **replays the recorded result** instead of calling your integration again.
+
+#### Retry at definition vs call site
+
+On the **step definition**, optional **`retryPolicy`** sets **how** to retry (interval, backoff, per-attempt `timeoutSeconds`) — not **when to stop**. A step is expected to **retry until `execute` returns successfully** unless the **caller** caps the run. At the **call site**, pass **`{ retry: … }`** to override that strategy and **`{ timeout: … }`** (seconds, deadline, or `maxAttempts`) when this invocation must not wait forever. The caller is in a better position to decide whether a timeout or attempt cap is acceptable.
 
 ### Compensable steps
 
@@ -78,6 +82,7 @@ const reserveInventory = defineStep({
   name: "reserveInventory",
   args: z.object({ sku: z.string(), quantity: z.number() }),
   result: z.object({ reservationId: z.string() }),
+  retryPolicy: { intervalSeconds: 2, backoffRate: 1.5 },
   async execute({ signal }, args) {
     const res = await fetch("https://warehouse.example/v1/reservations", {
       method: "POST",
@@ -163,7 +168,7 @@ const chargeCard = defineStep({
     gatewayIdempotencyKey: z.string(),
   }),
   result: z.object({ chargeId: z.string() }),
-  retryPolicy: { maxAttempts: 5, intervalSeconds: 2 },
+  retryPolicy: { intervalSeconds: 2, backoffRate: 1.5 },
   compensation: {
     streams: {
       undoAudit: z.object({ phase: z.string(), detail: z.string() }),

@@ -70,7 +70,11 @@ export type StepDefinition<
   readonly args: TArgsSchema;
   /** Result schema for encoding/decoding. */
   readonly result: TResultSchema;
-  /** Default retry policy */
+  /**
+   * Default retry **strategy** (interval, backoff, per-attempt `timeoutSeconds`).
+   * Does not cap total attempts — use call-time `timeout` / `maxAttempts` when
+   * the caller needs a stop condition.
+   */
   readonly retryPolicy?: RetryPolicyOptions;
 } & ([TCompensation] extends [undefined]
   ? NoDefinitionExtension

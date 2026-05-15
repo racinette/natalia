@@ -5,7 +5,13 @@
 // =============================================================================
 
 /**
- * Configuration for retry behavior and timeouts.
+ * Retry **strategy** for a retried operation (step definition default, per-call
+ * `retry` override, handler registration, and similar).
+ *
+ * Stop conditions (`maxAttempts`, wall-clock `timeout` on the workflow call) live
+ * on the **call site** (`StepBoundary` / `timeout` option), not here. Without a
+ * caller timeout, a step retries according to this policy until `execute`
+ * succeeds or the workflow is terminated.
  */
 export interface RetryPolicyOptions {
   /** Initial retry interval in seconds (default: 1) */
