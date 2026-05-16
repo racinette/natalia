@@ -353,7 +353,7 @@ export const compensationModelAcceptanceWorkflow = defineWorkflow({
     // @ts-expect-error general ad hoc compensation registration is removed
     void ctx.addCompensation(async () => undefined);
 
-    const child = ctx.children.attached.childWorkflow({});
+    const child = ctx.children.attached.childWorkflow();
     // @ts-expect-error child compensation is no longer call-site-bound
     void child.compensate(async () => undefined);
 

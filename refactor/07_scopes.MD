@@ -32,14 +32,14 @@ A scope entry is one of:
 - `StepEntry<T>` — produced by `ctx.steps.X(args, opts?)`.
 - `RequestEntry<T>` — produced by `ctx.requests.X(payload, opts?)`.
 - `AttachedChildWorkflowEntry<W, T>` — produced by
-  `ctx.children.attached.X(startOpts, opts?)`.
+  `ctx.children.attached.X(args, opts?)`.
 
 All three are awaitable brands over `T` (`AwaitableEntry<T>` from step 01).
 Inside the scope body, attached child properties become
 `AttachedChildWorkflowScopeHandle` (await + `channels.*.send`); completion is
 observed with `ctx.join(handle)` per `WorkflowContext.join`.
 
-`ctx.children.detached.X(opts)` is a buffered op that returns a
+`ctx.children.detached.X(args, opts)` is a buffered op that returns a
 `ForeignWorkflowHandle<W>` synchronously. **It is not a scope entry**;
 attempting to pass it to `ctx.scope` / `ctx.all` / etc. is rejected at
 compile time.

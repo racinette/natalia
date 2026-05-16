@@ -83,34 +83,42 @@ export interface ChildWorkflowTimeoutCallOptions extends ChildWorkflowCallOption
 }
 
 /**
- * Attached child workflow start options. Retention is inherited from the
- * parent workflow.
+ * Optional invocation extras for attached child workflow calls (metadata,
+ * seed). Workflow args are the first call argument, like `ctx.steps.X(args)`.
  *
  * `idempotencyKey` is omitted — attached children are parent-scoped, not
  * globally keyed.
  */
-export type AttachedChildWorkflowStartOptions<W extends AnyWorkflowHeader> = Omit<
-  ChildWorkflowStartOptions<W>,
-  "idempotencyKey"
->;
+export type AttachedChildWorkflowStartOptions<W extends AnyWorkflowHeader> = {
+  readonly metadata?: InferWorkflowMetadataInput<W>;
+  readonly seed?: string;
+};
+
+export type AttachedChildWorkflowTimeoutInvocationOptions<W extends AnyWorkflowHeader> =
+  ChildWorkflowTimeoutCallOptions & AttachedChildWorkflowStartOptions<W>;
 
 /**
- * Detached child workflow start options. Detached children may override
- * retention independently from the parent.
+ * Invocation options for detached child workflow starts. Workflow args are
+ * the first call argument; this bag carries `idempotencyKey`, metadata, seed,
+ * and retention. Detached children may override retention independently from
+ * the parent.
  */
+export type DetachedChildWorkflowInvocationOptions<W extends AnyWorkflowHeader> = {
+  readonly idempotencyKey?: string;
+  readonly metadata?: InferWorkflowMetadataInput<W>;
+  readonly seed?: string;
+  readonly retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
+};
+
+/** @deprecated Use `DetachedChildWorkflowInvocationOptions` — args are no longer nested here. */
 export type DetachedStartOptions<W extends AnyWorkflowHeader> =
-  ChildWorkflowStartOptions<W> & {
-    retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
-  };
+  DetachedChildWorkflowInvocationOptions<W>;
 
 /**
- * Compensation-context child workflow start options.
+ * Optional invocation extras for attached child calls in compensation blocks.
  */
 export type CompensationChildWorkflowStartOptions<W extends AnyWorkflowHeader> =
-  WorkflowInvocationBaseOptions<
-    InferWorkflowArgsInput<W>,
-    InferWorkflowMetadataInput<W>
-  >;
+  AttachedChildWorkflowStartOptions<W>;
 
 /**
  * Result type for an attached child workflow entry awaited inside the parent
@@ -123,7 +131,7 @@ export type AttachedChildWorkflowResult<T, TError = unknown> =
 
 /**
  * The unstarted attached child workflow entry returned by
- * `ctx.children.attached.X(startOpts, opts?)`.
+ * `ctx.children.attached.X(args, opts?)`.
  *
  * **Await-only** in the parent body: use `await entry` (or pass the entry into
  * `ctx.scope` / join it from there) for the success/failure (and optional
@@ -149,57 +157,102 @@ export type AttachedChildWorkflowScopeHandle<
 > = AttachedChildWorkflowEntry<W, TAwaited> &
   ChannelSendSurface<InferWorkflowChannels<W>>;
 
+type AttachedChildWorkflowAwaited<W extends AnyWorkflowHeader> =
+  AttachedChildWorkflowResult<
+    InferWorkflowResult<W>,
+    ErrorValue<InferWorkflowErrors<W>>
+  >;
+
+type AttachedChildWorkflowTimedAwaited<W extends AnyWorkflowHeader> =
+  | AttachedChildWorkflowAwaited<W>
+  | { ok: false; status: "timeout" };
+
+interface ChildWorkflowAccessorWithArgs<
+  W extends AnyWorkflowHeader,
+  TArgsSchema extends StandardSchemaV1<unknown, unknown>,
+> {
+  (
+    args: SchemaInvocationInput<TArgsSchema>,
+  ): AttachedChildWorkflowEntry<W, AttachedChildWorkflowAwaited<W>>;
+
+  (
+    args: SchemaInvocationInput<TArgsSchema>,
+    opts: AttachedChildWorkflowTimeoutInvocationOptions<W>,
+  ): AttachedChildWorkflowEntry<W, AttachedChildWorkflowTimedAwaited<W>>;
+}
+
+interface ChildWorkflowAccessorNoArgs<W extends AnyWorkflowHeader> {
+  (): AttachedChildWorkflowEntry<W, AttachedChildWorkflowAwaited<W>>;
+
+  (
+    opts: AttachedChildWorkflowTimeoutInvocationOptions<W>,
+  ): AttachedChildWorkflowEntry<W, AttachedChildWorkflowTimedAwaited<W>>;
+}
+
 /**
  * Callable child workflow accessor on `ctx.children.attached` in
  * `WorkflowContext`.
  *
- * Two call overloads:
- * - `(opts)` — dispatches the attached child; the awaited value is a
- *   success-or-failure union (no timeout variant).
- * - `(opts, { timeout })` — dispatches with an observation timeout; the
- *   awaited value adds a `{ ok: false; status: "timeout" }` variant.
+ * Workflow args are the first argument (same shape as `ctx.steps.X(args)`).
+ * When the child declares no `args` schema, call with `()` instead.
+ *
+ * - `(args)` — success-or-failure union (no timeout variant).
+ * - `(args, { timeout, ... })` — adds `{ ok: false; status: "timeout" }`.
  *
  * Child workflows are not retried by the parent; configure retry/backoff at
  * the child workflow definition level if needed.
- *
- * @typeParam W - The child workflow definition.
  */
-export interface ChildWorkflowAccessor<W extends AnyWorkflowHeader> {
-  (
-    options: AttachedChildWorkflowStartOptions<W>,
-  ): AttachedChildWorkflowEntry<
-    W,
-    AttachedChildWorkflowResult<
-      InferWorkflowResult<W>,
-      ErrorValue<InferWorkflowErrors<W>>
-    >
-  >;
+export type ChildWorkflowAccessor<W extends AnyWorkflowHeader> =
+  InferWorkflowArgsSchema<W> extends StandardSchemaV1<unknown, unknown>
+    ? ChildWorkflowAccessorWithArgs<W, InferWorkflowArgsSchema<W>>
+    : ChildWorkflowAccessorNoArgs<W>;
 
+interface DetachedChildWorkflowAccessorWithArgs<
+  W extends AnyWorkflowHeader,
+  TArgsSchema extends StandardSchemaV1<unknown, unknown>,
+> {
   (
-    options: AttachedChildWorkflowStartOptions<W>,
-    opts: ChildWorkflowTimeoutCallOptions,
-  ): AttachedChildWorkflowEntry<
-    W,
-    | AttachedChildWorkflowResult<
-        InferWorkflowResult<W>,
-        ErrorValue<InferWorkflowErrors<W>>
-      >
-    | { ok: false; status: "timeout" }
-  >;
+    args: SchemaInvocationInput<TArgsSchema>,
+    opts: DetachedChildWorkflowInvocationOptions<W>,
+  ): ForeignWorkflowHandle<InferWorkflowChannels<W>>;
+}
 
+interface DetachedChildWorkflowAccessorNoArgs<W extends AnyWorkflowHeader> {
+  (
+    opts: DetachedChildWorkflowInvocationOptions<W>,
+  ): ForeignWorkflowHandle<InferWorkflowChannels<W>>;
 }
 
 /**
  * Callable child workflow accessor on `ctx.children.detached`.
  *
+ * Workflow args are the first argument (like `ctx.steps.X(args)` and
+ * `ctx.children.attached.X(args)`). When the child declares no `args` schema,
+ * call with a single options bag: `ctx.children.detached.X({ idempotencyKey })`.
+ *
  * Detached starts are buffered and synchronous; they return a
  * `ForeignWorkflowHandle` immediately. Detached children run independently of
  * the parent's lifecycle.
  */
-export interface DetachedChildWorkflowAccessor<W extends AnyWorkflowHeader> {
+export type DetachedChildWorkflowAccessor<W extends AnyWorkflowHeader> =
+  InferWorkflowArgsSchema<W> extends StandardSchemaV1<unknown, unknown>
+    ? DetachedChildWorkflowAccessorWithArgs<W, InferWorkflowArgsSchema<W>>
+    : DetachedChildWorkflowAccessorNoArgs<W>;
+
+interface CompensationChildWorkflowAccessorWithArgs<
+  W extends AnyWorkflowHeader,
+  TArgsSchema extends StandardSchemaV1<unknown, unknown>,
+> {
   (
-    options: DetachedStartOptions<W>,
-  ): ForeignWorkflowHandle<InferWorkflowChannels<W>>;
+    args: SchemaInvocationInput<TArgsSchema>,
+    opts?: CompensationChildWorkflowStartOptions<W>,
+  ): WorkflowEntry<WorkflowResult<InferWorkflowResult<W>>>;
+}
+
+interface CompensationChildWorkflowAccessorNoArgs<W extends AnyWorkflowHeader> {
+  (
+    opts?: CompensationChildWorkflowStartOptions<W>,
+  ): WorkflowEntry<WorkflowResult<InferWorkflowResult<W>>>;
 }
 
 /**
@@ -207,13 +260,10 @@ export interface DetachedChildWorkflowAccessor<W extends AnyWorkflowHeader> {
  * `CompensationContext`. Returns a `WorkflowEntry` whose awaited value is a
  * full `WorkflowResult<T>` — compensation must handle all outcomes.
  */
-export interface CompensationChildWorkflowAccessor<
-  W extends AnyWorkflowHeader,
-> {
-  (
-    options: CompensationChildWorkflowStartOptions<W>,
-  ): WorkflowEntry<WorkflowResult<InferWorkflowResult<W>>>;
-}
+export type CompensationChildWorkflowAccessor<W extends AnyWorkflowHeader> =
+  InferWorkflowArgsSchema<W> extends StandardSchemaV1<unknown, unknown>
+    ? CompensationChildWorkflowAccessorWithArgs<W, InferWorkflowArgsSchema<W>>
+    : CompensationChildWorkflowAccessorNoArgs<W>;
 
 // =============================================================================
 // REQUEST ACCESSOR
@@ -278,6 +328,12 @@ type InferWorkflowChannels<W> = W extends {
     ? TChannels
     : Record<string, never>
   : Record<string, never>;
+
+type InferWorkflowArgsSchema<W> = W extends { args?: infer TArgSchema }
+  ? TArgSchema extends StandardSchemaV1<unknown, unknown>
+    ? TArgSchema
+    : never
+  : never;
 
 type InferWorkflowArgsInput<W> = W extends { args?: infer TArgSchema }
   ? TArgSchema extends StandardSchemaV1<unknown, unknown>

@@ -82,7 +82,7 @@ Callers with a handle to **this** instance send on `operatorCancel`. While `proc
 ```typescript
 await ctx.scope(
   "cancelable-order",
-  { order: ctx.children.attached.processOrder({ args: { orderId: "o-1" } }) },
+  { order: ctx.children.attached.processOrder({ orderId: "o-1" }) },
   async (ctx, { order }) => {
     const fromOutside = await ctx.channels.operatorCancel.receive();
     order.channels.cancel.send({ reason: fromOutside.reason });

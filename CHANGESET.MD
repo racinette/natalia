@@ -10,11 +10,13 @@ This document records **proposed** changes and open questions for the **public**
 4. **Client vs engine** — different connection sources. Does the client accept a pool in the constructor, or does every method accept a connection? How do we stay generic over backend type?
 5. A way to **pause** a workflow.
 6. **Forking** a workflow from a specific point in time — likely requires richer introspection over workflow state, steps, and scopes. Concurrent branches make semantics an open problem.
-7. Client-driven **rollback** — signal a running workflow (`sigterm` / etc.) and wait for compensation, *or* force rollback after completion. (Operator verbs and `WorkflowResult` are taking shape in the type layer; runtime wiring is still ahead.)
+7. Client-driven **rollback** — signal a running workflow (`sigterm` / etc.) and wait for compensation, _or_ force rollback after completion. (Operator verbs and `WorkflowResult` are taking shape in the type layer; runtime wiring is still ahead.)
 8. New primitive: **stream aggregator** (working name) — denormalized aggregate over a stream, possibly related to long-running workflows, topic consumption, continue-as-new, etc. Use cases and global-state concerns are still fuzzy.
 9. **Real cron-like workflow starts** — external scheduling that creates new instances (see §19). Distinct from in-workflow `ctx.schedule()` ticks.
 10. **List / browse ergonomics** for operators — see §20.
 11. introduce scope hierarchies. effectively `{scope1: { scope11: true, scope12: { scope121: true } }, scope2: true }`
+12. add "aborted" flag to attempt. this is to track whether a per-attempt timeout was triggered for the attempt in question.
+13. `ctx.children.attached.processOrder({ args: {...} })` - is this really the syntax? args should be the first argument then.
 
 If we land the above coherently, the public API is close to “feature complete” for the product vision.
 
@@ -37,7 +39,7 @@ So the old idea of a dedicated minimal **`WorkflowSearchItem`** type is **supers
 
 1. **Summary-friendly defaults**  
    For dashboards and multi-project scans, we may want either:
-   - documented **recommended field masks** for `fetchRow` in list contexts, and/or  
+   - documented **recommended field masks** for `fetchRow` in list contexts, and/or
    - an optional **higher-level “summary” view** (still to be designed) that avoids N+1 round-trips without abandoning the handle-centric model.
 
 2. **Rich enough row semantics**  

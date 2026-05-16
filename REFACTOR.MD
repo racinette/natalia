@@ -92,8 +92,8 @@ The execution model is described as a set of independent properties: durable rep
 
 A `defineWorkflow.execute` callback is an ordinary `async` function. Each step / request / child workflow call inside it is recorded as a durable entry; the call returns an awaitable entry value that, when awaited, suspends the body until the engine observes the entry's completion.
 
-- `ctx.steps.X(args, opts?)`, `ctx.requests.X(payload, opts?)`, and `ctx.children.attached.X(startOpts, opts?)` create typed unstarted entries. Direct `await` dispatches and observes an entry. The structured-concurrency helpers (`ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, `ctx.some`) dispatch a top-level object of entries under structural ownership and let the body await results selectively.
-- `ctx.children.detached.X(opts)` is a buffered start that returns a `ForeignWorkflowHandle<W>` and is not joinable from the parent.
+- `ctx.steps.X(args, opts?)`, `ctx.requests.X(payload, opts?)`, and `ctx.children.attached.X(args, opts?)` create typed unstarted entries. Direct `await` dispatches and observes an entry. The structured-concurrency helpers (`ctx.scope`, `ctx.all`, `ctx.first`, `ctx.atLeast`, `ctx.atMost`, `ctx.some`) dispatch a top-level object of entries under structural ownership and let the body await results selectively.
+- `ctx.children.detached.X(args, opts)` is a buffered start that returns a `ForeignWorkflowHandle<W>` and is not joinable from the parent.
 - The body itself never forks. Whatever concurrency exists is between the dispatched entries the body has started but not yet awaited.
 
 ### 1.2 Buffered vs awaitable operations
@@ -639,7 +639,7 @@ A workflow-level `ctx.errors.X(...)` throw fails the workflow and triggers compe
 A step or request that fails or times out is observed as a local return-value variant on the awaited entry, not as a thrown error. A child workflow that fails is observed as `{ ok: false; status: "failed"; error: ErrorValue<TChildErrors> }` on its awaited entry. These are ordinary values; whether to translate any of them into a workflow-level failure is the body's decision via `throw ctx.errors.X(...)`.
 
 ```typescript
-const order = await ctx.children.attached.processOrder(startOpts);
+const order = await ctx.children.attached.processOrder({ orderId: "o-1" });
 if (!order.ok) {
   if (order.status === "failed") {
     throw ctx.errors.OrderProcessingFailed("Child workflow failed", {
@@ -753,7 +753,7 @@ After compensation closures and scope failure callbacks are removed, the builder
 ```typescript
 await ctx.steps.bookFlight(args);
 await ctx.steps.bookFlight(args, { timeout: 30 });
-await ctx.children.attached.processOrder(startOpts, { timeout: 120 });
+await ctx.children.attached.processOrder({ orderId: "o-1" }, { timeout: 120 });
 await ctx.requests.humanReview(payload, { priority: 1, timeout: 3600 });
 ```
 
@@ -824,8 +824,8 @@ A workflow can start child workflows in three shapes; the resulting handle types
 
 | Start shape                                                | Returns                                       | Awaitable for result | `channels.X.send` to child | Has `idempotencyKey` | Tied to parent lifecycle |
 | ---------------------------------------------------------- | --------------------------------------------- | -------------------- | -------------------------- | -------------------- | ------------------------ |
-| `ctx.children.attached.X(startOpts, opts?)` (workflow body) | `AttachedChildWorkflowEntry<W>`               | yes (`await` entry) | **no** (await-only entry)  | **no** (not on `startOpts`) | yes                      |
-| `ctx.children.detached.X(opts)`                             | `ForeignWorkflowHandle<W>`                    | no                   | yes                        | yes                  | no                       |
+| `ctx.children.attached.X(args, opts?)` (workflow body) | `AttachedChildWorkflowEntry<W>`               | yes (`await` entry) | **no** (await-only entry)  | **no** (not on args) | yes                      |
+| `ctx.children.detached.X(args, opts)`                       | `ForeignWorkflowHandle<W>`                    | no                   | yes                        | yes                  | no                       |
 | Inside a scope: `ctx.scope("S", { x: ctx.children.attached.X(...) }, async (ctx, { x }) => …)` | `AttachedChildWorkflowScopeHandle<W>` (the `x`) | observe via `ctx.join(x)` | yes (until scope exit) | **no**               | yes (until scope exit)   |
 
 **Lifecycle.** Attached children complete within the parent's guarantees: the parent does not finish leaving attached children as independently managed roots. Detached children are buffered starts with their own global identity; the parent does not await them for completion.
@@ -841,24 +841,24 @@ Attached children deliberately do not have an `idempotencyKey`. They are not glo
 Attached child workflows always return a discriminated union because child failure is structurally possible.
 
 ```typescript
-const order = await ctx.children.attached.processOrder(startOpts);
+const order = await ctx.children.attached.processOrder({ orderId: "o-1" });
 // order:
 //   { ok: true; result: OrderResult }
 // | { ok: false; status: "failed"; error: ErrorValue<TChildErrors> }
 
-const timed = await ctx.children.attached.processOrder(startOpts, { timeout: 60 });
+const timed = await ctx.children.attached.processOrder({ orderId: "o-1" }, { timeout: 60 });
 // timed additionally includes { ok: false; status: "timeout" }
 ```
 
-The entry returned by `ctx.children.attached.X(startOpts)` is **await-only** in the parent body — do not assign it and call `channels.*.send` before the prescribed completion path. To push messages while the child runs, pass the entry into `ctx.scope` and use the scope handle's `channels.*.send`, then observe the outcome with `ctx.join`.
+The entry returned by `ctx.children.attached.X(args)` is **await-only** in the parent body — do not assign it and call `channels.*.send` before the prescribed completion path. To push messages while the child runs, pass the entry into `ctx.scope` and use the scope handle's `channels.*.send`, then observe the outcome with `ctx.join`.
 
 ```typescript
-const outcome = await ctx.children.attached.processOrder(startOpts);
+const outcome = await ctx.children.attached.processOrder({ orderId: "o-1" });
 // outcome: { ok: true; result: ... } | { ok: false; status: "failed"; error: ... }
 
 await ctx.scope(
   "cancelable",
-  { order: ctx.children.attached.processOrder(startOpts) },
+  { order: ctx.children.attached.processOrder({ orderId: "o-1" }) },
   async (ctx, { order }) => {
     order.channels.cancel.send({ reason: "user-cancelled" }); // buffered; void
     return ctx.join(order);
@@ -875,7 +875,7 @@ The scope body receives `AttachedChildWorkflowScopeHandle<W, …>` for each atta
 ```typescript
 await ctx.scope(
   "process",
-  { order: ctx.children.attached.processOrder(startOpts) },
+  { order: ctx.children.attached.processOrder({ orderId: "o-1" }) },
   async (ctx, { order }) => {
     order.channels.cancel.send({ reason: "timeout-soon" });
     return ctx.join(order);
@@ -885,7 +885,7 @@ await ctx.scope(
 
 #### Detached starts
 
-`ctx.children.detached.X(opts)` is a buffered start. It returns a `ForeignWorkflowHandle<W>` synchronously. The handle exposes `channels.X.send` and `idempotencyKey`; it is not awaitable from the parent.
+`ctx.children.detached.X(args, opts)` is a buffered start. It returns a `ForeignWorkflowHandle<W>` synchronously. The handle exposes `channels.X.send` and `idempotencyKey`; it is not awaitable from the parent.
 
 #### Search and introspection — unified shape
 
@@ -1284,7 +1284,7 @@ interface ChannelSendSurface<W extends AnyWorkflowHeader> {
 }
 
 // Direct `ctx.children.attached.X(...)`: await-only entry for the result union.
-// `AttachedChildWorkflowStartOptions<W>` omits `idempotencyKey` (parent-scoped identity).
+// Args are the first call argument; invocation options omit `idempotencyKey`.
 type AttachedChildWorkflowEntry<W extends AnyWorkflowHeader, TAwaited> =
   AwaitableEntry<TAwaited>;
 
@@ -1300,15 +1300,15 @@ interface ForeignWorkflowHandle<W extends AnyWorkflowHeader>
 
 interface ChildWorkflowAccessor<W extends AnyWorkflowHeader> {
   (
-    startOpts: AttachedChildWorkflowStartOptions<W>,
+    args: InferInput<InferWorkflowArgsSchema<W>>,
   ): AttachedChildWorkflowEntry<
     W,
     | { ok: true; result: InferWorkflowResult<W> }
     | { ok: false; status: "failed"; error: ErrorValue<InferWorkflowErrors<W>> }
   >;
   (
-    startOpts: AttachedChildWorkflowStartOptions<W>,
-    opts: { retry?: RetryPolicyOptions; timeout: StepBoundary },
+    args: InferInput<InferWorkflowArgsSchema<W>>,
+    opts: AttachedChildWorkflowInvocationOptions<W> & { timeout: StepBoundary },
   ): AttachedChildWorkflowEntry<
     W,
     | { ok: true; result: InferWorkflowResult<W> }
@@ -1318,7 +1318,8 @@ interface ChildWorkflowAccessor<W extends AnyWorkflowHeader> {
 }
 
 type DetachedChildWorkflowAccessor<W extends AnyWorkflowHeader> = (
-  opts: DetachedStartOptions<W>
+  args: InferInput<InferWorkflowArgsSchema<W>>,
+  opts: DetachedChildWorkflowInvocationOptions<W>,
 ) => ForeignWorkflowHandle<W>;
 
 interface RequestAccessor<TPayload, TResponse> {
@@ -1399,7 +1400,7 @@ type AwaitableEntry =
 
 Direct `await` dispatches and observes an entry. A scope dispatches entries under structural ownership and passes handles to the body.
 
-Detached child workflow starts are not entries. `ctx.children.detached.X(opts)` is a buffered synchronous operation that returns a `ForeignWorkflowHandle<W>` immediately and cannot be passed to structured-concurrency scopes.
+Detached child workflow starts are not entries. `ctx.children.detached.X(args, opts)` is a buffered synchronous operation that returns a `ForeignWorkflowHandle<W>` immediately and cannot be passed to structured-concurrency scopes.
 
 ### Scope input structure
 
@@ -1414,8 +1415,8 @@ await ctx.scope(
       ctx.steps.quoteHotel({ city: "Rome" }),
     ],
     children: new Map([
-      ["bar1", ctx.children.attached.bar({ args: { n: 1 } })],
-      ["bar2", ctx.children.attached.bar({ args: { n: 2 } })],
+      ["bar1", ctx.children.attached.bar({ n: 1 })],
+      ["bar2", ctx.children.attached.bar({ n: 2 })],
     ]),
     review: ctx.requests.humanReview({ data: "..." }),
   },
@@ -1433,7 +1434,7 @@ For attached child workflow handles, the scope body can also push messages:
 ```typescript
 await ctx.scope(
   "process",
-  { order: ctx.children.attached.processOrder(startOpts) },
+  { order: ctx.children.attached.processOrder({ orderId: "o-1" }) },
   async (ctx, { order }) => {
     order.channels.cancel.send({ reason: "timeout-soon" });
     return ctx.join(order);
@@ -2853,11 +2854,10 @@ const handle = await client.workflows.order.start({
   args: { destination: "Paris", customerId: "cust-123" },
 });
 
-ctx.children.detached.followUp({
-  idempotencyKey: "follow-up-next-day",
-  delaySeconds: 86400,
-  args: { parentId: ctx.instanceId },
-});
+ctx.children.detached.followUp(
+  { parentId: ctx.instanceId },
+  { idempotencyKey: "follow-up-next-day", delaySeconds: 86400 },
+);
 ```
 
 The deadline clock starts from creation time, not scheduled start. If `delaySeconds >= deadlineSeconds`, the engine raises an error.
@@ -2915,12 +2915,16 @@ type StartWorkflowOptions<
   : { args: TArgs; idempotencyKey: string } & ScheduledDeliveryOptions;
 ```
 
-This applies to `client.workflows.<def>.start(...)` (root workflows) and `ctx.children.detached.X(...)` (detached children) — both cases where the workflow is globally addressable and needs an idempotency key.
+This applies to `client.workflows.<def>.start(...)` (root workflows) — globally addressable starts that still take `{ args, idempotencyKey?, ... }` in one options bag. Detached children use the same **idempotency** rules but pass workflow args as the first argument: `ctx.children.detached.X(args, { idempotencyKey?, ... })`.
 
 It does **not** apply to attached children. Attached children are not globally addressable (Part 5) and do not have an idempotency key. Their start options are simply:
 
 ```typescript
-type AttachedChildWorkflowStartOptions<TArgs> = { args: TArgs } & ScheduledDeliveryOptions;
+type AttachedChildWorkflowInvocationOptions<TMetadata> = {
+  metadata?: TMetadata;
+  seed?: string;
+} & ScheduledDeliveryOptions;
+// Attached child args are the first call argument (like steps), not wrapped in `{ args }`.
 ```
 
 No `idempotencyKey` field, no `idempotencyKeyFactory` interaction.
@@ -2983,7 +2987,7 @@ The `args` field is a `JsonSchemaConstraint` — the same constraint as everythi
 
 The codebase follows a strict encode-on-write, decode-on-read discipline using `StandardSchemaV1`'s two type parameters. Standard Schema does not support bidirectional transforms (there is no `encode(Output) → Input`), so the write side must always accept `InferInput` (the JSON-serializable form):
 
-- **Call sites** (write side) accept `InferInput`: `ctx.steps.X(args)`, `ctx.children.attached.X({ args })`, `ctx.errors.X(message, details)`, `channel.send(data)`, `stream.write(data)`. The developer provides the serializable form.
+- **Call sites** (write side) accept `InferInput`: `ctx.steps.X(args)`, `ctx.children.attached.X(args)`, `ctx.errors.X(message, details)`, `channel.send(data)`, `stream.write(data)`. The developer provides the serializable form.
 - **Callbacks** (read side) receive `InferOutput`: `execute(args, { signal })`, queue/request/topic handlers `(payload, { signal })`, compensation `undo` callbacks, `idempotencyKeyFactory(args)`. The engine deserializes from the database and validates through the schema, producing the decoded form.
 - **External results** (read side) are typed as `InferOutput`: step results, workflow results, error details, operation results and compensation info. The external caller receives the decoded form.
 
@@ -3191,8 +3195,8 @@ defineStep({
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `ctx.steps.X(args, opts?)`                                                                                                                                   | Returns an awaitable entry. No builder chain. Timeout via `{ timeout }`.                                                                                     |
 | `ctx.requests.X(payload, opts?)`                                                                                                                             | Returns an awaitable entry. Priority and timeout via options.                                                                                                |
-| `ctx.children.attached.X(startOpts, opts?)`                                                                                                                  | Attached child entry: **await-only** for the success/failure union (timeout adds a variant). `channels.X.send` only on `AttachedChildWorkflowScopeHandle` inside `ctx.scope`. |
-| `ctx.children.detached.X(opts)`                                                                                                                              | Buffered start. Returns `ForeignWorkflowHandle<W>` (`channels.X.send`, `idempotencyKey`; not awaitable from the parent).                                      |
+| `ctx.children.attached.X(args, opts?)`                                                                                                                  | Attached child entry: **await-only** for the success/failure union (timeout adds a variant). `channels.X.send` only on `AttachedChildWorkflowScopeHandle` inside `ctx.scope`. |
+| `ctx.children.detached.X(args, opts)`                                                                                                                        | Buffered start. Returns `ForeignWorkflowHandle<W>` (`channels.X.send`, `idempotencyKey`; not awaitable from the parent).                                      |
 | `ctx.errors.X(message, details?)`                                                                                                                            | Factory functions for the current definition level's declared errors.                                                                                        |
 | `ctx.queues.X.enqueue(payload, opts?)`                                                                                                                       | Sync buffered operation.                                                                                                                                     |
 | `ctx.topics.X.publish(payload, opts?)`                                                                                                                       | Sync buffered operation.                                                                                                                                     |

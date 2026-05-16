@@ -113,7 +113,7 @@ export const errorModelAcceptanceWorkflow = defineWorkflow({
     // ----------------------------------------------------------------------
 
     const child = await ctx.children.attached.child({
-      args: { id: "c-1" },
+      id: "c-1",
     });
     if (!child.ok) {
       if (child.status === "failed") {

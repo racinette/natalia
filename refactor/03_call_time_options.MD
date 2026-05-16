@@ -54,15 +54,15 @@ Child workflows are not retried by the parent — they either run to
 completion, fail with a typed `error: ErrorValue<TChildErrors>`, or (when
 a timeout is supplied) the parent observation times out.
 
-- `(startOpts)` — awaits to `{ ok: true; result } | { ok: false; status: "failed"; error }`.
-- `(startOpts, { retry?, timeout })` — adds `{ ok: false; status: "timeout" }`.
+- `(args)` — awaits to `{ ok: true; result } | { ok: false; status: "failed"; error }`.
+- `(args, { retry?, timeout })` — adds `{ ok: false; status: "timeout" }`.
 
 The returned entry is an `AttachedChildWorkflowEntry<W, TAwaited>` —
 awaitable for the success/failure union only (no `channels.X.send` on this
-type). **`AttachedChildWorkflowStartOptions<W>` omits `idempotencyKey`** —
-attached children are parent-scoped, not globally keyed on start options.
+type). Workflow args are the first argument (like steps). Invocation options
+omit `idempotencyKey` — attached children are parent-scoped, not globally keyed.
 
-`ctx.children.detached.X(opts)` is a buffered operation that returns a
+`ctx.children.detached.X(args, opts)` is a buffered operation that returns a
 `ForeignWorkflowHandle<W>` synchronously. Detached children are
 globally-addressable root workflows with their own `idempotencyKey`.
 
@@ -133,10 +133,10 @@ verifies:
    adds the `timeout` variant.
 5. The attached child entry is awaitable for the union; it does **not**
    expose `channels` on the direct entry; `idempotencyKey` is rejected on
-   `startOpts`.
+   invocation options.
 6. Inside `ctx.scope`, the scope mirror for an attached child extends
    `ChannelSendSurface`; `channels.X.send(...)` returns plain `void`.
-7. `ctx.children.detached.X(opts)` returns a `ForeignWorkflowHandle<W>` with
+7. `ctx.children.detached.X(args, opts)` returns a `ForeignWorkflowHandle<W>` with
    `idempotencyKey` and `channels`. The handle is not awaitable.
 8. Request accessors expose two overloads — the second requires
    `timeout` when supplied; `priority` alone is rejected.

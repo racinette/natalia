@@ -377,7 +377,7 @@ const ctx13FullWorkflow = ctx13FullInterface.implement({
     }
 
     const _childAEntry = ctx.children.attached.childA({
-      args: { seed: 1 },
+      seed: 1,
     });
     type _ChildAResult = AttachedChildWorkflowResult<
       string,

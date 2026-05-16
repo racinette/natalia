@@ -64,7 +64,7 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
         normalize: ctx.steps.normalize({ orderId: args.orderId }),
         approval: ctx.requests.approval({ orderId: args.orderId }),
         followUp: ctx.children.attached.followUp({
-          args: { orderId: args.orderId },
+          orderId: args.orderId,
         }),
       },
       async (scopeCtx, handles) => {
@@ -145,10 +145,10 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
     // scope entry.
     // -------------------------------------------------------------------------
 
-    const detached = ctx.children.detached.followUp({
-      idempotencyKey: "f-detached-1",
-      args: { orderId: args.orderId },
-    });
+    const detached = ctx.children.detached.followUp(
+      { orderId: args.orderId },
+      { idempotencyKey: "f-detached-1" },
+    );
     // @ts-expect-error detached child handles are not scope entries
     await ctx.scope(
       "DetachedRejected",
