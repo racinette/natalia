@@ -2126,7 +2126,7 @@ Failed handler attempts are written to `request_attempt`. Only failures are reco
 declare const MANUAL: unique symbol;
 ```
 
-`MANUAL` can be returned by a handler or by `onExhausted`. In both cases the request transitions to manual mode and waits for `client.requests.<name>.resolve()`.
+`MANUAL` can be returned by a handler or by `onExhausted`. In both cases the request transitions to manual mode and waits for an external actor to resolve it through a request handle.
 
 ### Request compensation
 
@@ -2297,21 +2297,24 @@ Handlers claim requests ordered by `priority ASC, created_at ASC, id ASC`.
 ### Manual resolution client API
 
 ```typescript
-const result = await client.requests.humanReview.resolve(requestId, {
+const request = client.requests.humanReview.get(requestId);
+
+const result = await request.resolve({
   decision: "approve",
   note: "Approved by admin",
 });
 
-const pending = await client.requests.humanReview.list({
-  status: "manual",
-  limit: 50,
-  cursor: prevCursor,
-});
+const pending = client.requests.humanReview.findMany(
+  ({ status }) => eq(status, "manual"),
+  { limit: 50 },
+);
 
-const cancelResult = await client.requests.humanReview.cancel(requestId);
+for await (const request of pending) {
+  await request.cancel();
+}
 ```
 
-`resolve()` validates the response against the request's response schema. `resolve()` on a claimed request interrupts the handler via its `AbortSignal`. `cancel()` transitions the request to `cancelled`; workflow-side request entries with timeout observe `{ ok: false; status: "timeout" }`.
+`client.requests.<name>` is a normal queryable namespace: `get(id)` constructs a request handle, `findUnique` / `findMany` return request handles, and `count` aggregates over the same predicate surface. `resolve()` validates the response against the request's response schema. `resolve()` on a claimed request interrupts the handler via its `AbortSignal`. `cancel()` transitions the request to `cancelled`; workflow-side request entries with timeout observe `{ ok: false; status: "timeout" }`.
 
 ---
 
@@ -2779,7 +2782,7 @@ interface AttemptAccessor {
 Request handlers can return the `MANUAL` sentinel directly (in addition to `onExhausted` returning it). This enables the "check-or-wait" pattern: the handler checks an external system, resolves the request if the condition is met, or returns `MANUAL` to transition to manual mode immediately — without exhausting retry attempts.
 
 - **Return `TResponse`** → request resolved. Workflow unblocks.
-- **Return `MANUAL`** → stop retrying, transition to `status = 'manual'`. Wait for external resolution via `client.requests.<name>.resolve()`.
+- **Return `MANUAL`** → stop retrying, transition to `status = 'manual'`. Wait for external resolution through a request handle.
 - **Throw** → transient failure, retry per `retryPolicy`.
 
 Handler return type: `TResponse | typeof MANUAL`.

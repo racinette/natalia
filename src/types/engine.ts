@@ -10,6 +10,10 @@ import type {
   AttachedChildWorkflowId,
   CompensationBlockRow,
   CompensationBlockWhereTemplate,
+  RequestId,
+  RequestRow,
+  RequestStatus,
+  RequestWhereTemplate,
   RequestCompensationRow,
   RequestCompensationWhereTemplate,
   WorkflowWhereTemplate,
@@ -62,6 +66,7 @@ import type { StepCompensationDefinition, StepDefinition } from "./definitions/s
 import type {
   RequestCompensationConfig,
   RequestDefinition,
+  RequestDefinitions,
 } from "./definitions/requests";
 import type { IsHeaderAuthoringKind } from "./definitions/authoring-kind";
 
@@ -233,6 +238,53 @@ export type RequestCompensationNamespaceExternal<
 >;
 
 // =============================================================================
+// FORWARD REQUEST HANDLE
+// =============================================================================
+
+export interface RequestResolveOutcome {
+  readonly status: "resolved";
+}
+
+export type RequestCancelOutcome =
+  | { readonly status: "cancelled" }
+  | { readonly status: "already_terminal"; readonly current: RequestStatus };
+
+/**
+ * Operator-facing handle for a forward request invocation.
+ *
+ * Request namespaces are queryable through the same `get` / `findUnique` /
+ * `findMany` / `count` surface as workflows and compensation instances.
+ * Individual request actions live on the handle.
+ */
+export interface RequestHandleExternal<
+  TRequestName extends string = string,
+  TPayload = unknown,
+  TResponse = unknown,
+  TResponseInput = TResponse,
+> extends FetchableHandle<RequestRow<TRequestName, TPayload, TResponse>> {
+  readonly id: RequestId<TRequestName>;
+
+  resolve(
+    response: TResponseInput,
+    opts?: OperatorActionOptions,
+  ): Promise<RequestResolveOutcome>;
+
+  cancel(opts?: OperatorActionOptions): Promise<RequestCancelOutcome>;
+}
+
+export type RequestNamespaceExternal<
+  TRequestName extends string = string,
+  TPayload = unknown,
+  TResponse = unknown,
+  TResponseInput = TResponse,
+> = QueryableNamespace<
+  RequestHandleExternal<TRequestName, TPayload, TResponse, TResponseInput>,
+  RequestWhereTemplate<TRequestName, TPayload, TResponse>,
+  RequestRow<TRequestName, TPayload, TResponse>,
+  RequestId<TRequestName>
+>;
+
+// =============================================================================
 // ATTACHED / DETACHED CHILD WORKFLOW NAMESPACES
 //
 // Per `REFACTOR.MD` Part 5 §"External introspection of children" — operators
@@ -344,6 +396,71 @@ export type DetachedChildWorkflowNamespaceExternal<
 >;
 
 type IsAny<T> = 0 extends (1 & T) ? true : false;
+
+type WorkflowClientLooseRequests = Record<string, RequestNamespaceExternal>;
+
+/* eslint-disable @typescript-eslint/no-explicit-any -- heterogeneous request definitions; schema slots stay top-like */
+type RequestPayloadForNamespace<TRequest> =
+  TRequest extends RequestDefinition<string, infer TPayloadSchema, any, any>
+    ? StandardSchemaV1.InferOutput<TPayloadSchema>
+    : unknown;
+
+type RequestResponseForNamespace<TRequest> =
+  TRequest extends RequestDefinition<string, any, infer TResponseSchema, any>
+    ? StandardSchemaV1.InferOutput<TResponseSchema>
+    : unknown;
+
+type RequestResponseInputForNamespace<TRequest> =
+  TRequest extends RequestDefinition<string, any, infer TResponseSchema, any>
+    ? StandardSchemaV1.InferInput<TResponseSchema>
+    : unknown;
+
+type RequestDefinitionUnionFromWorkflow<W> =
+  InferWorkflowRequests<W> extends infer TRequests
+    ? [TRequests] extends [never]
+      ? never
+      : IsAny<TRequests> extends true
+        ? RequestDefinition<string, any, any, any>
+        : TRequests extends RequestDefinitions
+          ? TRequests[keyof TRequests & string]
+          : never
+    : never;
+
+type RequestDefinitionUnionFromWorkflows<
+  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+> = {
+  [K in keyof TWfs & string]: RequestDefinitionUnionFromWorkflow<TWfs[K]>;
+}[keyof TWfs & string];
+
+type WorkflowClientRequestNamespacesFromUnion<TRequestUnion> = {
+  [TRequest in TRequestUnion as TRequest extends RequestDefinition<
+    infer TName,
+    any,
+    any,
+    any
+  >
+    ? TName
+    : never]: TRequest extends RequestDefinition<infer TName, any, any, any>
+    ? RequestNamespaceExternal<
+        TName,
+        RequestPayloadForNamespace<TRequest>,
+        RequestResponseForNamespace<TRequest>,
+        RequestResponseInputForNamespace<TRequest>
+      >
+    : never;
+};
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+type WorkflowClientRequestNamespaces<
+  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+> =
+  IsAny<TWfs> extends true
+    ? WorkflowClientLooseRequests
+    : RequestDefinitionUnionFromWorkflows<TWfs> extends infer TRequestUnion
+      ? [TRequestUnion] extends [never]
+        ? Record<string, never>
+        : WorkflowClientRequestNamespacesFromUnion<TRequestUnion>
+      : Record<string, never>;
 
 type WorkflowHandleLooseChildWorkflows = Record<
   string,
@@ -820,6 +937,7 @@ export interface WorkflowClient<
   readonly workflows: {
     [K in keyof TWfs]: WorkflowClientAccessor<TWfs[K]>;
   };
+  readonly requests: WorkflowClientRequestNamespaces<TWfs>;
 }
 
 /**

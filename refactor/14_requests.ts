@@ -6,6 +6,7 @@ import {
   UnrecoverableError,
 } from "../workflow";
 import { createWorkflowClient } from "../client";
+import { eq } from "../search";
 import type {
   RequestAccessorResult,
   RequestCompensationInfo,
@@ -119,15 +120,19 @@ client.registerRequestHandler(approvalRequest, async () => {
 });
 
 async function manualResolution(): Promise<void> {
-  const page = await client.requests.approval.search({
-    where: { kind: "eq", namespace: "request", path: "status", value: "manual" },
-  });
-  const request = page.items[0];
-  await client.requests.approval.resolve(request.id, {
+  const requests = await client.requests.approvalRequestAcceptance.findMany(
+    ({ status }) => eq(status, "manual"),
+    { fields: { id: true }, limit: 1 },
+  );
+  const request = requests[0];
+  if (!request) {
+    return;
+  }
+  await request.resolve({
     approved: true,
     reviewerId: "manual-reviewer",
   });
-  await client.requests.approval.cancel(request.id);
+  await request.cancel();
 }
 
 type _Unregister = Assert<IsEqual<typeof unregister, Unsubscribe>>;

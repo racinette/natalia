@@ -1,5 +1,7 @@
 import type {
   AnyPublicWorkflowHeader,
+  RequestHandleExternal,
+  RequestNamespaceExternal,
   WorkflowClient,
   WorkflowClientAccessor,
 } from "./types";
@@ -19,12 +21,14 @@ export abstract class AbstractWorkflowClient<
   public readonly workflows: {
     [K in keyof TWfs]: WorkflowClientAccessor<TWfs[K]>;
   };
+  public readonly requests: WorkflowClient<TWfs>["requests"];
 
   constructor(workflows: TWfs) {
     const workflowAccessors: Record<
       string,
       WorkflowClientAccessor<AnyPublicWorkflowHeader>
     > = {};
+    const requestAccessors: Record<string, RequestNamespaceExternal> = {};
     for (const [name] of Object.entries(workflows)) {
       workflowAccessors[name] = {
         start: async (_options: unknown) => {
@@ -52,14 +56,64 @@ export abstract class AbstractWorkflowClient<
           throw new Error("Not implemented");
         },
       } as WorkflowClientAccessor<AnyPublicWorkflowHeader>;
+
+      const requests = (workflows[name] as { requests?: Record<string, { name?: string }> })
+        .requests;
+      if (requests) {
+        for (const request of Object.values(requests)) {
+          if (request.name && !requestAccessors[request.name]) {
+            requestAccessors[request.name] = this.createRequestAccessor();
+          }
+        }
+      }
     }
 
     this.workflows = workflowAccessors as unknown as {
       [K in keyof TWfs]: WorkflowClientAccessor<TWfs[K]>;
     };
+    this.requests = requestAccessors as WorkflowClient<TWfs>["requests"];
   }
 
   protected abstract assertClientAvailable(): void;
+
+  private createRequestAccessor(): RequestNamespaceExternal {
+    return {
+      get: ((_id: unknown) => {
+        this.assertClientAvailable();
+        return this.createRequestHandle();
+      }) as RequestNamespaceExternal["get"],
+      findUnique: async (_query: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+      findMany: ((_query: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      }) as RequestNamespaceExternal["findMany"],
+      count: async (_query: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+    };
+  }
+
+  private createRequestHandle(): RequestHandleExternal {
+    return {
+      id: "" as RequestHandleExternal["id"],
+      fetchRow: async (_fieldsOrOpts?: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+      resolve: async (_response: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+      cancel: async (_opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+    } as RequestHandleExternal;
+  }
 }
 
 class StaticWorkflowClient<

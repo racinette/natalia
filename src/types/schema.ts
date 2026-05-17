@@ -66,6 +66,18 @@ export type RequestCompensationInstanceId = string & {
   readonly __brand: "RequestCompensationInstanceId";
 };
 
+/**
+ * Branded opaque public id for a forward request invocation row.
+ *
+ * The `__request` phantom ties the id to the request definition name so
+ * `client.requests.someRequest.get(id)` cannot be accidentally fed an id from
+ * another request type.
+ */
+export type RequestId<TRequestName extends string = string> = string & {
+  readonly __brand: "RequestId";
+  readonly __request: TRequestName;
+};
+
 // =============================================================================
 // STATUS UNIONS
 // =============================================================================
@@ -101,6 +113,17 @@ export type RequestCompensationStatus =
   | "completed"
   | "skipped"
   | "manual";
+
+/**
+ * Durable status of a forward request invocation.
+ */
+export type RequestStatus =
+  | "pending"
+  | "claimed"
+  | "resolved"
+  | "manual"
+  | "timedOut"
+  | "cancelled";
 
 // =============================================================================
 // STEP TYPE CATALOG
@@ -214,6 +237,29 @@ export interface RequestCompensationRow<
   readonly skippedAt: Date | null;
 }
 
+/**
+ * Flat scalar columns of a forward request invocation row.
+ */
+export interface RequestRow<
+  TRequestName extends string = string,
+  TPayload = unknown,
+  TResponse = unknown,
+> {
+  readonly id: RequestId<TRequestName>;
+  readonly requestName: TRequestName;
+  readonly status: RequestStatus;
+  readonly priority: number;
+  readonly payload: TPayload;
+  readonly response: TResponse | null;
+  readonly createdAt: Date;
+  readonly claimedAt: Date | null;
+  readonly resolvedAt: Date | null;
+  readonly manualAt: Date | null;
+  readonly timedOutAt: Date | null;
+  readonly cancelledAt: Date | null;
+  readonly deadlineAt: Date | null;
+}
+
 // =============================================================================
 // WHERE TEMPLATES (single row-shaped predicate scope)
 // =============================================================================
@@ -235,6 +281,15 @@ export type RequestCompensationWhereTemplate<
   TPayload = unknown,
   TCompResult = unknown,
 > = RequestCompensationRow<TPayload, TCompResult>;
+
+/**
+ * Predicate template for forward request invocation rows.
+ */
+export type RequestWhereTemplate<
+  TRequestName extends string = string,
+  TPayload = unknown,
+  TResponse = unknown,
+> = RequestRow<TRequestName, TPayload, TResponse>;
 
 // =============================================================================
 // COMPENSATION BLOCK INSTANCE ROW + QUERY NAMESPACES

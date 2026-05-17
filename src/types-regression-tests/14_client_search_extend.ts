@@ -7,6 +7,7 @@
 import { z } from "zod";
 import { createWorkflowClient } from "../client";
 import {
+  defineRequest,
   defineWorkflow,
   defineWorkflowHeader,
   defineWorkflowInterface,
@@ -15,14 +16,19 @@ import type {
   AttachedChildWorkflowExternalHandle,
   FindManyResult,
   FindUniqueResult,
+  HandleWithRow,
   InferWorkflowArgs,
   InferWorkflowMetadata,
   InferWorkflowResult,
+  RequestHandleExternal,
+  RequestNamespaceExternal,
+  RequestRow,
   WorkflowClient,
   WorkflowHandleExternal,
 } from "../types";
 import type {
   AttachedChildWorkflowId,
+  RequestId,
   WorkflowWhereTemplate,
 } from "../types/schema";
 import {
@@ -81,6 +87,17 @@ const workerInterface = workerHeader.extend({
   events: { done: true },
 });
 
+const reserveTicketRequest = defineRequest({
+  name: "client14ReserveTicket",
+  payload: z.object({
+    customerId: z.string(),
+    flightDate: z.string(),
+  }),
+  response: z.object({
+    reservationId: z.string(),
+  }),
+});
+
 const orchestratorHeader = defineWorkflowHeader({
   name: "client14Orchestrator",
   args: z.object({ ref: z.string() }),
@@ -92,6 +109,7 @@ const orchestratorWorkflow = defineWorkflow({
   children: {
     attached: { worker: workerHeader },
   },
+  requests: { reserveTicket: reserveTicketRequest },
   async execute() {
     return undefined;
   },
@@ -224,6 +242,77 @@ async function _client14SearchSurface(
   );
   type _WorkerCount = Assert<IsEqual<typeof workerCount, number>>;
   void workerCount;
+
+  type _RequestNamespace = Assert<
+    IsEqual<
+      typeof c.requests.client14ReserveTicket,
+      RequestNamespaceExternal<
+        "client14ReserveTicket",
+        { customerId: string; flightDate: string },
+        { reservationId: string },
+        { reservationId: string }
+      >
+    >
+  >;
+
+  const requestMany = c.requests.client14ReserveTicket.findMany(
+    (s) =>
+      and(
+        eq(s.status, "manual"),
+        eq(s.payload.flightDate, "2027-01-01"),
+        gt(s.priority, 0),
+      ),
+    {
+      fields: { id: true, payload: true },
+      sort: [{ path: "priority", direction: "desc" }],
+      limit: 1,
+    },
+  );
+  type _RequestMany = Assert<
+    IsEqual<
+      typeof requestMany,
+      FindManyResult<
+        HandleWithRow<
+          RequestHandleExternal<
+            "client14ReserveTicket",
+            { customerId: string; flightDate: string },
+            { reservationId: string },
+            { reservationId: string }
+          >,
+          Pick<
+            RequestRow<
+              "client14ReserveTicket",
+              { customerId: string; flightDate: string },
+              { reservationId: string }
+            >,
+            "id" | "payload"
+          >
+        >
+      >
+    >
+  >;
+  void requestMany;
+
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- regression-only cast to branded `RequestId`
+  const requestId = "req-1" as RequestId<"client14ReserveTicket">;
+  const requestHandle = c.requests.client14ReserveTicket.get(requestId);
+  type _RequestHandle = Assert<
+    IsEqual<
+      typeof requestHandle,
+      RequestHandleExternal<
+        "client14ReserveTicket",
+        { customerId: string; flightDate: string },
+        { reservationId: string },
+        { reservationId: string }
+      >
+    >
+  >;
+  await requestHandle.resolve({ reservationId: "r-1" });
+  await requestHandle.cancel();
+  // @ts-expect-error — request ids are branded by request name
+  c.requests.client14ReserveTicket.get("plain-id");
+  // @ts-expect-error — resolve payload must match the request response schema
+  await requestHandle.resolve({ reservationId: 123 });
 
   // @ts-expect-error — `shadow` rows have `{ flag: boolean }` args, not `sku`
   await c.workflows.shadow.findUnique((s) => eq(s.args.sku, "nope"));

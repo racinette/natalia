@@ -17,7 +17,7 @@ Retry strategy, per-attempt limits, exhaustion, and **`MANUAL`** belong on **han
 
 Handlers are registered on the **client** (alongside the engine runtime), not on `defineRequest`. A handler receives the decoded **payload** and **`{ signal }`** for the current try. It **returns** a typed **response**, or **`MANUAL`** when resolution must come from outside (human, ticket system, webhook).
 
-When a handler (or its **`onExhausted`** callback) returns **`MANUAL`**, the request enters **manual mode** and stays open until **`client.requests.<name>.resolve(...)`** supplies the response (or the invocation is cancelled). Failed handler tries are persisted on the request’s attempt log (**failed tries only** on the handler side—see `AttemptAccessor`).
+When a handler (or its **`onExhausted`** callback) returns **`MANUAL`**, the request enters **manual mode** and stays open until an external actor resolves the request through its request handle (or the invocation is cancelled). Failed handler tries are persisted on the request’s attempt log (**failed tries only** on the handler side—see `AttemptAccessor`).
 
 #### Compensable requests
 
@@ -122,33 +122,204 @@ client.registerRequestHandler(
 );
 ```
 
-**Compensable request** — declare on the definition; register the compensation handler separately
+**Flight booking request** — reserve immediately when inventory exists, otherwise wait in manual mode for future availability
 
 ```typescript
-const refundCharge = defineRequest({
-  name: "refundCharge",
-  payload: z.object({ chargeId: z.string() }),
-  response: z.object({ refundId: z.string() }),
+import { MANUAL } from "natalia";
+import { and, eq } from "natalia/search";
+
+const reserveFlightTicket = defineRequest({
+  name: "reserveFlightTicket",
+  payload: z.object({
+    customerId: z.string(),
+    flightDate: z.string(),
+    from: z.string(),
+    to: z.string(),
+  }),
+  response: z.object({
+    reservationId: z.string(),
+    ticketId: z.string(),
+    expiresAt: z.string(),
+  }),
   compensation: {
     result: z.object({
-      kind: z.enum(["refunded", "charge_not_found", "operator_resolved"]),
-      note: z.string().optional(),
+      kind: z.enum(["reservation_released", "nothing_to_release"]),
+      failedForwardAttempts: z.number(),
     }),
   },
 });
 
-client.registerRequestCompensationHandler(
-  refundCharge,
-  async (payload, info, { signal }) => {
-    if (info.status === "completed") {
-      await reverseRefund(payload.chargeId, info.response.refundId, { signal });
-      return { kind: "refunded" as const };
+const customerNotifications = defineQueue({
+  name: "customerNotifications",
+  message: z.object({
+    kind: z.literal("no_ticket_available"),
+    customerId: z.string(),
+    flightDate: z.string(),
+  }),
+});
+
+const scoreTicketRequestPriority = defineStep({
+  name: "scoreTicketRequestPriority",
+  args: z.object({
+    customerId: z.string(),
+    flightDate: z.string(),
+    from: z.string(),
+    to: z.string(),
+  }),
+  result: z.object({ priority: z.number() }),
+  async execute(args, { signal }) {
+    const score = await scoreCustomerConversionLikelihood(args.customerId, {
+      signal,
+    });
+    return { priority: scoreToTicketQueuePriority(score) };
+  },
+});
+
+const chargeCustomer = defineStep({
+  name: "chargeCustomer",
+  args: z.object({
+    customerId: z.string(),
+    reservationId: z.string(),
+  }),
+  result: z.object({ paymentId: z.string() }),
+  async execute(args, { signal }) {
+    return billing.chargeForReservation(args, { signal });
+  },
+});
+
+const bookFlight = defineWorkflow({
+  name: "bookFlight",
+  steps: { scoreTicketRequestPriority, chargeCustomer },
+  queues: { customerNotifications },
+  requests: { reserveFlightTicket },
+  args: z.object({
+    customerId: z.string(),
+    flightDate: z.string(),
+    from: z.string(),
+    to: z.string(),
+    ticketSearchTimeoutOffsetSeconds: z.number(),
+  }),
+  async execute(ctx, args) {
+    const flightDateEndsAt = endOfFlightDate(args.flightDate);
+    const timeoutAt = new Date(
+      flightDateEndsAt.getTime() - args.ticketSearchTimeoutOffsetSeconds * 1000,
+    );
+    const { priority } = await ctx.steps.scoreTicketRequestPriority({
+      customerId: args.customerId,
+      flightDate: args.flightDate,
+      from: args.from,
+      to: args.to,
+    });
+
+    const ticket = await ctx.requests.reserveFlightTicket(
+      {
+        customerId: args.customerId,
+        flightDate: args.flightDate,
+        from: args.from,
+        to: args.to,
+      },
+      {
+        priority,
+        timeout: timeoutAt,
+      },
+    );
+
+    if (!ticket.ok) {
+      ctx.queues.customerNotifications.enqueue({
+        kind: "no_ticket_available",
+        customerId: args.customerId,
+        flightDate: args.flightDate,
+      });
+      throw ctx.errors.NoTicketAvailable("No ticket became available");
     }
-    return {
-      kind: "operator_resolved" as const,
-      note: "forward request unsettled",
-    };
+
+    await ctx.steps.chargeCustomer({
+      customerId: args.customerId,
+      reservationId: ticket.result.reservationId,
+    });
+    return ticket.result;
+  },
+});
+
+client.registerRequestHandler(
+  reserveFlightTicket,
+  async (payload, { signal }) => {
+    const reservation = await db.transaction(async (tx) => {
+      const ticket = await tx.returnedTickets.findAvailableForUpdate({
+        date: payload.flightDate,
+        from: payload.from,
+        to: payload.to,
+        signal,
+      });
+
+      if (!ticket) {
+        return null;
+      }
+
+      return tx.reservations.createForCustomer({
+        customerId: payload.customerId,
+        ticketId: ticket.id,
+        signal,
+      });
+    });
+
+    return reservation ?? MANUAL;
+  },
+  { retryPolicy: { timeoutSeconds: 30, maxAttempts: 3 } },
+);
+
+async function onTicketReturned(event: TicketReturnedEvent) {
+  const waiting = client.requests.reserveFlightTicket.findMany(
+    ({ payload, status }) =>
+      and(
+        eq(status, "manual"),
+        eq(payload.flightDate, event.date),
+        eq(payload.from, event.from),
+        eq(payload.to, event.to),
+      ),
+    {
+      fields: { id: true, payload: true },
+      sort: [{ path: "priority", direction: "desc" }],
+      limit: 1,
+    },
+  );
+
+  const [request] = await waiting;
+  if (!request) {
+    return;
+  }
+
+  const reservation = await reserveTicketForCustomer({
+    ticketId: event.ticketId,
+    customerId: request.row.payload.customerId,
+    idempotencyKey: request.id,
+  });
+
+  await request.resolve(reservation);
+}
+
+client.registerRequestCompensationHandler(
+  reserveFlightTicket,
+  async (_payload, info, { signal }) => {
+    const failedForwardAttempts = await info.attempts.count();
+
+    if (info.status !== "completed") {
+      return { kind: "nothing_to_release" as const, failedForwardAttempts };
+    }
+
+    await releaseReservation(info.response.reservationId, { signal });
+    return { kind: "reservation_released" as const, failedForwardAttempts };
   },
   { retryPolicy: { timeoutSeconds: 30 } },
 );
 ```
+
+The request call uses an absolute **`Date`** timeout derived from the flight date. The customer supplies an offset in seconds from the end of **`flightDate`**, so the computed timeout is always relative to the flight itself rather than an independent deadline that the workflow must cap.
+
+The **priority** comes from a normal workflow-owned **step**. In this example, customer scoring decides how valuable the booking is likely to be, and the request uses that score-derived priority when competing with other waiting ticket requests.
+
+The handler either reserves an available ticket in one transaction or returns **`MANUAL`**. Manual requests become a durable, queryable waitlist keyed by date and route: each ticket-return event can search the waiting requests, reserve exactly one ticket, and **`resolve`** that request. If no ticket becomes available before the workflow’s call-time **`timeout`**, the workflow observes `{ ok: false, status: "timeout" }` and can notify the customer.
+
+The compensation handler receives the original payload plus **`info`** about the forward request. If the request completed, **`info.response`** contains the reservation to release. For timed-out or terminated requests there is no reservation, but **`info.attempts`** is still available for audit and operator-visible compensation results.
+
+See [Resolving Requests Asynchronously](./resolving-requests-asynchronously.md) for the commit-boundary and retry rules around external **`resolve`** calls.
