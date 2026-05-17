@@ -1,4 +1,4 @@
-# 13 Requests
+# 14 Requests
 
 ## Goal
 
@@ -20,7 +20,13 @@ Add durable requests for workflow code that needs an external handler or manual 
 - Request handler retry policy belongs to registration.
 - Handler return type is `TResponse | typeof MANUAL`.
 - `MANUAL` transitions a request to manual mode without exhausting retries.
-- Client APIs can resolve or cancel manual requests.
+- Client request namespaces use the unified searchable surface: `.get(id)`,
+  `.findUnique(query)`, `.findMany(query)`, and `.count(query)`.
+- Request search returns typed request handles. Manual resolution and
+  cancellation are handle methods: `request.resolve(response)` and
+  `request.cancel()`.
+- Request ids are branded by request definition name, so `.get(id)` cannot mix
+  ids from different request types.
 - Requests can declare compensation with typed payload and response info.
 
 ## Runtime Target
@@ -39,4 +45,4 @@ Add durable requests for workflow code that needs an external handler or manual 
 
 ## Acceptance Contract
 
-The paired file `refactor/14_requests.ts` verifies request definition inference, workflow-side result unions, `MANUAL`, manual client APIs, request compensation info, and rejection of queue/topic-only early termination.
+The paired file `src/types-regression-tests/14_requests.ts` verifies request definition inference, workflow-side result unions, handle-based manual client APIs, request search/prefetch typing, request compensation info, and compensation-handler `MANUAL`.
