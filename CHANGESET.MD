@@ -16,7 +16,6 @@ This document records **proposed** changes and open questions for the **public**
 10. **List / browse ergonomics** for operators — see §20.
 11. introduce scope hierarchies. effectively `{scope1: { scope11: true, scope12: { scope121: true } }, scope2: true }`
 12. add "aborted" flag to attempt. this is to track whether a per-attempt timeout was triggered for the attempt in question.
-13. `ctx.children.attached.processOrder({ args: {...} })` - is this really the syntax? args should be the first argument then.
 
 If we land the above coherently, the public API is close to “feature complete” for the product vision.
 
