@@ -1,6 +1,7 @@
 import type { StandardSchemaV1 } from "../standard-schema";
 import type { ChannelDefinitions } from "../definitions/primitives";
 import type { ErrorDefinitions } from "../definitions/errors";
+import type { QueueEnqueueOptions } from "../definitions/messaging";
 import type { RetentionSetter, WorkflowInvocationBaseOptions } from "../definitions/policies";
 import type { AnyWorkflowHeader } from "../definitions/workflow-headers";
 import type { RetryPolicyOptions } from "../definitions/policies";
@@ -292,6 +293,19 @@ export interface RequestAccessor<
     payload: SchemaInvocationInput<TPayloadSchema>,
     opts: RequestCallOptions,
   ): RequestEntry<TimeoutResult<TResponse>>;
+}
+
+// =============================================================================
+// QUEUE ACCESSOR
+// =============================================================================
+
+/**
+ * Workflow-side accessor for enqueueing to a declared queue.
+ *
+ * `enqueue` is a synchronous buffered operation — returns `void`, not awaitable.
+ */
+export interface QueueAccessor<TMessageSchema extends StandardSchemaV1> {
+  enqueue(message: SchemaInvocationInput<TMessageSchema>, opts?: QueueEnqueueOptions): void;
 }
 
 // =============================================================================

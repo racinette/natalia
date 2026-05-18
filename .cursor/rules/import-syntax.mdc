@@ -1,0 +1,5 @@
+---
+alwaysApply: true
+---
+
+Avoid using dynamic `import()` unless absolutely necessary. Use static import statements for static dependencies.

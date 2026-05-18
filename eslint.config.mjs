@@ -26,6 +26,17 @@ export default defineConfig(
           caughtErrorsIgnorePattern: "^_",
         },
       ],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'ImportExpression[source.type="Literal"]', // Only catches import('static-string')
+          message: 'Static import paths should use import statements. Use "// eslint-disable-next-line no-restricted-syntax" if this is intentional (e.g., lazy loading).'
+        },
+        {
+          selector: 'TSImportType[source.type="Literal"]',
+          message: 'Use a top-level `import type { ... } from "..."` instead of inline import() types.',
+        },
+      ]
     },
   },
   {

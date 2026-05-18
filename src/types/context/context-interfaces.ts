@@ -1,6 +1,7 @@
 import type { StandardSchemaV1 } from "../standard-schema";
 import type { ErrorDefinitions } from "../definitions/errors";
 import type { PatchAccessor, ChannelDefinitions, EventDefinitions, PatchDefinitions, StreamDefinitions } from "../definitions/primitives";
+import type { QueueDefinition, QueueDefinitions } from "../definitions/messaging";
 import type { RequestDefinition, RequestDefinitions } from "../definitions/requests";
 import type { RngAccessors, RngDefinitions } from "../definitions/rng";
 import type { StepDefinition, StepDefinitions } from "../definitions/steps";
@@ -11,6 +12,7 @@ import type {
   CompensationChildWorkflowAccessor,
   DetachedChildWorkflowAccessor,
   ForeignWorkflowAccessor,
+  QueueAccessor,
   RequestAccessor,
 } from "./call-builders";
 import type { BlockingResult, CompensationResolver, ExecutionResolver } from "./deterministic-handles";
@@ -128,6 +130,7 @@ export interface CompensationContext<
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
   TRequests extends RequestDefinitions = Record<string, never>,
+  TQueues extends QueueDefinitions = Record<string, never>,
   TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
   TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
@@ -164,6 +167,15 @@ export interface CompensationContext<
       any
     >
       ? RequestAccessor<TPayload, StandardSchemaV1.InferOutput<TResponseSchema>>
+      : never;
+  };
+
+  /**
+   * Queues for durable enqueue from compensation undo paths.
+   */
+  readonly queues: {
+    [K in keyof TQueues]: TQueues[K] extends QueueDefinition<infer _N, infer TMessageSchema>
+      ? QueueAccessor<TMessageSchema>
       : never;
   };
   /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -219,6 +231,7 @@ export interface CompensationContext<
         TEvents,
         TSteps,
         TRequests,
+        TQueues,
         TAttachedChildren,
         TDetachedChildren,
         TExternalWorkflows,
@@ -303,6 +316,7 @@ export interface WorkflowContext<
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
   TRequests extends RequestDefinitions = Record<string, never>,
+  TQueues extends QueueDefinitions = Record<string, never>,
   TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
   TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
@@ -340,6 +354,15 @@ export interface WorkflowContext<
       any
     >
       ? RequestAccessor<TPayload, StandardSchemaV1.InferOutput<TResponseSchema>>
+      : never;
+  };
+
+  /**
+   * Queues for durable enqueue from workflow bodies and compensation undo paths.
+   */
+  readonly queues: {
+    [K in keyof TQueues]: TQueues[K] extends QueueDefinition<infer _N, infer TMessageSchema>
+      ? QueueAccessor<TMessageSchema>
       : never;
   };
   /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -401,6 +424,7 @@ export interface WorkflowContext<
         TEvents,
         TSteps,
         TRequests,
+        TQueues,
         TAttachedChildren,
         TDetachedChildren,
         TExternalWorkflows,
@@ -488,6 +512,7 @@ export type WorkflowConcurrencyContext<
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
   TRequests extends RequestDefinitions = Record<string, never>,
+  TQueues extends QueueDefinitions = Record<string, never>,
   TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
   TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
@@ -502,6 +527,7 @@ export type WorkflowConcurrencyContext<
     TEvents,
     TSteps,
     TRequests,
+    TQueues,
     TAttachedChildren,
     TDetachedChildren,
     TExternalWorkflows,
@@ -529,6 +555,7 @@ export interface CompensationConcurrencyContext<
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
   TRequests extends RequestDefinitions = Record<string, never>,
+  TQueues extends QueueDefinitions = Record<string, never>,
   TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
   TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
@@ -543,6 +570,7 @@ export interface CompensationConcurrencyContext<
       TEvents,
       TSteps,
       TRequests,
+      TQueues,
       TAttachedChildren,
       TDetachedChildren,
       TExternalWorkflows,

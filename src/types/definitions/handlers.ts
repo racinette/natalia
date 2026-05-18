@@ -18,6 +18,20 @@ export interface HandlerContext {
  */
 export type QueueHandlerContext = HandlerContext;
 
+declare const _deadLetterSentinel: unique symbol;
+
+/**
+ * Sentinel return for queue handlers that dead-letter a message immediately,
+ * bypassing remaining retry attempts (analogous to `MANUAL` on request handlers).
+ */
+export const DEAD_LETTER: typeof _deadLetterSentinel =
+  Symbol("DEAD_LETTER") as typeof _deadLetterSentinel;
+
+export type DeadLetterSentinel = typeof DEAD_LETTER;
+
+/** Result of a queue handler invocation. */
+export type QueueHandlerResult = void | DeadLetterSentinel;
+
 /**
  * Request handler context.
  */

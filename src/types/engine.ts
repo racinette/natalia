@@ -1,3 +1,4 @@
+import type { JsonSchemaConstraint } from "./json-input";
 import type { StandardSchemaV1 } from "./standard-schema";
 import type {
   DeadlineOptions,
@@ -10,6 +11,9 @@ import type {
   AttachedChildWorkflowId,
   CompensationBlockRow,
   CompensationBlockWhereTemplate,
+  DeadLetterId,
+  DeadLetterRow,
+  DeadLetterWhereTemplate,
   RequestId,
   RequestRow,
   RequestStatus,
@@ -18,6 +22,7 @@ import type {
   RequestCompensationWhereTemplate,
   WorkflowWhereTemplate,
   WorkflowRow,
+  WorkflowId,
 } from "./schema";
 import type {
   ChannelSendResult,
@@ -41,6 +46,16 @@ import type {
 } from "./results";
 import type { RequestCompensationInstanceId } from "./schema";
 import type {
+  QueueDefinition,
+  QueueDefinitions,
+  QueueHandlerRegistrationOptions,
+} from "./definitions/messaging";
+import type {
+  QueueHandlerContext,
+  QueueHandlerResult,
+  Unsubscribe,
+} from "./definitions/handlers";
+import type {
   FetchableHandle,
   FetchOptions,
   FindUniqueResult,
@@ -57,6 +72,7 @@ import type {
   InferWorkflowEvents,
   InferWorkflowMetadata,
   InferWorkflowMetadataInput,
+  InferWorkflowQueues,
   InferWorkflowRequests,
   InferWorkflowResult,
   InferWorkflowSteps,
@@ -285,6 +301,57 @@ export type RequestNamespaceExternal<
 >;
 
 // =============================================================================
+// QUEUE DEAD-LETTER HANDLE
+// =============================================================================
+
+export interface DeadLetterRetryOutcome {
+  readonly status: "retried";
+}
+
+export interface DeadLetterPurgeOutcome {
+  readonly status: "purged";
+}
+
+/**
+ * Operator-facing handle for a dead-lettered queue message.
+ */
+export interface DeadLetterHandleExternal<
+  TQueueName extends string = string,
+  TMessage = unknown,
+> extends FetchableHandle<DeadLetterRow<TQueueName, TMessage>> {
+  readonly id: DeadLetterId<TQueueName>;
+
+  retry(opts?: OperatorActionOptions): Promise<DeadLetterRetryOutcome>;
+
+  purge(opts?: OperatorActionOptions): Promise<DeadLetterPurgeOutcome>;
+}
+
+export type DeadLetterNamespaceExternal<
+  TQueueName extends string = string,
+  TMessage = unknown,
+> = QueryableNamespace<
+  DeadLetterHandleExternal<TQueueName, TMessage>,
+  DeadLetterWhereTemplate<TQueueName, TMessage>,
+  DeadLetterRow<TQueueName, TMessage>,
+  DeadLetterId<TQueueName>
+>;
+
+/**
+ * Client/engine namespace for a globally registered queue definition.
+ */
+export interface QueueNamespaceExternal<
+  TQueueName extends string = string,
+  TMessage = unknown,
+> {
+  registerHandler(
+    handler: (message: TMessage, opts: QueueHandlerContext) => Promise<QueueHandlerResult>,
+    options?: QueueHandlerRegistrationOptions,
+  ): Unsubscribe;
+
+  readonly deadLetters: DeadLetterNamespaceExternal<TQueueName, TMessage>;
+}
+
+// =============================================================================
 // ATTACHED / DETACHED CHILD WORKFLOW NAMESPACES
 //
 // Per `REFACTOR.MD` Part 5 §"External introspection of children" — operators
@@ -399,6 +466,8 @@ type IsAny<T> = 0 extends (1 & T) ? true : false;
 
 type WorkflowClientLooseRequests = Record<string, RequestNamespaceExternal>;
 
+type WorkflowClientLooseQueues = Record<string, QueueNamespaceExternal>;
+
 /* eslint-disable @typescript-eslint/no-explicit-any -- heterogeneous request definitions; schema slots stay top-like */
 type RequestPayloadForNamespace<TRequest> =
   TRequest extends RequestDefinition<string, infer TPayloadSchema, any, any>
@@ -460,6 +529,47 @@ type WorkflowClientRequestNamespaces<
       ? [TRequestUnion] extends [never]
         ? Record<string, never>
         : WorkflowClientRequestNamespacesFromUnion<TRequestUnion>
+      : Record<string, never>;
+
+type QueueMessageForNamespace<TQueue> =
+  TQueue extends QueueDefinition<string, infer TMessageSchema>
+    ? StandardSchemaV1.InferOutput<TMessageSchema>
+    : unknown;
+
+type QueueDefinitionUnionFromWorkflow<W> =
+  InferWorkflowQueues<W> extends infer TQueues
+    ? [TQueues] extends [never]
+      ? never
+      : IsAny<TQueues> extends true
+        ? QueueDefinition<string, JsonSchemaConstraint>
+        : TQueues extends QueueDefinitions
+          ? TQueues[keyof TQueues & string]
+          : never
+    : never;
+
+type QueueDefinitionUnionFromWorkflows<
+  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+> = {
+  [K in keyof TWfs & string]: QueueDefinitionUnionFromWorkflow<TWfs[K]>;
+}[keyof TWfs & string];
+
+type WorkflowClientQueueNamespacesFromUnion<TQueueUnion> = {
+  [TQueue in TQueueUnion as TQueue extends QueueDefinition<infer TName, infer _M>
+    ? TName
+    : never]: TQueue extends QueueDefinition<infer TName, infer _M>
+    ? QueueNamespaceExternal<TName, QueueMessageForNamespace<TQueue>>
+    : never;
+};
+
+type WorkflowClientQueueNamespaces<
+  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+> =
+  IsAny<TWfs> extends true
+    ? WorkflowClientLooseQueues
+    : QueueDefinitionUnionFromWorkflows<TWfs> extends infer TQueueUnion
+      ? [TQueueUnion] extends [never]
+        ? Record<string, never>
+        : WorkflowClientQueueNamespacesFromUnion<TQueueUnion>
       : Record<string, never>;
 
 type WorkflowHandleLooseChildWorkflows = Record<
@@ -662,7 +772,7 @@ interface WorkflowHandleExternalBase<W extends AnyPublicWorkflowHeader>
       >
     >,
     WorkflowOperatorActions<InferWorkflowResult<W>> {
-  readonly id: import("./schema").WorkflowId;
+  readonly id: WorkflowId;
 
   readonly idempotencyKey: string;
 
@@ -938,6 +1048,7 @@ export interface WorkflowClient<
     [K in keyof TWfs]: WorkflowClientAccessor<TWfs[K]>;
   };
   readonly requests: WorkflowClientRequestNamespaces<TWfs>;
+  readonly queues: WorkflowClientQueueNamespaces<TWfs>;
 }
 
 /**

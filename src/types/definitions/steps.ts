@@ -209,6 +209,7 @@ export interface StepCompensationDefinition<
       TEvents,
       TSteps,
       TRequests,
+      Record<string, never>,
       TAttachedChildren,
       TDetachedChildren,
       TExternalWorkflows

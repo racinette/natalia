@@ -78,6 +78,17 @@ export type RequestId<TRequestName extends string = string> = string & {
   readonly __request: TRequestName;
 };
 
+/**
+ * Branded opaque public id for a dead-lettered queue message row.
+ *
+ * The `__queue` phantom ties the id to the queue definition name so
+ * `client.queues.someQueue.deadLetters.get(id)` cannot mix ids across queues.
+ */
+export type DeadLetterId<TQueueName extends string = string> = string & {
+  readonly __brand: "DeadLetterId";
+  readonly __queue: TQueueName;
+};
+
 // =============================================================================
 // STATUS UNIONS
 // =============================================================================
@@ -124,6 +135,11 @@ export type RequestStatus =
   | "manual"
   | "timedOut"
   | "cancelled";
+
+/**
+ * Reason a queue message was dead-lettered.
+ */
+export type DeadLetterReason = "max_attempts" | "ttl_expired" | "unrecoverable";
 
 // =============================================================================
 // STEP TYPE CATALOG
@@ -260,6 +276,23 @@ export interface RequestRow<
   readonly deadlineAt: Date | null;
 }
 
+/**
+ * Flat scalar columns of a dead-lettered queue message row.
+ */
+export interface DeadLetterRow<
+  TQueueName extends string = string,
+  TMessage = unknown,
+> {
+  readonly id: DeadLetterId<TQueueName>;
+  readonly queueName: TQueueName;
+  readonly payload: TMessage;
+  readonly reason: DeadLetterReason;
+  readonly priority: number;
+  readonly attemptCount: number;
+  readonly deadLetteredAt: Date;
+  readonly createdAt: Date;
+}
+
 // =============================================================================
 // WHERE TEMPLATES (single row-shaped predicate scope)
 // =============================================================================
@@ -290,6 +323,14 @@ export type RequestWhereTemplate<
   TPayload = unknown,
   TResponse = unknown,
 > = RequestRow<TRequestName, TPayload, TResponse>;
+
+/**
+ * Predicate template for dead-lettered queue message rows.
+ */
+export type DeadLetterWhereTemplate<
+  TQueueName extends string = string,
+  TMessage = unknown,
+> = DeadLetterRow<TQueueName, TMessage>;
 
 // =============================================================================
 // COMPENSATION BLOCK INSTANCE ROW + QUERY NAMESPACES

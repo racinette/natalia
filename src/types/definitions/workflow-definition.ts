@@ -8,6 +8,7 @@ import type {
   EventDefinitions,
   StreamDefinitions,
 } from "./primitives";
+import type { QueueDefinitions } from "./messaging";
 import type { RequestDefinitions } from "./requests";
 import type { RetentionSetter } from "./policies";
 import type { RngDefinitions } from "./rng";
@@ -26,6 +27,7 @@ export type AnyWorkflowDefinition = WorkflowDefinition<
   EventDefinitions,
   StepDefinitions,
   RequestDefinitions,
+  QueueDefinitions,
   WorkflowDefinitions,
   WorkflowDefinitions,
   WorkflowDefinitions,
@@ -55,6 +57,7 @@ export interface WorkflowDefinition<
   TEvents extends EventDefinitions = Record<string, never>,
   TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
+  TQueues extends QueueDefinitions = Record<string, never>,
   TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
   TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
@@ -100,6 +103,9 @@ export interface WorkflowDefinition<
 
   /** Request definitions */
   readonly requests?: TRequests;
+
+  /** Queue definitions (for ctx.queues) */
+  readonly queues?: TQueues;
 
   /** Child workflow definitions (for ctx.children.attached / ctx.children.detached) */
   readonly children?: {
@@ -154,6 +160,7 @@ export interface WorkflowDefinition<
       TEvents,
       TSteps,
       TRequests,
+      TQueues,
       TAttachedChildren,
       TDetachedChildren,
       TExternalWorkflows,

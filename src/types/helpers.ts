@@ -1,6 +1,7 @@
 import type { StandardSchemaV1 } from "./standard-schema";
 import type { ChannelDefinitions, EventDefinitions, StreamDefinitions } from "./definitions/primitives";
 import type { ErrorDefinitions } from "./definitions/errors";
+import type { QueueDefinitions } from "./definitions/messaging";
 import type { RequestDefinitions } from "./definitions/requests";
 import type { StepDefinitions } from "./definitions/steps";
 import type { WorkflowDefinitions } from "./definitions/workflow-headers";
@@ -121,6 +122,18 @@ export type InferWorkflowSteps<W> = W extends { steps?: infer TSteps }
 export type InferWorkflowRequests<W> = W extends { requests?: infer TRequests }
   ? TRequests extends RequestDefinitions
     ? TRequests
+    : never
+  : never;
+
+/**
+ * Extract declared workflow queues from a full workflow definition.
+ *
+ * Header-only workflow descriptors do not carry this field and resolve to
+ * `never` so callers can choose an explicit fallback policy.
+ */
+export type InferWorkflowQueues<W> = W extends { queues?: infer TQueues }
+  ? TQueues extends QueueDefinitions
+    ? TQueues
     : never
   : never;
 

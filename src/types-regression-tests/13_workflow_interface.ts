@@ -550,6 +550,7 @@ type TripleContract = WorkflowInterface<
   { done: true },
   { work: TripleWorkIface },
   Record<string, never>,
+  Record<string, never>,
   { childSlot: typeof tripleHeader },
   Record<string, never>,
   z.ZodNumber,
@@ -669,6 +670,7 @@ type _StdResultIn = Assert<
 
 type TransformWorkflowContract = WorkflowInterface<
   "tfWf",
+  Record<string, never>,
   Record<string, never>,
   Record<string, never>,
   Record<string, never>,

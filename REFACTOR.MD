@@ -1875,8 +1875,7 @@ ctx.queues.notifications.enqueue(
 ### Client registration API
 
 ```typescript
-const unregister = client.registerQueueHandler(
-  notificationsQueue,
+const unregister = client.queues.notifications.registerHandler(
   async (message, { signal }) => {
     await sendEmail(message.userId, message.body, { signal });
   },
@@ -1895,38 +1894,43 @@ const unregister = client.registerQueueHandler(
 unregister();
 ```
 
-The handler receives the decoded message and opts `{ signal: AbortSignal }`. The signal fires after `retryPolicy.timeoutSeconds` per attempt. `maxAttempts` is meaningful for queues: after exhaustion, the message is dead-lettered with `max_attempts`. Failed attempts are written to `queue_message_attempt` — only failures are recorded, successful processing writes the result directly. All retry policy fields are in seconds (durable, persisted to DB). Throwing `UnrecoverableError` dead-letters the message immediately, bypassing remaining retry attempts (see Part 15b).
+Handler registration is namespace-based and does **not** accept `txOrConn?` — the runtime owns connection and transaction management for claiming messages, recording attempts, and handler outcomes.
+
+The handler receives the decoded message and opts `{ signal: AbortSignal }`. The signal fires after `retryPolicy.timeoutSeconds` per attempt. `maxAttempts` is meaningful for queues: after exhaustion, the message is dead-lettered with `max_attempts`. Failed attempts are written to `queue_message_attempt` — only failures are recorded, successful processing writes the result directly. All retry policy fields are in seconds (durable, persisted to DB). Returning `DEAD_LETTER` dead-letters the message immediately, bypassing remaining retry attempts (see Part 15b).
 
 `maxConcurrent` controls the maximum number of messages this consumer instance handles concurrently. When omitted (`undefined`), there is no limit — the consumer claims messages as fast as they arrive. When set, the consumer claims at most `maxConcurrent` messages at a time and waits for a slot to open before claiming the next. This prevents overwhelming downstream services and controls resource usage per consumer instance.
 
 ### Dead-letter client API
 
+Dead letters are a **queryable handle namespace** under each queue:
+
 ```typescript
-const dl = client.deadLetters(notificationsQueue);
-
-const { messages, nextCursor } = await dl.list({
-  sort: [{ namespace: "record", path: "deadLetteredAt", direction: "desc" }],
-  filter: (q) =>
-    q.and(q.record.reason.eq("max_attempts"), q.payload.userId.eq("u1")),
-});
-
-await dl.redriveAll({
-  filter: (q) => q.record.reason.eq("max_attempts"),
-  ttl: 3600,
-});
-await dl.discardAll({ filter: (q) => q.record.reason.eq("ttl_expired") });
-
-const unsubscribe = dl.listen(
-  async (msg) => {
-    await dl.redrive({ ids: [msg.id], ttl: 3600 });
+const deadLetters = client.queues.notifications.deadLetters.findMany(
+  ({ reason, payload }) =>
+    and(eq(reason, "max_attempts"), eq(payload.userId, "u1")),
+  {
+    fields: { id: true, payload: true },
+    sort: [{ path: "deadLetteredAt", direction: "desc" }],
+    limit: 50,
+    txOrConn: tx,
   },
-  { filter: (q) => q.record.reason.eq("max_attempts") },
 );
+
+for await (const deadLetter of deadLetters) {
+  await deadLetter.retry({ txOrConn: tx });
+  // or: await deadLetter.purge({ txOrConn: tx });
+}
+
+const one = client.queues.notifications.deadLetters.get(deadLetterId);
+const row = await one.fetchRow({ payload: true, reason: true }, { txOrConn: tx });
 ```
 
-`**DeadLetterHandle<TMessage>` methods:\*\* `list`, `count`, `redrive`, `redriveAll`, `discard`, `discardAll`, `listen`.
+- **Namespace methods:** `findMany`, `findUnique`, `count`, and synchronous `.get(brandedId)` (no I/O; no `txOrConn`).
+- **Handle methods:** `fetchRow`, `retry`, `purge` — each accepts optional `txOrConn?` for operator/client IO.
+- `findMany` returns handles (awaitable and async-iterable), not page records.
+- Avoid namespace-level actions that take ids (e.g. `deadLetters.retry(id)`).
 
-**Redrive TTL behavior:** On redrive, `status` resets to `pending`, `attempt_count` resets to zero, `priority` is preserved. If `ttl` provided, `expires_at = NOW() + ttl`; if `ttl: null`, never expires; if omitted, `defaultTTL` re-applied.
+**Retry TTL behavior:** On `retry`, `status` resets to `pending`, `attempt_count` resets to zero, `priority` is preserved. TTL semantics follow queue definition / enqueue options.
 
 ### Postgres implementation
 
@@ -2787,9 +2791,34 @@ Request handlers can return the `MANUAL` sentinel directly (in addition to `onEx
 
 Handler return type: `TResponse | typeof MANUAL`.
 
-### `UnrecoverableError` for queue and topic handlers
+### `DEAD_LETTER` return from queue handlers
 
-A throwable `Error` subclass that signals the engine to skip retries and proceed directly to the exhaustion path. Used when the handler determines that retrying will not produce a different outcome — the input itself is the problem, not the handler or its dependencies.
+Queue handlers can return the `DEAD_LETTER` sentinel when the handler determines that retrying will not produce a different outcome — the message itself is the problem, not the handler or its dependencies. This mirrors the request-handler `MANUAL` pattern: intentional control-flow outcomes are **returns**, not throws.
+
+```typescript
+declare const DEAD_LETTER: unique symbol;
+```
+
+- **Return** (or implicit `void`) → message processed successfully.
+- **Return `DEAD_LETTER`** → dead-letter immediately, bypassing remaining retry attempts. The attempt is recorded normally in `queue_message_attempt`.
+- **Throw** → transient failure, retry per `retryPolicy` (including structured `AttemptError`).
+
+Handler return type: `void | typeof DEAD_LETTER`.
+
+```typescript
+client.queues.notifications.registerHandler(async (message, { signal }) => {
+  if (!isValidPayload(message)) {
+    return DEAD_LETTER;
+  }
+  await sendEmail(message.userId, message.body, { signal });
+}, { retryPolicy: { ... } });
+```
+
+`DEAD_LETTER` is NOT applicable to request handlers — use `return MANUAL` instead (manual mode vs dead-letter). `MANUAL` is NOT applicable to queue handlers.
+
+### `UnrecoverableError` for topic handlers
+
+A throwable `Error` subclass that signals the engine to skip retries and proceed directly to the exhaustion path. Used when a **topic** consumer determines that retrying will not produce a different outcome.
 
 ```typescript
 class UnrecoverableError extends Error {
@@ -2797,19 +2826,9 @@ class UnrecoverableError extends Error {
 }
 ```
 
-**Queue handlers:** throwing `UnrecoverableError` dead-letters the message immediately, bypassing remaining retry attempts. The attempt is recorded normally in `queue_message_attempt`.
-
 **Topic consumers (single-record and batch):** throwing `UnrecoverableError` triggers `onConsumeError` with `event.type === "attemptsExhausted"` immediately, bypassing remaining retry attempts. The attempt is recorded normally in `topic_consumer_attempt`. The `onConsumeError` callback then decides: `"skip"` or `"halt"`.
 
 ```typescript
-// Queue handler — dead-letter a malformed message immediately
-client.registerQueueHandler(notificationsQueue, async (message, { signal }) => {
-  if (!isValidPayload(message)) {
-    throw new UnrecoverableError("Malformed payload, retrying will not help");
-  }
-  await sendEmail(message.userId, message.body, { signal });
-}, { retryPolicy: { ... } });
-
 // Topic consumer — skip an unprocessable record immediately
 client.registerTopicConsumer(auditTopic, "analyticsConsumer", async (record, { signal }) => {
   if (!isSupportedEventType(record.payload.type)) {
@@ -2819,15 +2838,15 @@ client.registerTopicConsumer(auditTopic, "analyticsConsumer", async (record, { s
 }, { retryPolicy: { ... } });
 ```
 
-**Distinction from regular exceptions:**
+**Distinction from regular exceptions (topics):**
 
-| Thrown value         | Queue behavior                                         | Topic behavior                                         |
-| -------------------- | ------------------------------------------------------ | ------------------------------------------------------ |
-| Regular `Error`      | Retry per `retryPolicy`                                | Retry per `retryPolicy`                                |
-| `UnrecoverableError` | Dead-letter immediately                                | `onConsumeError("attemptsExhausted")` immediately      |
-| `AttemptError`       | Retry per `retryPolicy` (structured details persisted) | Retry per `retryPolicy` (structured details persisted) |
+| Thrown value         | Topic behavior                                         |
+| -------------------- | ------------------------------------------------------ |
+| Regular `Error`      | Retry per `retryPolicy`                                |
+| `UnrecoverableError` | `onConsumeError("attemptsExhausted")` immediately      |
+| `AttemptError`       | Retry per `retryPolicy` (structured details persisted) |
 
-`UnrecoverableError` is NOT applicable to request handlers — use `return MANUAL` instead. Requests have a fundamentally different exhaustion semantic (manual mode vs dead-letter).
+`UnrecoverableError` is NOT applicable to request handlers — use `return MANUAL` instead. It is NOT applicable to queue handlers — use `return DEAD_LETTER` instead.
 
 ---
 
@@ -3231,14 +3250,14 @@ Removed context APIs:
 
 - `defineQueue`, `defineRequest`, `defineTopic`.
 - `Predicate`, `WhereScope`, `SearchQuery`, `SearchSort`.
-- `DeadLetterRecordFields`, `DeadLetterSort`, `DeadLetterCursor`, `DeadLetteredMessage`, `DeadLetterHandle`.
+- `DeadLetterId`, `DeadLetterRow`, `DeadLetterWhereTemplate`, `DeadLetterHandleExternal`, `DeadLetterNamespaceExternal`, `QueueNamespaceExternal`.
 - `AttemptAccessor`, `Failure`, `Attempt`, `AttemptError`.
 - `ExplicitError`, `ErrorValue`, `FailureInfo`.
 - `CompensationInfo`, `CompensationBlockStatus`, `CompensationId`, `FindUniqueResult`, `FindManyResult`, `FindManyOptions`, `FindUniqueOptions`, `CountOptions`.
 - `FieldsMask`, `ProjectedKeys`, `HandleWithRow`, `FetchableHandle`.
 - `WorkflowRow`, `WorkflowWhereTemplate`, `CompensationBlockRow`, `CompensationBlockWhereTemplate`, `RequestCompensationRow`, `RequestCompensationWhereTemplate`.
 - `RequestCompensationInfo`, `RequestCompensationStatus`, `RequestCompensationInstanceId`.
-- `StepBoundary`, `MANUAL`, `UnrecoverableError`.
+- `StepBoundary`, `MANUAL`, `DEAD_LETTER`, `UnrecoverableError`.
 - `ForeignWorkflowHandle`, `AttachedChildWorkflowEntry`, `AttachedChildWorkflowScopeHandle`, `AttachedChildWorkflowExternalHandle`, `AttachedChildWorkflowId`.
 - `Unsubscribe`.
 - `TopicRecord`.

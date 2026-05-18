@@ -34,11 +34,17 @@ import type {
   WorkflowImplementInput,
   StepInterfaces,
   RequestInterfaces,
+  QueueInterfaces,
   StepInterface,
   StepCompensationInterface,
 } from "./types";
+import type {
+  StepsFromInterfaces,
+  RequestsFromInterfaces,
+  QueuesFromInterfaces,
+} from "./types/definitions/workflow-contract";
 
-export { AttemptError } from "./types/results";
+export { AttemptError, UnrecoverableError } from "./types/results";
 
 function isStandardSchema(value: unknown): value is JsonSchemaConstraint {
   return (
@@ -70,6 +76,8 @@ declare const _manualCompensationSentinel: unique symbol;
 /** Sentinel return for request compensation handlers that defer to manual resolution. */
 export const MANUAL: typeof _manualCompensationSentinel =
   Symbol("MANUAL") as typeof _manualCompensationSentinel;
+
+export { DEAD_LETTER, type DeadLetterSentinel } from "./types/definitions/handlers";
 
 type RequestCompensationHandlerResult<TCompensation> =
   TCompensation extends { readonly result?: infer TResultSchema }
@@ -670,6 +678,12 @@ type ExtRequestsSel<Ext> = Ext extends { requests?: infer R }
     : Record<string, never>
   : Record<string, never>;
 
+type ExtQueuesSel<Ext> = Ext extends { queues?: infer Q }
+  ? Q extends QueueInterfaces
+    ? Q
+    : Record<string, never>
+  : Record<string, never>;
+
 type ExtAttachedSel<Ext> = Ext extends { children?: { attached?: infer A } }
   ? A extends WorkflowDefinitions
     ? A
@@ -842,6 +856,7 @@ export function defineWorkflowHeader<
         ExtEventsSel<Ext>,
         ExtStepsSel<Ext>,
         ExtRequestsSel<Ext>,
+        ExtQueuesSel<Ext>,
         ExtAttachedSel<Ext>,
         ExtDetachedSel<Ext>,
         TResult,
@@ -860,6 +875,7 @@ export function defineWorkflowHeader<
         ExtEventsSel<Ext>,
         ExtStepsSel<Ext>,
         ExtRequestsSel<Ext>,
+        ExtQueuesSel<Ext>,
         ExtAttachedSel<Ext>,
         ExtDetachedSel<Ext>,
         TResult,
@@ -898,6 +914,7 @@ export function defineWorkflowInterface<
   TEvents extends EventDefinitions = Record<string, never>,
   TSteps extends StepInterfaces = Record<string, never>,
   TRequests extends RequestInterfaces = Record<string, never>,
+  TQueues extends QueueInterfaces = Record<string, never>,
   TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
   TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
@@ -914,6 +931,7 @@ export function defineWorkflowInterface<
     TEvents,
     TSteps,
     TRequests,
+    TQueues,
     TAttachedChildren,
     TDetachedChildren,
     TResultSchema,
@@ -930,6 +948,7 @@ export function defineWorkflowInterface<
   TEvents,
   TSteps,
   TRequests,
+  TQueues,
   TAttachedChildren,
   TDetachedChildren,
   TResultSchema,
@@ -948,6 +967,7 @@ export function defineWorkflowInterface<
       TEvents,
       TSteps,
       TRequests,
+      TQueues,
       TAttachedChildren,
       TDetachedChildren,
       TExternalWorkflows,
@@ -963,8 +983,9 @@ export function defineWorkflowInterface<
     TChannels,
     TStreams,
     TEvents,
-    import("./types/definitions/workflow-contract").StepsFromInterfaces<TSteps>,
-    import("./types/definitions/workflow-contract").RequestsFromInterfaces<TRequests>,
+    StepsFromInterfaces<TSteps>,
+    RequestsFromInterfaces<TRequests>,
+    QueuesFromInterfaces<TQueues>,
     TAttachedChildren,
     TDetachedChildren,
     TExternalWorkflows,
@@ -1094,6 +1115,31 @@ export function defineWorkflowInterface<
       }
     }
   }
+  if (config.queues !== undefined) {
+    if (typeof config.queues !== "object" || Array.isArray(config.queues)) {
+      throw new Error("queues must be an object");
+    }
+    for (const [name, queue] of Object.entries(config.queues)) {
+      if (!queue || typeof queue !== "object") {
+        throw new Error(`Queue interface '${name}' must be an object`);
+      }
+      if (typeof (queue as { registerHandler?: unknown }).registerHandler === "function") {
+        throw new Error(
+          `Queue interface '${name}' must not include registerHandler — register on client.queues.<definitionName>`,
+        );
+      }
+      if (!(queue as { name?: unknown }).name || typeof (queue as { name: string }).name !== "string") {
+        throw new Error(`Queue interface '${name}' must have a name`);
+      }
+      if (
+        !(queue as { message?: unknown }).message ||
+        typeof (queue as { message: object }).message !== "object" ||
+        !("~standard" in (queue as { message: object }).message)
+      ) {
+        throw new Error(`Queue interface '${name}' must have a standard message schema`);
+      }
+    }
+  }
   if (config.children !== undefined) {
     if (typeof config.children !== "object" || Array.isArray(config.children)) {
       throw new Error("children must be an object");
@@ -1197,6 +1243,7 @@ export function defineWorkflowInterface<
         TEvents,
         TSteps,
         TRequests,
+        TQueues,
         TAttachedChildren,
         TDetachedChildren,
         TExternalWorkflows,
@@ -1208,6 +1255,11 @@ export function defineWorkflowInterface<
         TRng
       >,
     ) => {
+      if ((impl as { queues?: unknown }).queues !== undefined) {
+        throw new Error(
+          "queues must be declared on the workflow interface — pass them to extend(), not implement()",
+        );
+      }
       if (impl.external !== undefined) {
         if (typeof impl.external !== "object" || Array.isArray(impl.external)) {
           throw new Error("external must be an object");
@@ -1224,8 +1276,9 @@ export function defineWorkflowInterface<
       const merged = {
         ...config,
         ...impl,
-        steps: impl.steps ?? ({} as import("./types/definitions/workflow-contract").StepsFromInterfaces<TSteps>),
-        requests: impl.requests ?? ({} as import("./types/definitions/workflow-contract").RequestsFromInterfaces<TRequests>),
+        steps: impl.steps ?? ({} as StepsFromInterfaces<TSteps>),
+        requests: impl.requests ?? ({} as RequestsFromInterfaces<TRequests>),
+        queues: config.queues ?? ({} as QueuesFromInterfaces<TQueues>),
         __nataliaAuthoringKind: "definition" as const,
       };
       return defineWorkflow(merged as unknown as Parameters<typeof defineWorkflow>[0]) as unknown as WorkflowDefinition<
@@ -1233,8 +1286,9 @@ export function defineWorkflowInterface<
         TChannels,
         TStreams,
         TEvents,
-        import("./types/definitions/workflow-contract").StepsFromInterfaces<TSteps>,
-        import("./types/definitions/workflow-contract").RequestsFromInterfaces<TRequests>,
+        StepsFromInterfaces<TSteps>,
+        RequestsFromInterfaces<TRequests>,
+        QueuesFromInterfaces<TQueues>,
         TAttachedChildren,
         TDetachedChildren,
         TExternalWorkflows,
@@ -1253,6 +1307,7 @@ export function defineWorkflowInterface<
     TEvents,
     TSteps,
     TRequests,
+    TQueues,
     TAttachedChildren,
     TDetachedChildren,
     TResultSchema,
@@ -1271,6 +1326,7 @@ export function defineWorkflowInterface<
         TEvents,
         TSteps,
         TRequests,
+        TQueues,
         TAttachedChildren,
         TDetachedChildren,
         TExternalWorkflows,
@@ -1286,8 +1342,9 @@ export function defineWorkflowInterface<
       TChannels,
       TStreams,
       TEvents,
-      import("./types/definitions/workflow-contract").StepsFromInterfaces<TSteps>,
-      import("./types/definitions/workflow-contract").RequestsFromInterfaces<TRequests>,
+      StepsFromInterfaces<TSteps>,
+      RequestsFromInterfaces<TRequests>,
+      QueuesFromInterfaces<TQueues>,
       TAttachedChildren,
       TDetachedChildren,
       TExternalWorkflows,
@@ -1328,6 +1385,7 @@ export function defineWorkflow<
   TEvents extends EventDefinitions = Record<string, never>,
   TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
+  TQueues extends QueueDefinitions = Record<string, never>,
   TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
   TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
@@ -1344,6 +1402,7 @@ export function defineWorkflow<
   events?: TEvents;
   steps?: TSteps;
   requests?: TRequests;
+  queues?: TQueues;
   children?: {
     attached?: TAttachedChildren;
     detached?: TDetachedChildren;
@@ -1370,6 +1429,7 @@ export function defineWorkflow<
       TEvents,
       TSteps,
       TRequests,
+      TQueues,
       TAttachedChildren,
       TDetachedChildren,
       TExternalWorkflows,
@@ -1387,6 +1447,7 @@ export function defineWorkflow<
   TEvents,
   TSteps,
   TRequests,
+  TQueues,
   TAttachedChildren,
   TDetachedChildren,
   TExternalWorkflows,
@@ -1482,6 +1543,25 @@ export function defineWorkflow<
       }
       if (!request.response || !("~standard" in request.response)) {
         throw new Error(`Request '${name}' must have a standard response schema`);
+      }
+    }
+  }
+
+  // Validate queues
+  const queues = config.queues ?? ({} as TQueues);
+  if (config.queues !== undefined) {
+    if (typeof config.queues !== "object" || Array.isArray(config.queues)) {
+      throw new Error("queues must be an object");
+    }
+    for (const [name, queue] of Object.entries(config.queues)) {
+      if (!queue || typeof queue !== "object") {
+        throw new Error(`Queue '${name}' must be a valid queue definition`);
+      }
+      if (!queue.name || typeof queue.name !== "string") {
+        throw new Error(`Queue '${name}' must have a name`);
+      }
+      if (!queue.message || !("~standard" in queue.message)) {
+        throw new Error(`Queue '${name}' must have a standard message schema`);
       }
     }
   }
@@ -1654,6 +1734,7 @@ export function defineWorkflow<
     events,
     steps,
     requests,
+    queues,
     children,
     external,
     errors,
@@ -1667,6 +1748,7 @@ export function defineWorkflow<
     TEvents,
     TSteps,
     TRequests,
+    TQueues,
     TAttachedChildren,
     TDetachedChildren,
     TExternalWorkflows,

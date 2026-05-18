@@ -3,9 +3,36 @@ import type { JsonSchemaConstraint } from "../json-input";
 import type {
   HandlerRetryOptions,
   QueueHandlerContext,
+  QueueHandlerResult,
   TopicConsumerContext,
   Unsubscribe,
 } from "./handlers";
+
+/**
+ * Scheduled delivery options for queue enqueue and workflow starts.
+ *
+ * `delaySeconds` and `scheduledAt` are mutually exclusive.
+ */
+export type ScheduledDeliveryOptions =
+  | { readonly delaySeconds: number; readonly scheduledAt?: never }
+  | { readonly scheduledAt: Date; readonly delaySeconds?: never }
+  | { readonly delaySeconds?: undefined; readonly scheduledAt?: undefined };
+
+/**
+ * Workflow-side queue enqueue options (buffered; no `txOrConn`).
+ */
+export type QueueEnqueueOptions = ScheduledDeliveryOptions & {
+  readonly priority?: number;
+  readonly ttlSeconds?: number;
+};
+
+/**
+ * Client-side queue handler registration options (runtime-owned IO).
+ */
+export interface QueueHandlerRegistrationOptions {
+  readonly retryPolicy?: HandlerRetryOptions;
+  readonly maxConcurrent?: number;
+}
 
 /**
  * Queue definition — created via `defineQueue()`.
@@ -26,7 +53,7 @@ export interface QueueDefinition<
     handler: (
       message: StandardSchemaV1.InferOutput<TMessageSchema>,
       opts: QueueHandlerContext,
-    ) => Promise<void>,
+    ) => Promise<QueueHandlerResult>,
     options?: {
       readonly retryPolicy?: HandlerRetryOptions;
       readonly maxConcurrent?: number;

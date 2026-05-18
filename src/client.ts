@@ -1,5 +1,8 @@
 import type {
   AnyPublicWorkflowHeader,
+  DeadLetterHandleExternal,
+  DeadLetterNamespaceExternal,
+  QueueNamespaceExternal,
   RequestHandleExternal,
   RequestNamespaceExternal,
   WorkflowClient,
@@ -22,6 +25,7 @@ export abstract class AbstractWorkflowClient<
     [K in keyof TWfs]: WorkflowClientAccessor<TWfs[K]>;
   };
   public readonly requests: WorkflowClient<TWfs>["requests"];
+  public readonly queues: WorkflowClient<TWfs>["queues"];
 
   constructor(workflows: TWfs) {
     const workflowAccessors: Record<
@@ -29,6 +33,7 @@ export abstract class AbstractWorkflowClient<
       WorkflowClientAccessor<AnyPublicWorkflowHeader>
     > = {};
     const requestAccessors: Record<string, RequestNamespaceExternal> = {};
+    const queueAccessors: Record<string, QueueNamespaceExternal> = {};
     for (const [name] of Object.entries(workflows)) {
       workflowAccessors[name] = {
         start: async (_options: unknown) => {
@@ -66,12 +71,22 @@ export abstract class AbstractWorkflowClient<
           }
         }
       }
+
+      const queues = (workflows[name] as { queues?: Record<string, { name?: string }> }).queues;
+      if (queues) {
+        for (const queue of Object.values(queues)) {
+          if (queue.name && !queueAccessors[queue.name]) {
+            queueAccessors[queue.name] = this.createQueueAccessor();
+          }
+        }
+      }
     }
 
     this.workflows = workflowAccessors as unknown as {
       [K in keyof TWfs]: WorkflowClientAccessor<TWfs[K]>;
     };
     this.requests = requestAccessors as WorkflowClient<TWfs>["requests"];
+    this.queues = queueAccessors as WorkflowClient<TWfs>["queues"];
   }
 
   protected abstract assertClientAvailable(): void;
@@ -113,6 +128,55 @@ export abstract class AbstractWorkflowClient<
         throw new Error("Not implemented");
       },
     } as RequestHandleExternal;
+  }
+
+  private createQueueAccessor(): QueueNamespaceExternal {
+    return {
+      registerHandler: (_handler: unknown, _options?: unknown) => {
+        this.assertClientAvailable();
+        return () => undefined;
+      },
+      deadLetters: this.createDeadLetterNamespace(),
+    };
+  }
+
+  private createDeadLetterNamespace(): DeadLetterNamespaceExternal {
+    return {
+      get: ((_id: unknown) => {
+        this.assertClientAvailable();
+        return this.createDeadLetterHandle();
+      }) as DeadLetterNamespaceExternal["get"],
+      findUnique: async (_query: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+      findMany: ((_query: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      }) as DeadLetterNamespaceExternal["findMany"],
+      count: async (_query: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+    };
+  }
+
+  private createDeadLetterHandle(): DeadLetterHandleExternal {
+    return {
+      id: "" as DeadLetterHandleExternal["id"],
+      fetchRow: async (_fieldsOrOpts?: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+      retry: async (_opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+      purge: async (_opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+    } as DeadLetterHandleExternal;
   }
 }
 

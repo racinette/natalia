@@ -9,7 +9,7 @@ import type {
   EventDefinitions,
   StreamDefinitions,
 } from "./primitives";
-import type { QueueDefinitions, TopicDefinitions } from "./messaging";
+import type { QueueDefinition, QueueDefinitions, TopicDefinitions } from "./messaging";
 import type {
   RequestCompensationDefinition,
   RequestDefinition,
@@ -107,6 +107,21 @@ export type RequestInterfaces = Record<
   >
 >;
 
+/**
+ * Queue contract without `registerHandler` (declarative slice only).
+ *
+ * Handler registration lives on `client.queues.<definitionName>`.
+ */
+export type QueueInterface<
+  TName extends string = string,
+  TMessageSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+> = Omit<QueueDefinition<TName, TMessageSchema>, "registerHandler">;
+
+export type QueueInterfaces = Record<
+  string,
+  QueueInterface<string, JsonSchemaConstraint>
+>;
+
 export type StepsFromInterfaces<T extends StepInterfaces> = {
   [K in keyof T]: T[K] extends StepInterface<infer N, infer A, infer R, infer C>
     ? StepDefinition<
@@ -125,6 +140,12 @@ export type RequestsFromInterfaces<T extends RequestInterfaces> = {
     : never;
 };
 
+export type QueuesFromInterfaces<T extends QueueInterfaces> = {
+  [K in keyof T]: T[K] extends QueueInterface<infer N, infer M>
+    ? QueueDefinition<N, M>
+    : never;
+};
+
 export type WorkflowImplementInput<
   _TName extends string,
   TChannels extends ChannelDefinitions,
@@ -132,6 +153,7 @@ export type WorkflowImplementInput<
   TEvents extends EventDefinitions,
   TSteps extends StepInterfaces,
   TRequests extends RequestInterfaces,
+  TQueues extends QueueInterfaces,
   TAttachedChildren extends WorkflowDefinitions,
   TDetachedChildren extends WorkflowDefinitions,
   TExternalWorkflows extends WorkflowDefinitions,
@@ -151,6 +173,7 @@ export type WorkflowImplementInput<
       TEvents,
       StepsFromInterfaces<TSteps>,
       RequestsFromInterfaces<TRequests>,
+      QueuesFromInterfaces<TQueues>,
       TAttachedChildren,
       TDetachedChildren,
       TExternalWorkflows,
@@ -185,6 +208,7 @@ export interface WorkflowInterface<
   TEvents extends EventDefinitions = Record<string, never>,
   TSteps extends StepInterfaces = Record<string, never>,
   TRequests extends RequestInterfaces = Record<string, never>,
+  TQueues extends QueueInterfaces = Record<string, never>,
   TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
   TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
@@ -205,6 +229,7 @@ export interface WorkflowInterface<
   > {
   readonly steps?: TSteps;
   readonly requests?: TRequests;
+  readonly queues?: TQueues;
   readonly children?: {
     readonly attached?: TAttachedChildren;
     readonly detached?: TDetachedChildren;
@@ -252,6 +277,7 @@ export type WorkflowInterfaceExtendFromHeader<
     EventDefinitions,
     StepInterfaces,
     RequestInterfaces,
+    QueueInterfaces,
     WorkflowDefinitions,
     WorkflowDefinitions,
     TResult,
@@ -265,6 +291,7 @@ export type WorkflowInterfaceExtendFromHeader<
   | "events"
   | "steps"
   | "requests"
+  | "queues"
   | "children"
   | "patches"
   | "rng"
@@ -279,6 +306,7 @@ export type AnyWorkflowInterface = WorkflowInterface<
   EventDefinitions,
   StepInterfaces,
   RequestInterfaces,
+  QueueInterfaces,
   WorkflowDefinitions,
   WorkflowDefinitions,
   JsonSchemaConstraint,
@@ -298,6 +326,7 @@ export type WorkflowContextForInterface<
   TEvents extends EventDefinitions,
   TSteps extends StepDefinitions,
   TRequests extends RequestDefinitions,
+  TQueues extends QueueDefinitions,
   TAttachedChildren extends WorkflowDefinitions,
   TDetachedChildren extends WorkflowDefinitions,
   TExternalWorkflows extends WorkflowDefinitions,
@@ -310,6 +339,7 @@ export type WorkflowContextForInterface<
   TEvents,
   TSteps,
   TRequests,
+  TQueues,
   TAttachedChildren,
   TDetachedChildren,
   TExternalWorkflows,

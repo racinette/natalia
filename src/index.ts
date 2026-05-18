@@ -53,6 +53,7 @@ export {
   defineWorkflowHeader,
   defineWorkflowInterface,
   MANUAL,
+  DEAD_LETTER,
   registerRequestCompensationHandler,
 } from "./workflow";
 

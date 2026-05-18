@@ -114,6 +114,18 @@ export class AttemptError extends Error {
 }
 
 /**
+ * Signals that a topic consumer failure is permanent — the runtime should not
+ * retry and should proceed to the exhaustion path (`onConsumeError`). Queue
+ * handlers use `return DEAD_LETTER` instead (see `REFACTOR.MD` Part 15b).
+ */
+export class UnrecoverableError extends Error {
+  constructor(message?: string) {
+    super(message);
+    this.name = "UnrecoverableError";
+  }
+}
+
+/**
  * Lazy, async-iterable accessor over execution attempt records for a retried
  * operation (step, request handler, queue message, topic consumer, forward
  * step observed from compensation `undo`, and similar).

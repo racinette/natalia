@@ -99,6 +99,7 @@ export type {
   DetachedStartOptions,
   ForeignWorkflowAccessor,
   ForeignWorkflowHandle,
+  QueueAccessor,
   RequestAccessor,
   RequestCallOptions,
 } from "./types/context/call-builders";
