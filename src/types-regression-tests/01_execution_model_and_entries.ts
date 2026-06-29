@@ -108,7 +108,7 @@ export const executionModelAcceptanceWorkflow = defineWorkflow({
   name: "executionModelAcceptance",
   steps: { noopStep },
   requests: { noopRequest },
-  children: { attached: { childWorkflow } },
+  children: { childWorkflow },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx) {
     // Step entry: dispatched, awaitable, resolves to T.
@@ -135,7 +135,7 @@ export const executionModelAcceptanceWorkflow = defineWorkflow({
     // success-or-failure union. Step 01 only verifies it is an AwaitableEntry
     // and the awaited type contains the success branch; the exact shape of
     // the union; channel send on attached children is step 03 / scope handles.
-    const childEntry = ctx.children.attached.childWorkflow({ value: 21 });
+    const childEntry = ctx.children.childWorkflow({ value: 21 });
     type _ChildEntryIsAwaitable = Assert<
       typeof childEntry extends AwaitableEntry<infer _> ? true : false
     >;
@@ -152,7 +152,7 @@ export const executionModelAcceptanceWorkflow = defineWorkflow({
 
     await ctx.scope(
       "execModelAttachedScope",
-      { ch: ctx.children.attached.childWorkflow({ value: 3 }) },
+      { ch: ctx.children.childWorkflow({ value: 3 }) },
       async (scopeCtx, { ch }) => {
         ch.channels.noopCh.send({ token: "scope" });
         const _joined = await scopeCtx.join(ch);

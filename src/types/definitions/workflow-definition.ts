@@ -30,13 +30,14 @@ export type AnyWorkflowDefinition = WorkflowDefinition<
   QueueDefinitions,
   WorkflowDefinitions,
   WorkflowDefinitions,
-  WorkflowDefinitions,
   JsonSchemaConstraint,
   JsonSchemaConstraint,
   JsonObjectSchemaConstraint,
   WorkflowErrorDefinitions,
   PatchDefinitions,
-  RngDefinitions
+  RngDefinitions,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- upper bound must accept any concrete factory's arg type
+  ((args: any) => string) | undefined
 >;
 
 // =============================================================================
@@ -58,8 +59,7 @@ export interface WorkflowDefinition<
   TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
-  TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
-  TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<
     void,
@@ -76,6 +76,9 @@ export interface WorkflowDefinition<
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
+  TIdempotencyKeyFactory extends
+    | ((args: StandardSchemaV1.InferOutput<TArgs>) => string)
+    | undefined = undefined,
 > extends PublicWorkflowHeader<
     TName,
     TChannels,
@@ -84,7 +87,8 @@ export interface WorkflowDefinition<
     TArgs,
     TMetadata,
     TResultSchema,
-    TErrors
+    TErrors,
+    TIdempotencyKeyFactory
   > {
   /** Unique workflow name */
   readonly name: TName;
@@ -107,11 +111,12 @@ export interface WorkflowDefinition<
   /** Queue definitions (for ctx.queues) */
   readonly queues?: TQueues;
 
-  /** Child workflow definitions (for ctx.children.attached / ctx.children.detached) */
-  readonly children?: {
-    readonly attached?: TAttachedChildren;
-    readonly detached?: TDetachedChildren;
-  };
+  /**
+   * Child workflow definitions (one map). Whether a child runs attached or
+   * detached is a call-site choice (`ctx.children.X(...)` vs `.start(...)`),
+   * not a declaration property.
+   */
+  readonly children?: TChildren;
 
   /** External workflow definitions (for ctx.external) */
   readonly external?: TExternalWorkflows;
@@ -141,6 +146,13 @@ export interface WorkflowDefinition<
   readonly errors?: TErrors;
 
   /**
+   * Optional factory deriving this workflow's idempotency key from its decoded
+   * args. When present, identity is derived from args (callers must not pass an
+   * explicit `idempotencyKey`); when absent, the caller owns the key.
+   */
+  readonly idempotencyKeyFactory?: TIdempotencyKeyFactory;
+
+  /**
    * Workflow retention policy for garbage collection.
    */
   readonly retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
@@ -161,8 +173,7 @@ export interface WorkflowDefinition<
       TSteps,
       TRequests,
       TQueues,
-      TAttachedChildren,
-      TDetachedChildren,
+      TChildren,
       TExternalWorkflows,
       TPatches,
       TRng,

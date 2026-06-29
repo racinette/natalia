@@ -94,7 +94,7 @@ const humanReviewRequest = defineRequest({
 export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
   name: "callTimeOptionsAcceptance",
   steps: { timedStep },
-  children: { attached: { child: childHeader }, detached: { child: childHeader } },
+  children: { child: childHeader },
   external: { ops: externalHeader },
   requests: { humanReview: humanReviewRequest },
   result: z.object({ ok: z.boolean() }),
@@ -148,7 +148,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     // (no `channels.*.send` on the direct entry; no `idempotencyKey` on invocation opts).
     // -------------------------------------------------------------------------
 
-    const childEntry = ctx.children.attached.child({
+    const childEntry = ctx.children.child({
       id: "c-1",
     });
 
@@ -159,10 +159,10 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
       "channels" extends keyof typeof childEntry ? false : true
     >;
 
-    ctx.children.attached.child(
+    ctx.children.child(
       { id: "c-1" },
-      // @ts-expect-error attached child invocation options omit idempotencyKey
-      { idempotencyKey: "child-1", timeout: 60 },
+      // @ts-expect-error attached child options omit idempotencyKey (a detached `.start()` concern)
+      { idempotencyKey: "child-1" },
     );
 
     // The entry is awaitable for the success/failure union:
@@ -185,7 +185,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
 
     await ctx.scope(
       "callTimeChildChannels",
-      { c: ctx.children.attached.child({ id: "c-1b" }) },
+      { c: ctx.children.child({ id: "c-1b" }) },
       async (sctx, { c }) => {
         const sendReturn: void = c.channels.cancel.send({ reason: "user" });
         void sendReturn;
@@ -196,7 +196,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     );
 
     // Timeout overload adds `{ ok: false; status: "timeout" }`.
-    const _timedChild = await ctx.children.attached.child({ id: "c-2" }, { timeout: 60 });
+    const _timedChild = await ctx.children.child({ id: "c-2" }, { deadlineSeconds: 60 });
     type _TimedChildHasTimeout = Assert<
       Extract<typeof _timedChild, { ok: false; status: "timeout" }> extends never
         ? false
@@ -206,9 +206,9 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     // No retry-only overload on child workflows: passing `retry` without
     // `timeout` is rejected because the only options-bag overload requires
     // `timeout`.
-    ctx.children.attached.child(
+    ctx.children.child(
       { id: "c-3" },
-      // @ts-expect-error child workflows require `timeout` when an options bag is supplied
+      // @ts-expect-error `retry` is not a child-call option (workflows are not retried)
       { retry: { intervalSeconds: 1 } },
     );
 
@@ -219,10 +219,9 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     // and carries idempotencyKey. Not awaitable.
     // -------------------------------------------------------------------------
 
-    const detached = ctx.children.detached.child(
-      { id: "d-1" },
-      { idempotencyKey: "child-detached-1" },
-    );
+    const detached = ctx.children
+      .child({ id: "d-1" })
+      .start({ idempotencyKey: "child-detached-1" });
     type _DetachedIsForeignHandle = Assert<
       typeof detached extends ForeignWorkflowHandle<infer _> ? true : false
     >;
@@ -236,8 +235,8 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     type _DetachedNotAwaitable = Assert<
       typeof detached extends PromiseLike<unknown> ? false : true
     >;
-    // @ts-expect-error detached starts are exposed on ctx.children.detached only
-    void ctx.children.attached.child.startDetached;
+    // @ts-expect-error no `.startDetached`; detach via `.start()` on the entry
+    void ctx.children.child.startDetached;
 
     // -------------------------------------------------------------------------
     // EXTERNAL WORKFLOW ACCESSORS

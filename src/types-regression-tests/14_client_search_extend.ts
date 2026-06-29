@@ -89,9 +89,7 @@ const orchestratorHeader = defineWorkflowHeader({
 
 const orchestratorWorkflow = defineWorkflow({
   ...orchestratorHeader,
-  children: {
-    attached: { worker: workerHeader },
-  },
+  children: { worker: workerHeader },
   async execute() {
     return undefined;
   },

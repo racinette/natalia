@@ -62,6 +62,7 @@ import type {
   QueryableNamespace,
 } from "./introspection";
 import type {
+  HasIdempotencyFactory,
   InferWorkflowArgs,
   InferWorkflowArgsInput,
   InferWorkflowAttachedChildren,
@@ -615,8 +616,7 @@ type StepCompensationResultForNamespace<TStep> =
         infer _Req,
         infer _Qu,
         infer _To,
-        infer _Att,
-        infer _Det,
+        infer _Children,
         infer _Ext,
         infer TResultSchema
       >
@@ -978,6 +978,36 @@ export type StartWorkflowOptions<
   txOrConn?: IWorkflowConnection | IWorkflowTransaction;
 } & DeadlineOptions;
 
+/**
+ * The `idempotencyKey` slot on a start call, conditional on whether the
+ * workflow declares an `idempotencyKeyFactory`:
+ * - factory present → identity is derived from args; the key is **not passable**.
+ * - factory absent  → the caller **must** supply an explicit `idempotencyKey`.
+ */
+export type IdempotencyKeyStartOption<W extends AnyPublicWorkflowHeader> =
+  HasIdempotencyFactory<W> extends true
+    ? { readonly idempotencyKey?: never }
+    : { readonly idempotencyKey: string };
+
+/**
+ * Factory-aware start options for `client.workflows.<def>.start` / `.execute`.
+ */
+export type WorkflowStartOptions<W extends AnyPublicWorkflowHeader> = Omit<
+  StartWorkflowOptions<InferWorkflowArgsInput<W>, InferWorkflowMetadataInput<W>>,
+  "idempotencyKey"
+> &
+  IdempotencyKeyStartOption<W>;
+
+/**
+ * Identity lookup arguments for `.get(...)`, conditional on the factory:
+ * by `args` (the engine derives the key) when a factory is declared, by an
+ * explicit `idempotencyKey` otherwise.
+ */
+export type WorkflowGetArgs<W extends AnyPublicWorkflowHeader> =
+  HasIdempotencyFactory<W> extends true
+    ? [args: InferWorkflowArgsInput<W>]
+    : [idempotencyKey: string];
+
 // =============================================================================
 // CLIENT-LEVEL WORKFLOW ACCESSOR
 //
@@ -1011,31 +1041,25 @@ export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader>
   /**
    * Start a new instance of this workflow and return a typed external handle.
    */
-  start(
-    options: StartWorkflowOptions<
-      InferWorkflowArgsInput<W>,
-      InferWorkflowMetadataInput<W>
-    >,
-  ): Promise<WorkflowHandleExternal<W>>;
+  start(options: WorkflowStartOptions<W>): Promise<WorkflowHandleExternal<W>>;
 
   /**
    * Start and wait for the workflow's terminal outcome (start + handle.wait()
    * one-shot convenience).
    */
   execute(
-    options: StartWorkflowOptions<
-      InferWorkflowArgsInput<W>,
-      InferWorkflowMetadataInput<W>
-    >,
+    options: WorkflowStartOptions<W>,
   ): Promise<
     WorkflowResult<InferWorkflowResult<W>, ErrorValue<InferWorkflowErrors<W>>>
   >;
 
   /**
-   * Get an external handle to an existing workflow instance by its
-   * idempotency key. Synchronous; no I/O.
+   * Get an external handle to an existing workflow instance by its identity:
+   * by `args` when the workflow declares an `idempotencyKeyFactory` (the engine
+   * derives the same key), otherwise by an explicit `idempotencyKey`.
+   * Synchronous; no I/O.
    */
-  get(idempotencyKey: string): WorkflowHandleExternal<W>;
+  get(...lookup: WorkflowGetArgs<W>): WorkflowHandleExternal<W>;
 }
 
 /**

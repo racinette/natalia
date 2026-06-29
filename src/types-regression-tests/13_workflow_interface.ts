@@ -201,10 +201,7 @@ const ctx13FullInterface = ctx13MainHeader.extend({
       compensation: { result: z.object({ reversed: z.boolean() }) },
     },
   },
-  children: {
-    attached: { childA: ctx13ChildWorkflow },
-    detached: { childD: ctx13DetachedWorkflow },
-  },
+  children: { childA: ctx13ChildWorkflow, childD: ctx13DetachedWorkflow },
 });
 
 void defineWorkflowInterface({
@@ -263,8 +260,8 @@ const ctx13FullWorkflow = ctx13FullInterface.implement({
 
     void ctx.requests.rpc;
 
-    void ctx.children.attached.childA;
-    void ctx.children.detached.childD;
+    void ctx.children.childA;
+    void ctx.children.childD;
 
     const _extPartner = ctx.external.partner.get("idem-1");
     type _ExtPartner = Assert<
@@ -303,8 +300,8 @@ const ctx13FullWorkflow = ctx13FullInterface.implement({
         void sctx.errors.ErrA("scope");
         void sctx.steps.plain;
         void sctx.requests.rpc;
-        void sctx.children.attached.childA;
-        void sctx.children.detached.childD;
+        void sctx.children.childA;
+        void sctx.children.childD;
         void sctx.external.partner;
         const _joinPe = await sctx.join(handles.pe);
         type _JoinPe = Assert<
@@ -376,18 +373,23 @@ const ctx13FullWorkflow = ctx13FullInterface.implement({
       break;
     }
 
-    const _childAEntry = ctx.children.attached.childA({
+    const _childAEntry = ctx.children.childA({
       seed: 1,
     });
     type _ChildAResult = AttachedChildWorkflowResult<
       string,
       ErrorValue<InferWorkflowErrors<typeof ctx13ChildWorkflow>>
     >;
+    // The unified accessor returns an UnstartedChildWorkflowEntry, which
+    // extends AttachedChildWorkflowEntry (adding `.start()` for detached). The
+    // attached awaited shape is unchanged. (`.start()` is covered in step 15.)
     type _ChildAEntry = Assert<
-      IsEqual<
-        typeof _childAEntry,
-        AttachedChildWorkflowEntry<typeof ctx13ChildWorkflow, _ChildAResult>
+      typeof _childAEntry extends AttachedChildWorkflowEntry<
+        typeof ctx13ChildWorkflow,
+        _ChildAResult
       >
+        ? true
+        : false
     >;
     void _childAEntry;
     type _RpcPayload = Parameters<(typeof ctx)["requests"]["rpc"]>[0];
@@ -500,7 +502,7 @@ const orderInterface = orderHeader.extend({
   streams: { audit: z.object({ line: z.string() }) },
   events: { paid: true },
   steps: { charge: chargeStepInterface },
-  children: { attached: {}, detached: {} },
+  children: {},
 });
 
 // @ts-expect-error — header-locked keys cannot be passed to `.extend()`
@@ -552,7 +554,6 @@ type TripleContract = WorkflowInterface<
   Record<string, never>,
   Record<string, never>,
   { childSlot: typeof tripleHeader },
-  Record<string, never>,
   z.ZodNumber,
   z.ZodObject<{ q: z.ZodString }>,
   StandardSchemaV1<void, void>,
@@ -589,7 +590,7 @@ const tripleInterfaceOnly: TripleContract = {
       result: z.void(),
     },
   },
-  children: { attached: { childSlot: tripleHeader }, detached: {} },
+  children: { childSlot: tripleHeader },
 };
 
 const tripleStep = tripleStepIface.implement({
@@ -670,7 +671,6 @@ type _StdResultIn = Assert<
 
 type TransformWorkflowContract = WorkflowInterface<
   "tfWf",
-  Record<string, never>,
   Record<string, never>,
   Record<string, never>,
   Record<string, never>,

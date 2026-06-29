@@ -44,10 +44,7 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
   args: z.object({ orderId: z.string() }),
   steps: { normalize: normalizeStep },
   requests: { approval: approvalRequest },
-  children: {
-    attached: { followUp: followUpHeader },
-    detached: { followUp: followUpHeader },
-  },
+  children: { followUp: followUpHeader },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx, args) {
     // -------------------------------------------------------------------------
@@ -63,7 +60,7 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
       {
         normalize: ctx.steps.normalize({ orderId: args.orderId }),
         approval: ctx.requests.approval({ orderId: args.orderId }),
-        followUp: ctx.children.attached.followUp({
+        followUp: ctx.children.followUp({
           orderId: args.orderId,
         }),
       },
@@ -145,10 +142,9 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
     // scope entry.
     // -------------------------------------------------------------------------
 
-    const detached = ctx.children.detached.followUp(
-      { orderId: args.orderId },
-      { idempotencyKey: "f-detached-1" },
-    );
+    const detached = ctx.children
+      .followUp({ orderId: args.orderId })
+      .start({ idempotencyKey: "f-detached-1" });
     // @ts-expect-error detached child handles are not scope entries
     await ctx.scope(
       "DetachedRejected",

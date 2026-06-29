@@ -70,6 +70,17 @@ export type InferWorkflowArgsInput<W> = W extends { args?: infer TArgSchema }
   : void;
 
 /**
+ * Extract the args *schema* itself (not its decoded/encoded value) from a
+ * workflow definition or header. Resolves to `never` when no args schema is
+ * declared.
+ */
+export type InferWorkflowArgsSchema<W> = W extends { args?: infer TArgSchema }
+  ? TArgSchema extends StandardSchemaV1<unknown, unknown>
+    ? TArgSchema
+    : never
+  : never;
+
+/**
  * Extract metadata input type from a workflow definition or header (encoded — z.input).
  * Used for StartWorkflowOptions.metadata.
  */
@@ -143,15 +154,18 @@ export type InferWorkflowQueues<W> = W extends { queues?: infer TQueues }
  * Header-only workflow descriptors do not carry this field and resolve to
  * `never` so callers can choose an explicit fallback policy.
  */
-export type InferWorkflowAttachedChildren<W> = W extends {
-  children?: infer TChildren;
-}
-  ? TChildren extends { attached?: infer TAttachedChildren }
-    ? TAttachedChildren extends WorkflowDefinitions
-      ? TAttachedChildren
-      : never
+export type InferWorkflowChildren<W> = W extends { children?: infer TChildren }
+  ? TChildren extends WorkflowDefinitions
+    ? TChildren
     : never
   : never;
+
+/**
+ * @deprecated Attached/detached is now a call-site mode over the single
+ * declared `children` set; this alias resolves to the full set. Kept for the
+ * operator-side `children.attached` query view.
+ */
+export type InferWorkflowAttachedChildren<W> = InferWorkflowChildren<W>;
 
 /**
  * Extract declared detached children from a full workflow definition.
@@ -159,15 +173,12 @@ export type InferWorkflowAttachedChildren<W> = W extends {
  * Header-only workflow descriptors do not carry this field and resolve to
  * `never` so callers can choose an explicit fallback policy.
  */
-export type InferWorkflowDetachedChildren<W> = W extends {
-  children?: infer TChildren;
-}
-  ? TChildren extends { detached?: infer TDetachedChildren }
-    ? TDetachedChildren extends WorkflowDefinitions
-      ? TDetachedChildren
-      : never
-    : never
-  : never;
+/**
+ * @deprecated Attached/detached is now a call-site mode over the single
+ * declared `children` set; this alias resolves to the full set. Kept for the
+ * operator-side `children.detached` query view.
+ */
+export type InferWorkflowDetachedChildren<W> = InferWorkflowChildren<W>;
 
 /**
  * Extract declared external workflow dependencies from a full workflow definition.
@@ -182,4 +193,29 @@ export type InferWorkflowExternal<W> = W extends {
     ? TExternalWorkflows
     : never
   : never;
+
+/**
+ * Extract the `idempotencyKeyFactory` declared on a workflow header/definition,
+ * or `undefined` when none is declared.
+ */
+export type InferIdempotencyKeyFactory<W> = W extends {
+  idempotencyKeyFactory?: infer TFactory;
+}
+  ? TFactory extends (args: never) => string
+    ? TFactory
+    : undefined
+  : undefined;
+
+/**
+ * True when the workflow declares an `idempotencyKeyFactory` — its identity key
+ * is derived from args, so callers must NOT pass an explicit `idempotencyKey`
+ * (and lookups address it by `args`). False when no factory is declared — the
+ * caller owns the key.
+ */
+export type HasIdempotencyFactory<W> =
+  InferIdempotencyKeyFactory<W> extends (args: never) => never
+    ? false // the `=> never` sentinel that `define*` uses for "no factory declared"
+    : InferIdempotencyKeyFactory<W> extends (args: never) => string
+      ? true
+      : false;
 

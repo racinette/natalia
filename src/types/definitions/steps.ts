@@ -51,7 +51,6 @@ export type StepDefinition<
         any,
         any,
         any,
-        any,
         any
         /* eslint-enable @typescript-eslint/no-explicit-any */
       >
@@ -166,8 +165,7 @@ export interface StepCompensationDefinition<
   TRequests extends NonCompensableRequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
   TTopics extends TopicDefinitions = Record<string, never>,
-  TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
-  TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint | undefined = undefined,
 > {
@@ -188,10 +186,7 @@ export interface StepCompensationDefinition<
   /** Declared topic dependencies (the compensation can publish). */
   readonly topics?: TTopics;
   /** Declared child workflow dependencies (exempt from compensable filter). */
-  readonly children?: {
-    readonly attached?: TAttachedChildren;
-    readonly detached?: TDetachedChildren;
-  };
+  readonly children?: TChildren;
   /** Declared external workflow dependencies. */
   readonly external?: TExternalWorkflows;
   /** Optional outcome schema. Default: `void`. */
@@ -210,8 +205,7 @@ export interface StepCompensationDefinition<
       TSteps,
       TRequests,
       Record<string, never>,
-      TAttachedChildren,
-      TDetachedChildren,
+      TChildren,
       TExternalWorkflows
     >,
     args: StandardSchemaV1.InferOutput<TArgsSchema>,
@@ -238,7 +232,6 @@ export type MaximalStepCompensationDefinition = StepCompensationDefinition<
   NonCompensableRequestDefinitions,
   QueueDefinitions,
   TopicDefinitions,
-  WorkflowDefinitions,
   WorkflowDefinitions,
   WorkflowDefinitions,
   JsonSchemaConstraint | undefined
@@ -289,8 +282,7 @@ type StepCompensationResultSchema<TStep> =
         infer _Req,
         infer _Qu,
         infer _To,
-        infer _Att,
-        infer _Det,
+        infer _Children,
         infer _Ext,
         infer TResultSchema
       >

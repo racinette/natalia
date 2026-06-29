@@ -165,8 +165,7 @@ export function defineStep<
   TCompensationRequests extends NonCompensableRequestDefinitions = Record<string, never>,
   TCompQueues extends QueueDefinitions = Record<string, never>,
   TCompTopics extends TopicDefinitions = Record<string, never>,
-  TCompAttachedChildren extends WorkflowDefinitions = Record<string, never>,
-  TCompDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TCompChildren extends WorkflowDefinitions = Record<string, never>,
   TCompExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TCompensationResultSchema extends JsonSchemaConstraint | undefined = undefined,
 >(config: {
@@ -184,8 +183,7 @@ export function defineStep<
     TCompensationRequests,
     TCompQueues,
     TCompTopics,
-    TCompAttachedChildren,
-    TCompDetachedChildren,
+    TCompChildren,
     TCompExternalWorkflows,
     TCompensationResultSchema
   >;
@@ -209,8 +207,7 @@ export function defineStep<
     TCompensationRequests,
     TCompQueues,
     TCompTopics,
-    TCompAttachedChildren,
-    TCompDetachedChildren,
+    TCompChildren,
     TCompExternalWorkflows,
     TCompensationResultSchema
   >
@@ -326,7 +323,6 @@ export function defineStepInterface<
             TopicDefinitions,
             WorkflowDefinitions,
             WorkflowDefinitions,
-            WorkflowDefinitions,
             JsonSchemaConstraint | undefined
           >;
         },
@@ -417,7 +413,6 @@ export function defineStepInterface<
               NonCompensableRequestDefinitions,
               QueueDefinitions,
               TopicDefinitions,
-              WorkflowDefinitions,
               WorkflowDefinitions,
               WorkflowDefinitions,
               JsonSchemaConstraint | undefined
@@ -684,15 +679,9 @@ type ExtQueuesSel<Ext> = Ext extends { queues?: infer Q }
     : Record<string, never>
   : Record<string, never>;
 
-type ExtAttachedSel<Ext> = Ext extends { children?: { attached?: infer A } }
-  ? A extends WorkflowDefinitions
-    ? A
-    : Record<string, never>
-  : Record<string, never>;
-
-type ExtDetachedSel<Ext> = Ext extends { children?: { detached?: infer D } }
-  ? D extends WorkflowDefinitions
-    ? D
+type ExtChildrenSel<Ext> = Ext extends { children?: infer C }
+  ? C extends WorkflowDefinitions
+    ? C
     : Record<string, never>
   : Record<string, never>;
 
@@ -791,6 +780,8 @@ export function defineWorkflowHeader<
   TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<void, void>,
   TResult extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
+  TIdempotencyKeyFactory extends (args: StandardSchemaV1.InferOutput<TArgs>) => string =
+    (args: StandardSchemaV1.InferOutput<TArgs>) => never,
 >(config: {
   name: TName;
   channels?: TChannels;
@@ -798,6 +789,7 @@ export function defineWorkflowHeader<
   metadata?: TMetadata;
   result?: TResult;
   errors?: TErrors;
+  idempotencyKeyFactory?: TIdempotencyKeyFactory;
 }) {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Workflow name must be a non-empty string");
@@ -857,8 +849,7 @@ export function defineWorkflowHeader<
         ExtStepsSel<Ext>,
         ExtRequestsSel<Ext>,
         ExtQueuesSel<Ext>,
-        ExtAttachedSel<Ext>,
-        ExtDetachedSel<Ext>,
+        ExtChildrenSel<Ext>,
         TResult,
         TArgs,
         TMetadata,
@@ -876,8 +867,7 @@ export function defineWorkflowHeader<
         ExtStepsSel<Ext>,
         ExtRequestsSel<Ext>,
         ExtQueuesSel<Ext>,
-        ExtAttachedSel<Ext>,
-        ExtDetachedSel<Ext>,
+        ExtChildrenSel<Ext>,
         TResult,
         TArgs,
         TMetadata,
@@ -915,8 +905,7 @@ export function defineWorkflowInterface<
   TSteps extends StepInterfaces = Record<string, never>,
   TRequests extends RequestInterfaces = Record<string, never>,
   TQueues extends QueueInterfaces = Record<string, never>,
-  TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
-  TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TChildren extends WorkflowDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<void, void>,
@@ -932,8 +921,7 @@ export function defineWorkflowInterface<
     TSteps,
     TRequests,
     TQueues,
-    TAttachedChildren,
-    TDetachedChildren,
+    TChildren,
     TResultSchema,
     TArgs,
     TMetadata,
@@ -949,8 +937,7 @@ export function defineWorkflowInterface<
   TSteps,
   TRequests,
   TQueues,
-  TAttachedChildren,
-  TDetachedChildren,
+  TChildren,
   TResultSchema,
   TArgs,
   TMetadata,
@@ -968,8 +955,7 @@ export function defineWorkflowInterface<
       TSteps,
       TRequests,
       TQueues,
-      TAttachedChildren,
-      TDetachedChildren,
+      TChildren,
       TExternalWorkflows,
       TResultSchema,
       TArgs,
@@ -986,8 +972,7 @@ export function defineWorkflowInterface<
     StepsFromInterfaces<TSteps>,
     RequestsFromInterfaces<TRequests>,
     QueuesFromInterfaces<TQueues>,
-    TAttachedChildren,
-    TDetachedChildren,
+    TChildren,
     TExternalWorkflows,
     TResultSchema,
     TArgs,
@@ -1144,32 +1129,12 @@ export function defineWorkflowInterface<
     if (typeof config.children !== "object" || Array.isArray(config.children)) {
       throw new Error("children must be an object");
     }
-    if (
-      config.children.attached !== undefined &&
-      (typeof config.children.attached !== "object" || Array.isArray(config.children.attached))
-    ) {
-      throw new Error("children.attached must be an object");
-    }
-    if (
-      config.children.detached !== undefined &&
-      (typeof config.children.detached !== "object" || Array.isArray(config.children.detached))
-    ) {
-      throw new Error("children.detached must be an object");
-    }
-    for (const [name, wf] of Object.entries(config.children.attached ?? {})) {
+    for (const [name, wf] of Object.entries(config.children)) {
       if (!wf || typeof wf !== "object") {
-        throw new Error(`Attached child workflow '${name}' must be a valid workflow definition or header`);
+        throw new Error(`Child workflow '${name}' must be a valid workflow definition or header`);
       }
       if (!(wf as { name?: unknown }).name || typeof (wf as { name: string }).name !== "string") {
-        throw new Error(`Attached child workflow '${name}' must have a name`);
-      }
-    }
-    for (const [name, wf] of Object.entries(config.children.detached ?? {})) {
-      if (!wf || typeof wf !== "object") {
-        throw new Error(`Detached child workflow '${name}' must be a valid workflow definition or header`);
-      }
-      if (!(wf as { name?: unknown }).name || typeof (wf as { name: string }).name !== "string") {
-        throw new Error(`Detached child workflow '${name}' must have a name`);
+        throw new Error(`Child workflow '${name}' must have a name`);
       }
     }
   }
@@ -1244,8 +1209,7 @@ export function defineWorkflowInterface<
         TSteps,
         TRequests,
         TQueues,
-        TAttachedChildren,
-        TDetachedChildren,
+        TChildren,
         TExternalWorkflows,
         TResultSchema,
         TArgs,
@@ -1289,8 +1253,7 @@ export function defineWorkflowInterface<
         StepsFromInterfaces<TSteps>,
         RequestsFromInterfaces<TRequests>,
         QueuesFromInterfaces<TQueues>,
-        TAttachedChildren,
-        TDetachedChildren,
+        TChildren,
         TExternalWorkflows,
         TResultSchema,
         TArgs,
@@ -1308,8 +1271,7 @@ export function defineWorkflowInterface<
     TSteps,
     TRequests,
     TQueues,
-    TAttachedChildren,
-    TDetachedChildren,
+    TChildren,
     TResultSchema,
     TArgs,
     TMetadata,
@@ -1327,8 +1289,7 @@ export function defineWorkflowInterface<
         TSteps,
         TRequests,
         TQueues,
-        TAttachedChildren,
-        TDetachedChildren,
+        TChildren,
         TExternalWorkflows,
         TResultSchema,
         TArgs,
@@ -1345,8 +1306,7 @@ export function defineWorkflowInterface<
       StepsFromInterfaces<TSteps>,
       RequestsFromInterfaces<TRequests>,
       QueuesFromInterfaces<TQueues>,
-      TAttachedChildren,
-      TDetachedChildren,
+      TChildren,
       TExternalWorkflows,
       TResultSchema,
       TArgs,
@@ -1386,8 +1346,7 @@ export function defineWorkflow<
   TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
-  TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
-  TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
@@ -1395,6 +1354,8 @@ export function defineWorkflow<
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
+  TIdempotencyKeyFactory extends (args: StandardSchemaV1.InferOutput<TArgs>) => string =
+    (args: StandardSchemaV1.InferOutput<TArgs>) => never,
 >(config: {
   name: TName;
   channels?: TChannels;
@@ -1403,10 +1364,7 @@ export function defineWorkflow<
   steps?: TSteps;
   requests?: TRequests;
   queues?: TQueues;
-  children?: {
-    attached?: TAttachedChildren;
-    detached?: TDetachedChildren;
-  };
+  children?: TChildren;
   external?: TExternalWorkflows;
   patches?: TPatches;
   rng?: TRng;
@@ -1414,6 +1372,7 @@ export function defineWorkflow<
   args?: TArgs;
   metadata?: TMetadata;
   errors?: TErrors;
+  idempotencyKeyFactory?: TIdempotencyKeyFactory;
   retention?:
     | number
     | {
@@ -1430,8 +1389,7 @@ export function defineWorkflow<
       TSteps,
       TRequests,
       TQueues,
-      TAttachedChildren,
-      TDetachedChildren,
+      TChildren,
       TExternalWorkflows,
       TPatches,
       TRng,
@@ -1448,15 +1406,15 @@ export function defineWorkflow<
   TSteps,
   TRequests,
   TQueues,
-  TAttachedChildren,
-  TDetachedChildren,
+  TChildren,
   TExternalWorkflows,
   TResultSchema,
   TArgs,
   TMetadata,
   TErrors,
   TPatches,
-  TRng
+  TRng,
+  TIdempotencyKeyFactory
 > {
   // Validate name
   if (!config.name || typeof config.name !== "string") {
@@ -1567,46 +1525,19 @@ export function defineWorkflow<
   }
 
   // Validate children
-  const children = {
-    attached: config.children?.attached ?? ({} as TAttachedChildren),
-    detached: config.children?.detached ?? ({} as TDetachedChildren),
-  };
+  const children = config.children ?? ({} as TChildren);
   if (config.children !== undefined) {
     if (typeof config.children !== "object" || Array.isArray(config.children)) {
       throw new Error("children must be an object");
     }
-    if (
-      config.children.attached !== undefined &&
-      (typeof config.children.attached !== "object" ||
-        Array.isArray(config.children.attached))
-    ) {
-      throw new Error("children.attached must be an object");
-    }
-    if (
-      config.children.detached !== undefined &&
-      (typeof config.children.detached !== "object" ||
-        Array.isArray(config.children.detached))
-    ) {
-      throw new Error("children.detached must be an object");
-    }
-    for (const [name, wf] of Object.entries(config.children.attached ?? {})) {
+    for (const [name, wf] of Object.entries(config.children)) {
       if (!wf || typeof wf !== "object") {
         throw new Error(
-          `Attached child workflow '${name}' must be a valid workflow definition or header`,
+          `Child workflow '${name}' must be a valid workflow definition or header`,
         );
       }
       if (!wf.name || typeof wf.name !== "string") {
-        throw new Error(`Attached child workflow '${name}' must have a name`);
-      }
-    }
-    for (const [name, wf] of Object.entries(config.children.detached ?? {})) {
-      if (!wf || typeof wf !== "object") {
-        throw new Error(
-          `Detached child workflow '${name}' must be a valid workflow definition or header`,
-        );
-      }
-      if (!wf.name || typeof wf.name !== "string") {
-        throw new Error(`Detached child workflow '${name}' must have a name`);
+        throw new Error(`Child workflow '${name}' must have a name`);
       }
     }
   }
@@ -1749,8 +1680,7 @@ export function defineWorkflow<
     TSteps,
     TRequests,
     TQueues,
-    TAttachedChildren,
-    TDetachedChildren,
+    TChildren,
     TExternalWorkflows,
     TResultSchema,
     TArgs,

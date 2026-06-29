@@ -8,9 +8,8 @@ import type { StepDefinition, StepDefinitions } from "../definitions/steps";
 import type { WorkflowDefinitions } from "../definitions/workflow-headers";
 import type { ExplicitError } from "../results";
 import type {
-  ChildWorkflowAccessor,
-  CompensationChildWorkflowAccessor,
-  DetachedChildWorkflowAccessor,
+  ChildWorkflowUnifiedAccessor,
+  CompensationChildWorkflowUnifiedAccessor,
   ForeignWorkflowAccessor,
   QueueAccessor,
   RequestAccessor,
@@ -131,8 +130,7 @@ export interface CompensationContext<
   TSteps extends StepDefinitions,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
-  TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
-  TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
@@ -181,19 +179,11 @@ export interface CompensationContext<
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
   /**
-   * Child workflows.
+   * Child workflows. One accessor per declared child: the bare call runs it
+   * attached (full `WorkflowResult`); `.start(...)` spins it off detached.
    */
   readonly children: {
-    readonly attached: {
-      [K in keyof TAttachedChildren]: CompensationChildWorkflowAccessor<
-        TAttachedChildren[K]
-      >;
-    };
-    readonly detached: {
-      [K in keyof TDetachedChildren]: DetachedChildWorkflowAccessor<
-        TDetachedChildren[K]
-      >;
-    };
+    [K in keyof TChildren]: CompensationChildWorkflowUnifiedAccessor<TChildren[K]>;
   };
 
   /**
@@ -232,8 +222,7 @@ export interface CompensationContext<
         TSteps,
         TRequests,
         TQueues,
-        TAttachedChildren,
-        TDetachedChildren,
+        TChildren,
         TExternalWorkflows,
         TPatches,
         TRng,
@@ -317,8 +306,7 @@ export interface WorkflowContext<
   TSteps extends StepDefinitions,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
-  TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
-  TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
@@ -368,17 +356,12 @@ export interface WorkflowContext<
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
   /**
-   * Child workflow accessors — structured invocation (lifecycle managed by parent).
+   * Child workflow accessors. One accessor per declared child: the bare call
+   * runs it attached (parent-owned, awaitable); `.start(...)` spins it off
+   * detached.
    */
   readonly children: {
-    readonly attached: {
-      [K in keyof TAttachedChildren]: ChildWorkflowAccessor<TAttachedChildren[K]>;
-    };
-    readonly detached: {
-      [K in keyof TDetachedChildren]: DetachedChildWorkflowAccessor<
-        TDetachedChildren[K]
-      >;
-    };
+    [K in keyof TChildren]: ChildWorkflowUnifiedAccessor<TChildren[K]>;
   };
 
   /**
@@ -425,8 +408,7 @@ export interface WorkflowContext<
         TSteps,
         TRequests,
         TQueues,
-        TAttachedChildren,
-        TDetachedChildren,
+        TChildren,
         TExternalWorkflows,
         TPatches,
         TRng,
@@ -513,8 +495,7 @@ export type WorkflowConcurrencyContext<
   TSteps extends StepDefinitions,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
-  TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
-  TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
@@ -528,8 +509,7 @@ export type WorkflowConcurrencyContext<
     TSteps,
     TRequests,
     TQueues,
-    TAttachedChildren,
-    TDetachedChildren,
+    TChildren,
     TExternalWorkflows,
     TPatches,
     TRng,
@@ -556,8 +536,7 @@ export interface CompensationConcurrencyContext<
   TSteps extends StepDefinitions,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
-  TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
-  TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
@@ -571,8 +550,7 @@ export interface CompensationConcurrencyContext<
       TSteps,
       TRequests,
       TQueues,
-      TAttachedChildren,
-      TDetachedChildren,
+      TChildren,
       TExternalWorkflows,
       TPatches,
       TRng,

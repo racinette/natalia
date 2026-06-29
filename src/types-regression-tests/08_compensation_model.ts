@@ -63,7 +63,7 @@ const chargeStep = defineStep({
     // Dependencies.
     steps: { refundStep },
     requests: { reconcileRequest },
-    children: { attached: { undoChild: undoChildHeader } },
+    children: { undoChild: undoChildHeader },
 
     // Outcome schema.
     result: z.object({
@@ -335,7 +335,7 @@ export const compensationModelAcceptanceWorkflow = defineWorkflow({
   name: "compensationModelAcceptance",
   steps: { chargeStep },
   requests: { approvalRequest },
-  children: { attached: { childWorkflow } },
+  children: { childWorkflow },
   result: z.object({ ok: z.boolean() }),
   // @ts-expect-error workflow-level compensation hooks are removed
   async beforeCompensate() {},
@@ -353,7 +353,7 @@ export const compensationModelAcceptanceWorkflow = defineWorkflow({
     // @ts-expect-error general ad hoc compensation registration is removed
     void ctx.addCompensation(async () => undefined);
 
-    const child = ctx.children.attached.childWorkflow();
+    const child = ctx.children.childWorkflow();
     // @ts-expect-error child compensation is no longer call-site-bound
     void child.compensate(async () => undefined);
 

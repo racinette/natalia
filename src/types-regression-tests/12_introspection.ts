@@ -157,16 +157,9 @@ const _orderWorkflow = defineWorkflow({
   steps: { chargeStep, noResultCompensableStep, notifyStep },
   requests: { approvalRequest, pingRequest },
   children: {
-    attached: {
-      followUp: followUpHeader,
-      audit: auditHeader,
-      opsChild: opsChildWorkflow,
-    },
-    detached: {
-      followUp: followUpHeader,
-      audit: auditHeader,
-      opsChild: opsChildWorkflow,
-    },
+    followUp: followUpHeader,
+    audit: auditHeader,
+    opsChild: opsChildWorkflow,
   },
   async execute() {
     return { ok: true };

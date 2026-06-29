@@ -40,8 +40,7 @@ export type StepCompensationInterface<
   TRequests extends NonCompensableRequestDefinitions = NonCompensableRequestDefinitions,
   TQueues extends QueueDefinitions = QueueDefinitions,
   TTopics extends TopicDefinitions = TopicDefinitions,
-  TAttachedChildren extends WorkflowDefinitions = WorkflowDefinitions,
-  TDetachedChildren extends WorkflowDefinitions = WorkflowDefinitions,
+  TChildren extends WorkflowDefinitions = WorkflowDefinitions,
   TResultSchema extends JsonSchemaConstraint | undefined = undefined,
 > = Omit<
   StepCompensationDefinition<
@@ -55,8 +54,7 @@ export type StepCompensationInterface<
     TRequests,
     TQueues,
     TTopics,
-    TAttachedChildren,
-    TDetachedChildren,
+    TChildren,
     WorkflowDefinitions,
     TResultSchema
   >,
@@ -154,8 +152,7 @@ export type WorkflowImplementInput<
   TSteps extends StepInterfaces,
   TRequests extends RequestInterfaces,
   TQueues extends QueueInterfaces,
-  TAttachedChildren extends WorkflowDefinitions,
-  TDetachedChildren extends WorkflowDefinitions,
+  TChildren extends WorkflowDefinitions,
   TExternalWorkflows extends WorkflowDefinitions,
   TResultSchema extends JsonSchemaConstraint,
   TArgs extends JsonSchemaConstraint,
@@ -174,8 +171,7 @@ export type WorkflowImplementInput<
       StepsFromInterfaces<TSteps>,
       RequestsFromInterfaces<TRequests>,
       QueuesFromInterfaces<TQueues>,
-      TAttachedChildren,
-      TDetachedChildren,
+      TChildren,
       TExternalWorkflows,
       TPatches,
       TRng,
@@ -209,8 +205,7 @@ export interface WorkflowInterface<
   TSteps extends StepInterfaces = Record<string, never>,
   TRequests extends RequestInterfaces = Record<string, never>,
   TQueues extends QueueInterfaces = Record<string, never>,
-  TAttachedChildren extends WorkflowDefinitions = Record<string, never>,
-  TDetachedChildren extends WorkflowDefinitions = Record<string, never>,
+  TChildren extends WorkflowDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<void, void>,
@@ -230,10 +225,7 @@ export interface WorkflowInterface<
   readonly steps?: TSteps;
   readonly requests?: TRequests;
   readonly queues?: TQueues;
-  readonly children?: {
-    readonly attached?: TAttachedChildren;
-    readonly detached?: TDetachedChildren;
-  };
+  readonly children?: TChildren;
   readonly patches?: TPatches;
   readonly rng?: TRng;
   readonly retention?:
@@ -279,7 +271,6 @@ export type WorkflowInterfaceExtendFromHeader<
     RequestInterfaces,
     QueueInterfaces,
     WorkflowDefinitions,
-    WorkflowDefinitions,
     TResult,
     TArgs,
     TMetadata,
@@ -308,7 +299,6 @@ export type AnyWorkflowInterface = WorkflowInterface<
   RequestInterfaces,
   QueueInterfaces,
   WorkflowDefinitions,
-  WorkflowDefinitions,
   JsonSchemaConstraint,
   JsonSchemaConstraint,
   JsonObjectSchemaConstraint,
@@ -327,8 +317,7 @@ export type WorkflowContextForInterface<
   TSteps extends StepDefinitions,
   TRequests extends RequestDefinitions,
   TQueues extends QueueDefinitions,
-  TAttachedChildren extends WorkflowDefinitions,
-  TDetachedChildren extends WorkflowDefinitions,
+  TChildren extends WorkflowDefinitions,
   TExternalWorkflows extends WorkflowDefinitions,
   TPatches extends PatchDefinitions,
   TRng extends RngDefinitions,
@@ -340,8 +329,7 @@ export type WorkflowContextForInterface<
   TSteps,
   TRequests,
   TQueues,
-  TAttachedChildren,
-  TDetachedChildren,
+  TChildren,
   TExternalWorkflows,
   TPatches,
   TRng,

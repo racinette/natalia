@@ -42,6 +42,9 @@ export interface PublicWorkflowHeader<
     void
   >,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
+  TIdempotencyKeyFactory extends
+    | ((args: StandardSchemaV1.InferOutput<TArgs>) => string)
+    | undefined = undefined,
 > {
   readonly name: TName;
   readonly channels?: TChannels;
@@ -51,6 +54,11 @@ export interface PublicWorkflowHeader<
   readonly metadata?: TMetadata;
   readonly result?: TResult;
   readonly errors?: TErrors;
+  /**
+   * Optional factory deriving this workflow's idempotency key from its decoded
+   * args. See `WorkflowHeader.idempotencyKeyFactory`.
+   */
+  readonly idempotencyKeyFactory?: TIdempotencyKeyFactory;
 }
 
 /**
@@ -64,7 +72,9 @@ export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
   JsonSchemaConstraint,
   JsonObjectSchemaConstraint,
   JsonSchemaConstraint,
-  WorkflowErrorDefinitions
+  WorkflowErrorDefinitions,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- upper bound must accept any concrete factory's arg type
+  ((args: any) => string) | undefined
 >;
 
 /**
@@ -130,6 +140,9 @@ export interface WorkflowHeader<
     void
   >,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
+  TIdempotencyKeyFactory extends
+    | ((args: StandardSchemaV1.InferOutput<TArgs>) => string)
+    | undefined = undefined,
 > {
   readonly name: TName;
   readonly channels?: TChannels;
@@ -137,6 +150,13 @@ export interface WorkflowHeader<
   readonly metadata?: TMetadata;
   readonly result?: TResult;
   readonly errors?: TErrors;
+  /**
+   * Optional factory deriving this workflow's idempotency key from its decoded
+   * args. When present, identity is derived from args (callers must not pass an
+   * explicit `idempotencyKey`, and lookups address it by args); when absent, the
+   * caller owns the key.
+   */
+  readonly idempotencyKeyFactory?: TIdempotencyKeyFactory;
 }
 
 /**
@@ -151,5 +171,7 @@ export type AnyWorkflowHeader = WorkflowHeader<
   JsonSchemaConstraint,
   JsonObjectSchemaConstraint,
   JsonSchemaConstraint,
-  WorkflowErrorDefinitions
+  WorkflowErrorDefinitions,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- upper bound must accept any concrete factory's arg type
+  ((args: any) => string) | undefined
 >;
