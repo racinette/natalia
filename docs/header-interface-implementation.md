@@ -16,25 +16,25 @@ To start a workflow instance you need, at minimum:
 
 The **minimal** contract something needs in order to **reference** or **start** a child workflow from inside another workflow’s `execute` (or a step’s `undo`, etc.): identity + start/result/errors/metadata surface + **channels**.
 
-Headers exist to break cycles, keep a single source of truth for identity and channel names, and type **references** (`children`, `external` slots) without pulling in full implementations.
+Headers exist to break cycles, keep a single source of truth for identity and channel names, and type **references** (`childWorkflows`, `externalWorkflows` slots) without pulling in full implementations.
 
 ### 2. Interface (`defineWorkflowInterface` or `header.extend`)
 
-The **public** contract of a workflow: everything that can be **declared** and **introspected** by a client—streams, events, step *interfaces*, requests, children slots, patches, RNG, retention knobs, etc.
+The **public** contract of a workflow: everything that can be **declared** and **introspected** by a client—streams, events, step *interfaces*, requests, childWorkflows slots, patches, RNG, retention knobs, etc.
 
 This is the layer meant for **discovery and typing** of “what exists on the wire / in the product API,” not for implementation bodies.
 
 ### 3. Implementation (`defineWorkflow` or `interface.implement`)
 
-What is required to **run** the workflow as the executor: concrete `execute`, step bodies, request handlers, compensations’ `undo` / `external`, and any wiring that only the runtime needs.
+What is required to **run** the workflow as the executor: concrete `execute`, step bodies, request handlers, compensations’ `undo` / `externalWorkflows`, and any wiring that only the runtime needs.
 
-## Why `external` is not on the interface
+## Why `externalWorkflows` is not on the interface
 
-`external` workflows are intentionally **not** part of the public interface.
+`externalWorkflows` are intentionally **not** part of the public interface.
 
-Externals are “send-only” references: interaction is through **channels**, not through a typed handle to another workflow’s lifecycle. The executor does not get a meaningful, stateful notion of whether that peer is alive, failed, completed, or ever existed—only the ability to emit into the void. Surfacing `external` on the public interface would conceptually invite an idea of **lifecycle coupling** between unrelated workflows, which is hard to implement well and often not meaningful.
+External workflows are **independent roots you create (`.start`) or reference (`.get`)**: interaction is **send-only**, through **channels**, not a typed handle to another workflow’s lifecycle. The executor does not get a meaningful, stateful notion of whether that peer is alive, failed, completed, or ever existed—only the ability to emit into the void. Surfacing `externalWorkflows` on the public interface would conceptually invite an idea of **lifecycle coupling** between unrelated workflows, which is hard to implement well and often not meaningful.
 
-Declare `**external` on `.implement({ external, … })`** so `ctx.external` stays an **implementation-only** surface.
+Declare `**externalWorkflows` on `.implement({ externalWorkflows, … })`** so `ctx.externalWorkflows` stays an **implementation-only** surface.
 
 ## Authoring hierarchy (optional but strict when you use it)
 
@@ -58,11 +58,11 @@ Moving from **header → interface** should not be “spread the header and hope
 - At the **type** level, header-locked fields (`name`, `channels`, `args`, `metadata`, `result`, `errors`) are not legitimate inputs to `.extend()`.
 - At **runtime**, passing any of those keys on the extend object is an **error** (fail fast)—not silently dropped.
 
-The extend payload is only the **additive** public fields (streams, events, steps as interfaces, children references, …).
+The extend payload is only the **additive** public fields (streams, events, steps as interfaces, childWorkflows references, …).
 
 ### `interface.implement({ … })`
 
-The interface → implementation step remains `**.implement({ execute, steps, …, external? })`**, keeping implementation-only wiring off the public interface type.
+The interface → implementation step remains `**.implement({ execute, steps, …, externalWorkflows? })`**, keeping implementation-only wiring off the public interface type.
 
 ## Escape hatch
 
@@ -75,7 +75,7 @@ The interface → implementation step remains `**.implement({ execute, steps, �
 | ------------------ | -------------------------------------------------------------------------------- |
 | **Header**         | Minimal contract to reference/start a child; **channels** are the typed ingress. |
 | **Interface**      | Public, client-introspectable surface (streams, events, …).                      |
-| **Implementation** | Runnable graph: `execute`, concrete steps/requests, `external`, compensations.   |
+| **Implementation** | Runnable graph: `execute`, concrete steps/requests, `externalWorkflows`, compensations.   |
 
 
-**Opinionated authoring path:** `defineWorkflowHeader` → `**.extend`** (additive, locked header slice) → `**.implement**` (implementation-only extras like `external`). Use plain `defineWorkflow` when you deliberately want a single-shot definition.
+**Opinionated authoring path:** `defineWorkflowHeader` → `**.extend`** (additive, locked header slice) → `**.implement**` (implementation-only extras like `externalWorkflows`). Use plain `defineWorkflow` when you deliberately want a single-shot definition.

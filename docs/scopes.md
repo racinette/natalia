@@ -2,7 +2,7 @@
 
 ## What it is
 
-A **scope** is the **structured-concurrency boundary** inside a workflow body. You open one with `ctx.scope(name, entries, callback)`: a **named** scope, a **top-level object of dispatched entries** (steps, requests, attached child workflows—singly, in arrays/tuples, or in maps), and an inline async **body** that runs with a typed mirror of those entries as **handles**. The body observes outcomes selectively with `ctx.join` (and iterates completions with `ctx.match`); the scope **owns the lifecycle** of everything dispatched into it for the duration of that body.
+A **scope** is the **structured-concurrency boundary** inside a workflow body. You open one with `ctx.scope(name, entries, callback)`: a **named** scope, a **top-level object of dispatched entries** (steps, requests, child workflows—singly, in arrays/tuples, or in maps), and an inline async **body** that runs with a typed mirror of those entries as **handles**. The body observes outcomes selectively with `ctx.join` (and iterates completions with `ctx.match`); the scope **owns the lifecycle** of everything dispatched into it for the duration of that body.
 
 ```typescript
 await ctx.scope(
@@ -43,10 +43,10 @@ Structured concurrency also clarifies **observation vs. lifecycle**. Joining an 
 Observe one handle’s outcome.
 
 - A **step** or **request** handle joins to its success payload directly (or a success-or-timeout union if that entry was dispatched with `{ timeout }`).
-- An **attached child** handle joins to `{ ok: true; result } | { ok: false; status: "failed"; error }`.
+- A **child workflow** handle joins to `{ ok: true; result } | { ok: false; status: "failed"; error }`.
 - Passing `{ timeout }` to `join` adds `{ ok: false; status: "join_timeout" }`—an **observation** timeout that does not cancel, fail, or compensate the underlying work. You may join the same handle again afterward.
 
-There are **two distinct timeouts**, and they compose. A **join timeout** (`ctx.join(handle, { timeout })`) bounds *your wait* and leaves the entry running. An **execution deadline**, set at the entry’s own call site (e.g. `ctx.children.X(args, { deadlineSeconds })`), bounds *the work itself*: when it fires the entry is terminated and settles as `{ ok: false; status: "timeout" }`. A single join can surface either, and they are distinguishable by status (`"timeout"` vs `"join_timeout"`).
+There are **two distinct timeouts**, and they compose. A **join timeout** (`ctx.join(handle, { timeout })`) bounds *your wait* and leaves the entry running. An **execution deadline**, set at the entry’s own call site (e.g. `ctx.childWorkflows.X(args, { deadlineSeconds })`), bounds *the work itself*: when it fires the entry is terminated and settles as `{ ok: false; status: "timeout" }`. A single join can surface either, and they are distinguishable by status (`"timeout"` vs `"join_timeout"`).
 
 ### Convenience combinators
 
@@ -69,7 +69,7 @@ An async iterable of completions, **keyed** by top-level property. Tuple entries
 ## What it is NOT
 
 - **Not** a thread spawner: the body is sequential. Only the dispatched entries run concurrently.
-- **Not** a place for arbitrary async work: inline closures are not valid scope entries, and neither are **detached** child starts (a `ForeignWorkflowHandle` is send-only, not joinable).
+- **Not** a place for arbitrary async work: inline closures are not valid scope entries, and neither are `externalWorkflows` starts (an `ExternalWorkflowHandle` is send-only, not joinable).
 - **Not** a separate error mode: the scope body uses the workflow’s own `ctx.errors`; there is no scope-local failure channel.
 - **Not** a cancellation mechanism via `join`: a join timeout is observation-only.
 
@@ -140,14 +140,14 @@ const best = await ctx.some("gather", {
 }); // keyed-success array, no failure case
 ```
 
-**Messaging an attached child while it runs**
+**Messaging a child workflow while it runs**
 
-Inside a scope, an attached-child entry’s handle gains a `channels.<name>.send(...)` surface—the only way to message an attached child mid-flight. This is the relay pattern: the parent receives on its own channel and forwards onto the child’s.
+Inside a scope, a child-workflow entry’s handle gains a `channels.<name>.send(...)` surface—the only way to message a child workflow mid-flight. This is the relay pattern: the parent receives on its own channel and forwards onto the child’s.
 
 ```typescript
 await ctx.scope(
   "cancelable-order",
-  { order: ctx.children.processOrder({ orderId: "o-1" }) },
+  { order: ctx.childWorkflows.processOrder({ orderId: "o-1" }) },
   async (ctx, { order }) => {
     const fromOutside = await ctx.channels.operatorCancel.receive();
     order.channels.cancel.send({ reason: fromOutside.reason });

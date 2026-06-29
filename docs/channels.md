@@ -69,20 +69,20 @@ async execute(ctx) {
 }
 ```
 
-**Sending from a caller that holds a handle** (detached child, foreign workflow, operator API, etc.)
+**Sending from a caller that holds a handle** (external workflow, operator API, etc.)
 
 ```typescript
 agent.channels.humanReply.send({ text: "Ship it." });
 ```
 
-**Relay (proxy): parent receives on its own channel, forwards to an attached child** (`ctx.scope` + `join`)
+**Relay (proxy): parent receives on its own channel, forwards to a child workflow** (`ctx.scope` + `join`)
 
-Callers with a handle to **this** instance send on `operatorCancel`. While `processOrder` runs as an attached child, the parent waits on that mailbox and **relays** the payload onto the child’s `cancel` channel—two actors, two inboxes, one hop in the middle.
+Callers with a handle to **this** instance send on `operatorCancel`. While `processOrder` runs as a child workflow, the parent waits on that mailbox and **relays** the payload onto the child’s `cancel` channel—two actors, two inboxes, one hop in the middle.
 
 ```typescript
 await ctx.scope(
   "cancelable-order",
-  { order: ctx.children.processOrder({ orderId: "o-1" }) },
+  { order: ctx.childWorkflows.processOrder({ orderId: "o-1" }) },
   async (ctx, { order }) => {
     const fromOutside = await ctx.channels.operatorCancel.receive();
     order.channels.cancel.send({ reason: fromOutside.reason });
