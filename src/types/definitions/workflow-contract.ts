@@ -22,12 +22,12 @@ import type { NonCompensableStepDefinitions, StepCompensationDefinition, StepDef
 import type { PublicWorkflowHeader, WorkflowDefinitions } from "./workflow-headers";
 
 /**
- * Step compensation contract without `undo` or `external` (declarative slice only).
+ * Step compensation contract without `undo` or `externalWorkflows` (declarative slice only).
  *
  * Dependency maps default to their **definition upper bounds** (not `Record<string, never>`)
  * so authoring literals with real `channels`, `steps`, etc. type-check without casts.
  *
- * Declare **`external`** on **`.implement({ compensation: { external, undo } })`** only.
+ * Declare **`externalWorkflows`** on **`.implement({ compensation: { externalWorkflows, undo } })`** only.
  */
 export type StepCompensationInterface<
   TArgsSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
@@ -58,7 +58,7 @@ export type StepCompensationInterface<
     WorkflowDefinitions,
     TResultSchema
   >,
-  "undo" | "external"
+  "undo" | "externalWorkflows"
 >;
 
 /**
@@ -161,8 +161,8 @@ export type WorkflowImplementInput<
   TPatches extends PatchDefinitions,
   TRng extends RngDefinitions,
 > = {
-  /** Other workflows reachable from `execute` via `ctx.external` — implementation-only, not part of `WorkflowInterface`. */
-  readonly external?: TExternalWorkflows;
+  /** Other workflows reachable from `execute` via `ctx.externalWorkflows` — implementation-only, not part of `WorkflowInterface`. */
+  readonly externalWorkflows?: TExternalWorkflows;
   execute: (
     ctx: WorkflowContextForInterface<
       TChannels,
@@ -192,10 +192,10 @@ export type WorkflowImplementInput<
  *
  * Prefer `defineWorkflowHeader(...).extend({ ... })` for the header → interface
  * transition so header fields cannot be overridden. Additive fields (streams,
- * events, children, requests, step interfaces, …) complete the public contract.
+ * events, childWorkflows, requests, step interfaces, …) complete the public contract.
  *
- * Declaring **`external`** workflows belongs on **`.implement({ external, … })`** only
- * — they wire `ctx.external` for the implementation and are not part of this public surface.
+ * Declaring **`externalWorkflows`** workflows belongs on **`.implement({ externalWorkflows, … })`** only
+ * — they wire `ctx.externalWorkflows` for the implementation and are not part of this public surface.
  */
 export interface WorkflowInterface<
   TName extends string = string,
@@ -225,7 +225,7 @@ export interface WorkflowInterface<
   readonly steps?: TSteps;
   readonly requests?: TRequests;
   readonly queues?: TQueues;
-  readonly children?: TChildren;
+  readonly childWorkflows?: TChildren;
   readonly patches?: TPatches;
   readonly rng?: TRng;
   readonly retention?:
@@ -252,7 +252,7 @@ export type WorkflowHeaderLockedForExtend =
 
 /**
  * Additive interface fields layered on top of an existing `WorkflowHeader` (streams,
- * events, steps, children, …). Header-locked keys are omitted from this shape.
+ * events, steps, childWorkflows, …). Header-locked keys are omitted from this shape.
  */
 export type WorkflowInterfaceExtendFromHeader<
   TName extends string,
@@ -283,7 +283,7 @@ export type WorkflowInterfaceExtendFromHeader<
   | "steps"
   | "requests"
   | "queues"
-  | "children"
+  | "childWorkflows"
   | "patches"
   | "rng"
   | "retention"

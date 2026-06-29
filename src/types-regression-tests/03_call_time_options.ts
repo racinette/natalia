@@ -7,7 +7,7 @@ import {
 } from "../workflow";
 import type {
   AwaitableEntry,
-  ForeignWorkflowHandle,
+  ExternalWorkflowHandle,
   RetryPolicyOptions,
   StepBoundary,
 } from "../types";
@@ -94,8 +94,8 @@ const humanReviewRequest = defineRequest({
 export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
   name: "callTimeOptionsAcceptance",
   steps: { timedStep },
-  children: { child: childHeader },
-  external: { ops: externalHeader },
+  childWorkflows: { child: childHeader },
+  externalWorkflows: { ops: externalHeader, child: childHeader },
   requests: { humanReview: humanReviewRequest },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx) {
@@ -148,7 +148,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     // (no `channels.*.send` on the direct entry; no `idempotencyKey` on invocation opts).
     // -------------------------------------------------------------------------
 
-    const childEntry = ctx.children.child({
+    const childEntry = ctx.childWorkflows.child({
       id: "c-1",
     });
 
@@ -159,7 +159,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
       "channels" extends keyof typeof childEntry ? false : true
     >;
 
-    ctx.children.child(
+    ctx.childWorkflows.child(
       { id: "c-1" },
       // @ts-expect-error attached child options omit idempotencyKey (a detached `.start()` concern)
       { idempotencyKey: "child-1" },
@@ -185,7 +185,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
 
     await ctx.scope(
       "callTimeChildChannels",
-      { c: ctx.children.child({ id: "c-1b" }) },
+      { c: ctx.childWorkflows.child({ id: "c-1b" }) },
       async (sctx, { c }) => {
         const sendReturn: void = c.channels.cancel.send({ reason: "user" });
         void sendReturn;
@@ -196,7 +196,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     );
 
     // Timeout overload adds `{ ok: false; status: "timeout" }`.
-    const _timedChild = await ctx.children.child({ id: "c-2" }, { deadlineSeconds: 60 });
+    const _timedChild = await ctx.childWorkflows.child({ id: "c-2" }, { deadlineSeconds: 60 });
     type _TimedChildHasTimeout = Assert<
       Extract<typeof _timedChild, { ok: false; status: "timeout" }> extends never
         ? false
@@ -206,7 +206,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     // No retry-only overload on child workflows: passing `retry` without
     // `timeout` is rejected because the only options-bag overload requires
     // `timeout`.
-    ctx.children.child(
+    ctx.childWorkflows.child(
       { id: "c-3" },
       // @ts-expect-error `retry` is not a child-call option (workflows are not retried)
       { retry: { intervalSeconds: 1 } },
@@ -215,15 +215,16 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     // -------------------------------------------------------------------------
     // DETACHED CHILD WORKFLOW STARTS
     //
-    // Buffered, synchronous; returns ForeignWorkflowHandle<W>. Send-capable
+    // Buffered, synchronous; returns ExternalWorkflowHandle<W>. Send-capable
     // and carries idempotencyKey. Not awaitable.
     // -------------------------------------------------------------------------
 
-    const detached = ctx.children
-      .child({ id: "d-1" })
-      .start({ idempotencyKey: "child-detached-1" });
+    const detached = ctx.externalWorkflows.child.start(
+      { id: "d-1" },
+      { idempotencyKey: "child-detached-1" },
+    );
     type _DetachedIsForeignHandle = Assert<
-      typeof detached extends ForeignWorkflowHandle<infer _> ? true : false
+      typeof detached extends ExternalWorkflowHandle<infer _> ? true : false
     >;
     type _DetachedHasIdempotencyKey = Assert<
       typeof detached.idempotencyKey extends string ? true : false
@@ -235,15 +236,15 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     type _DetachedNotAwaitable = Assert<
       typeof detached extends PromiseLike<unknown> ? false : true
     >;
-    // @ts-expect-error no `.startDetached`; detach via `.start()` on the entry
-    void ctx.children.child.startDetached;
+    // @ts-expect-error childWorkflows are attached-only; detached starts live on externalWorkflows.<name>.start()
+    void ctx.childWorkflows.child({ id: "x" }).start;
 
     // -------------------------------------------------------------------------
     // EXTERNAL WORKFLOW ACCESSORS
     // -------------------------------------------------------------------------
-    const externalHandle = ctx.external.ops.get("external-1");
+    const externalHandle = ctx.externalWorkflows.ops.get("externalWorkflows-1");
     type _ExternalHandle = Assert<
-      typeof externalHandle extends ForeignWorkflowHandle<infer _> ? true : false
+      typeof externalHandle extends ExternalWorkflowHandle<infer _> ? true : false
     >;
     externalHandle.channels.ping.send({ at: "2027-01-01T00:00:00.000Z" });
 

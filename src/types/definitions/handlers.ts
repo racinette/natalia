@@ -7,7 +7,7 @@ import type { RequestCompensationInfo } from "./steps";
 export type Unsubscribe = () => void;
 
 /**
- * Runtime opts passed to external handlers (abort signal per attempt).
+ * Runtime opts passed to externalWorkflows handlers (abort signal per attempt).
  */
 export interface HandlerContext {
   readonly signal: AbortSignal;
@@ -43,7 +43,7 @@ export type RequestHandlerContext = HandlerContext;
 export type TopicConsumerContext = HandlerContext;
 
 /**
- * Options for external retried handlers.
+ * Options for externalWorkflows retried handlers.
  */
 export interface HandlerRetryOptions extends RetryPolicyOptions {
   readonly maxAttempts?: number;

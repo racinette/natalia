@@ -67,7 +67,6 @@ import type {
   InferWorkflowArgsInput,
   InferWorkflowAttachedChildren,
   InferWorkflowChannels,
-  InferWorkflowDetachedChildren,
   InferWorkflowErrors,
   InferWorkflowExternal,
   InferWorkflowEvents,
@@ -355,19 +354,19 @@ export interface QueueNamespaceExternal<
 // =============================================================================
 // ATTACHED / DETACHED CHILD WORKFLOW NAMESPACES
 //
-// Per `REFACTOR.MD` Part 5 §"External introspection of children" — operators
-// inspect a parent's children through two namespaces. Attached children are
+// Per `REFACTOR.MD` Part 5 §"External introspection of childWorkflows" — operators
+// inspect a parent's childWorkflows through two namespaces. Attached childWorkflows are
 // queryable only via the parent (parent-scoped) and use a **non-lifecycle**
 // handle: no `sigkill` / `sigterm` / `skip`, no `idempotencyKey`, while
 // channels / streams / events / `fetchRow` remain available where typed.
-// Detached children are real root workflows; the parent-scoped namespace
+// Detached childWorkflows are real root workflows; the parent-scoped namespace
 // returns `WorkflowHandleExternal<W>` (full root semantics).
 // =============================================================================
 
 /**
  * Operator handle for an attached child workflow row (**non-lifecycle**).
  *
- * Attached children are subordinate to the parent's lifecycle — operators do
+ * Attached childWorkflows are subordinate to the parent's lifecycle — operators do
  * not drive terminal actions on them. There is no `idempotencyKey` (not
  * globally addressable). Introspection and messaging surfaces (`channels`,
  * streams, events, `fetchRow`) follow the declared child workflow where the
@@ -420,7 +419,7 @@ export type AttachedChildWorkflowExternalHandle<W extends AnyPublicWorkflowHeade
 
 /**
  * Per-parent attached child workflow namespace, keyed by child workflow name
- * on `workflowInstance.children.attached.<name>`.
+ * on `workflowInstance.childWorkflows.attached.<name>`.
  */
 export type AttachedChildWorkflowNamespaceExternal<
   W extends AnyPublicWorkflowHeader,
@@ -442,7 +441,7 @@ export type AttachedChildWorkflowNamespaceExternal<
 /**
  * Per-parent detached child workflow namespace.
  *
- * Detached children are globally addressable root workflows; the parent-scoped
+ * Detached childWorkflows are globally addressable root workflows; the parent-scoped
  * namespace is a convenience filter that returns the standard
  * `WorkflowHandleExternal<W>`.
  */
@@ -578,11 +577,6 @@ type WorkflowHandleLooseChildWorkflows = Record<
   AttachedChildWorkflowNamespaceExternal<AnyPublicWorkflowHeader>
 >;
 
-type WorkflowHandleLooseDetachedChildWorkflows = Record<
-  string,
-  DetachedChildWorkflowNamespaceExternal<AnyPublicWorkflowHeader>
->;
-
 type WorkflowHandleLooseCompensations = Record<
   string,
   CompensationBlockNamespaceExternal<unknown>
@@ -676,15 +670,6 @@ type WorkflowHandleChildWorkflowNamespaces<
   >;
 };
 
-type WorkflowHandleDetachedChildWorkflowNamespaces<
-  TChildren extends Record<string, unknown>,
-> = {
-  [K in keyof TChildren & string]: DetachedChildWorkflowNamespaceExternal<
-    TChildren[K] extends AnyPublicWorkflowHeader
-      ? TChildren[K]
-      : AnyPublicWorkflowHeader
-  >;
-};
 
 type WorkflowHandleCompensations<W extends AnyPublicWorkflowHeader> =
   InferWorkflowSteps<W> extends infer TSteps
@@ -727,16 +712,6 @@ type WorkflowHandleChildWorkflows<W extends AnyPublicWorkflowHeader> =
           : WorkflowHandleLooseChildWorkflows
     : WorkflowHandleLooseChildWorkflows;
 
-type WorkflowHandleDetachedChildWorkflows<W extends AnyPublicWorkflowHeader> =
-  InferWorkflowDetachedChildren<W> extends infer TChildren
-    ? [TChildren] extends [never]
-      ? WorkflowHandleLooseDetachedChildWorkflows
-      : IsAny<TChildren> extends true
-        ? WorkflowHandleLooseDetachedChildWorkflows
-        : TChildren extends Record<string, unknown>
-          ? WorkflowHandleDetachedChildWorkflowNamespaces<TChildren>
-          : WorkflowHandleLooseDetachedChildWorkflows
-    : WorkflowHandleLooseDetachedChildWorkflows;
 
 type WorkflowHandleExternalNamespaces<W extends AnyPublicWorkflowHeader> =
   InferWorkflowExternal<W> extends infer TExternalWorkflows
@@ -795,12 +770,11 @@ interface WorkflowHandleExternalBase<W extends AnyPublicWorkflowHeader>
   // Halts.
   readonly halts: HaltsNamespaceExternal;
 
-  // Per-parent introspection namespaces.
-  readonly children: {
-    readonly attached: WorkflowHandleChildWorkflows<W>;
-    readonly detached: WorkflowHandleDetachedChildWorkflows<W>;
-  };
-  readonly external: WorkflowHandleExternalNamespaces<W>;
+  // Per-parent introspection namespaces. One shape each: childWorkflows are
+  // the attached (owned) children; externalWorkflows are the independent roots
+  // this instance started or references.
+  readonly childWorkflows: WorkflowHandleChildWorkflows<W>;
+  readonly externalWorkflows: WorkflowHandleExternalNamespaces<W>;
   readonly compensations: WorkflowHandleCompensationsRoot<W>;
 
   /**
@@ -1014,8 +988,8 @@ export type WorkflowGetArgs<W extends AnyPublicWorkflowHeader> =
 // Per `REFACTOR.MD` Part 5 §"`client.workflows.<def>` surface" — gain the
 // unified queryable namespace surface alongside `start` / `execute` / `get`.
 //
-// `findMany` automatically excludes attached children (Part 5 §"Global
-// queries filter out attached children" — the filter is a runtime guarantee;
+// `findMany` automatically excludes attached child workflows (Part 5 §"Global
+// queries filter out attached child workflows" — the filter is a runtime guarantee;
 // the type-level surface returns the same `WorkflowHandleExternal<W>` shape
 // regardless).
 // =============================================================================
@@ -1039,7 +1013,7 @@ export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader>
     "get"
   > {
   /**
-   * Start a new instance of this workflow and return a typed external handle.
+   * Start a new instance of this workflow and return a typed externalWorkflows handle.
    */
   start(options: WorkflowStartOptions<W>): Promise<WorkflowHandleExternal<W>>;
 
@@ -1054,7 +1028,7 @@ export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader>
   >;
 
   /**
-   * Get an external handle to an existing workflow instance by its identity:
+   * Get an externalWorkflows handle to an existing workflow instance by its identity:
    * by `args` when the workflow declares an `idempotencyKeyFactory` (the engine
    * derives the same key), otherwise by an explicit `idempotencyKey`.
    * Synchronous; no I/O.

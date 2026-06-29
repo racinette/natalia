@@ -1,26 +1,21 @@
-// Regression test — converged child-workflow API (Move 2).
+// Regression test — converged child-workflow / external-workflow API.
 //
-// Section 1 is a SELF-CONTAINED proof of the API *mechanics* (stand-in types),
-// relocated from the original spike. It proves the shapes are expressible; it
-// migrates to the real project types as Tasks 10–11 land the accessor.
-// Section 2 asserts the real Task-9 foundations (idempotencyKeyFactory presence
-// via HasIdempotencyFactory) against the actual define* output.
-//
-// Mechanic A: the unstarted entry is simultaneously
-//   (1) awaitable -> attached success/failure union
-//   (2) carries .start(delta) -> detached ForeignWorkflowHandle
-//   (3) degrades under ScopeHandles<E> to an attached scope handle
-//       (awaitable + channels.send, NO .start)
-// Mechanic B: HasIdempotencyFactory<W> drives .start() arity
-//   (factory => .start();  no factory => .start({ idempotencyKey }))
-// Bonus: the same flag drives the .get(args | key) lookup overload.
+// All assertions run against the REAL project types:
+//   - Section 2: idempotencyKeyFactory presence via HasIdempotencyFactory.
+//   - Section 3: childWorkflows accessor — attached-only awaitable entry
+//     (an execution deadline adds a timeout variant; NO `.start`; ScopeHandles
+//     degrades it to a scope handle with channels.send but no `.start`).
+//   - Section 4: identity — conditional idempotencyKey + `.get(args | key)` on
+//     the client, and externalWorkflows `.get` (reference) / `.start` (create),
+//     both yielding ExternalWorkflowHandle.
+//   - Section 5: scope semantics — a timed-out child counts as a keyed failure.
 
 import type { Assert, IsEqual } from "./type-assertions";
 import { defineWorkflow, defineWorkflowHeader } from "../workflow";
 import type { HasIdempotencyFactory } from "../types/helpers";
 import type {
   ChildWorkflowUnifiedAccessor,
-  ForeignWorkflowAccessor,
+  ExternalWorkflowAccessor,
 } from "../types/context/call-builders";
 import type {
   KeyedFailure,
@@ -29,141 +24,6 @@ import type {
 } from "../types/context/scope-results";
 import type { WorkflowClientAccessor } from "../types/engine";
 import { z } from "zod";
-
-// ===========================================================================
-// SECTION 1 — mechanics proof (self-contained stand-ins)
-// ===========================================================================
-declare const FWH: unique symbol;
-interface ForeignWorkflowHandle<Ch> {
-  readonly idempotencyKey: string;
-  readonly channels: ChannelSend<Ch>;
-  readonly [FWH]: true;
-}
-
-type ChannelSend<Ch> = { readonly [K in keyof Ch]: { send(data: Ch[K]): void } };
-
-type AttachedResult<R, E> =
-  | { ok: true; result: R }
-  | { ok: false; status: "failed"; error: E };
-
-interface WF<Args, Result, Err, Ch, HasFactory extends boolean> {
-  readonly __args: Args;
-  readonly __result: Result;
-  readonly __err: Err;
-  readonly __ch: Ch;
-  readonly __factory: HasFactory;
-}
-
-interface ChildStartOptionsSpike<Meta = unknown> {
-  metadata?: Meta;
-  seed?: string;
-  retention?: number;
-  deadlineSeconds?: number;
-}
-
-type StartDelta<HasFactory extends boolean> = HasFactory extends true
-  ? []
-  : [opts: { idempotencyKey: string }];
-
-interface ChildEntry<R, Err, Ch, HasFactory extends boolean>
-  extends PromiseLike<AttachedResult<R, Err>> {
-  start(...args: StartDelta<HasFactory>): ForeignWorkflowHandle<Ch>;
-  readonly __ch?: Ch;
-  readonly __r?: R;
-  readonly __err?: Err;
-}
-
-type AttachedScopeHandle<R, Err, Ch> = PromiseLike<AttachedResult<R, Err>> & {
-  readonly channels: ChannelSend<Ch>;
-};
-
-type ScopeHandles<E> = E extends ChildEntry<infer R, infer Err, infer Ch, boolean>
-  ? AttachedScopeHandle<R, Err, Ch>
-  : E extends object
-    ? { [K in keyof E]: ScopeHandles<E[K]> }
-    : E;
-
-type ChildAccessor<W> = W extends WF<
-  infer A,
-  infer R,
-  infer Err,
-  infer Ch,
-  infer HasF
->
-  ? (args: A, opts?: ChildStartOptionsSpike) => ChildEntry<R, Err, Ch, HasF>
-  : never;
-
-type GetArgs<W> = W extends WF<infer A, unknown, unknown, unknown, infer HasF>
-  ? HasF extends true
-    ? [args: A]
-    : [idempotencyKey: string]
-  : never;
-
-interface ForeignAccessor<W> {
-  get(
-    ...a: GetArgs<W>
-  ): ForeignWorkflowHandle<
-    W extends WF<unknown, unknown, unknown, infer Ch, boolean> ? Ch : never
-  >;
-}
-
-type Ch1 = { cancel: { reason: string } };
-type WfNoFactory = WF<{ orderId: string }, { ok: boolean }, "Boom", Ch1, false>;
-type WfFactory = WF<{ orderId: string }, { ok: boolean }, "Boom", Ch1, true>;
-
-declare const childNoF: ChildAccessor<WfNoFactory>;
-declare const childF: ChildAccessor<WfFactory>;
-declare function scope<E, R>(
-  name: string,
-  entries: E,
-  cb: (handles: ScopeHandles<E>) => Promise<R>,
-): PromiseLike<R>;
-
-async function mechanicsAssertions() {
-  const r = await childNoF({ orderId: "o1" });
-  if (r.ok) {
-    const _ok: boolean = r.result.ok;
-    void _ok;
-  } else {
-    const _s: "failed" = r.status;
-    const _e: "Boom" = r.error;
-    void _s;
-    void _e;
-  }
-
-  const h = childNoF({ orderId: "o1" }).start({ idempotencyKey: "k" });
-  const _k: string = h.idempotencyKey;
-  void _k;
-  h.channels.cancel.send({ reason: "x" });
-
-  // @ts-expect-error no factory => idempotencyKey is required
-  childNoF({ orderId: "o1" }).start();
-  childF({ orderId: "o1" }).start();
-  // @ts-expect-error factory => key is not passable
-  childF({ orderId: "o1" }).start({ idempotencyKey: "k" });
-
-  childNoF({ orderId: "o1" }, { deadlineSeconds: 60, metadata: {} }).start({
-    idempotencyKey: "k",
-  });
-
-  await scope("s", { order: childNoF({ orderId: "o1" }) }, async (handles) => {
-    handles.order.channels.cancel.send({ reason: "y" });
-    const ar = await handles.order;
-    // @ts-expect-error scope handle must not expose .start
-    handles.order.start({ idempotencyKey: "k" });
-    return ar;
-  });
-}
-void mechanicsAssertions;
-
-declare const extNoF: ForeignAccessor<WfNoFactory>;
-declare const extF: ForeignAccessor<WfFactory>;
-extNoF.get("key");
-extF.get({ orderId: "o1" });
-// @ts-expect-error no factory => lookup is by key, not args
-extNoF.get({ orderId: "o1" });
-// @ts-expect-error factory => lookup is by args, not key
-extF.get("key");
 
 // ===========================================================================
 // SECTION 2 — Task 9 foundations against the REAL types
@@ -209,8 +69,9 @@ type _A3 = Assert<IsEqual<HasIdempotencyFactory<typeof wfNoFactory>, false>>;
 type _A4 = Assert<IsEqual<HasIdempotencyFactory<typeof wfWithFactory>, true>>;
 
 // ===========================================================================
-// SECTION 3 — unified child accessor against the REAL types
-// One accessor: bare call => attached entry (awaitable); .start() => detached.
+// SECTION 3 — childWorkflows accessor against the REAL types
+// Attached-only: bare call => awaitable attached entry; NO .start (detached
+// starts live on externalWorkflows, Section 4).
 // ===========================================================================
 const childWf = defineWorkflow({
   name: "child-wf",
@@ -234,7 +95,6 @@ const childWfFactory = defineWorkflow({
 });
 
 declare const childAcc: ChildWorkflowUnifiedAccessor<typeof childWf>;
-declare const childAccF: ChildWorkflowUnifiedAccessor<typeof childWfFactory>;
 
 async function unifiedAccessorAssertions() {
   // attached: await -> success/failure union
@@ -247,19 +107,10 @@ async function unifiedAccessorAssertions() {
     void _s;
   }
 
-  // detached: .start({ idempotencyKey }) -> send-only handle
-  const h = childAcc({ orderId: "o" }).start({ idempotencyKey: "k" });
-  const _k: string = h.idempotencyKey;
-  void _k;
-  h.channels.cancel.send({ reason: "x" });
-
-  // @ts-expect-error no factory => idempotencyKey is required on .start()
-  childAcc({ orderId: "o" }).start();
-
-  // factory => .start() takes nothing
-  childAccF({ orderId: "o" }).start();
-  // @ts-expect-error factory => key is not passable
-  childAccF({ orderId: "o" }).start({ idempotencyKey: "k" });
+  // childWorkflows are attached-only — no `.start()` (detached starts live on
+  // externalWorkflows; see Section 4).
+  // @ts-expect-error childWorkflows accessor entry has no `.start`
+  void childAcc({ orderId: "o" }).start;
 
   // execution deadline => adds the timeout variant to the awaited union
   const rt = await childAcc({ orderId: "o" }, { deadlineSeconds: 30 });
@@ -286,7 +137,7 @@ void scopeDegradeAssertions;
 
 // ===========================================================================
 // SECTION 4 — identity: conditional idempotencyKey + .get(args | key)
-// (client start surface + in-body external lookup), against the REAL types.
+// (client start surface + in-body externalWorkflows lookup), against the REAL types.
 // ===========================================================================
 declare const clientNoF: WorkflowClientAccessor<typeof wfNoFactory>;
 declare const clientF: WorkflowClientAccessor<typeof wfWithFactory>;
@@ -312,15 +163,27 @@ async function clientIdentityAssertions() {
 }
 void clientIdentityAssertions;
 
-// in-body external lookup mirrors the same conditional
-declare const extReal: ForeignWorkflowAccessor<typeof childWf>;
-declare const extRealF: ForeignWorkflowAccessor<typeof childWfFactory>;
+// in-body externalWorkflows lookup mirrors the same conditional
+declare const extReal: ExternalWorkflowAccessor<typeof childWf>;
+declare const extRealF: ExternalWorkflowAccessor<typeof childWfFactory>;
 extReal.get("k");
 extRealF.get({ orderId: "o" });
-// @ts-expect-error no factory => external lookup by key, not args
+// @ts-expect-error no factory => externalWorkflows lookup by key, not args
 extReal.get({ orderId: "o" });
-// @ts-expect-error factory => external lookup by args, not key
+// @ts-expect-error factory => externalWorkflows lookup by args, not key
 extRealF.get("k");
+
+// externalWorkflows.start creates an independent root; identity is conditional
+const started = extReal.start({ orderId: "o" }, { idempotencyKey: "k" });
+const _startedKey: string = started.idempotencyKey;
+void _startedKey;
+started.channels.cancel.send({ reason: "x" });
+// @ts-expect-error no factory => idempotencyKey required on start
+extReal.start({ orderId: "o" }, {});
+// factory => key derived from args, not passable
+extRealF.start({ orderId: "o" }, {});
+// @ts-expect-error factory => idempotencyKey not passable on start
+extRealF.start({ orderId: "o" }, { idempotencyKey: "k" });
 
 // ===========================================================================
 // SECTION 5 — scope semantics: a timed-out child counts as a keyed FAILURE.

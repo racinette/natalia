@@ -114,7 +114,7 @@ defineStep({
 
 // =============================================================================
 // WORKFLOW BODY — sees the workflow's declared steps, requests, and
-// children; sees the workflow's declared `errors`.
+// childWorkflows; sees the workflow's declared `errors`.
 // =============================================================================
 
 const workflowOnlyStep = defineStep({

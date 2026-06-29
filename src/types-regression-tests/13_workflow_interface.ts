@@ -6,8 +6,8 @@ import { z } from "zod";
  *
  * Touches workflow primitives that flow into `WorkflowContext`,
  * `WorkflowConcurrencyContext`, and `CompensationContext`: channels, streams,
- * events, patches, rng, errors, steps, requests, children (attached + detached),
- * external accessors, sleep/sleepUntil, schedule, scope helpers, join, listen,
+ * events, patches, rng, errors, steps, requests, childWorkflows (attached + detached),
+ * externalWorkflows accessors, sleep/sleepUntil, schedule, scope helpers, join, listen,
  * and match.
  *
  * **Transforms:** Zod `.transform` splits Standard Schema **input** vs **output**
@@ -32,7 +32,7 @@ import type {
   ChannelReceiveCall,
   ErrorValue,
   FirstResult,
-  ForeignWorkflowHandle,
+  ExternalWorkflowHandle,
   InferWorkflowChannels,
   InferWorkflowErrors,
   IsHeaderAuthoringKind,
@@ -55,7 +55,7 @@ import type { Assert, IsEqual } from "./type-assertions";
 type AssertAssignable<T, U extends T> = U;
 
 // =============================================================================
-// Shared headers / children / external targets (graph primitives)
+// Shared headers / childWorkflows / externalWorkflows targets (graph primitives)
 // =============================================================================
 
 const ctx13ChildHeader = defineWorkflowHeader({
@@ -143,7 +143,7 @@ const ctx13CompStep = ctx13CompStepIface.implement({
     streams: { sUndo: z.object({ row: z.string() }) },
     events: { eUndo: true },
     steps: { ctx13InnerStep },
-    external: { partner: ctx13ExtHeader },
+    externalWorkflows: { partner: ctx13ExtHeader },
     async undo() {
       return undefined;
     },
@@ -201,18 +201,18 @@ const ctx13FullInterface = ctx13MainHeader.extend({
       compensation: { result: z.object({ reversed: z.boolean() }) },
     },
   },
-  children: { childA: ctx13ChildWorkflow, childD: ctx13DetachedWorkflow },
+  childWorkflows: { childA: ctx13ChildWorkflow, childD: ctx13DetachedWorkflow },
 });
 
 void defineWorkflowInterface({
   ...ctx13MainHeader,
   steps: { plain: ctx13PlainStepIface },
-  // @ts-expect-error — `external` is not on `WorkflowInterface`; pass it to `.implement({ external })` only
-  external: { partner: ctx13ExtWorkflow },
+  // @ts-expect-error — `externalWorkflows` is not on `WorkflowInterface`; pass it to `.implement({ externalWorkflows })` only
+  externalWorkflows: { partner: ctx13ExtWorkflow },
 });
 
 const ctx13FullWorkflow = ctx13FullInterface.implement({
-  external: { partner: ctx13ExtWorkflow },
+  externalWorkflows: { partner: ctx13ExtWorkflow },
   steps: {
     plain: ctx13PlainStep,
     withComp: ctx13CompStep,
@@ -260,14 +260,14 @@ const ctx13FullWorkflow = ctx13FullInterface.implement({
 
     void ctx.requests.rpc;
 
-    void ctx.children.childA;
-    void ctx.children.childD;
+    void ctx.childWorkflows.childA;
+    void ctx.childWorkflows.childD;
 
-    const _extPartner = ctx.external.partner.get("idem-1");
+    const _extPartner = ctx.externalWorkflows.partner.get("idem-1");
     type _ExtPartner = Assert<
       IsEqual<
         typeof _extPartner,
-        ForeignWorkflowHandle<InferWorkflowChannels<typeof ctx13ExtWorkflow>>
+        ExternalWorkflowHandle<InferWorkflowChannels<typeof ctx13ExtWorkflow>>
       >
     >;
     void _extPartner.channels.extOut.send({ n: 1 });
@@ -300,9 +300,9 @@ const ctx13FullWorkflow = ctx13FullInterface.implement({
         void sctx.errors.ErrA("scope");
         void sctx.steps.plain;
         void sctx.requests.rpc;
-        void sctx.children.childA;
-        void sctx.children.childD;
-        void sctx.external.partner;
+        void sctx.childWorkflows.childA;
+        void sctx.childWorkflows.childD;
+        void sctx.externalWorkflows.partner;
         const _joinPe = await sctx.join(handles.pe);
         type _JoinPe = Assert<
           IsEqual<typeof _joinPe, JoinResult<(typeof handles)["pe"]>>
@@ -373,7 +373,7 @@ const ctx13FullWorkflow = ctx13FullInterface.implement({
       break;
     }
 
-    const _childAEntry = ctx.children.childA({
+    const _childAEntry = ctx.childWorkflows.childA({
       seed: 1,
     });
     type _ChildAResult = AttachedChildWorkflowResult<
@@ -502,7 +502,7 @@ const orderInterface = orderHeader.extend({
   streams: { audit: z.object({ line: z.string() }) },
   events: { paid: true },
   steps: { charge: chargeStepInterface },
-  children: {},
+  childWorkflows: {},
 });
 
 // @ts-expect-error — header-locked keys cannot be passed to `.extend()`
@@ -572,7 +572,7 @@ type TripleContractSurface = Pick<
   | "streams"
   | "events"
   | "steps"
-  | "children"
+  | "childWorkflows"
 >;
 
 const tripleInterfaceOnly: TripleContract = {
@@ -590,7 +590,7 @@ const tripleInterfaceOnly: TripleContract = {
       result: z.void(),
     },
   },
-  children: { childSlot: tripleHeader },
+  childWorkflows: { childSlot: tripleHeader },
 };
 
 const tripleStep = tripleStepIface.implement({
@@ -603,12 +603,12 @@ const triplePublicFromHeader = tripleHeader.extend({
   streams: tripleInterfaceOnly.streams,
   events: tripleInterfaceOnly.events,
   steps: { work: tripleStepIface },
-  children: tripleInterfaceOnly.children,
+  childWorkflows: tripleInterfaceOnly.childWorkflows,
 });
 
 const tripleImplementation = triplePublicFromHeader.implement({
   steps: { work: tripleStep },
-  external: { ext: tripleHeader },
+  externalWorkflows: { ext: tripleHeader },
   async execute() {
     return 1;
   },
@@ -624,12 +624,12 @@ const _badStreamFromHeader: typeof triplePublicFromHeader = tripleHeader.extend(
   streams: { log: z.object({ line: z.number() }) },
   events: tripleInterfaceOnly.events,
   steps: { work: tripleStepIface },
-  children: tripleInterfaceOnly.children,
+  childWorkflows: tripleInterfaceOnly.childWorkflows,
 });
 void _badStreamFromHeader;
 
-type TripleExternalSlot = Pick<typeof tripleImplementation, "external">;
-// @ts-expect-error — wrong `external` key vs `TripleExternalSlot`
+type TripleExternalSlot = Pick<typeof tripleImplementation, "externalWorkflows">;
+// @ts-expect-error — wrong `externalWorkflows` key vs `TripleExternalSlot`
 const _wrongExternalSlot: TripleExternalSlot = { extx: tripleHeader };
 
 // =============================================================================

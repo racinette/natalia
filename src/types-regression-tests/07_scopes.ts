@@ -44,7 +44,8 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
   args: z.object({ orderId: z.string() }),
   steps: { normalize: normalizeStep },
   requests: { approval: approvalRequest },
-  children: { followUp: followUpHeader },
+  childWorkflows: { followUp: followUpHeader },
+  externalWorkflows: { followUp: followUpHeader },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx, args) {
     // -------------------------------------------------------------------------
@@ -60,7 +61,7 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
       {
         normalize: ctx.steps.normalize({ orderId: args.orderId }),
         approval: ctx.requests.approval({ orderId: args.orderId }),
-        followUp: ctx.children.followUp({
+        followUp: ctx.childWorkflows.followUp({
           orderId: args.orderId,
         }),
       },
@@ -137,14 +138,15 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
     // -------------------------------------------------------------------------
     // DETACHED CHILD WORKFLOW STARTS ARE NOT SCOPE ENTRIES
     //
-    // Detached child call mode is a buffered op that returns a `ForeignWorkflowHandle`
+    // Detached child call mode is a buffered op that returns a `ExternalWorkflowHandle`
     // synchronously; it is not joinable from the parent and not a valid
     // scope entry.
     // -------------------------------------------------------------------------
 
-    const detached = ctx.children
-      .followUp({ orderId: args.orderId })
-      .start({ idempotencyKey: "f-detached-1" });
+    const detached = ctx.externalWorkflows.followUp.start(
+      { orderId: args.orderId },
+      { idempotencyKey: "f-detached-1" },
+    );
     // @ts-expect-error detached child handles are not scope entries
     await ctx.scope(
       "DetachedRejected",

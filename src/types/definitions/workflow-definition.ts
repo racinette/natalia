@@ -113,13 +113,13 @@ export interface WorkflowDefinition<
 
   /**
    * Child workflow definitions (one map). Whether a child runs attached or
-   * detached is a call-site choice (`ctx.children.X(...)` vs `.start(...)`),
+   * detached is a call-site choice (`ctx.childWorkflows.X(...)` vs `.start(...)`),
    * not a declaration property.
    */
-  readonly children?: TChildren;
+  readonly childWorkflows?: TChildren;
 
-  /** External workflow definitions (for ctx.external) */
-  readonly external?: TExternalWorkflows;
+  /** External workflow definitions (for ctx.externalWorkflows) */
+  readonly externalWorkflows?: TExternalWorkflows;
 
   /**
    * Patch definitions for safe workflow evolution.

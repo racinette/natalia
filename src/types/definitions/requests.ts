@@ -24,7 +24,7 @@ export type RequestCompensationDefinition<
 /**
  * Request definition — created via `defineRequest()`.
  *
- * Typed request/response with external handlers or manual resolution. Workflow
+ * Typed request/response with externalWorkflows handlers or manual resolution. Workflow
  * code supplies the payload and per-call options (priority, observation timeout)
  * at the accessor.
  *

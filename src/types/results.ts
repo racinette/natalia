@@ -29,7 +29,7 @@ export class ExplicitError<
 /**
  * Serializable representation of a declared business error.
  *
- * Carries the `type: "ExplicitError"` discriminator so external callers can
+ * Carries the `type: "ExplicitError"` discriminator so externalWorkflows callers can
  * distinguish declared business failures from arbitrary thrown values
  * captured as `Failure` records.
  */
@@ -47,7 +47,7 @@ export type ErrorValue<TErrors> = {
 }[keyof TErrors & string];
 
 /**
- * Workflow failure surface visible to external callers.
+ * Workflow failure surface visible to externalWorkflows callers.
  */
 export type FailureInfo<TWorkflowErrors> = ErrorValue<TWorkflowErrors>;
 

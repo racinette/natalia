@@ -33,7 +33,6 @@ import type {
   SkipOutcome,
   StreamReaderAccessorExternal,
   EventAccessorExternal,
-  DetachedChildWorkflowNamespaceExternal,
   WorkflowClientAccessor,
   WorkflowHandleExternal,
   WorkflowId,
@@ -156,7 +155,12 @@ const _orderWorkflow = defineWorkflow({
   },
   steps: { chargeStep, noResultCompensableStep, notifyStep },
   requests: { approvalRequest, pingRequest },
-  children: {
+  childWorkflows: {
+    followUp: followUpHeader,
+    audit: auditHeader,
+    opsChild: opsChildWorkflow,
+  },
+  externalWorkflows: {
     followUp: followUpHeader,
     audit: auditHeader,
     opsChild: opsChildWorkflow,
@@ -651,20 +655,20 @@ async function _exerciseRequestCompensationNamespace(): Promise<void> {
 }
 void _exerciseRequestCompensationNamespace;
 
-type _AttachedChildrenKeys = Assert<
+type _ChildWorkflowKeys = Assert<
   IsEqual<
-    keyof typeof workflowHandle.children.attached,
+    keyof typeof workflowHandle.childWorkflows,
     "followUp" | "audit" | "opsChild"
   >
 >;
-type _DetachedChildrenKeys = Assert<
+type _ExternalWorkflowKeys = Assert<
   IsEqual<
-    keyof typeof workflowHandle.children.detached,
+    keyof typeof workflowHandle.externalWorkflows,
     "followUp" | "audit" | "opsChild"
   >
 >;
 
-const _followUpAttached = workflowHandle.children.attached.followUp;
+const _followUpAttached = workflowHandle.childWorkflows.followUp;
 type _FollowUpAttachedType = Assert<
   IsEqual<
     typeof _followUpAttached,
@@ -672,7 +676,7 @@ type _FollowUpAttachedType = Assert<
   >
 >;
 async function _attachedFindUniqueShape(): Promise<void> {
-  const found = await workflowHandle.children.attached.followUp.findUnique(
+  const found = await workflowHandle.childWorkflows.followUp.findUnique(
     () => and(),
   );
   if (found.status === "unique") {
@@ -684,14 +688,14 @@ async function _attachedFindUniqueShape(): Promise<void> {
     >;
     // @ts-expect-error attached child handle has no lifecycle verbs
     void found.value.sigkill;
-    // @ts-expect-error attached children are not globally addressable
+    // @ts-expect-error attached child workflows are not globally addressable
     void found.value.idempotencyKey;
   }
 }
 void _attachedFindUniqueShape;
 
 declare const followUpAttachedId: AttachedChildWorkflowId<typeof followUpHeader>;
-const followUpAttachedHandle = workflowHandle.children.attached.followUp.get(
+const followUpAttachedHandle = workflowHandle.childWorkflows.followUp.get(
   followUpAttachedId,
 );
 type _FollowUpAttachedGet = Assert<
@@ -702,7 +706,7 @@ type _FollowUpAttachedGet = Assert<
 >;
 // @ts-expect-error attached child handle has no lifecycle verbs
 void followUpAttachedHandle.sigkill;
-// @ts-expect-error attached children are not globally addressable
+// @ts-expect-error attached child workflows are not globally addressable
 void followUpAttachedHandle.idempotencyKey;
 type _FollowUpAttachedChannelTyped = Assert<
   IsEqual<
@@ -724,7 +728,7 @@ type _FollowUpEventsFallback = Assert<
 void followUpAttachedHandle.channels.typo;
 
 const _followUpAttachedHandleWithRow =
-  workflowHandle.children.attached.followUp.get(followUpAttachedId, {
+  workflowHandle.childWorkflows.followUp.get(followUpAttachedId, {
     id: true,
     args: true,
   });
@@ -737,7 +741,7 @@ type _FollowUpAttachedGetWithRow = Assert<
 
 declare const opsChildAttachedId: AttachedChildWorkflowId<typeof opsChildWorkflow>;
 const opsChildAttachedHandle =
-  workflowHandle.children.attached.opsChild.get(opsChildAttachedId);
+  workflowHandle.childWorkflows.opsChild.get(opsChildAttachedId);
 type _OpsChildAttachedChannelTyped = Assert<
   IsEqual<
     typeof opsChildAttachedHandle.channels.childCommand,
@@ -760,70 +764,56 @@ void opsChildAttachedHandle.streams.typo;
 // @ts-expect-error undeclared ops child event should be absent
 void opsChildAttachedHandle.events.typo;
 
-const _auditDetached = workflowHandle.children.detached.audit;
-type _AuditDetachedType = Assert<
-  IsEqual<
-    typeof _auditDetached,
-    DetachedChildWorkflowNamespaceExternal<typeof auditHeader>
-  >
+// externalWorkflows operator handle: a DIRECT full handle per declared name
+// (independent root) — not a queryable attached namespace.
+const _auditExternal = workflowHandle.externalWorkflows.audit;
+type _AuditExternalType = Assert<
+  IsEqual<typeof _auditExternal, WorkflowHandleExternal<typeof auditHeader>>
 >;
-async function _detachedFindUniqueShape(): Promise<void> {
-  const found = await workflowHandle.children.detached.audit.findUnique(
-    () => and(),
-  );
-  if (found.status === "unique") {
-    type _DetachedUniqueHandle = Assert<
-      IsEqual<typeof found.value, WorkflowHandleExternal<typeof auditHeader>>
-    >;
-    type _DetachedHasLifecycle = Assert<
-      typeof found.value extends { sigkill(...args: never[]): unknown }
-        ? true
-        : false
-    >;
-    type _DetachedHasIdempotencyKey = Assert<
-      IsEqual<typeof found.value.idempotencyKey, string>
-    >;
-  }
-}
-void _detachedFindUniqueShape;
-
-declare const opsChildDetachedId: AttachedChildWorkflowId<typeof opsChildWorkflow>;
-const opsChildDetachedHandle =
-  workflowHandle.children.detached.opsChild.get(opsChildDetachedId);
-type _OpsChildDetachedHandle = Assert<
-  IsEqual<typeof opsChildDetachedHandle, WorkflowHandleExternal<typeof opsChildWorkflow>>
->;
-type _OpsChildDetachedChannelTyped = Assert<
-  IsEqual<
-    typeof opsChildDetachedHandle.channels.childCommand,
-    ChannelAccessorExternal<{ source: string }>
-  >
->;
-type _OpsChildDetachedStreamTyped = Assert<
-  IsEqual<
-    typeof opsChildDetachedHandle.streams.childLog,
-    StreamReaderAccessorExternal<{ line: string }>
-  >
->;
-type _OpsChildDetachedEventTyped = Assert<
-  IsEqual<typeof opsChildDetachedHandle.events.childReady, EventAccessorExternal>
->;
-type _OpsChildDetachedHasSigkill = Assert<
-  typeof opsChildDetachedHandle extends { sigkill(...args: never[]): unknown }
+type _AuditExternalHasLifecycle = Assert<
+  typeof _auditExternal extends { sigkill(...args: never[]): unknown }
     ? true
     : false
 >;
-type _OpsChildDetachedIdempotencyKey = Assert<
-  IsEqual<typeof opsChildDetachedHandle.idempotencyKey, string>
+type _AuditExternalHasIdempotencyKey = Assert<
+  IsEqual<typeof _auditExternal.idempotencyKey, string>
 >;
-// @ts-expect-error undeclared detached ops child channel should be absent
-void opsChildDetachedHandle.channels.typo;
-// @ts-expect-error undeclared detached ops child stream should be absent
-void opsChildDetachedHandle.streams.typo;
-// @ts-expect-error undeclared detached ops child event should be absent
-void opsChildDetachedHandle.events.typo;
+
+const opsChildExternalHandle = workflowHandle.externalWorkflows.opsChild;
+type _OpsChildExternalHandle = Assert<
+  IsEqual<typeof opsChildExternalHandle, WorkflowHandleExternal<typeof opsChildWorkflow>>
+>;
+type _OpsChildExternalChannelTyped = Assert<
+  IsEqual<
+    typeof opsChildExternalHandle.channels.childCommand,
+    ChannelAccessorExternal<{ source: string }>
+  >
+>;
+type _OpsChildExternalStreamTyped = Assert<
+  IsEqual<
+    typeof opsChildExternalHandle.streams.childLog,
+    StreamReaderAccessorExternal<{ line: string }>
+  >
+>;
+type _OpsChildExternalEventTyped = Assert<
+  IsEqual<typeof opsChildExternalHandle.events.childReady, EventAccessorExternal>
+>;
+type _OpsChildExternalHasSigkill = Assert<
+  typeof opsChildExternalHandle extends { sigkill(...args: never[]): unknown }
+    ? true
+    : false
+>;
+type _OpsChildExternalIdempotencyKey = Assert<
+  IsEqual<typeof opsChildExternalHandle.idempotencyKey, string>
+>;
+// @ts-expect-error undeclared external ops child channel should be absent
+void opsChildExternalHandle.channels.typo;
+// @ts-expect-error undeclared external ops child stream should be absent
+void opsChildExternalHandle.streams.typo;
+// @ts-expect-error undeclared external ops child event should be absent
+void opsChildExternalHandle.events.typo;
 // @ts-expect-error unknown child workflow key should be rejected
-void workflowHandle.children.attached.typo;
+void workflowHandle.childWorkflows.typo;
 // @ts-expect-error legacy namespace removed
 void workflowHandle.attachedChildWorkflows;
 // @ts-expect-error legacy namespace removed
@@ -842,22 +832,19 @@ type _HeaderOnlyRequestCompensationsFallback = Assert<
     Record<string, RequestCompensationNamespaceExternal>
   >
 >;
-type _HeaderOnlyAttachedChildrenFallback = Assert<
+type _HeaderOnlyChildWorkflowsFallback = Assert<
   IsEqual<
-    typeof _headerOnlyHandle.children.attached,
+    typeof _headerOnlyHandle.childWorkflows,
     Record<
       string,
       AttachedChildWorkflowNamespaceExternal<AnyPublicWorkflowHeader>
     >
   >
 >;
-type _HeaderOnlyDetachedChildrenFallback = Assert<
+type _HeaderOnlyExternalWorkflowsFallback = Assert<
   IsEqual<
-    typeof _headerOnlyHandle.children.detached,
-    Record<
-      string,
-      DetachedChildWorkflowNamespaceExternal<AnyPublicWorkflowHeader>
-    >
+    typeof _headerOnlyHandle.externalWorkflows,
+    Record<string, WorkflowHandleExternal<AnyPublicWorkflowHeader>>
   >
 >;
 

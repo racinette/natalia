@@ -89,7 +89,7 @@ const orchestratorHeader = defineWorkflowHeader({
 
 const orchestratorWorkflow = defineWorkflow({
   ...orchestratorHeader,
-  children: { worker: workerHeader },
+  childWorkflows: { worker: workerHeader },
   async execute() {
     return undefined;
   },
@@ -199,7 +199,7 @@ async function _client14SearchSurface(
     IsEqual<typeof orch, WorkflowHandleExternal<typeof orchestratorWorkflow>>
   >;
 
-  const workerMany = orch.children.attached.worker.findMany((s) =>
+  const workerMany = orch.childWorkflows.worker.findMany((s) =>
     eq(s.args.task, "ping"),
   );
   type _WorkerManyHandle = Assert<
@@ -217,7 +217,7 @@ async function _client14SearchSurface(
   >;
   void workerManyRows;
 
-  const workerCount = await orch.children.attached.worker.count((s) =>
+  const workerCount = await orch.childWorkflows.worker.count((s) =>
     gt(s.createdAt, new Date(0)),
   );
   type _WorkerCount = Assert<IsEqual<typeof workerCount, number>>;
@@ -230,7 +230,7 @@ async function _client14SearchSurface(
   await c.workflows.catalog.findUnique((s) => eq(s.status, "not-a-status"));
 
   // @ts-expect-error — child namespace is typed to worker args (`task`), not catalog `sku`
-  await orch.children.attached.worker.findUnique((s) => eq(s.args.sku, "x"));
+  await orch.childWorkflows.worker.findUnique((s) => eq(s.args.sku, "x"));
 }
 
 void _client14SearchSurface(client14);
@@ -279,7 +279,7 @@ async function _client14ExtendSurface(
   // Synthetic branded id for typing `.get` / `.extend` (real ids come from the engine).
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- regression-only cast to `AttachedChildWorkflowId`
   const childId = "ch-1" as AttachedChildWorkflowId<typeof workerHeader>;
-  const rawChild = orch2.children.attached.worker.get(childId);
+  const rawChild = orch2.childWorkflows.worker.get(childId);
   type _RawChild = Assert<
     IsEqual<
       typeof rawChild,

@@ -353,9 +353,9 @@ export function defineStepInterface<
     if (typeof (config.compensation as { undo?: unknown }).undo === "function") {
       throw new Error("Step interface compensation must not include undo — add it in implement()");
     }
-    if ((config.compensation as { external?: unknown }).external !== undefined) {
+    if ((config.compensation as { externalWorkflows?: unknown }).externalWorkflows !== undefined) {
       throw new Error(
-        "Step interface compensation must not include external — add it in implement()",
+        "Step interface compensation must not include externalWorkflows — add it in implement()",
       );
     }
   }
@@ -679,7 +679,7 @@ type ExtQueuesSel<Ext> = Ext extends { queues?: infer Q }
     : Record<string, never>
   : Record<string, never>;
 
-type ExtChildrenSel<Ext> = Ext extends { children?: infer C }
+type ExtChildrenSel<Ext> = Ext extends { childWorkflows?: infer C }
   ? C extends WorkflowDefinitions
     ? C
     : Record<string, never>
@@ -717,8 +717,8 @@ function assertWorkflowHeaderExtendHasNoLockedKeys(extension: object): void {
 }
 
 /**
- * Define a minimal workflow descriptor for use in `children` and
- * `external` references before the full workflow is defined.
+ * Define a minimal workflow descriptor for use in `childWorkflows` and
+ * `externalWorkflows` references before the full workflow is defined.
  *
  * A `WorkflowHeader` captures a lightweight authoring contract — `name`,
  * optional `channels`, `args`, `metadata`, and `result` — with no
@@ -744,13 +744,13 @@ function assertWorkflowHeaderExtendHasNoLockedKeys(extension: object): void {
  *
  * const workerWorkflow = defineWorkflow({
  *   ...workerHeader,
- *   external: { manager: managerHeader },
+ *   externalWorkflows: { manager: managerHeader },
  *   execute: async (ctx, args) => { ... },
  * });
  *
  * const managerWorkflow = defineWorkflow({
  *   ...managerHeader,
- *   children: { attached: { worker: workerWorkflow } },
+ *   childWorkflows: { attached: { worker: workerWorkflow } },
  *   execute: async (ctx, args) => { ... },
  * });
  *
@@ -768,7 +768,7 @@ function assertWorkflowHeaderExtendHasNoLockedKeys(extension: object): void {
  * const treeHeader = defineWorkflowHeader({ name: "tree", args: TreeArgs });
  * const treeWorkflow = defineWorkflow({
  *   ...treeHeader,
- *   children: { attached: { subtree: treeHeader } },
+ *   childWorkflows: { attached: { subtree: treeHeader } },
  *   execute: async (ctx, args) => { ... },
  * });
  * ```
@@ -885,14 +885,14 @@ export function defineWorkflowHeader<
 // =============================================================================
 
 /**
- * Declare the full workflow contract (streams, events, children, requests, step
+ * Declare the full workflow contract (streams, events, childWorkflows, requests, step
  * interfaces, …) without `execute` or step bodies. Prefer
  * **`defineWorkflowHeader(...).extend({ ... })`** for the header → interface step
  * so header fields stay fixed, then call **`.implement()`** for a type-checked
  * `WorkflowDefinition`.
  *
- * **`external`** workflows are **not** part of this public contract — pass them on
- * **`.implement({ external, execute, … })`** so `ctx.external` is typed for the
+ * **`externalWorkflows`** workflows are **not** part of this public contract — pass them on
+ * **`.implement({ externalWorkflows, execute, … })`** so `ctx.externalWorkflows` is typed for the
  * implementation only.
  *
  * Teams that prefer a single object can still use `defineWorkflow({ ...header, execute, ... })`.
@@ -1060,10 +1060,10 @@ export function defineWorkflowInterface<
         comp !== undefined &&
         typeof comp === "object" &&
         comp !== null &&
-        (comp as { external?: unknown }).external !== undefined
+        (comp as { externalWorkflows?: unknown }).externalWorkflows !== undefined
       ) {
         throw new Error(
-          `Step interface '${name}' compensation must not include external — add it in implement()`,
+          `Step interface '${name}' compensation must not include externalWorkflows — add it in implement()`,
         );
       }
     }
@@ -1125,11 +1125,11 @@ export function defineWorkflowInterface<
       }
     }
   }
-  if (config.children !== undefined) {
-    if (typeof config.children !== "object" || Array.isArray(config.children)) {
-      throw new Error("children must be an object");
+  if (config.childWorkflows !== undefined) {
+    if (typeof config.childWorkflows !== "object" || Array.isArray(config.childWorkflows)) {
+      throw new Error("childWorkflows must be an object");
     }
-    for (const [name, wf] of Object.entries(config.children)) {
+    for (const [name, wf] of Object.entries(config.childWorkflows)) {
       if (!wf || typeof wf !== "object") {
         throw new Error(`Child workflow '${name}' must be a valid workflow definition or header`);
       }
@@ -1224,11 +1224,11 @@ export function defineWorkflowInterface<
           "queues must be declared on the workflow interface — pass them to extend(), not implement()",
         );
       }
-      if (impl.external !== undefined) {
-        if (typeof impl.external !== "object" || Array.isArray(impl.external)) {
-          throw new Error("external must be an object");
+      if (impl.externalWorkflows !== undefined) {
+        if (typeof impl.externalWorkflows !== "object" || Array.isArray(impl.externalWorkflows)) {
+          throw new Error("externalWorkflows must be an object");
         }
-        for (const [name, wf] of Object.entries(impl.external)) {
+        for (const [name, wf] of Object.entries(impl.externalWorkflows)) {
           if (!wf || typeof wf !== "object") {
             throw new Error(`External workflow '${name}' must be a valid workflow definition or header`);
           }
@@ -1364,8 +1364,8 @@ export function defineWorkflow<
   steps?: TSteps;
   requests?: TRequests;
   queues?: TQueues;
-  children?: TChildren;
-  external?: TExternalWorkflows;
+  childWorkflows?: TChildren;
+  externalWorkflows?: TExternalWorkflows;
   patches?: TPatches;
   rng?: TRng;
   result?: TResultSchema;
@@ -1524,13 +1524,13 @@ export function defineWorkflow<
     }
   }
 
-  // Validate children
-  const children = config.children ?? ({} as TChildren);
-  if (config.children !== undefined) {
-    if (typeof config.children !== "object" || Array.isArray(config.children)) {
-      throw new Error("children must be an object");
+  // Validate childWorkflows
+  const childWorkflows = config.childWorkflows ?? ({} as TChildren);
+  if (config.childWorkflows !== undefined) {
+    if (typeof config.childWorkflows !== "object" || Array.isArray(config.childWorkflows)) {
+      throw new Error("childWorkflows must be an object");
     }
-    for (const [name, wf] of Object.entries(config.children)) {
+    for (const [name, wf] of Object.entries(config.childWorkflows)) {
       if (!wf || typeof wf !== "object") {
         throw new Error(
           `Child workflow '${name}' must be a valid workflow definition or header`,
@@ -1543,12 +1543,12 @@ export function defineWorkflow<
   }
 
   // Validate external workflows
-  const external = config.external ?? ({} as TExternalWorkflows);
-  if (config.external !== undefined) {
-    if (typeof config.external !== "object" || Array.isArray(config.external)) {
-      throw new Error("external must be an object");
+  const externalWorkflows = config.externalWorkflows ?? ({} as TExternalWorkflows);
+  if (config.externalWorkflows !== undefined) {
+    if (typeof config.externalWorkflows !== "object" || Array.isArray(config.externalWorkflows)) {
+      throw new Error("externalWorkflows must be an object");
     }
-    for (const [name, wf] of Object.entries(config.external)) {
+    for (const [name, wf] of Object.entries(config.externalWorkflows)) {
       if (!wf || typeof wf !== "object") {
         throw new Error(
           `External workflow '${name}' must be a valid workflow definition or header`,
@@ -1666,8 +1666,8 @@ export function defineWorkflow<
     steps,
     requests,
     queues,
-    children,
-    external,
+    childWorkflows,
+    externalWorkflows,
     errors,
     patches,
     rng,

@@ -42,7 +42,7 @@ export const errorModelAcceptanceWorkflow = defineWorkflow({
     MissingApproval: true,
   },
   steps: { noopStep },
-  children: { child: childHeader },
+  childWorkflows: { child: childHeader },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx, args) {
     // Factory produces a typed throwable.
@@ -112,7 +112,7 @@ export const errorModelAcceptanceWorkflow = defineWorkflow({
     // The `error` field is `ErrorValue<TChildErrors>` with `type: "ExplicitError"`.
     // ----------------------------------------------------------------------
 
-    const child = await ctx.children.child({
+    const child = await ctx.childWorkflows.child({
       id: "c-1",
     });
     if (!child.ok) {

@@ -46,9 +46,9 @@ export type WorkflowId = string & { readonly __brand: "WorkflowId" };
  * from compensation block ids. The `__workflow` phantom prevents ids from
  * different child-workflow definitions being assignable to each other.
  *
- * Per `REFACTOR.MD` Part 5, attached children have no `idempotencyKey`;
+ * Per `REFACTOR.MD` Part 5, attached child workflows have no `idempotencyKey`;
  * they are addressable only via the parent workflow's
- * `children.attached.<name>` namespace (step 12).
+ * `childWorkflows.attached.<name>` namespace (step 12).
  */
 export type AttachedChildWorkflowId<W extends AnyWorkflowHeader> = string & {
   readonly __brand: "AttachedChildWorkflowId";
@@ -150,7 +150,7 @@ export type DeadLetterReason = "max_attempts" | "ttl_expired" | "unrecoverable";
  *
  * Each persisted step row records one of these types. The categories from
  * Part 1.2 (buffered / dispatched / awaitable wait / awaitable read) are an
- * external classification on top of this catalog; they are not separate
+ * externalWorkflows classification on top of this catalog; they are not separate
  * persisted columns.
  */
 export type StepType =

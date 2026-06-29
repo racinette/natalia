@@ -149,12 +149,12 @@ export type InferWorkflowQueues<W> = W extends { queues?: infer TQueues }
   : never;
 
 /**
- * Extract declared attached children from a full workflow definition.
+ * Extract declared attached child workflows from a full workflow definition.
  *
  * Header-only workflow descriptors do not carry this field and resolve to
  * `never` so callers can choose an explicit fallback policy.
  */
-export type InferWorkflowChildren<W> = W extends { children?: infer TChildren }
+export type InferWorkflowChildren<W> = W extends { childWorkflows?: infer TChildren }
   ? TChildren extends WorkflowDefinitions
     ? TChildren
     : never
@@ -162,21 +162,21 @@ export type InferWorkflowChildren<W> = W extends { children?: infer TChildren }
 
 /**
  * @deprecated Attached/detached is now a call-site mode over the single
- * declared `children` set; this alias resolves to the full set. Kept for the
- * operator-side `children.attached` query view.
+ * declared declared child-workflow set; this alias resolves to the full set. Kept for the
+ * operator-side `childWorkflows.attached` query view.
  */
 export type InferWorkflowAttachedChildren<W> = InferWorkflowChildren<W>;
 
 /**
- * Extract declared detached children from a full workflow definition.
+ * Extract declared detached child workflows from a full workflow definition.
  *
  * Header-only workflow descriptors do not carry this field and resolve to
  * `never` so callers can choose an explicit fallback policy.
  */
 /**
  * @deprecated Attached/detached is now a call-site mode over the single
- * declared `children` set; this alias resolves to the full set. Kept for the
- * operator-side `children.detached` query view.
+ * declared declared child-workflow set; this alias resolves to the full set. Kept for the
+ * operator-side `childWorkflows.detached` query view.
  */
 export type InferWorkflowDetachedChildren<W> = InferWorkflowChildren<W>;
 
@@ -187,7 +187,7 @@ export type InferWorkflowDetachedChildren<W> = InferWorkflowChildren<W>;
  * `never` so callers can choose an explicit fallback policy.
  */
 export type InferWorkflowExternal<W> = W extends {
-  external?: infer TExternalWorkflows;
+  externalWorkflows?: infer TExternalWorkflows;
 }
   ? TExternalWorkflows extends WorkflowDefinitions
     ? TExternalWorkflows

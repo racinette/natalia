@@ -9,8 +9,8 @@ import type { WorkflowDefinitions } from "../definitions/workflow-headers";
 import type { ExplicitError } from "../results";
 import type {
   ChildWorkflowUnifiedAccessor,
-  CompensationChildWorkflowUnifiedAccessor,
-  ForeignWorkflowAccessor,
+  CompensationChildWorkflowAccessor,
+  ExternalWorkflowAccessor,
   QueueAccessor,
   RequestAccessor,
 } from "./call-builders";
@@ -155,7 +155,7 @@ export interface CompensationContext<
   };
 
   /**
-   * Requests for external request-response work.
+   * Requests for externalWorkflows request-response work.
    */
   readonly requests: {
     [K in keyof TRequests]: TRequests[K] extends RequestDefinition<
@@ -182,15 +182,15 @@ export interface CompensationContext<
    * Child workflows. One accessor per declared child: the bare call runs it
    * attached (full `WorkflowResult`); `.start(...)` spins it off detached.
    */
-  readonly children: {
-    [K in keyof TChildren]: CompensationChildWorkflowUnifiedAccessor<TChildren[K]>;
+  readonly childWorkflows: {
+    [K in keyof TChildren]: CompensationChildWorkflowAccessor<TChildren[K]>;
   };
 
   /**
    * Foreign workflow accessors — message-only handles to existing workflow instances.
    */
-  readonly external: {
-    [K in keyof TExternalWorkflows]: ForeignWorkflowAccessor<
+  readonly externalWorkflows: {
+    [K in keyof TExternalWorkflows]: ExternalWorkflowAccessor<
       TExternalWorkflows[K]
     >;
   };
@@ -294,7 +294,7 @@ export interface CompensationContext<
  * `ctx.atLeast` / `ctx.atMost` / `ctx.some` for structured-concurrency
  * orchestration.
  *
- * Attached child calls (`ctx.children.attached`) return an await-only entry in
+ * Attached child calls (`ctx.childWorkflows.attached`) return an await-only entry in
  * the body; use `ctx.scope` + `ctx.join` when the parent must
  * `channels.*.send` while the child runs (see `AttachedChildWorkflowScopeHandle`
  * in `call-builders.ts`).
@@ -332,7 +332,7 @@ export interface WorkflowContext<
   };
 
   /**
-   * Requests for external request-response work.
+   * Requests for externalWorkflows request-response work.
    */
   readonly requests: {
     [K in keyof TRequests]: TRequests[K] extends RequestDefinition<
@@ -360,15 +360,15 @@ export interface WorkflowContext<
    * runs it attached (parent-owned, awaitable); `.start(...)` spins it off
    * detached.
    */
-  readonly children: {
+  readonly childWorkflows: {
     [K in keyof TChildren]: ChildWorkflowUnifiedAccessor<TChildren[K]>;
   };
 
   /**
    * Foreign workflow accessors — message-only handles to existing workflow instances.
    */
-  readonly external: {
-    [K in keyof TExternalWorkflows]: ForeignWorkflowAccessor<
+  readonly externalWorkflows: {
+    [K in keyof TExternalWorkflows]: ExternalWorkflowAccessor<
       TExternalWorkflows[K]
     >;
   };

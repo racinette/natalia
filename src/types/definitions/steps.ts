@@ -141,7 +141,7 @@ export type RequestCompensationInfo<TResponse> =
  *   own private set of `channels`, `streams`, `events`, `attributes` (these
  *   are isolated from the workflow body's primitives).
  * - **Dependencies** — non-compensable steps and requests, queues, topics,
- *   children, and external workflows. Compensable steps and requests are
+ *   childWorkflows, and external workflows. Compensable steps and requests are
  *   rejected at compile time to prevent recursive compensation chains.
  *   Child workflows are exempt because each child owns its own compensation
  *   lifecycle.
@@ -186,9 +186,9 @@ export interface StepCompensationDefinition<
   /** Declared topic dependencies (the compensation can publish). */
   readonly topics?: TTopics;
   /** Declared child workflow dependencies (exempt from compensable filter). */
-  readonly children?: TChildren;
+  readonly childWorkflows?: TChildren;
   /** Declared external workflow dependencies. */
-  readonly external?: TExternalWorkflows;
+  readonly externalWorkflows?: TExternalWorkflows;
   /** Optional outcome schema. Default: `void`. */
   readonly result?: TResultSchema;
   /**

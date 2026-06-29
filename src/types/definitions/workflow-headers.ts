@@ -12,7 +12,7 @@ import type { WorkflowErrorDefinitions } from "./errors";
 export type WorkflowDefinitions = Record<string, AnyWorkflowHeader>;
 
 /**
- * Public workflow descriptor for external/client-facing APIs.
+ * Public workflow descriptor for externalWorkflows/client-facing APIs.
  *
  * Captures the contract clients need to interact with workflow instances:
  * - identity (`name`)
@@ -87,7 +87,7 @@ export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
  *   inherits the same name and schema declarations — single source of truth.
  * - Call **`header.extend({ ... })`** to add streams, events, steps, and other
  *   public interface fields without restating the header slice.
- * - Pass directly to `external` or `children.{attached,detached}` in any workflow
+ * - Pass directly to `externalWorkflows` or `childWorkflows.{attached,detached}` in any workflow
  *   that needs to reference this one.
  *
  * This resolves circular references cleanly: define the header first, use it
@@ -102,14 +102,14 @@ export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
  * // worker references manager via header — no circular dep
  * const workerWorkflow = defineWorkflow({
  *   ...workerHeader,
- *   external: { manager: managerHeader },
+ *   externalWorkflows: { manager: managerHeader },
  *   execute: async (ctx, args) => { ... },
  * });
  *
  * // manager spreads its own header + adds full implementation
  * const managerWorkflow = defineWorkflow({
  *   ...managerHeader,
- *   children: { attached: { worker: workerWorkflow } },
+ *   childWorkflows: { attached: { worker: workerWorkflow } },
  *   execute: async (ctx, args) => { ... },
  * });
  * ```
@@ -119,7 +119,7 @@ export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
  * const treeHeader = defineWorkflowHeader({ name: "tree", args: TreeArgs });
  * const treeWorkflow = defineWorkflow({
  *   ...treeHeader,
- *   children: { attached: { node: treeHeader } },
+ *   childWorkflows: { attached: { node: treeHeader } },
  *   execute: async (ctx, args) => { ... },
  * });
  * ```
@@ -161,7 +161,7 @@ export interface WorkflowHeader<
 
 /**
  * Any workflow header shape.
- * Used as the constraint for `children` and `external` entries —
+ * Used as the constraint for `childWorkflows` and `externalWorkflows` entries —
  * both full `WorkflowDefinition` objects and lightweight `WorkflowHeader`
  * descriptors satisfy this type.
  */
