@@ -1,47 +1,39 @@
-# 12 Queues
+# 13 Queues
 
 ## Goal
 
-Add global durable queues for workflow-produced work and client-registered handlers.
+Implement global durable queues per [docs/queues.md](../docs/queues.md).
 
 ## Source Coverage
 
-- `REFACTOR.MD` Part 10: Queues.
-- `REFACTOR.MD` Part 16: Scheduled Delivery.
-- `REFACTOR.MD` Part 15 and 15b: attempt access and `DEAD_LETTER`.
+- [docs/queues.md](../docs/queues.md) — authoritative public API and semantics.
+- [docs/error-model.md](../docs/error-model.md) — queue handler errors vs workflow `ctx.errors`.
 - Search query generalization for dead-letter APIs.
 
 ## Public API Target
 
-- Export `defineQueue`.
-- Workflows declare queues and enqueue messages through `ctx.queues.<slot>.enqueue(payload, opts?)`.
-- Enqueue is a synchronous buffered workflow operation (no `txOrConn`).
-- Queue options include TTL, priority, delay, and scheduled delivery (`ScheduledDeliveryOptions`).
-- Client queue namespaces are keyed by **queue definition name** (not workflow-local slot names):
-  `client.queues.<queueDefinitionName>.registerHandler(...)`.
-- Handler callbacks receive decoded messages and opts (`{ signal }`).
-- Handler retry policies use durable seconds-based fields.
-- Handler registration does not accept `txOrConn`; the runtime owns worker connection/transaction management.
-- Exhausted messages move to dead letter storage.
-- Dead-letter client APIs use the unified namespace/handle model:
-  `client.queues.<name>.deadLetters.findMany` / `findUnique` / `count` / `get(id)`.
-- Dead-letter search returns handles; `retry`, `purge`, and `fetchRow` are handle methods.
-- Client/operator dead-letter query and action IO accepts optional `txOrConn?`.
+See [docs/queues.md](../docs/queues.md). Type regression: `src/types-regression-tests/13_queues.ts`.
+
+Highlights:
+
+- `defineQueue` (data-only: `message`, optional `error`, `defaultDelay`, `defaultTtl`).
+- `ctx.queues.<slot>.enqueue` — buffered, `void`, `delay`/`ttl`/`priority`.
+- `client.queues.<definitionName>.registerHandler` — required `retryPolicy` with `maxAttempts: number | null`.
+- `throw ctx.error({ deadLetter, ... })` — no `DEAD_LETTER` sentinel.
+- Dead-letter namespace/handle APIs with `attempts()`.
 
 ## Runtime Target
 
-- Queue records persist payload, metadata, priority, scheduled availability, attempts, and dead-letter state.
-- Handlers record attempt history through `AttemptAccessor`.
-- `DEAD_LETTER` bypasses remaining retries and dead-letters immediately.
+- Persist `eligible_at` / `expires_at` at enqueue commit; numeric `ttl` offsets from eligibility.
+- Queue message + attempt tables; `SELECT … FOR UPDATE SKIP LOCKED` claim ordering.
+- Handler attempt records with `Typed<T>` persistence and serialization validation.
 
 ## Affected Areas
 
-- New queue definition and client modules.
-- `src/types/definitions.ts`
-- `src/types/context.ts`
-- `src/types/engine.ts`
+- Queue definition and client modules.
+- `src/types/definitions/messaging.ts`, `handlers.ts`, `results.ts`, `engine.ts`
 - Migrations and queue worker runtime.
 
 ## Acceptance Contract
 
-The paired file `src/types-regression-tests/13_queues.ts` verifies definition inference, workflow enqueue typing, scheduling option exclusivity, namespace-based handler registration, dead-letter namespace/handle typing, `txOrConn?` placement, and immediate-exhaustion behavior surface.
+`src/types-regression-tests/13_queues.ts` verifies definition inference, `HasDefaultTtl` / `HasQueueErrorSchema`, workflow enqueue typing, client handler registration, `ctx.error` options, dead-letter namespace/handle typing, and `txOrConn?` placement.

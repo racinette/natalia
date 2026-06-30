@@ -1,19 +1,30 @@
 # Error Model
 
-## What it is
+Natalia does not treat errors as a single throwable hierarchy you navigate with `try/catch`. The engine **classifies outcomes** based on *where* code runs and *what form* the outcome takes. The same `throw new Error("oops")` in a step handler triggers a retry; in a workflow body it pauses the instance for operator intervention. That difference is not stylistic advice — it changes persistence, compensation, what the external caller receives, and whether replay can continue.
 
-The engine separates failure into surfaces that look similar but mean very different things. Getting them straight is most of understanding the model:
+The model has two execution planes:
 
-1. **Declared business failure** — the workflow declares a typed `errors` vocabulary and fails *deliberately* with `ctx.errors.X(...)`. This is terminal, triggers compensation, and is the **only** failure an external caller sees by schema.
-2. **Engine events** — a step/request that times out, or a child workflow that fails, comes back as an **ordinary return value** on the awaited entry, never as a throw. The body decides whether to turn one into a business failure.
-3. **Unrecognized throws** — anything thrown that *isn't* a declared `ctx.errors.X(...)` is **not** a failure. It **halts** the workflow for fix-and-replay (see the halt model). Failures are terminal; halts are pauses.
-4. **Handler failures** — step/request/queue/topic handlers run *outside* the workflow body and use a **different vocabulary entirely** (`throw` to retry, `AttemptError`, `UnrecoverableError`, `MANUAL`, `DEAD_LETTER`) — not `ctx.errors`.
+- **Workflow bodies** (`execute`, `ctx.scope` bodies) — durable, replayed, compensation-aware. They declare a typed failure vocabulary and interact with dispatched entries through **returned values**.
+- **Handlers** (step `execute`, request/queue/topic workers) — ephemeral, retried outside the body. They use **handler-local** surfaces (`AttemptError`, `MANUAL`, `ctx.error`, `UnrecoverableError`) and never see `ctx.errors`.
 
-The throughline: **`ctx.errors` is the workflow body's failure surface; everything else is either a value to inspect, a pause to fix, or a handler-side outcome.**
+Mixing vocabulary across planes does not produce a type error at the throw site in every case, but it produces the **wrong engine behavior**. The sections below describe what each plane actually does.
 
-## Declaring and throwing business failures
+## Workflow bodies: four outcome paths
 
-A workflow declares its failure vocabulary as a schema map. Each entry is either a payload schema or `true` (a payload-less marker):
+Code in a workflow body always ends up in exactly one of these buckets:
+
+| Outcome | How it is expressed | Engine behavior |
+|--------|---------------------|-----------------|
+| **Success** | `return` a value matching the workflow `result` schema | Terminal `complete`; caller gets `data`. |
+| **Declared business failure** | `throw ctx.errors.X(...)` for a code in the workflow's `errors` map | Terminal `failed`; compensation runs; caller gets a typed `error` by schema. |
+| **Engine event** | `await` a dispatched entry and receive `{ ok: false, … }` | **Not terminal by itself.** The body keeps running until it returns or throws a declared error. |
+| **Unmodeled fault** | Any other `throw` (bugs, `new Error`, stale codes) | **Execution halt** — workflow pauses; no terminal result; no compensation. |
+
+There is no fifth path where an arbitrary exception becomes a business failure. Undeclared throws are intentionally **not** failures.
+
+### Declared business failures
+
+A workflow declares its externally visible failure vocabulary on `defineWorkflow`:
 
 ```typescript
 const order = defineWorkflow({
@@ -21,7 +32,7 @@ const order = defineWorkflow({
   errors: {
     OrderInvalid: z.object({ orderId: z.string() }),
     InsufficientFunds: z.object({ amount: z.number(), balance: z.number() }),
-    Cancelled: true,
+    Cancelled: true, // payload-less marker
   },
   async execute(ctx, args) {
     if (!valid) {
@@ -32,102 +43,118 @@ const order = defineWorkflow({
 });
 ```
 
-`ctx.errors.<Code>` is a factory: for a schema-typed error you pass `(message, details)`; for a `true` error you pass `(message)` only. It returns an **`ExplicitError`** — you `throw` it. The signature is enforced from the declaration, so a typo'd code or a wrong `details` shape is a compile error.
+`ctx.errors.<Code>` is a factory bound to that declaration. Schema-typed codes take `(message, details)`; `true` codes take `(message)` only. It returns an `ExplicitError` — you throw it. Wrong codes or detail shapes are compile errors.
 
-Throwing a declared `ctx.errors.X(...)` **fails the workflow** and **triggers compensation** for its completed compensable steps. It's available in the `execute` body and in any `ctx.scope` body (scopes share the workflow's `errors`).
+Throwing a declared error **fails the workflow** and **triggers compensation** for completed compensable forward work. The same `errors` map is available in `ctx.scope` bodies; scopes do not introduce a separate failure namespace.
 
-## Engine events are values, not throws
+This is the **only** failure surface the external caller can observe by schema. Everything else either never reaches the caller (`halt`) or must be translated into a declared code by your body logic.
 
-A dispatched entry that times out or fails does **not** throw. You observe it as a local union on the awaited value, and you decide what it means:
+### Engine events are returned, not thrown
+
+When a step times out, a request invocation times out, or a child workflow fails, the engine does **not** unwind your stack. The awaited entry resolves to a discriminated union you inspect locally:
 
 ```typescript
-const result = await ctx.childWorkflows.processOrder({ orderId: "o-1" });
-if (!result.ok && result.status === "failed") {
-  // translate a child's failure into one of *our* declared failures
-  throw ctx.errors.OrderProcessingFailed("child failed", { childError: result.error });
+const child = await ctx.childWorkflows.processOrder({ orderId: "o-1" });
+if (!child.ok && child.status === "failed") {
+  throw ctx.errors.OrderProcessingFailed("child failed", {
+    childError: child.error,
+  });
 }
 ```
 
-This is deliberate: durable bodies are replayed, and "is this fatal?" is a domain decision, not something the engine should make by unwinding the stack. A step timeout (`{ ok: false; status: "timeout" }`), a child failure (`{ ok: false; status: "failed"; error }`) — all are data you branch on.
+Durable workflows replay. Whether a downstream timeout should abort the parent, trigger compensation, or trigger a different declared code is a **domain decision** the body makes explicitly — not something the runtime infers from an exception edge.
 
-## Unrecognized throws halt — they don't fail
+The same rule applies to step and request timeouts: branch on `{ ok: false, status: "timeout" }`, then decide.
 
-Any throw the body produces that is **not** a `ctx.errors.X(...)` of a *currently-declared* code becomes an **execution halt**, not a failure. A plain `throw new Error(...)`, a bug, an assertion — all halt.
+### Unrecognized throws halt
 
-This is the model's sharpest rule, and it's a feature:
+Any throw in a workflow body that is **not** a `ctx.errors.X(...)` for a code **currently** in the workflow's `errors` map becomes an **execution halt**.
 
-- A **failure** is a terminal, expected outcome you designed for — it compensates and reports a typed error to the caller.
-- A **halt** is "something is wrong that I didn't model" — the workflow **pauses** (no compensation, no terminal state) so an operator can fix the code and **replay**, or `skip` it. The recorded history is preserved.
+A halt is not a softer kind of failure:
 
-It also catches **stale throws**: if you remove an error code from the `errors` map but a replaying history still throws it, that throw is no longer recognized → it halts rather than silently mis-failing. (Halt resolution — patch + replay vs `skip` — is the halt model's domain.)
+- The workflow **does not** reach a terminal `failed` state.
+- Compensation **does not** run.
+- The external caller **does not** receive a `WorkflowResult` — the instance is **paused** until an operator patches and replays, or skips the faulting entry.
+
+Plain bugs, assertions, and `throw new Error(...)` all halt. So do **stale** declared errors: if you remove a code from `errors` but replaying history still throws it, recognition fails and the instance halts instead of mis-reporting a failure the current schema no longer describes.
+
+Failures are designed outcomes with compensation and a typed caller contract. Halts are "the code or history does not match what we model" — fix forward, then replay.
 
 ## What the caller sees
 
-A workflow's terminal outcome is a `WorkflowResult`:
+Terminal workflow outcomes are a closed union:
 
 ```typescript
 type WorkflowResult<T, TError> =
   | { ok: true;  status: "complete";   data: T }
-  | { ok: false; status: "failed";     error: TError }      // TError = ErrorValue<declared errors>
-  | { ok: false; status: "terminated"; reason: … };         // operator termination
+  | { ok: false; status: "failed";     error: TError }
+  | { ok: false; status: "terminated"; reason: … };
 ```
 
-The caller discriminates the **failed** arm on `error.code` — there is no outer error category, just the codes you declared:
+`TError` is `ErrorValue<your declared errors>` — discriminated on `error.code` with typed `details` per entry:
 
 ```typescript
-const result = await client.workflows.order.execute({ args: { … }, idempotencyKey: "…" });
+const result = await client.workflows.order.execute({ args, idempotencyKey: "o-1" });
 if (!result.ok && result.status === "failed") {
   switch (result.error.code) {
     case "OrderInvalid":      result.error.details.orderId; break;
     case "InsufficientFunds": result.error.details.balance; break;
-    case "Cancelled":         /* details is undefined for `true` errors */ break;
+    case "Cancelled":         /* no details */ break;
   }
 }
 ```
 
-Note the three terminal shapes are distinct, and a **halt is none of them** — a halted workflow has no terminal result; it is paused, waiting to be fixed or skipped. `failed` is a business outcome; `terminated` is an operator action; `halt` is an unmodeled fault.
+`failed` is a business outcome. `terminated` is operator action. **Halt is neither** — a halted workflow has no terminal result until it is resolved.
 
-## Errors per context
+## Compensation is isolated
 
-The recognized-throw rule changes by where you are:
+Compensation `undo` callbacks run as separate execution paths. They **do not** receive `ctx.errors`, and the parent workflow's declared errors are not visible inside them.
 
-| Context | A recognized failure throw | Anything else thrown |
-|---|---|---|
-| Workflow `execute` body | `ctx.errors.X(...)` (the workflow's errors) → **fails the workflow** | **execution halt** |
-| `ctx.scope` body | the parent body's `ctx.errors.X(...)` → fails the workflow | execution halt |
-| Compensation `undo` | *none* — there is no `ctx.errors` | **compensation-block halt** |
-| Step / request / queue / topic handler | *none* — see "Handler-side failures" | retry / dead-letter / halt, per handler |
+An `undo` reports success or partial outcome by **returning** through its optional `result` schema. There is no compensation equivalent of `ctx.errors.X(...)`.
 
-## Compensation has no error surface
+An unexpected throw inside `undo` **halts that compensation block instance** — a distinct halt from a workflow-body halt. It does not fail the parent workflow as a declared business error. See [primitives/steps.md](./primitives/steps.md) for the compensation surface.
 
-Compensation `undo` callbacks **do not** receive `ctx.errors`, and the workflow body's errors are invisible to them — each compensation block instance is its own isolated execution path. An `undo` reports its outcome by **returning a value** through its optional `result` schema, not by throwing. An unexpected throw inside `undo` **halts that compensation block** (a distinct halt from a workflow halt) for operator intervention. (See [steps.md](./steps.md) for the compensation surface.)
+## Handlers: a separate vocabulary
 
-## Handler-side failures (a different vocabulary)
+Step, request, queue, and topic handlers execute outside the replayed workflow body. They never use `ctx.errors`. Each primitive defines how throws and returns map to retries, dead letters, manual mode, or exhaustion callbacks.
 
-Step, request, queue, and topic **handlers** run outside the workflow body and never touch `ctx.errors`. They fail through a separate vocabulary, by **what they throw or return**:
+| Primitive | Intentional control flow | Transient fault |
+|-----------|-------------------------|-----------------|
+| **Steps** | normal `return` | `throw` (use `AttemptError` for structured attempt records) |
+| **Requests** | `return` response; `return MANUAL` for external resolution | `throw` → retry per policy |
+| **Queues** | `throw ctx.error({ deadLetter: true, … })` | `throw ctx.error({ deadLetter: false, … })` or unhandled throw → retry |
+| **Topics** | `throw UnrecoverableError` → `onConsumeError` immediately | `throw AttemptError` or ordinary error → retry |
 
-- **`throw` (any error)** — a transient failure: the engine **retries** per the retry policy. Use `AttemptError` to attach a structured `type` / `details` to the recorded attempt.
-- **`UnrecoverableError`** (topic consumers) — stop retrying immediately; go to the `onConsumeError` exhaustion path. (Topics only — see [topics.md](./topics.md).)
-- **`return DEAD_LETTER`** (queue handlers) — the message itself is the problem; dead-letter it instead of retrying. (See [queues.md](./queues.md).)
-- **`return MANUAL`** (request handlers) — stop retrying and transition to manual resolution. (See [requests.md](./requests.md).)
+Queue handlers are `void`-returning; disposition is entirely through `ctx.error`. Request handlers use **`return MANUAL`**, not queue-style dead-letter throws. Topic consumers use **`UnrecoverableError`**, not queue `ctx.error`.
 
-Intentional control-flow outcomes (`DEAD_LETTER`, `MANUAL`) are **returns**; only genuine transient faults are **throws**. This is the inverse of the body, where the *intentional* outcome (`ctx.errors`) is the throw.
+Details and type-level rules live in the primitive docs: [queues](./primitives/queues.md), [requests](./primitives/requests.md), [topics](./primitives/topics.md), [steps](./primitives/steps.md).
 
 ## Attempt history
 
-Every retried operation records its tries. `AttemptAccessor` exposes them — `last()`, `all()`, `count()`, async iteration — as `Attempt` records (a `Failure` plus a 1-indexed `attempt`). Steps persist **every** attempt (including the successful one); queues, requests, and topics persist **failed tries only**. The most common reader is compensation `undo`, where `info.attempts` lets rollback logic judge reachability before doing irreversible work (see [steps.md](./steps.md)).
+Retried operations persist tries for inspection. The shape depends on context:
 
-## What it is NOT
+- **Steps** — `AttemptAccessor` over `Attempt` records; **every** try is stored, including successes.
+- **Requests, topics** — `AttemptAccessor`; **failed tries only**.
+- **Queues** — `QueueHandlerAttemptAccessor` with a `Typed<T>` slot when the queue declares an `error` schema (`serialized` / `serialization_error` / `unspecified`).
 
-- **Not** a single throwable hierarchy. There is no base `Error` you catch; the body fails by throwing **declared** `ctx.errors.X(...)`, and handlers fail by their own returns/throws.
-- **Not** exception-based control flow for engine events. Timeouts and child failures are **values**, not throws — you branch on them.
-- **Not** a way to fail with an undeclared error. An undeclared/stale throw **halts**; it does not become a failure.
-- **Not** shared between body and compensation. They are isolated execution paths with separate (or no) error surfaces.
-- **Not** the same as the handler vocabulary. `ExplicitError` (body, business) and `AttemptError` (handler, transient) look alike but are unrelated — don't reach for `ctx.errors` in a handler or `AttemptError` in a body.
+`AttemptError` attaches structured `type` / `details` to step, request, and topic attempt rows. `QueueHandlerError` (from `ctx.error`) is separate and carries optional schema-validated `typed` payloads.
+
+Handler attempt records are diagnostic and operational. They do not flow to the workflow caller unless the body explicitly observes a dispatched result and translates it into `ctx.errors`.
+
+## Mental model
+
+Think in terms of **recognition**, not catching:
+
+1. In the body, only `ctx.errors.X(...)` is recognized as business failure. Everything else thrown is a halt.
+2. Dispatched failures arrive as **values** you must branch on before they become business failures.
+3. In handlers, the engine recognizes primitive-specific throws and returns — not `ctx.errors`.
+4. Compensation neither fails the workflow nor shares its error map.
+
+The ergonomics look like conventions (`throw ctx.errors`, `return MANUAL`, `throw ctx.error`). Underneath, they are **distinct state machines** wired to durability, replay, compensation, and external contracts. Writing against the wrong surface does not merely read oddly — it changes what gets persisted and what the system does next.
 
 ## Examples
 
-**Declaring, throwing, and translating**
+**Translate an engine event into a declared failure**
 
 ```typescript
 const order = defineWorkflow({
@@ -140,7 +167,6 @@ const order = defineWorkflow({
     }
     const child = await ctx.childWorkflows.processOrder({ orderId: args.orderId });
     if (!child.ok) {
-      // engine event (a value) → translate into a declared business failure
       throw ctx.errors.Cancelled("downstream failed");
     }
     return { ok: true };
@@ -148,21 +174,20 @@ const order = defineWorkflow({
 });
 ```
 
-**A bug halts rather than fails**
+**A bug halts; it does not fail**
 
 ```typescript
 async execute(ctx, args) {
-  const total = compute(args); // throws TypeError on a bad input shape
-  // ^ not a ctx.errors throw → the workflow HALTS (paused), not "failed".
-  //   Fix the code and replay; the recorded history is intact.
+  const total = compute(args); // TypeError → execution halt, not WorkflowResult.failed
+  // Fix the code, redeploy, replay. Recorded history is preserved.
 }
 ```
 
-**Caller branches on the code**
+**Caller handles only terminal shapes**
 
 ```typescript
 const r = await client.workflows.order.execute({ args, idempotencyKey: "o-1" });
 if (r.ok) r.data;
-else if (r.status === "failed") r.error.code; // "OrderInvalid" | "Cancelled"
-else r.reason; // terminated by an operator
+else if (r.status === "failed") r.error.code;
+else r.reason; // operator-terminated
 ```

@@ -16,7 +16,7 @@ The changes are organized into two categories:
 4. **Attributes** — workflow-instance-bound observable single current value
 5. **Streams extension** — non-blocking read variant on the external handle
 6. **Search query refactoring** — replace namespace builders with a row-scoped predicate DSL (`WhereScope<TRowTemplate> -> Predicate`)
-7. **Scheduled delivery** — `delay`/`scheduledAt` option on queue message enqueue and workflow starts
+7. **Scheduled delivery** — `delay`/`ttl` on queue enqueue; `delaySeconds`/`scheduledAt` on workflow starts
 
 **Architectural changes** — corrections and redesigns to existing engine behavior:
 
@@ -1697,194 +1697,7 @@ Legacy public builder/node aliases are removed.
 
 ## Part 10: Queues
 
-### Purpose
-
-A global competing-consumer work queue. Any workflow can enqueue a typed message to a named queue. Any registered worker can consume from it. Messages are processed exactly once via `SELECT FOR UPDATE SKIP LOCKED`.
-
-### Definition
-
-```typescript
-const notificationsQueue = defineQueue({
-  name: "notifications",
-  message: z.object({ userId: z.string(), body: z.string() }),
-  defaultTTL: 3600,
-  retention: {
-    processed: 86400,
-    deadLettered: 86400 * 30,
-  },
-});
-```
-
-- `name` — globally unique DB namespace.
-- `message` — standard-schema. Input type for enqueuing, output type for handler.
-- `defaultTTL` — optional. Seconds before unclaimed message is dead-lettered with `ttl_expired`. If absent, `ttl` is required on every `enqueue`.
-- `retention.processed` — row retention seconds after processing. `null` = never delete.
-- `retention.deadLettered` — row retention seconds after dead-lettering. `null` = never delete.
-
-### TTL semantics
-
-- `ttl: number` — expires N seconds from enqueue time.
-- `ttl: null` — never expires, regardless of `defaultTTL`.
-
-When `defaultTTL` is not specified, `ttl` is required on every `enqueue` call. When `defaultTTL` is specified, `ttl` is an optional override.
-
-### Scheduling semantics
-
-- `delay: number` — eligible N seconds from enqueue time.
-- `scheduledAt: Date` — eligible at absolute timestamp.
-
-Both optional. If neither is provided, eligible immediately. If `delay >= ttl` (or `scheduledAt >= expires_at`), the engine raises an error at enqueue time.
-
-Ordering once eligible: `priority ASC, COALESCE(scheduled_at, created_at) ASC, id ASC`. Lower priority number = higher urgency (0 is highest).
-
-### Priority
-
-- `priority: number` — optional. Lower number = higher urgency. Default: `0`.
-- Messages with lower priority numbers are claimed before messages with higher numbers.
-- Among messages with the same priority, FIFO ordering applies (by scheduled/created time, then id).
-- Priority is preserved on redrive.
-
-### Workflow-internal API
-
-```typescript
-ctx.queues.notifications.enqueue({ userId: "u1", body: "Hello" });
-ctx.queues.notifications.enqueue(
-  { userId: "u1", body: "Urgent" },
-  { ttl: 300 },
-);
-ctx.queues.notifications.enqueue(
-  { userId: "u1", body: "Reminder" },
-  { delay: 3600 },
-);
-ctx.queues.notifications.enqueue(
-  { userId: "u1", body: "Renew your subscription" },
-  { scheduledAt: addDays(ctx.date, 30) },
-);
-ctx.queues.notifications.enqueue(
-  { userId: "u1", body: "Weekly digest" },
-  { priority: 10 }, // lower urgency than default (0)
-);
-```
-
-- Synchronous buffered operation — returns `void`, not awaited.
-- Workflow can only enqueue, never read.
-- Available in workflow contexts and compensation block contexts.
-- Exactly-once enqueue: insert is colocated in the workflow's batch commit transaction. On replay, the existing record is detected and the re-insert is skipped.
-
-### Client registration API
-
-```typescript
-const unregister = client.queues.notifications.registerHandler(
-  async (message, { signal }) => {
-    await sendEmail(message.userId, message.body, { signal });
-  },
-  {
-    maxConcurrent: 10, // max concurrent handler invocations; undefined = unlimited
-    retryPolicy: {
-      timeoutSeconds: 30,
-      maxAttempts: 5,
-      intervalSeconds: 2,
-      backoffRate: 2,
-      maxIntervalSeconds: 60,
-    },
-  },
-);
-
-unregister();
-```
-
-Handler registration is namespace-based and does **not** accept `txOrConn?` — the runtime owns connection and transaction management for claiming messages, recording attempts, and handler outcomes.
-
-The handler receives the decoded message and opts `{ signal: AbortSignal }`. The signal fires after `retryPolicy.timeoutSeconds` per attempt. `maxAttempts` is meaningful for queues: after exhaustion, the message is dead-lettered with `max_attempts`. Failed attempts are written to `queue_message_attempt` — only failures are recorded, successful processing writes the result directly. All retry policy fields are in seconds (durable, persisted to DB). Returning `DEAD_LETTER` dead-letters the message immediately, bypassing remaining retry attempts (see Part 15b).
-
-`maxConcurrent` controls the maximum number of messages this consumer instance handles concurrently. When omitted (`undefined`), there is no limit — the consumer claims messages as fast as they arrive. When set, the consumer claims at most `maxConcurrent` messages at a time and waits for a slot to open before claiming the next. This prevents overwhelming downstream services and controls resource usage per consumer instance.
-
-### Dead-letter client API
-
-Dead letters are a **queryable handle namespace** under each queue:
-
-```typescript
-const deadLetters = client.queues.notifications.deadLetters.findMany(
-  ({ reason, payload }) =>
-    and(eq(reason, "max_attempts"), eq(payload.userId, "u1")),
-  {
-    fields: { id: true, payload: true },
-    sort: [{ path: "deadLetteredAt", direction: "desc" }],
-    limit: 50,
-    txOrConn: tx,
-  },
-);
-
-for await (const deadLetter of deadLetters) {
-  await deadLetter.retry({ txOrConn: tx });
-  // or: await deadLetter.purge({ txOrConn: tx });
-}
-
-const one = client.queues.notifications.deadLetters.get(deadLetterId);
-const row = await one.fetchRow({ payload: true, reason: true }, { txOrConn: tx });
-```
-
-- **Namespace methods:** `findMany`, `findUnique`, `count`, and synchronous `.get(brandedId)` (no I/O; no `txOrConn`).
-- **Handle methods:** `fetchRow`, `retry`, `purge` — each accepts optional `txOrConn?` for operator/client IO.
-- `findMany` returns handles (awaitable and async-iterable), not page records.
-- Avoid namespace-level actions that take ids (e.g. `deadLetters.retry(id)`).
-
-**Retry TTL behavior:** On `retry`, `status` resets to `pending`, `attempt_count` resets to zero, `priority` is preserved. TTL semantics follow queue definition / enqueue options.
-
-### Postgres implementation
-
-```sql
-CREATE TABLE queue_messages (
-  id                                BIGSERIAL PRIMARY KEY,
-  queue_name                        TEXT NOT NULL,
-  payload                           JSONB NOT NULL,
-  status                            TEXT NOT NULL DEFAULT 'pending',
-  priority                          INT NOT NULL DEFAULT 0,
-  attempt_count                     INT NOT NULL DEFAULT 0,
-  dead_letter_reason                TEXT,
-  scheduled_at                      TIMESTAMPTZ,
-  expires_at                        TIMESTAMPTZ,
-  claimed_at                        TIMESTAMPTZ,
-  dead_lettered_at                  TIMESTAMPTZ,
-  created_at                        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  processed_retention_deadline_at   TIMESTAMPTZ,
-  dead_letter_retention_deadline_at TIMESTAMPTZ,
-
-  CONSTRAINT chk_status CHECK (
-    status IN ('pending', 'claimed', 'processed', 'dead_lettered')
-  ),
-  CONSTRAINT chk_dead_letter_reason CHECK (
-    dead_letter_reason IS NULL OR dead_letter_reason IN ('max_attempts', 'ttl_expired')
-  ),
-  CONSTRAINT chk_schedule_before_expiry CHECK (
-    scheduled_at IS NULL OR expires_at IS NULL OR scheduled_at < expires_at
-  )
-);
-
-CREATE TABLE queue_message_attempt (
-  id              BIGSERIAL PRIMARY KEY,
-  message_id      BIGINT NOT NULL REFERENCES queue_messages(id) ON DELETE CASCADE,
-  attempt         INT NOT NULL,
-  error_message   TEXT,
-  error_type      TEXT,
-  error_details   JSONB,
-  started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  failed_at       TIMESTAMPTZ NOT NULL
-);
-```
-
-**Consumer claim:**
-
-```sql
-SELECT * FROM queue_messages
-WHERE queue_name = $1
-  AND status = 'pending'
-  AND (expires_at IS NULL OR expires_at > NOW())
-  AND (scheduled_at IS NULL OR scheduled_at <= NOW())
-ORDER BY priority ASC, COALESCE(scheduled_at, created_at) ASC, id ASC
-LIMIT 1
-FOR UPDATE SKIP LOCKED;
-```
+> **Extracted → [docs/queues.md](docs/queues.md)** (canonical). This section now lives in its own document; the design there is authoritative.
 
 ---
 
@@ -2690,30 +2503,9 @@ Request handlers can return the `MANUAL` sentinel directly (in addition to `onEx
 
 Handler return type: `TResponse | typeof MANUAL`.
 
-### `DEAD_LETTER` return from queue handlers
+### Queue handlers
 
-Queue handlers can return the `DEAD_LETTER` sentinel when the handler determines that retrying will not produce a different outcome — the message itself is the problem, not the handler or its dependencies. This mirrors the request-handler `MANUAL` pattern: intentional control-flow outcomes are **returns**, not throws.
-
-```typescript
-declare const DEAD_LETTER: unique symbol;
-```
-
-- **Return** (or implicit `void`) → message processed successfully.
-- **Return `DEAD_LETTER`** → dead-letter immediately, bypassing remaining retry attempts. The attempt is recorded normally in `queue_message_attempt`.
-- **Throw** → transient failure, retry per `retryPolicy` (including structured `AttemptError`).
-
-Handler return type: `void | typeof DEAD_LETTER`.
-
-```typescript
-client.queues.notifications.registerHandler(async (message, { signal }) => {
-  if (!isValidPayload(message)) {
-    return DEAD_LETTER;
-  }
-  await sendEmail(message.userId, message.body, { signal });
-}, { retryPolicy: { ... } });
-```
-
-`DEAD_LETTER` is NOT applicable to request handlers — use `return MANUAL` instead (manual mode vs dead-letter). `MANUAL` is NOT applicable to queue handlers.
+See **[docs/queues.md](./docs/queues.md)**. Queue handlers return `void` and use `throw ctx.error({ deadLetter, ... })` for intentional outcomes (`handler_reject` vs retry). `DEAD_LETTER` return sentinel is removed.
 
 ### `UnrecoverableError` for topic handlers
 
@@ -2745,7 +2537,7 @@ client.registerTopicConsumer(auditTopic, "analyticsConsumer", async (record, { s
 | `UnrecoverableError` | `onConsumeError("attemptsExhausted")` immediately      |
 | `AttemptError`       | Retry per `retryPolicy` (structured details persisted) |
 
-`UnrecoverableError` is NOT applicable to request handlers — use `return MANUAL` instead. It is NOT applicable to queue handlers — use `return DEAD_LETTER` instead.
+`UnrecoverableError` is NOT applicable to request handlers — use `return MANUAL` instead. It is NOT applicable to queue handlers — use `throw ctx.error({ deadLetter: true })` instead (see [docs/queues.md](./docs/queues.md)).
 
 ---
 
@@ -2762,7 +2554,7 @@ export type ScheduledDeliveryOptions =
 
 ### Queue messages
 
-Described in Part 10. `enqueue` opts accept `delay: number` (seconds) or `scheduledAt: Date`.
+Described in [docs/queues.md](./docs/queues.md). `enqueue` opts accept `delay` (`number | Date | 0`) and `ttl` (`number | Date | null`).
 
 ### Workflow starts
 
@@ -3156,7 +2948,7 @@ Removed context APIs:
 - `FieldsMask`, `ProjectedKeys`, `HandleWithRow`, `FetchableHandle`.
 - `WorkflowRow`, `WorkflowWhereTemplate`, `CompensationBlockRow`, `CompensationBlockWhereTemplate`, `RequestCompensationRow`, `RequestCompensationWhereTemplate`.
 - `RequestCompensationInfo`, `RequestCompensationStatus`, `RequestCompensationInstanceId`.
-- `StepBoundary`, `MANUAL`, `DEAD_LETTER`, `UnrecoverableError`.
+- `StepBoundary`, `MANUAL`, `QueueHandlerError`, `UnrecoverableError`.
 - `ForeignWorkflowHandle`, `AttachedChildWorkflowEntry`, `AttachedChildWorkflowScopeHandle`, `AttachedChildWorkflowExternalHandle`, `AttachedChildWorkflowId`.
 - `Unsubscribe`.
 - `TopicRecord`.
