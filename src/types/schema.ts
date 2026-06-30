@@ -139,7 +139,11 @@ export type RequestStatus =
 /**
  * Reason a queue message was dead-lettered.
  */
-export type DeadLetterReason = "max_attempts" | "ttl_expired" | "unrecoverable";
+export type DeadLetterReason =
+  | "max_attempts"
+  | "ttl_expired"
+  | "invalid_payload"
+  | "handler_reject";
 
 // =============================================================================
 // STEP TYPE CATALOG

@@ -41,6 +41,7 @@ import type {
   WorkflowOperatorActions,
   WorkflowResult,
   AttemptAccessor,
+  QueueHandlerAttemptAccessor,
   SkipOutcome,
   OperatorActionOptions,
 } from "./results";
@@ -52,7 +53,6 @@ import type {
 } from "./definitions/messaging";
 import type {
   QueueHandlerContext,
-  QueueHandlerResult,
   Unsubscribe,
 } from "./definitions/handlers";
 import type {
@@ -75,6 +75,7 @@ import type {
   InferWorkflowQueues,
   InferWorkflowRequests,
   InferWorkflowResult,
+  InferQueueTypedError,
   InferWorkflowSteps,
   InferWorkflowStreams,
 } from "./helpers";
@@ -318,8 +319,15 @@ export interface DeadLetterPurgeOutcome {
 export interface DeadLetterHandleExternal<
   TQueueName extends string = string,
   TMessage = unknown,
+  TTyped = never,
 > extends FetchableHandle<DeadLetterRow<TQueueName, TMessage>> {
   readonly id: DeadLetterId<TQueueName>;
+
+  /**
+   * Async accessor over handler attempt records for this message (failed tries
+   * only). Any attempt may carry a serialized `typed` payload.
+   */
+  attempts(opts?: FetchOptions): Promise<FindUniqueResult<QueueHandlerAttemptAccessor<TTyped>>>;
 
   retry(opts?: OperatorActionOptions): Promise<DeadLetterRetryOutcome>;
 
@@ -329,8 +337,9 @@ export interface DeadLetterHandleExternal<
 export type DeadLetterNamespaceExternal<
   TQueueName extends string = string,
   TMessage = unknown,
+  TTyped = never,
 > = QueryableNamespace<
-  DeadLetterHandleExternal<TQueueName, TMessage>,
+  DeadLetterHandleExternal<TQueueName, TMessage, TTyped>,
   DeadLetterWhereTemplate<TQueueName, TMessage>,
   DeadLetterRow<TQueueName, TMessage>,
   DeadLetterId<TQueueName>
@@ -342,13 +351,14 @@ export type DeadLetterNamespaceExternal<
 export interface QueueNamespaceExternal<
   TQueueName extends string = string,
   TMessage = unknown,
+  TTyped = never,
 > {
   registerHandler(
-    handler: (message: TMessage, opts: QueueHandlerContext) => Promise<QueueHandlerResult>,
-    options?: QueueHandlerRegistrationOptions,
+    handler: (message: TMessage, opts: QueueHandlerContext<TTyped>) => Promise<void>,
+    options: QueueHandlerRegistrationOptions,
   ): Unsubscribe;
 
-  readonly deadLetters: DeadLetterNamespaceExternal<TQueueName, TMessage>;
+  readonly deadLetters: DeadLetterNamespaceExternal<TQueueName, TMessage, TTyped>;
 }
 
 // =============================================================================
@@ -505,16 +515,18 @@ type WorkflowClientRequestNamespaces<
       : Record<string, never>;
 
 type QueueMessageForNamespace<TQueue> =
-  TQueue extends QueueDefinition<string, infer TMessageSchema>
+  TQueue extends QueueDefinition<string, infer TMessageSchema, infer _E, infer _D>
     ? StandardSchemaV1.InferOutput<TMessageSchema>
     : unknown;
+
+type QueueTypedErrorForNamespace<TQueue> = InferQueueTypedError<TQueue>;
 
 type QueueDefinitionUnionFromWorkflow<W> =
   InferWorkflowQueues<W> extends infer TQueues
     ? [TQueues] extends [never]
       ? never
       : IsAny<TQueues> extends true
-        ? QueueDefinition<string, JsonSchemaConstraint>
+        ? QueueDefinition<string, JsonSchemaConstraint, JsonSchemaConstraint | undefined, undefined>
         : TQueues extends QueueDefinitions
           ? TQueues[keyof TQueues & string]
           : never
@@ -527,10 +539,19 @@ type QueueDefinitionUnionFromWorkflows<
 }[keyof TWfs & string];
 
 type WorkflowClientQueueNamespacesFromUnion<TQueueUnion> = {
-  [TQueue in TQueueUnion as TQueue extends QueueDefinition<infer TName, infer _M>
+  [TQueue in TQueueUnion as TQueue extends QueueDefinition<
+    infer TName,
+    infer _M,
+    infer _E,
+    infer _D
+  >
     ? TName
-    : never]: TQueue extends QueueDefinition<infer TName, infer _M>
-    ? QueueNamespaceExternal<TName, QueueMessageForNamespace<TQueue>>
+    : never]: TQueue extends QueueDefinition<infer TName, infer _M, infer _E, infer _D>
+    ? QueueNamespaceExternal<
+        TName,
+        QueueMessageForNamespace<TQueue>,
+        QueueTypedErrorForNamespace<TQueue>
+      >
     : never;
 };
 

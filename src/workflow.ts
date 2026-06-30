@@ -44,7 +44,7 @@ import type {
   QueuesFromInterfaces,
 } from "./types/definitions/workflow-contract";
 
-export { AttemptError, UnrecoverableError } from "./types/results";
+export { AttemptError, QueueHandlerError, UnrecoverableError } from "./types/results";
 
 function isStandardSchema(value: unknown): value is JsonSchemaConstraint {
   return (
@@ -77,7 +77,7 @@ declare const _manualCompensationSentinel: unique symbol;
 export const MANUAL: typeof _manualCompensationSentinel =
   Symbol("MANUAL") as typeof _manualCompensationSentinel;
 
-export { DEAD_LETTER, type DeadLetterSentinel } from "./types/definitions/handlers";
+export type ManualSentinel = typeof MANUAL;
 
 type RequestCompensationHandlerResult<TCompensation> =
   TCompensation extends { readonly result?: infer TResultSchema }
@@ -561,34 +561,47 @@ export function registerRequestCompensationHandler<
 
 /**
  * Define a global durable queue.
- *
- * See `QueueDefinition` for the stub `registerHandler` on the returned object.
  */
 export function defineQueue<
   TName extends string,
   TMessageSchema extends JsonSchemaConstraint,
+  TErrorSchema extends JsonSchemaConstraint | undefined = undefined,
+  TDefaultTtl extends number | Date | null | undefined = undefined,
 >(config: {
   name: TName;
   message: TMessageSchema;
-  ttlSeconds?: number;
-}): QueueDefinition<TName, TMessageSchema>;
+  error?: TErrorSchema;
+  defaultDelay?: number | Date | 0;
+  defaultTtl?: TDefaultTtl;
+}): QueueDefinition<TName, TMessageSchema, TErrorSchema, TDefaultTtl>;
 export function defineQueue(config: {
   name: string;
   message: JsonSchemaConstraint;
-  ttlSeconds?: number;
-}): QueueDefinition<string, JsonSchemaConstraint> {
+  error?: JsonSchemaConstraint;
+  defaultDelay?: number | Date | 0;
+  defaultTtl?: number | Date | null;
+}): QueueDefinition<
+  string,
+  JsonSchemaConstraint,
+  JsonSchemaConstraint | undefined,
+  number | Date | null | undefined
+> {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Queue name must be a non-empty string");
   }
   if (!isStandardSchema(config.message)) {
     throw new Error("Queue message must be a standard schema");
   }
+  if (config.error !== undefined && !isStandardSchema(config.error)) {
+    throw new Error("Queue error schema must be a standard schema");
+  }
 
   return {
     name: config.name,
     message: config.message,
-    ttlSeconds: config.ttlSeconds,
-    registerHandler: () => noopUnsubscribe,
+    error: config.error,
+    defaultDelay: config.defaultDelay,
+    defaultTtl: config.defaultTtl,
   };
 }
 

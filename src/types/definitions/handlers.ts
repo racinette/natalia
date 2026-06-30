@@ -1,3 +1,8 @@
+import type { JsonInput } from "../json-input";
+import type {
+  QueueHandlerError,
+  QueueHandlerErrorOptions,
+} from "../results";
 import type { RetryPolicyOptions } from "./policies";
 import type { RequestCompensationInfo } from "./steps";
 
@@ -15,22 +20,28 @@ export interface HandlerContext {
 
 /**
  * Queue handler context.
+ *
+ * `TTyped` is `never` when the queue definition omits `error` — `ctx.error`
+ * then has no `typed` field. When an `error` schema is declared, `typed` is
+ * optional and validated against that schema.
  */
-export type QueueHandlerContext = HandlerContext;
-
-declare const _deadLetterSentinel: unique symbol;
+export interface QueueHandlerContext<TTyped = never> extends HandlerContext {
+  /**
+   * Build a throwable queue handler error. Throw the return value to record an
+   * attempt and apply `deadLetter` disposition.
+   */
+  error(options: QueueHandlerErrorOptions<TTyped>): QueueHandlerError<TTyped>;
+}
 
 /**
- * Sentinel return for queue handlers that dead-letter a message immediately,
- * bypassing remaining retry attempts (analogous to `MANUAL` on request handlers).
+ * Retry policy for queue handler registration.
+ *
+ * `maxAttempts: null` retries without an attempt cap until success, message
+ * expiry (`ttl_expired`), or `ctx.error({ deadLetter: true })`.
  */
-export const DEAD_LETTER: typeof _deadLetterSentinel =
-  Symbol("DEAD_LETTER") as typeof _deadLetterSentinel;
-
-export type DeadLetterSentinel = typeof DEAD_LETTER;
-
-/** Result of a queue handler invocation. */
-export type QueueHandlerResult = void | DeadLetterSentinel;
+export interface QueueHandlerRetryPolicy extends RetryPolicyOptions {
+  readonly maxAttempts: number | null;
+}
 
 /**
  * Request handler context.

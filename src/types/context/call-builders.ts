@@ -9,7 +9,7 @@ import type {
   InferWorkflowMetadataInput,
   InferWorkflowResult,
 } from "../helpers";
-import type { QueueEnqueueOptions } from "../definitions/messaging";
+import type { QueueEnqueueOptions, QueueEnqueueOptionsWithRequiredTtl } from "../definitions/messaging";
 import type { DeadlineOptions, RetentionSetter } from "../definitions/policies";
 import type { AnyWorkflowHeader } from "../definitions/workflow-headers";
 import type { ErrorValue, WorkflowResult } from "../results";
@@ -266,8 +266,16 @@ export interface RequestAccessor<
  *
  * `enqueue` is a synchronous buffered operation — returns `void`, not awaitable.
  */
-export interface QueueAccessor<TMessageSchema extends StandardSchemaV1> {
-  enqueue(message: SchemaInvocationInput<TMessageSchema>, opts?: QueueEnqueueOptions): void;
+export interface QueueAccessor<
+  TMessageSchema extends StandardSchemaV1,
+  THasDefaultTtl extends boolean = false,
+> {
+  enqueue(
+    message: SchemaInvocationInput<TMessageSchema>,
+    ...args: THasDefaultTtl extends true
+      ? [opts?: QueueEnqueueOptions]
+      : [opts: QueueEnqueueOptionsWithRequiredTtl]
+  ): void;
 }
 
 // =============================================================================

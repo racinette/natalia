@@ -106,18 +106,25 @@ export type RequestInterfaces = Record<
 >;
 
 /**
- * Queue contract without `registerHandler` (declarative slice only).
+ * Queue contract (declarative slice only).
  *
  * Handler registration lives on `client.queues.<definitionName>`.
  */
 export type QueueInterface<
   TName extends string = string,
   TMessageSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
-> = Omit<QueueDefinition<TName, TMessageSchema>, "registerHandler">;
+  TErrorSchema extends JsonSchemaConstraint | undefined = undefined,
+  TDefaultTtl extends number | Date | null | undefined = undefined,
+> = QueueDefinition<TName, TMessageSchema, TErrorSchema, TDefaultTtl>;
 
 export type QueueInterfaces = Record<
   string,
-  QueueInterface<string, JsonSchemaConstraint>
+  QueueInterface<
+    string,
+    JsonSchemaConstraint,
+    JsonSchemaConstraint | undefined,
+    number | Date | null | undefined
+  >
 >;
 
 export type StepsFromInterfaces<T extends StepInterfaces> = {
@@ -139,9 +146,7 @@ export type RequestsFromInterfaces<T extends RequestInterfaces> = {
 };
 
 export type QueuesFromInterfaces<T extends QueueInterfaces> = {
-  [K in keyof T]: T[K] extends QueueInterface<infer N, infer M>
-    ? QueueDefinition<N, M>
-    : never;
+  [K in keyof T]: T[K];
 };
 
 export type WorkflowImplementInput<

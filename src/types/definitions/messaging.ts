@@ -3,13 +3,13 @@ import type { JsonSchemaConstraint } from "../json-input";
 import type {
   HandlerRetryOptions,
   QueueHandlerContext,
-  QueueHandlerResult,
+  QueueHandlerRetryPolicy,
   TopicConsumerContext,
   Unsubscribe,
 } from "./handlers";
 
 /**
- * Scheduled delivery options for queue enqueue and workflow starts.
+ * Scheduled delivery options for workflow starts (not queue enqueue).
  *
  * `delaySeconds` and `scheduledAt` are mutually exclusive.
  */
@@ -20,45 +20,55 @@ export type ScheduledDeliveryOptions =
 
 /**
  * Workflow-side queue enqueue options (buffered; no `txOrConn`).
+ *
+ * `delay`: omit or `0` = immediate; `number` = commit-relative seconds;
+ * `Date` = absolute eligible time.
+ *
+ * `ttl`: omit = use the queue definition's `defaultTtl` (required on enqueue
+ * when the definition has no default); `null` = never expires; `number` =
+ * wall-clock seconds from commit; `Date` = absolute expiry.
  */
-export type QueueEnqueueOptions = ScheduledDeliveryOptions & {
+export type QueueEnqueueOptions = {
   readonly priority?: number;
-  readonly ttlSeconds?: number;
+  readonly delay?: number | Date | 0;
+  readonly ttl?: number | Date | null;
+};
+
+/**
+ * Enqueue options when the queue definition does not declare `defaultTtl`.
+ */
+export type QueueEnqueueOptionsWithRequiredTtl = QueueEnqueueOptions & {
+  readonly ttl: number | Date | null;
 };
 
 /**
  * Client-side queue handler registration options (runtime-owned IO).
  */
 export interface QueueHandlerRegistrationOptions {
-  readonly retryPolicy?: HandlerRetryOptions;
+  readonly retryPolicy: QueueHandlerRetryPolicy;
   readonly maxConcurrent?: number;
 }
 
 /**
  * Queue definition — created via `defineQueue()`.
  *
- * `registerHandler` is still attached for early API shaping; `REFACTOR.MD`
- * moves durable registration to the engine/client. The authoring helper wires a
- * stub that returns a no-op unsubscribe until that lands.
+ * Data-only: handlers register on `client.queues.<definitionName>`.
  */
 export interface QueueDefinition<
   TName extends string = string,
   TMessageSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+  TErrorSchema extends JsonSchemaConstraint | undefined = undefined,
+  TDefaultTtl extends number | Date | null | undefined = undefined,
 > {
   readonly name: TName;
   /** Message schema for enqueued payloads and decoded handler messages. */
   readonly message: TMessageSchema;
-  readonly ttlSeconds?: number;
-  registerHandler(
-    handler: (
-      message: StandardSchemaV1.InferOutput<TMessageSchema>,
-      opts: QueueHandlerContext,
-    ) => Promise<QueueHandlerResult>,
-    options?: {
-      readonly retryPolicy?: HandlerRetryOptions;
-      readonly maxConcurrent?: number;
-    },
-  ): Unsubscribe;
+  /** Optional schema for handler `ctx.error({ typed })` payloads. */
+  readonly error?: TErrorSchema;
+  /** Default enqueue delay. Omit = `0` (immediate). */
+  readonly defaultDelay?: number | Date | 0;
+  /** Default message TTL. Omit at definition time = enqueue must pass `ttl`. */
+  readonly defaultTtl?: TDefaultTtl;
 }
 
 /**
@@ -66,14 +76,19 @@ export interface QueueDefinition<
  */
 export type QueueDefinitions = Record<
   string,
-  QueueDefinition<string, JsonSchemaConstraint>
+  QueueDefinition<
+    string,
+    JsonSchemaConstraint,
+    JsonSchemaConstraint | undefined,
+    number | Date | null | undefined
+  >
 >;
 
 /**
  * Topic definition — created via `defineTopic()`.
  *
  * `registerConsumer` follows the same transitional pattern as queue handlers
- * (see `QueueDefinition`); the definition-level hook is a stub for now.
+ * historically used; durable registration moves to the engine/client.
  */
 export interface TopicDefinition<
   TName extends string = string,

@@ -4,47 +4,60 @@
 
 A **queue** is a **global competing-consumer work queue**. Workflows **enqueue typed messages** as a synchronous buffered operation; workers **register handlers** on the client to process messages exactly once.
 
-`defineQueue` declares a **name** and **message** schema. Workflows reference the definition in `queues: { slot: myQueue }` and call **`ctx.queues.<slot>.enqueue(payload, opts?)`**. The client exposes **`client.queues.<definitionName>`** (keyed by the queue definition's `name`, not the workflow-local slot).
+`defineQueue` declares a **name**, **message** schema, and optional **`error`** schema (enables `ctx.error({ typed })` when declared), plus optional **`defaultDelay`** and **`defaultTtl`**. Workflows reference the definition in `queues: { slot: myQueue }` and call **`ctx.queues.<slot>.enqueue(payload, opts?)`**. The client exposes **`client.queues.<definitionName>`** (keyed by the queue definition's `name`, not the workflow-local slot).
 
 ## Workflow enqueue
 
 `enqueue` returns **`void`** — do not `await` it. The engine records the operation in the workflow's durable batch commit.
 
-Options include **`priority`**, **`ttlSeconds`**, and scheduled delivery via **`ScheduledDeliveryOptions`** (`delaySeconds` or `scheduledAt`, mutually exclusive).
+Options include **`priority`**, **`delay`** (`number | Date | 0`), and **`ttl`** (`number | Date | null`). When the definition omits `defaultTtl`, enqueue **must** pass `ttl`.
 
 ```typescript
 ctx.queues.notifications.enqueue(
   { userId: "u1", body: "Hello" },
-  { priority: 0, delaySeconds: 60, ttlSeconds: 3600 },
+  { priority: 0, delay: 60, ttl: 3600 },
 );
 ```
 
 ## Handler registration
 
-Register on the client queue namespace (not on `defineQueue` at runtime — the definition-level hook is a transitional stub):
+Register on the client queue namespace only:
 
 ```typescript
 const unregister = client.queues.notifications.registerHandler(
-  async (message, { signal }) => {
+  async (message, ctx) => {
     if (!isValid(message)) {
-      return DEAD_LETTER;
+      throw ctx.error({
+        deadLetter: true,
+        type: "InvalidPayload",
+        message: "Message failed validation",
+      });
     }
-    await sendEmail(message.userId, message.body, { signal });
+    await sendEmail(message.userId, message.body, { signal: ctx.signal });
   },
   {
     maxConcurrent: 10,
-    retryPolicy: { timeoutSeconds: 30, maxAttempts: 5 },
+    retryPolicy: {
+      timeoutSeconds: 30,
+      maxAttempts: 5,
+      intervalSeconds: 1,
+      backoffRate: 2,
+    },
   },
 );
 ```
 
-Handlers receive **decoded** messages (`z.output`). Handler return type is **`void | typeof DEAD_LETTER`**:
+Handlers receive **decoded** messages (`z.output`). Handler return type is **`void`** — failures are **throws**:
 
-- **`return`** (or implicit `void`) — message processed successfully.
-- **`return DEAD_LETTER`** — dead-letter immediately; bypass remaining retry attempts (same intentional-outcome pattern as `return MANUAL` on request handlers).
-- **Throw** (e.g. `AttemptError` or an ordinary `Error`) — transient failure; retry per `retryPolicy`.
+- **Normal return** — message processed successfully.
+- **`throw ctx.error({ deadLetter: true, ... })`** — dead-letter immediately (`handler_reject`).
+- **`throw ctx.error({ deadLetter: false, ... })`** — record attempt, retry per policy.
+- **`typed`** — only when the queue declares an `error` schema on `defineQueue`; validated against that schema. Queues without `error` have no `typed` field on `ctx.error`.
+- **Unhandled throw** — safe loose fields, `typed.status: "unspecified"`, retry.
 
-**`MANUAL` is not used** for queue handlers — escalation is dead-letter storage and operator `retry` / `purge`, not manual resolution. **`UnrecoverableError` is for topic consumers only** (topics are unchanged for now).
+`retryPolicy` is **required**. Set **`maxAttempts: null`** for no attempt cap (still subject to message `ttl`, etc.).
+
+**`MANUAL` is not used** for queue handlers. **`UnrecoverableError` is for topic consumers only** (topics unchanged for now).
 
 Handler registration does **not** accept `txOrConn?`.
 
@@ -64,7 +77,11 @@ for await (const deadLetter of matches) {
 
 const handle = client.queues.notifications.deadLetters.get(deadLetterId);
 await handle.fetchRow({ payload: true }, { txOrConn: tx });
+const attempts = await handle.attempts();
+const last = attempts ? await attempts.last() : undefined;
 ```
 
+Dead-letter reasons: **`max_attempts`**, **`ttl_expired`**, **`invalid_payload`**, **`handler_reject`**.
+
 - **`.get(id)`** — synchronous; branded `DeadLetterId`; no `txOrConn`.
-- **`fetchRow`**, **`retry`**, **`purge`**, and namespace query methods — accept optional **`txOrConn?`**.
+- **`fetchRow`**, **`attempts()`**, **`retry`**, **`purge`**, and namespace query methods — accept optional **`txOrConn?`**.

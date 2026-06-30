@@ -204,7 +204,7 @@ export interface StepCompensationDefinition<
       TEvents,
       TSteps,
       TRequests,
-      Record<string, never>,
+      TQueues,
       TChildren,
       TExternalWorkflows
     >,

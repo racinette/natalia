@@ -176,6 +176,10 @@ export abstract class AbstractWorkflowClient<
         this.assertClientAvailable();
         throw new Error("Not implemented");
       },
+      attempts: async (_opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
     } as DeadLetterHandleExternal;
   }
 }

@@ -113,10 +113,105 @@ export class AttemptError extends Error {
   }
 }
 
+// =============================================================================
+// QUEUE HANDLER ERRORS
+// =============================================================================
+
+/**
+ * Loose error fields shared by queue handler attempts and serialization failures.
+ */
+export type BaseError = {
+  readonly message: string | null;
+  readonly type: string | null;
+  readonly details: JsonInput | undefined;
+};
+
+/**
+ * Outcome of persisting an optional typed error payload on a queue handler attempt.
+ *
+ * When the queue declares no `error` schema (`TTyped` is `never`), only
+ * `unspecified` is representable — there is no typed slot on `ctx.error`.
+ *
+ * `serialization_error` means the handler responded with `ctx.error({ typed })` but
+ * the typed value failed schema validation before persistence — handler disposition
+ * (`deadLetter`, loose fields) is unchanged; only structured observability degrades.
+ */
+export type Typed<T> = [T] extends [never]
+  ? { readonly ok: false; readonly status: "unspecified" }
+  :
+      | { readonly ok: true; readonly status: "serialized"; readonly result: T }
+      | {
+          readonly ok: false;
+          readonly status: "serialization_error";
+          readonly error: BaseError;
+        }
+      | { readonly ok: false; readonly status: "unspecified" };
+
+/**
+ * Per-try outcome record for a retried queue message handler (1-indexed `attempt`).
+ */
+export type QueueHandlerAttempt<TTyped = never> = BaseError & {
+  readonly attempt: number;
+  readonly typed: Typed<TTyped>;
+  readonly deadLetter: boolean;
+};
+
+type QueueHandlerErrorLooseOptions = {
+  readonly deadLetter: boolean;
+  readonly message?: string | null;
+  readonly type?: string | null;
+  readonly details?: JsonInput;
+};
+
+/**
+ * Options for `ctx.error(...)` inside a queue handler.
+ *
+ * When the queue declares no `error` schema (`TTyped` is `never`), `typed` is
+ * absent — only loose fields are available.
+ */
+export type QueueHandlerErrorOptions<TTyped = never> = [TTyped] extends [never]
+  ? QueueHandlerErrorLooseOptions
+  : QueueHandlerErrorLooseOptions & { readonly typed?: TTyped };
+
+/**
+ * Throwable error created by `ctx.error(...)` in a queue handler.
+ *
+ * The engine records loose fields on the attempt row and validates `typed`
+ * against the queue definition's optional `error` schema before persistence.
+ */
+export class QueueHandlerError<TTyped = never> extends Error {
+  readonly deadLetter: boolean;
+  readonly errorType: string | null;
+  readonly details: JsonInput | undefined;
+  readonly typed: TTyped | undefined;
+
+  constructor(options: QueueHandlerErrorOptions<TTyped>) {
+    super(options.message ?? options.type ?? "QueueHandlerError");
+    this.name = "QueueHandlerError";
+    this.deadLetter = options.deadLetter;
+    this.errorType = options.type ?? null;
+    this.details = options.details;
+    this.typed = (
+      options as QueueHandlerErrorLooseOptions & { readonly typed?: TTyped }
+    ).typed;
+  }
+}
+
+/**
+ * Lazy, async-iterable accessor over queue handler attempt records for a
+ * dead-lettered (or in-flight retried) message.
+ */
+export interface QueueHandlerAttemptAccessor<TTyped = never> {
+  last(): Promise<QueueHandlerAttempt<TTyped>>;
+  all(): Promise<QueueHandlerAttempt<TTyped>[]>;
+  count(): Promise<number>;
+  [Symbol.asyncIterator](): AsyncIterableIterator<QueueHandlerAttempt<TTyped>>;
+  reverse(): AsyncIterable<QueueHandlerAttempt<TTyped>>;
+}
+
 /**
  * Signals that a topic consumer failure is permanent — the runtime should not
- * retry and should proceed to the exhaustion path (`onConsumeError`). Queue
- * handlers use `return DEAD_LETTER` instead (see `REFACTOR.MD` Part 15b).
+ * retry and should proceed to the exhaustion path (`onConsumeError`).
  */
 export class UnrecoverableError extends Error {
   constructor(message?: string) {

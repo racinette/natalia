@@ -1,7 +1,8 @@
 import type { StandardSchemaV1 } from "./standard-schema";
 import type { ChannelDefinitions, EventDefinitions, StreamDefinitions } from "./definitions/primitives";
 import type { ErrorDefinitions } from "./definitions/errors";
-import type { QueueDefinitions } from "./definitions/messaging";
+import type { QueueDefinition, QueueDefinitions } from "./definitions/messaging";
+import type { JsonSchemaConstraint } from "./json-input";
 import type { RequestDefinitions } from "./definitions/requests";
 import type { StepDefinitions } from "./definitions/steps";
 import type { WorkflowDefinitions } from "./definitions/workflow-headers";
@@ -198,4 +199,48 @@ export type HasIdempotencyFactory<W> =
     : InferIdempotencyKeyFactory<W> extends (args: never) => string
       ? true
       : false;
+
+/**
+ * True when a queue definition declares `defaultTtl` on `defineQueue` — enqueue
+ * may omit `ttl` and inherit the default. False when `defaultTtl` was omitted
+ * at definition time — enqueue must pass `ttl` explicitly.
+ *
+ * Mirrors {@link HasIdempotencyFactory}: discrimination is on an inferred generic
+ * (`TDefaultTtl`), not on the optional `defaultTtl` property (optional properties
+ * always union with `undefined`, so property presence cannot be narrowed).
+ */
+export type HasDefaultTtl<Q> = Q extends QueueDefinition<
+  string,
+  JsonSchemaConstraint,
+  JsonSchemaConstraint | undefined,
+  infer TDefaultTtl
+>
+  ? [TDefaultTtl] extends [undefined]
+    ? false
+    : true
+  : false;
+
+/**
+ * Structured error payload type for a queue definition, or `never` when no
+ * `error` schema was declared on `defineQueue`.
+ */
+export type InferQueueTypedError<Q> = Q extends QueueDefinition<
+  string,
+  JsonSchemaConstraint,
+  infer TErrorSchema,
+  infer _D
+>
+  ? TErrorSchema extends JsonSchemaConstraint
+    ? StandardSchemaV1.InferOutput<TErrorSchema>
+    : never
+  : never;
+
+/**
+ * True when `defineQueue` declared an `error` schema — `ctx.error` exposes
+ * optional `typed` validated against it. False when omitted — `typed` is absent
+ * from `ctx.error` options and attempts stay `unspecified`.
+ */
+export type HasQueueErrorSchema<Q> = [InferQueueTypedError<Q>] extends [never]
+  ? false
+  : true;
 

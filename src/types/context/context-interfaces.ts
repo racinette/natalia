@@ -1,3 +1,4 @@
+import type { HasDefaultTtl } from "../helpers";
 import type { StandardSchemaV1 } from "../standard-schema";
 import type { ErrorDefinitions } from "../definitions/errors";
 import type { PatchAccessor, ChannelDefinitions, EventDefinitions, PatchDefinitions, StreamDefinitions } from "../definitions/primitives";
@@ -172,8 +173,15 @@ export interface CompensationContext<
    * Queues for durable enqueue from compensation undo paths.
    */
   readonly queues: {
-    [K in keyof TQueues]: TQueues[K] extends QueueDefinition<infer _N, infer TMessageSchema>
-      ? QueueAccessor<TMessageSchema>
+    [K in keyof TQueues]: TQueues[K] extends QueueDefinition<
+      infer _N,
+      infer TMessageSchema,
+      infer _E,
+      infer _TDefaultTtl
+    >
+      ? HasDefaultTtl<TQueues[K]> extends true
+        ? QueueAccessor<TMessageSchema, true>
+        : QueueAccessor<TMessageSchema, false>
       : never;
   };
   /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -350,8 +358,15 @@ export interface WorkflowContext<
    * Queues for durable enqueue from workflow bodies and compensation undo paths.
    */
   readonly queues: {
-    [K in keyof TQueues]: TQueues[K] extends QueueDefinition<infer _N, infer TMessageSchema>
-      ? QueueAccessor<TMessageSchema>
+    [K in keyof TQueues]: TQueues[K] extends QueueDefinition<
+      infer _N,
+      infer TMessageSchema,
+      infer _E,
+      infer _TDefaultTtl
+    >
+      ? HasDefaultTtl<TQueues[K]> extends true
+        ? QueueAccessor<TMessageSchema, true>
+        : QueueAccessor<TMessageSchema, false>
       : never;
   };
   /* eslint-enable @typescript-eslint/no-explicit-any */
