@@ -7,14 +7,14 @@ Introduce one shared scheduling option type for queue messages and workflow star
 ## Source Coverage
 
 - `REFACTOR.MD` Part 16: Scheduled Delivery.
-- [docs/queues.md](../docs/queues.md) — queue enqueue `delay` / `ttl` semantics.
+- [docs/primitives/queues.md](../docs/primitives/queues.md) — queue enqueue `delay` / `ttl` semantics.
 - Workflow and child workflow start options from Part 5 and Part 17.
 
 ## Public API Target
 
 - Export `ScheduledDeliveryOptions`.
 - `delaySeconds` and `scheduledAt` are mutually exclusive.
-- Queue enqueue accepts `delay` (`number | Date | 0`) and `ttl` (`number | Date | null`) per [docs/queues.md](../docs/queues.md) — not `ScheduledDeliveryOptions`.
+- Queue enqueue accepts `delay` (`number | Date | 0`) and `ttl` (`number | Date | null`) per [docs/primitives/queues.md](../docs/primitives/queues.md) — not `ScheduledDeliveryOptions`.
 - Root workflow start options include scheduled delivery.
 - Attached and detached child workflow start options include scheduled delivery.
 - Compensation block child-workflow dependencies use the same child workflow option shapes.

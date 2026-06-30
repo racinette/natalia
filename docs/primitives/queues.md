@@ -4,7 +4,7 @@
 
 A **queue** is a **global competing-consumer work queue**. Workflows **enqueue typed messages** as a synchronous buffered operation; workers **register handlers** on the client to process messages exactly once.
 
-`defineQueue` is **data-only** — it declares a **name**, **message** schema, and optional **`error`** schema (for handler `typed` payloads), plus optional **`defaultDelay`** and **`defaultTtl`**. Handler registration lives on the client, not on the definition.
+`defineQueue` is **data-only** — it declares a **name**, **message** schema, optional **`errors`** map (for handler `ctx.errors`), plus optional **`defaultDelay`** and **`defaultTtl`**. Handler registration lives on the client, not on the definition.
 
 Workflows reference the definition in `queues: { slot: myQueue }` and call **`ctx.queues.<slot>.enqueue(payload, opts?)`**. The client exposes **`client.queues.<definitionName>`** (keyed by the queue definition's `name`, not the workflow-local slot).
 
@@ -16,7 +16,10 @@ Enqueue is available in workflow `execute` bodies and in compensation `undo` cal
 const notifications = defineQueue({
   name: "notifications",
   message: z.object({ userId: z.string(), body: z.string() }),
-  error: z.object({ code: z.string(), orderId: z.string() }), // optional
+  errors: {
+    InvalidPayload: true,
+    ProviderRejected: z.object({ code: z.string(), orderId: z.string() }),
+  },
   defaultDelay: 0,
   defaultTtl: 3600,
 });
@@ -26,7 +29,7 @@ const notifications = defineQueue({
 |-------|---------|
 | `name` | Globally unique queue name (client namespace key). |
 | `message` | Standard schema — **input** at enqueue, **output** in handlers. |
-| `error` | Optional standard schema for `ctx.error({ typed })`. When omitted, `typed` is absent from `ctx.error`. |
+| `errors` | Optional map of handler error codes — each entry is `true` (message only) or a standard schema (message + `details`). When omitted, handlers rely on unhandled throws only. |
 | `defaultDelay` | Default enqueue delay. Omit = `0` (immediate). |
 | `defaultTtl` | Default message TTL. Omit = every `enqueue` **must** pass `ttl`. |
 
@@ -84,10 +87,8 @@ Register on **`client.queues.<definitionName>.registerHandler`** only:
 const unregister = client.queues.notifications.registerHandler(
   async (message, ctx) => {
     if (!isValid(message)) {
-      throw ctx.error({
+      throw ctx.errors.InvalidPayload("Message failed validation", {
         deadLetter: true,
-        type: "InvalidPayload",
-        message: "Message failed validation",
       });
     }
     await sendEmail(message.userId, message.body, { signal: ctx.signal });
@@ -113,55 +114,66 @@ const unregister = client.queues.notifications.registerHandler(
 
 Handler registration does **not** accept `txOrConn?`.
 
-Handlers receive **decoded** messages (`z.output`) and **`{ signal, error }`**. Return type is **`void`** — failures are **throws**.
+Handlers receive **decoded** messages (`z.output`) and **`{ signal, errors }`**. Return type is **`void`** — failures are **throws**.
 
 ### Handler outcomes
 
 | Action | Outcome |
 |--------|---------|
 | Normal return | Message processed. |
-| `throw ctx.error({ deadLetter: true, ... })` | Immediate dead-letter (`handler_reject`). |
-| `throw ctx.error({ deadLetter: false, ... })` | Record attempt, retry per policy. |
-| Unhandled throw | Safe loose fields on attempt, `typed.status: "unspecified"`, retry. |
+| `throw ctx.errors.X(..., { deadLetter: true })` | Immediate dead-letter (`handler_reject`). |
+| `throw ctx.errors.X(..., { deadLetter: false })` | Record attempt, retry per policy. |
+| Unhandled throw | `code: null`, loose extracted fields, retry. |
 
 **`MANUAL`** and **`UnrecoverableError`** are not used for queue handlers (requests and topics respectively).
 
 See [error-model.md](../error-model.md) for how queue handler errors relate to workflow `ctx.errors`.
 
-### `ctx.error`
+### `ctx.errors`
+
+Mirrors workflow **`ctx.errors`** — one factory per declared code, plus a required **`{ deadLetter }`** disposition on every call:
 
 ```typescript
-throw ctx.error({
-  deadLetter: boolean,       // required
-  typed?: T,                 // only when defineQueue declares `error`
-  message?: string | null,
-  type?: string | null,
-  details?: JsonInput,
-});
+// errors: { InvalidPayload: true }
+throw ctx.errors.InvalidPayload("reason", { deadLetter: true });
+
+// errors: { ProviderRejected: schema }
+throw ctx.errors.ProviderRejected(
+  "SMTP timed out",
+  { code: "SMTP_TIMEOUT", orderId: "o-1" },
+  { deadLetter: false },
+);
 ```
 
-When an **`error`** schema is declared, `typed` is optional and validated before persistence. When omitted from the definition, **`typed` is not a field on `ctx.error`**.
+When **`errors`** is omitted from `defineQueue`, **`ctx.errors`** exposes no factories — only unhandled throws.
 
 ### Attempt records
 
-Failed tries are persisted (successful handling writes the outcome directly). Each attempt has loose fields (`message`, `type`, `details`) plus:
+Failed tries are persisted (successful handling writes the outcome directly).
+
+**Declared errors** (`code` is set):
+
+- **`code`** + **`message`** always persist (`message` is `string`, never `null` when `code` is set).
+- **`details`**: absent for `true` codes; for schema codes, a validated payload slot:
 
 ```typescript
-type Typed<T> =
+type QueueHandlerAttemptDetails<T> =
   | { ok: true; status: "serialized"; result: T }
   | { ok: false; status: "serialization_error"; error: BaseError }
   | { ok: false; status: "unspecified" };
 ```
 
-- **`serialized`** — `typed` validated and stored.
-- **`serialization_error`** — handler offered `typed` but validation failed; handler disposition unchanged, loose fields preserved.
-- **`unspecified`** — no `typed` offered, or queue has no `error` schema.
+**Unhandled throws** (`code: null`): loose `message` / `type` extraction, `details.status: "unspecified"`.
 
-Use **`attempt.typed.ok`** for a fast path: structured `result` vs generic fallback.
+- **`serialized`** — schema-backed `details` validated and stored.
+- **`serialization_error`** — handler offered `details`, but validation/persistence failed; **`deadLetter` and `code`/`message` unchanged**.
+- **`unspecified`** — unhandled throw or no schema-backed slot.
+
+Narrow on **`attempt.code`**, then on **`attempt.details.ok`** for schema codes.
 
 ## Dead letters
 
-Dead-letter reasons: **`max_attempts`**, **`ttl_expired`**, **`invalid_payload`** (schema decode before handler runs), **`handler_reject`** (`ctx.error({ deadLetter: true })`).
+Dead-letter reasons: **`max_attempts`**, **`ttl_expired`**, **`invalid_payload`** (schema decode before handler runs), **`handler_reject`** (`ctx.errors.X(..., { deadLetter: true })`).
 
 Search via **`client.queues.<name>.deadLetters`** (`findMany`, `findUnique`, `count`, `get`):
 
@@ -180,8 +192,8 @@ await handle.fetchRow({ payload: true, reason: true }, { txOrConn: tx });
 const attempts = await handle.attempts();
 if (attempts?.status === "unique") {
   const last = await attempts.value.last();
-  if (last.typed.ok) {
-    // structured error from a prior attempt
+  if (last.code === "ProviderRejected" && last.details.ok) {
+    // structured details from a prior attempt
   }
 }
 ```

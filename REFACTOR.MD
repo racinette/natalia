@@ -1697,7 +1697,7 @@ Legacy public builder/node aliases are removed.
 
 ## Part 10: Queues
 
-> **Extracted → [docs/queues.md](docs/queues.md)** (canonical). This section now lives in its own document; the design there is authoritative.
+> **Extracted → [docs/primitives/queues.md](docs/primitives/queues.md)** (canonical). This section now lives in its own document; the design there is authoritative.
 
 ---
 
@@ -2505,7 +2505,7 @@ Handler return type: `TResponse | typeof MANUAL`.
 
 ### Queue handlers
 
-See **[docs/queues.md](./docs/queues.md)**. Queue handlers return `void` and use `throw ctx.error({ deadLetter, ... })` for intentional outcomes (`handler_reject` vs retry). `DEAD_LETTER` return sentinel is removed.
+See **[docs/primitives/queues.md](./docs/primitives/queues.md)**. Queue handlers return `void` and use `throw ctx.errors.X(..., { deadLetter })` for intentional outcomes (`handler_reject` vs retry).
 
 ### `UnrecoverableError` for topic handlers
 
@@ -2537,7 +2537,7 @@ client.registerTopicConsumer(auditTopic, "analyticsConsumer", async (record, { s
 | `UnrecoverableError` | `onConsumeError("attemptsExhausted")` immediately      |
 | `AttemptError`       | Retry per `retryPolicy` (structured details persisted) |
 
-`UnrecoverableError` is NOT applicable to request handlers — use `return MANUAL` instead. It is NOT applicable to queue handlers — use `throw ctx.error({ deadLetter: true })` instead (see [docs/queues.md](./docs/queues.md)).
+`UnrecoverableError` is NOT applicable to request handlers — use `return MANUAL` instead. It is NOT applicable to queue handlers — use `throw ctx.errors.X(..., { deadLetter: true })` instead (see [docs/primitives/queues.md](./docs/primitives/queues.md)).
 
 ---
 
@@ -2554,7 +2554,7 @@ export type ScheduledDeliveryOptions =
 
 ### Queue messages
 
-Described in [docs/queues.md](./docs/queues.md). `enqueue` opts accept `delay` (`number | Date | 0`) and `ttl` (`number | Date | null`).
+Described in [docs/primitives/queues.md](./docs/primitives/queues.md). `enqueue` opts accept `delay` (`number | Date | 0`) and `ttl` (`number | Date | null`).
 
 ### Workflow starts
 
@@ -2948,7 +2948,7 @@ Removed context APIs:
 - `FieldsMask`, `ProjectedKeys`, `HandleWithRow`, `FetchableHandle`.
 - `WorkflowRow`, `WorkflowWhereTemplate`, `CompensationBlockRow`, `CompensationBlockWhereTemplate`, `RequestCompensationRow`, `RequestCompensationWhereTemplate`.
 - `RequestCompensationInfo`, `RequestCompensationStatus`, `RequestCompensationInstanceId`.
-- `StepBoundary`, `MANUAL`, `QueueHandlerError`, `UnrecoverableError`.
+- `StepBoundary`, `MANUAL`, `QueueHandlerDeclaredError`, `UnrecoverableError`.
 - `ForeignWorkflowHandle`, `AttachedChildWorkflowEntry`, `AttachedChildWorkflowScopeHandle`, `AttachedChildWorkflowExternalHandle`, `AttachedChildWorkflowId`.
 - `Unsubscribe`.
 - `TopicRecord`.

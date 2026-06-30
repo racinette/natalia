@@ -1,30 +1,35 @@
 import { z } from "zod";
 import { createWorkflowClient } from "../client";
 import { eq } from "../search";
-import { defineQueue, defineWorkflow, MANUAL, QueueHandlerError } from "../workflow";
+import {
+  defineQueue,
+  defineWorkflow,
+  MANUAL,
+  QueueHandlerDeclaredError,
+} from "../workflow";
 import type {
   BaseError,
   DeadLetterHandleExternal,
   DeadLetterNamespaceExternal,
+  DeclaredQueueHandlerAttempt,
   FindManyResult,
   FindUniqueResult,
   HandleWithRow,
   QueueEnqueueOptions,
   QueueHandlerAttempt,
   QueueHandlerAttemptAccessor,
+  QueueHandlerAttemptDetails,
   QueueHandlerContext,
-  QueueHandlerErrorOptions,
   QueueHandlerRetryPolicy,
   QueueNamespaceExternal,
-  Typed,
+  UnhandledQueueHandlerAttempt,
   Unsubscribe,
 } from "../types";
 import type { DeadLetterId, DeadLetterReason, DeadLetterRow } from "../types/schema";
-import type { JsonInput } from "../types/json-input";
-import type { HasDefaultTtl, HasQueueErrorSchema, InferQueueTypedError } from "../types/helpers";
+import type { HasDefaultTtl, HasQueueErrors, InferQueueErrors } from "../types/helpers";
 import type { Assert, IsEqual } from "./type-assertions";
 
-const QueueError = z.object({
+const ProviderRejectedDetails = z.object({
   code: z.string(),
   orderId: z.string(),
 });
@@ -38,12 +43,24 @@ const EmailMessage = z.object({
 const emailQueue = defineQueue({
   name: "emailQueue",
   message: EmailMessage,
-  error: QueueError,
+  errors: {
+    InvalidTemplate: true,
+    ProviderRejected: ProviderRejectedDetails,
+  },
   defaultTtl: 86400,
   defaultDelay: 0,
 });
 
 type _QueueNameLiteral = Assert<IsEqual<typeof emailQueue.name, "emailQueue">>;
+
+type _EmailQueueErrors = {
+  InvalidTemplate: true;
+  ProviderRejected: typeof ProviderRejectedDetails;
+};
+
+type _EmailQueueErrorsInferred = Assert<
+  IsEqual<InferQueueErrors<typeof emailQueue>, _EmailQueueErrors>
+>;
 
 const enqueueOpts: QueueEnqueueOptions = {
   priority: 10,
@@ -65,20 +82,10 @@ const queueWithoutDefaultTtl = defineQueue({
   message: EmailMessage,
 });
 
-type _QueueTypedError = {
-  code: string;
-  orderId: string;
-};
-
 type _EmailQueueHasDefaultTtl = Assert<IsEqual<HasDefaultTtl<typeof emailQueue>, true>>;
 type _NoDefaultTtlQueue = Assert<IsEqual<HasDefaultTtl<typeof queueWithoutDefaultTtl>, false>>;
-type _EmailQueueHasErrorSchema = Assert<IsEqual<HasQueueErrorSchema<typeof emailQueue>, true>>;
-type _EmailQueueTypedError = Assert<
-  IsEqual<InferQueueTypedError<typeof emailQueue>, _QueueTypedError>
->;
-type _NoErrorSchemaQueueHasErrorSchema = Assert<
-  IsEqual<HasQueueErrorSchema<typeof queueWithoutDefaultTtl>, false>
->;
+type _EmailQueueHasErrors = Assert<IsEqual<HasQueueErrors<typeof emailQueue>, true>>;
+type _NoErrorsQueue = Assert<IsEqual<HasQueueErrors<typeof queueWithoutDefaultTtl>, false>>;
 
 export const queuesAcceptanceWorkflow = defineWorkflow({
   name: "queuesAcceptance",
@@ -154,7 +161,7 @@ const client = createWorkflowClient({ queuesAcceptance: queuesAcceptanceWorkflow
 type _QueueNamespace = Assert<
   IsEqual<
     typeof client.queues.emailQueue,
-    QueueNamespaceExternal<"emailQueue", z.infer<typeof EmailMessage>, _QueueTypedError>
+    QueueNamespaceExternal<"emailQueue", z.infer<typeof EmailMessage>, _EmailQueueErrors>
   >
 >;
 
@@ -165,7 +172,7 @@ void client.queues.email;
 const unregister = client.queues.emailQueue.registerHandler(
   async (message, handlerOpts) => {
     type _HandlerOpts = Assert<
-      typeof handlerOpts extends QueueHandlerContext<_QueueTypedError> ? true : false
+      typeof handlerOpts extends QueueHandlerContext<_EmailQueueErrors> ? true : false
     >;
     type _MessageDecoded = Assert<
       IsEqual<
@@ -179,19 +186,16 @@ const unregister = client.queues.emailQueue.registerHandler(
     >;
 
     if (message.template === "receipt") {
-      throw handlerOpts.error({
+      throw handlerOpts.errors.InvalidTemplate("Receipts are not supported", {
         deadLetter: true,
-        type: "InvalidTemplate",
-        message: "Receipts are not supported",
       });
     }
 
-    throw handlerOpts.error({
-      typed: { code: "SMTP_TIMEOUT", orderId: "o-1" },
-      deadLetter: false,
-      type: "SmtpError",
-      message: "SMTP timed out",
-    });
+    throw handlerOpts.errors.ProviderRejected(
+      "SMTP timed out",
+      { code: "SMTP_TIMEOUT", orderId: "o-1" },
+      { deadLetter: false },
+    );
   },
   {
     retryPolicy: {
@@ -206,161 +210,194 @@ const unregister = client.queues.emailQueue.registerHandler(
 );
 
 // =============================================================================
-// `ctx.error` — QUEUE HANDLER ERROR FACTORY
-//
-// Queue handlers report intentional outcomes via `throw ctx.error({...})`.
-// `deadLetter` is required. When the queue declares an `error` schema, `typed`
-// is optional and validated against it. Without an `error` schema, `typed` is
-// absent from `ctx.error` options entirely. Unhandled throws remain separate.
+// `ctx.errors` — QUEUE HANDLER ERROR FACTORIES
 // =============================================================================
 
-type _WithSchemaHasTypedKey = Assert<
-  'typed' extends keyof QueueHandlerErrorOptions<_QueueTypedError> ? true : false
->;
+type _ProviderRejectedDetails = {
+  code: string;
+  orderId: string;
+};
 
-type _WithoutSchemaOmitsTypedKey = Assert<
-  'typed' extends keyof QueueHandlerErrorOptions<never> ? false : true
->;
-
-type _TypedNeverIsUnspecifiedOnly = Assert<
-  IsEqual<Typed<never>, { readonly ok: false; readonly status: "unspecified" }>
->;
-
-const _constructedQueueError = new QueueHandlerError<_QueueTypedError>({
-  deadLetter: true,
-  typed: { code: "CONSTRUCTED", orderId: "o-0" },
-  type: "HandlerReject",
-  message: "constructed for regression",
-  details: { source: "test" },
-});
-type _QueueHandlerErrorIsError = Assert<
-  typeof _constructedQueueError extends Error ? true : false
->;
-type _QueueHandlerErrorFields = Assert<
+type _DetailsShape = Assert<
   IsEqual<
-    Pick<
-      typeof _constructedQueueError,
-      "typed" | "deadLetter" | "errorType" | "details" | "message"
-    >,
+    QueueHandlerAttemptDetails<_ProviderRejectedDetails>,
+    | {
+        readonly ok: true;
+        readonly status: "serialized";
+        readonly result: _ProviderRejectedDetails;
+      }
+    | {
+        readonly ok: false;
+        readonly status: "serialization_error";
+        readonly error: BaseError;
+      }
+    | { readonly ok: false; readonly status: "unspecified" }
+  >
+>;
+
+type _DeclaredTrueAttempt = Assert<
+  IsEqual<
+    DeclaredQueueHandlerAttempt<_EmailQueueErrors, "InvalidTemplate">,
     {
-      readonly typed: _QueueTypedError | undefined;
+      readonly attempt: number;
       readonly deadLetter: boolean;
-      readonly errorType: string | null;
-      readonly details: JsonInput | undefined;
-      message: string;
+      readonly code: "InvalidTemplate";
+      readonly message: string;
+      readonly details: undefined;
     }
   >
 >;
-void _constructedQueueError;
 
-// @ts-expect-error details must be JSON-serializable
-new QueueHandlerError({ deadLetter: false, details: new Set(["not-json"]) });
-
-// @ts-expect-error queues without an error schema cannot pass typed
-new QueueHandlerError<never>({ deadLetter: false, typed: { x: 1 } });
-
-const _constructedNoSchemaError = new QueueHandlerError<never>({
-  deadLetter: true,
-  message: "no schema",
-});
-type _NoSchemaErrorTypedField = Assert<
-  IsEqual<typeof _constructedNoSchemaError.typed, undefined>
+type _DeclaredSchemaAttempt = Assert<
+  IsEqual<
+    DeclaredQueueHandlerAttempt<_EmailQueueErrors, "ProviderRejected">,
+    {
+      readonly attempt: number;
+      readonly deadLetter: boolean;
+      readonly code: "ProviderRejected";
+      readonly message: string;
+      readonly details: QueueHandlerAttemptDetails<_ProviderRejectedDetails>;
+    }
+  >
 >;
-void _constructedNoSchemaError;
+
+type _UnhandledAttempt = Assert<
+  IsEqual<
+    UnhandledQueueHandlerAttempt,
+    {
+      readonly attempt: number;
+      readonly deadLetter: boolean;
+      readonly code: null;
+      readonly message: string | null;
+      readonly type: string | null;
+      readonly details: { readonly status: "unspecified" };
+    }
+  >
+>;
+
+const _constructedTrueError = new QueueHandlerDeclaredError(
+  "InvalidTemplate",
+  "constructed for regression",
+  undefined,
+  true,
+);
+type _TrueErrorShape = Assert<
+  typeof _constructedTrueError extends QueueHandlerDeclaredError<
+    "InvalidTemplate",
+    undefined
+  >
+    ? true
+    : false
+>;
+type _TrueErrorIsError = Assert<typeof _constructedTrueError extends Error ? true : false>;
+void _constructedTrueError;
+
+const _constructedSchemaError = new QueueHandlerDeclaredError(
+  "ProviderRejected",
+  "constructed for regression",
+  { code: "CONSTRUCTED", orderId: "o-0" },
+  false,
+);
+type _SchemaErrorShape = Assert<
+  typeof _constructedSchemaError extends QueueHandlerDeclaredError<
+    "ProviderRejected",
+    _ProviderRejectedDetails
+  >
+    ? true
+    : false
+>;
+void _constructedSchemaError;
 
 client.queues.emailQueue.registerHandler(
   async (_message, ctx) => {
     type _Ctx = Assert<
-      typeof ctx extends QueueHandlerContext<_QueueTypedError> ? true : false
+      typeof ctx extends QueueHandlerContext<_EmailQueueErrors> ? true : false
     >;
 
-    const deadLetterErr = ctx.error({
+    const deadLetterErr = ctx.errors.InvalidTemplate("Receipts are not supported", {
       deadLetter: true,
-      type: "InvalidTemplate",
-      message: "Receipts are not supported",
     });
     type _DeadLetterErr = Assert<
-      IsEqual<typeof deadLetterErr, QueueHandlerError<_QueueTypedError>>
+      IsEqual<
+        typeof deadLetterErr,
+        QueueHandlerDeclaredError<"InvalidTemplate", undefined>
+      >
     >;
-    type _DeadLetterErrIsError = Assert<typeof deadLetterErr extends Error ? true : false>;
     void deadLetterErr.deadLetter;
-    void deadLetterErr.errorType;
+    void deadLetterErr.code;
 
-    const retryErr = ctx.error({
-      typed: { code: "SMTP_TIMEOUT", orderId: "o-1" },
-      deadLetter: false,
-      type: "SmtpError",
-      message: "SMTP timed out",
-      details: { host: "smtp.example" },
-    });
-    type _RetryTyped = Assert<
-      typeof retryErr.typed extends _QueueTypedError | undefined ? true : false
+    const retryErr = ctx.errors.ProviderRejected(
+      "SMTP timed out",
+      { code: "SMTP_TIMEOUT", orderId: "o-1" },
+      { deadLetter: false },
+    );
+    type _RetryErr = Assert<
+      typeof retryErr extends QueueHandlerDeclaredError<
+        "ProviderRejected",
+        _ProviderRejectedDetails
+      >
+        ? true
+        : false
     >;
     void retryErr;
 
-    const minimalRetry = ctx.error({ deadLetter: false });
-    type _MinimalRetry = Assert<
-      typeof minimalRetry extends QueueHandlerError<_QueueTypedError> ? true : false
-    >;
-    void minimalRetry;
-
     // @ts-expect-error deadLetter is required
-    ctx.error({ typed: { code: "X", orderId: "o-1" } });
+    ctx.errors.InvalidTemplate("missing disposition");
 
-    // @ts-expect-error typed must match the queue error schema
-    ctx.error({ deadLetter: false, typed: { code: 1, orderId: "o-1" } });
+    // @ts-expect-error true-valued error factories accept two arguments
+    ctx.errors.InvalidTemplate("bad", { deadLetter: true }, { extra: true });
 
-    // @ts-expect-error typed must include all schema fields
-    ctx.error({ deadLetter: false, typed: { code: "X" } });
+    ctx.errors.ProviderRejected(
+      "bad details",
+      // @ts-expect-error details must match the declared schema input
+      { code: 1, orderId: "o-1" },
+      { deadLetter: false },
+    );
 
-    // @ts-expect-error details must be JSON-serializable
-    ctx.error({ deadLetter: true, details: new Map([["k", "v"]]) });
+    // @ts-expect-error details must include all schema fields
+    ctx.errors.ProviderRejected("incomplete", { code: "X" }, { deadLetter: false });
+
+    // @ts-expect-error unknown error code
+    ctx.errors.UnknownCode("nope", { deadLetter: true });
   },
   { retryPolicy: { maxAttempts: 1 } },
 );
 
-const untypedErrorQueue = defineQueue({
-  name: "untypedErrorQueue",
+const noErrorsQueue = defineQueue({
+  name: "noErrorsQueue",
   message: EmailMessage,
   defaultTtl: 3600,
 });
 
-const untypedErrorWorkflow = defineWorkflow({
-  name: "untypedErrorQueueWorkflow",
-  queues: { notifications: untypedErrorQueue },
+const noErrorsWorkflow = defineWorkflow({
+  name: "noErrorsQueueWorkflow",
+  queues: { notifications: noErrorsQueue },
   result: z.void(),
   async execute() {},
 });
 
-const untypedErrorClient = createWorkflowClient({
-  untypedErrorQueueWorkflow: untypedErrorWorkflow,
+const noErrorsClient = createWorkflowClient({
+  noErrorsQueueWorkflow: noErrorsWorkflow,
 });
 
-type _NoSchemaQueueHasErrorSchema = Assert<
-  IsEqual<HasQueueErrorSchema<typeof untypedErrorQueue>, false>
->;
-type _NoSchemaQueueTypedError = Assert<
-  IsEqual<InferQueueTypedError<typeof untypedErrorQueue>, never>
+type _NoErrorsQueueHasErrors = Assert<IsEqual<HasQueueErrors<typeof noErrorsQueue>, false>>;
+type _NoErrorsQueueErrorsInferred = Assert<
+  IsEqual<InferQueueErrors<typeof noErrorsQueue>, Record<string, never>>
 >;
 
-untypedErrorClient.queues.untypedErrorQueue.registerHandler(
+noErrorsClient.queues.noErrorsQueue.registerHandler(
   async (_message, ctx) => {
-    type _UntypedCtx = Assert<typeof ctx extends QueueHandlerContext<never> ? true : false>;
-
-    // @ts-expect-error queues without an error schema do not accept typed
-    ctx.error({ deadLetter: false, typed: { arbitrary: true, count: 1 } });
-
-    const err = ctx.error({ deadLetter: true, message: "no schema queue" });
-    type _ErrNever = Assert<IsEqual<typeof err, QueueHandlerError<never>>>;
-    type _ErrNeverTypedField = Assert<IsEqual<typeof err.typed, undefined>>;
-    void err;
+    type _NoErrorsCtx = Assert<
+      typeof ctx extends QueueHandlerContext<Record<string, never>> ? true : false
+    >;
+    type _AssertNoErrorsCtx = Assert<_NoErrorsCtx>;
   },
   { retryPolicy: { maxAttempts: 1 } },
 );
 
-type _QueueHandlerError = Assert<
+type _QueueHandlerDeclaredError = Assert<
   typeof unregister extends Unsubscribe
-    ? QueueHandlerError<_QueueTypedError> extends Error
+    ? QueueHandlerDeclaredError extends Error
       ? true
       : false
     : false
@@ -397,27 +434,12 @@ type _DeadLetterReasons = Assert<
   >
 >;
 
-type _TypedShape = Assert<
+type _QueueHandlerAttemptUnion = Assert<
   IsEqual<
-    Typed<_QueueTypedError>,
-    | { readonly ok: true; readonly status: "serialized"; readonly result: _QueueTypedError }
-    | {
-        readonly ok: false;
-        readonly status: "serialization_error";
-        readonly error: BaseError;
-      }
-    | { readonly ok: false; readonly status: "unspecified" }
-  >
->;
-
-type _QueueHandlerAttempt = Assert<
-  IsEqual<
-    QueueHandlerAttempt<_QueueTypedError>,
-    BaseError & {
-      readonly attempt: number;
-      readonly typed: Typed<_QueueTypedError>;
-      readonly deadLetter: boolean;
-    }
+    QueueHandlerAttempt<_EmailQueueErrors>,
+    | DeclaredQueueHandlerAttempt<_EmailQueueErrors, "InvalidTemplate">
+    | DeclaredQueueHandlerAttempt<_EmailQueueErrors, "ProviderRejected">
+    | UnhandledQueueHandlerAttempt
   >
 >;
 
@@ -443,7 +465,7 @@ async function inspectDeadLetters(): Promise<void> {
               template: "welcome" | "receipt";
               metadata: { tenantId: string };
             },
-            _QueueTypedError
+            _EmailQueueErrors
           >,
           Pick<
             DeadLetterRow<
@@ -469,13 +491,22 @@ async function inspectDeadLetters(): Promise<void> {
 
   const attemptAccessor = await deadLetter.attempts();
   type _AttemptAccessor = Assert<
-    IsEqual<typeof attemptAccessor, FindUniqueResult<QueueHandlerAttemptAccessor<_QueueTypedError>>>
+    IsEqual<
+      typeof attemptAccessor,
+      FindUniqueResult<QueueHandlerAttemptAccessor<_EmailQueueErrors>>
+    >
   >;
   if (attemptAccessor.status === "unique") {
     const last = await attemptAccessor.value.last();
-    if (last.typed.ok) {
-      const _code: string = last.typed.result.code;
-      void _code;
+    if (last.code === "ProviderRejected") {
+      if (last.details.ok) {
+        const _orderId: string = last.details.result.orderId;
+        void _orderId;
+      }
+    }
+    if (last.code === null) {
+      const _nullableMessage: string | null = last.message;
+      void _nullableMessage;
     }
   }
 
@@ -495,7 +526,7 @@ async function inspectDeadLetters(): Promise<void> {
           template: "welcome" | "receipt";
           metadata: { tenantId: string };
         },
-        _QueueTypedError
+        _EmailQueueErrors
       >
     >
   >;
@@ -543,7 +574,7 @@ async function inspectDeadLetters(): Promise<void> {
             template: "welcome" | "receipt";
             metadata: { tenantId: string };
           },
-          _QueueTypedError
+          _EmailQueueErrors
         >
       >
     >
@@ -570,7 +601,7 @@ type _DeadLetterNamespace = Assert<
         template: "welcome" | "receipt";
         metadata: { tenantId: string };
       },
-      _QueueTypedError
+      _EmailQueueErrors
     >
   >
 >;
@@ -578,6 +609,6 @@ type _DeadLetterNamespace = Assert<
 void enqueueOpts;
 void delayByDate;
 void neverExpires;
-void untypedErrorClient;
+void noErrorsClient;
 void unregister;
 void inspectDeadLetters();

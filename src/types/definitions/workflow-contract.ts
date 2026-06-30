@@ -1,7 +1,7 @@
 import type { StandardSchemaV1 } from "../standard-schema";
 import type { JsonObjectSchemaConstraint, JsonSchemaConstraint } from "../json-input";
 import type { WorkflowContext } from "../context/context-interfaces";
-import type { WorkflowErrorDefinitions } from "./errors";
+import type { ErrorDefinitions, WorkflowErrorDefinitions } from "./errors";
 import type {
   AttributeDefinitions,
   PatchDefinitions,
@@ -113,16 +113,16 @@ export type RequestInterfaces = Record<
 export type QueueInterface<
   TName extends string = string,
   TMessageSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
-  TErrorSchema extends JsonSchemaConstraint | undefined = undefined,
+  TErrors extends ErrorDefinitions = Record<string, never>,
   TDefaultTtl extends number | Date | null | undefined = undefined,
-> = QueueDefinition<TName, TMessageSchema, TErrorSchema, TDefaultTtl>;
+> = QueueDefinition<TName, TMessageSchema, TErrors, TDefaultTtl>;
 
 export type QueueInterfaces = Record<
   string,
   QueueInterface<
     string,
     JsonSchemaConstraint,
-    JsonSchemaConstraint | undefined,
+    ErrorDefinitions,
     number | Date | null | undefined
   >
 >;

@@ -15,3 +15,8 @@ export type ErrorDefinitions = Record<string, ErrorDefinition>;
  * Map of declared workflow business errors.
  */
 export type WorkflowErrorDefinitions = ErrorDefinitions;
+
+/**
+ * Map of declared queue handler errors (`defineQueue.errors`).
+ */
+export type QueueErrorDefinitions = ErrorDefinitions;

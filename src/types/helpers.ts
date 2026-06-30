@@ -212,7 +212,7 @@ export type HasIdempotencyFactory<W> =
 export type HasDefaultTtl<Q> = Q extends QueueDefinition<
   string,
   JsonSchemaConstraint,
-  JsonSchemaConstraint | undefined,
+  ErrorDefinitions,
   infer TDefaultTtl
 >
   ? [TDefaultTtl] extends [undefined]
@@ -221,26 +221,22 @@ export type HasDefaultTtl<Q> = Q extends QueueDefinition<
   : false;
 
 /**
- * Structured error payload type for a queue definition, or `never` when no
- * `error` schema was declared on `defineQueue`.
+ * Declared handler error map from a queue definition, or an empty map when
+ * `defineQueue` omitted `errors`.
  */
-export type InferQueueTypedError<Q> = Q extends QueueDefinition<
-  string,
-  JsonSchemaConstraint,
-  infer TErrorSchema,
-  infer _D
->
-  ? TErrorSchema extends JsonSchemaConstraint
-    ? StandardSchemaV1.InferOutput<TErrorSchema>
-    : never
-  : never;
+export type InferQueueErrors<Q> = Q extends { readonly errors?: infer E }
+  ? [E] extends [undefined]
+    ? Record<string, never>
+    : E extends ErrorDefinitions
+      ? E
+      : Record<string, never>
+  : Record<string, never>;
 
 /**
- * True when `defineQueue` declared an `error` schema — `ctx.error` exposes
- * optional `typed` validated against it. False when omitted — `typed` is absent
- * from `ctx.error` options and attempts stay `unspecified`.
+ * True when `defineQueue` declared a non-empty `errors` map — `ctx.errors`
+ * exposes factories. False when omitted or empty.
  */
-export type HasQueueErrorSchema<Q> = [InferQueueTypedError<Q>] extends [never]
+export type HasQueueErrors<Q> = InferQueueErrors<Q> extends Record<string, never>
   ? false
   : true;
 

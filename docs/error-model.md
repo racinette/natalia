@@ -5,7 +5,7 @@ Natalia does not treat errors as a single throwable hierarchy you navigate with 
 The model has two execution planes:
 
 - **Workflow bodies** (`execute`, `ctx.scope` bodies) — durable, replayed, compensation-aware. They declare a typed failure vocabulary and interact with dispatched entries through **returned values**.
-- **Handlers** (step `execute`, request/queue/topic workers) — ephemeral, retried outside the body. They use **handler-local** surfaces (`AttemptError`, `MANUAL`, `ctx.error`, `UnrecoverableError`) and never see `ctx.errors`.
+- **Handlers** (step `execute`, request/queue/topic workers) — ephemeral, retried outside the body. They use **handler-local** surfaces (`AttemptError`, `MANUAL`, queue `ctx.errors`, `UnrecoverableError`) and never the workflow body's `ctx.errors`.
 
 Mixing vocabulary across planes does not produce a type error at the throw site in every case, but it produces the **wrong engine behavior**. The sections below describe what each plane actually does.
 
@@ -122,10 +122,10 @@ Step, request, queue, and topic handlers execute outside the replayed workflow b
 |-----------|-------------------------|-----------------|
 | **Steps** | normal `return` | `throw` (use `AttemptError` for structured attempt records) |
 | **Requests** | `return` response; `return MANUAL` for external resolution | `throw` → retry per policy |
-| **Queues** | `throw ctx.error({ deadLetter: true, … })` | `throw ctx.error({ deadLetter: false, … })` or unhandled throw → retry |
+| **Queues** | `throw ctx.errors.X(..., { deadLetter: true })` | `throw ctx.errors.X(..., { deadLetter: false })` or unhandled throw → retry |
 | **Topics** | `throw UnrecoverableError` → `onConsumeError` immediately | `throw AttemptError` or ordinary error → retry |
 
-Queue handlers are `void`-returning; disposition is entirely through `ctx.error`. Request handlers use **`return MANUAL`**, not queue-style dead-letter throws. Topic consumers use **`UnrecoverableError`**, not queue `ctx.error`.
+Queue handlers are `void`-returning and declare an optional **`errors`** map on `defineQueue` (same shape as workflow errors: `true` or schema per code). Each throw uses **`ctx.errors.<Code>(message, { deadLetter })`** or **`ctx.errors.<Code>(message, details, { deadLetter })`**, producing a **`QueueHandlerDeclaredError`**. Request handlers use **`return MANUAL`**. Topic consumers use **`UnrecoverableError`**.
 
 Details and type-level rules live in the primitive docs: [queues](./primitives/queues.md), [requests](./primitives/requests.md), [topics](./primitives/topics.md), [steps](./primitives/steps.md).
 
@@ -135,9 +135,9 @@ Retried operations persist tries for inspection. The shape depends on context:
 
 - **Steps** — `AttemptAccessor` over `Attempt` records; **every** try is stored, including successes.
 - **Requests, topics** — `AttemptAccessor`; **failed tries only**.
-- **Queues** — `QueueHandlerAttemptAccessor` with a `Typed<T>` slot when the queue declares an `error` schema (`serialized` / `serialization_error` / `unspecified`).
+- **Queues** — `QueueHandlerAttemptAccessor` with per-code `details` (`serialized` / `serialization_error` / `unspecified`). When `code` is set, `message` is always `string`.
 
-`AttemptError` attaches structured `type` / `details` to step, request, and topic attempt rows. `QueueHandlerError` (from `ctx.error`) is separate and carries optional schema-validated `typed` payloads.
+`AttemptError` attaches structured fields to step, request, and topic attempt rows. **`QueueHandlerDeclaredError`** (from queue `ctx.errors`) carries `code`, `message`, optional schema-backed `details`, and `deadLetter`.
 
 Handler attempt records are diagnostic and operational. They do not flow to the workflow caller unless the body explicitly observes a dispatched result and translates it into `ctx.errors`.
 
@@ -150,7 +150,7 @@ Think in terms of **recognition**, not catching:
 3. In handlers, the engine recognizes primitive-specific throws and returns — not `ctx.errors`.
 4. Compensation neither fails the workflow nor shares its error map.
 
-The ergonomics look like conventions (`throw ctx.errors`, `return MANUAL`, `throw ctx.error`). Underneath, they are **distinct state machines** wired to durability, replay, compensation, and external contracts. Writing against the wrong surface does not merely read oddly — it changes what gets persisted and what the system does next.
+The ergonomics look like conventions (`throw ctx.errors`, `return MANUAL`). Underneath, they are **distinct state machines** wired to durability, replay, compensation, and external contracts. Writing against the wrong surface does not merely read oddly — it changes what gets persisted and what the system does next.
 
 ## Examples
 

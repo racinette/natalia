@@ -1,5 +1,6 @@
 import type { StandardSchemaV1 } from "../standard-schema";
 import type { JsonSchemaConstraint } from "../json-input";
+import type { ErrorDefinitions } from "./errors";
 import type {
   HandlerRetryOptions,
   QueueHandlerContext,
@@ -57,14 +58,14 @@ export interface QueueHandlerRegistrationOptions {
 export interface QueueDefinition<
   TName extends string = string,
   TMessageSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
-  TErrorSchema extends JsonSchemaConstraint | undefined = undefined,
+  TErrors extends ErrorDefinitions = Record<string, never>,
   TDefaultTtl extends number | Date | null | undefined = undefined,
 > {
   readonly name: TName;
   /** Message schema for enqueued payloads and decoded handler messages. */
   readonly message: TMessageSchema;
-  /** Optional schema for handler `ctx.error({ typed })` payloads. */
-  readonly error?: TErrorSchema;
+  /** Optional declared handler error codes (`true` or schema per code). */
+  readonly errors?: TErrors;
   /** Default enqueue delay. Omit = `0` (immediate). */
   readonly defaultDelay?: number | Date | 0;
   /** Default message TTL. Omit at definition time = enqueue must pass `ttl`. */
@@ -79,7 +80,7 @@ export type QueueDefinitions = Record<
   QueueDefinition<
     string,
     JsonSchemaConstraint,
-    JsonSchemaConstraint | undefined,
+    ErrorDefinitions,
     number | Date | null | undefined
   >
 >;

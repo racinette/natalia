@@ -29,6 +29,7 @@ import type {
   PatchDefinitions,
   RngDefinitions,
   WorkflowErrorDefinitions,
+  ErrorDefinitions,
   Unsubscribe,
   WorkflowInterface,
   WorkflowImplementInput,
@@ -44,7 +45,7 @@ import type {
   QueuesFromInterfaces,
 } from "./types/definitions/workflow-contract";
 
-export { AttemptError, QueueHandlerError, UnrecoverableError } from "./types/results";
+export { AttemptError, QueueHandlerDeclaredError, UnrecoverableError } from "./types/results";
 
 function isStandardSchema(value: unknown): value is JsonSchemaConstraint {
   return (
@@ -565,41 +566,57 @@ export function registerRequestCompensationHandler<
 export function defineQueue<
   TName extends string,
   TMessageSchema extends JsonSchemaConstraint,
-  TErrorSchema extends JsonSchemaConstraint | undefined = undefined,
   TDefaultTtl extends number | Date | null | undefined = undefined,
 >(config: {
   name: TName;
   message: TMessageSchema;
-  error?: TErrorSchema;
   defaultDelay?: number | Date | 0;
   defaultTtl?: TDefaultTtl;
-}): QueueDefinition<TName, TMessageSchema, TErrorSchema, TDefaultTtl>;
-export function defineQueue(config: {
-  name: string;
-  message: JsonSchemaConstraint;
-  error?: JsonSchemaConstraint;
+}): QueueDefinition<TName, TMessageSchema, Record<string, never>, TDefaultTtl>;
+export function defineQueue<
+  TName extends string,
+  TMessageSchema extends JsonSchemaConstraint,
+  TErrors extends ErrorDefinitions,
+  TDefaultTtl extends number | Date | null | undefined = undefined,
+>(config: {
+  name: TName;
+  message: TMessageSchema;
+  errors: TErrors;
   defaultDelay?: number | Date | 0;
-  defaultTtl?: number | Date | null;
-}): QueueDefinition<
-  string,
-  JsonSchemaConstraint,
-  JsonSchemaConstraint | undefined,
-  number | Date | null | undefined
-> {
+  defaultTtl?: TDefaultTtl;
+}): QueueDefinition<TName, TMessageSchema, TErrors, TDefaultTtl>;
+export function defineQueue<
+  TName extends string,
+  TMessageSchema extends JsonSchemaConstraint,
+  TErrors extends ErrorDefinitions = Record<string, never>,
+  TDefaultTtl extends number | Date | null | undefined = undefined,
+>(config: {
+  name: TName;
+  message: TMessageSchema;
+  errors?: TErrors;
+  defaultDelay?: number | Date | 0;
+  defaultTtl?: TDefaultTtl;
+}): QueueDefinition<TName, TMessageSchema, TErrors, TDefaultTtl> {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Queue name must be a non-empty string");
   }
   if (!isStandardSchema(config.message)) {
     throw new Error("Queue message must be a standard schema");
   }
-  if (config.error !== undefined && !isStandardSchema(config.error)) {
-    throw new Error("Queue error schema must be a standard schema");
+  if (config.errors !== undefined) {
+    for (const [key, definition] of Object.entries(config.errors)) {
+      if (definition !== true && !isStandardSchema(definition)) {
+        throw new Error(
+          `Queue error "${key}" must be \`true\` or a standard schema`,
+        );
+      }
+    }
   }
 
   return {
     name: config.name,
     message: config.message,
-    error: config.error,
+    ...(config.errors !== undefined ? { errors: config.errors } : {}),
     defaultDelay: config.defaultDelay,
     defaultTtl: config.defaultTtl,
   };

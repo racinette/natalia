@@ -1,4 +1,6 @@
+import type { ErrorDefinitions } from "./definitions/errors";
 import type { JsonInput } from "./json-input";
+import type { SchemaInvocationInput } from "./context/entries";
 import type { StandardSchemaV1 } from "./standard-schema";
 
 // =============================================================================
@@ -118,7 +120,8 @@ export class AttemptError extends Error {
 // =============================================================================
 
 /**
- * Loose error fields shared by queue handler attempts and serialization failures.
+ * Loose error fields captured when persisting a schema-backed details payload
+ * fails, or when extracting an unhandled throw.
  */
 export type BaseError = {
   readonly message: string | null;
@@ -127,19 +130,76 @@ export type BaseError = {
 };
 
 /**
- * Outcome of persisting an optional typed error payload on a queue handler attempt.
- *
- * When the queue declares no `error` schema (`TTyped` is `never`), only
- * `unspecified` is representable — there is no typed slot on `ctx.error`.
- *
- * `serialization_error` means the handler responded with `ctx.error({ typed })` but
- * the typed value failed schema validation before persistence — handler disposition
- * (`deadLetter`, loose fields) is unchanged; only structured observability degrades.
+ * Retry / dead-letter disposition passed to every queue error factory call.
  */
-export type Typed<T> = [T] extends [never]
-  ? { readonly ok: false; readonly status: "unspecified" }
+export type QueueErrorDisposition = {
+  readonly deadLetter: boolean;
+};
+
+/**
+ * Factory map for `ctx.errors` inside queue handlers — mirrors workflow
+ * `ErrorFactories`, with a required `{ deadLetter }` options bag on each call.
+ */
+export type QueueErrorFactories<TErrors extends ErrorDefinitions> = {
+  [K in keyof TErrors & string]: TErrors[K] extends true
+    ? (
+        message: string,
+        options: QueueErrorDisposition,
+      ) => QueueHandlerDeclaredError<K, undefined>
+    : TErrors[K] extends StandardSchemaV1<unknown, unknown>
+      ? (
+          message: string,
+          details: SchemaInvocationInput<TErrors[K]>,
+          options: QueueErrorDisposition,
+        ) => QueueHandlerDeclaredError<
+          K,
+          StandardSchemaV1.InferOutput<TErrors[K]>
+        >
+      : never;
+};
+
+/**
+ * Throwable error created by `ctx.errors.X(...)` in a queue handler.
+ */
+export class QueueHandlerDeclaredError<
+  TCode extends string = string,
+  TDetails = unknown,
+> extends Error {
+  readonly code: TCode;
+  readonly details: TDetails;
+  readonly deadLetter: boolean;
+
+  constructor(
+    code: TCode,
+    message: string,
+    details: TDetails,
+    deadLetter: boolean,
+  ) {
+    super(message);
+    this.name = "QueueHandlerDeclaredError";
+    this.code = code;
+    this.details = details;
+    this.deadLetter = deadLetter;
+  }
+}
+
+/**
+ * Outcome of persisting a declared error's optional schema-backed `details`
+ * payload on a queue handler attempt.
+ *
+ * `serialization_error` means the handler threw a declared error with
+ * `details`, but validation/persistence failed — handler disposition
+ * (`deadLetter`, `code`, `message`) is unchanged; only structured observability
+ * degrades.
+ */
+export type QueueHandlerAttemptDetails<TDetails> = [TDetails] extends [never]
+  ? { readonly status: "unspecified" }
   :
-      | { readonly ok: true; readonly status: "serialized"; readonly result: T }
+      | {
+          readonly ok: true;
+          readonly status: "serialized";
+          readonly result: TDetails;
+        }
       | {
           readonly ok: false;
           readonly status: "serialization_error";
@@ -148,65 +208,68 @@ export type Typed<T> = [T] extends [never]
       | { readonly ok: false; readonly status: "unspecified" };
 
 /**
+ * Attempt record for a declared queue handler error (`code` is non-null).
+ *
+ * `message` is always a string when `code` is set — declared errors require a
+ * message at the factory call site.
+ */
+export type DeclaredQueueHandlerAttempt<
+  TErrors extends ErrorDefinitions,
+  TCode extends keyof TErrors & string,
+> = {
+  readonly attempt: number;
+  readonly deadLetter: boolean;
+  readonly code: TCode;
+  readonly message: string;
+  readonly details: TErrors[TCode] extends true
+    ? undefined
+    : QueueHandlerAttemptDetails<
+        StandardSchemaV1.InferOutput<
+          Extract<TErrors[TCode], StandardSchemaV1<unknown, unknown>>
+        >
+      >;
+};
+
+/**
+ * Attempt record for an unhandled queue handler throw (no declared `code`).
+ */
+export type UnhandledQueueHandlerAttempt = {
+  readonly attempt: number;
+  readonly deadLetter: boolean;
+  readonly code: null;
+  readonly message: string | null;
+  readonly type: string | null;
+  readonly details: { readonly status: "unspecified" };
+};
+
+/**
  * Per-try outcome record for a retried queue message handler (1-indexed `attempt`).
  */
-export type QueueHandlerAttempt<TTyped = never> = BaseError & {
-  readonly attempt: number;
-  readonly typed: Typed<TTyped>;
-  readonly deadLetter: boolean;
-};
-
-type QueueHandlerErrorLooseOptions = {
-  readonly deadLetter: boolean;
-  readonly message?: string | null;
-  readonly type?: string | null;
-  readonly details?: JsonInput;
-};
-
-/**
- * Options for `ctx.error(...)` inside a queue handler.
- *
- * When the queue declares no `error` schema (`TTyped` is `never`), `typed` is
- * absent — only loose fields are available.
- */
-export type QueueHandlerErrorOptions<TTyped = never> = [TTyped] extends [never]
-  ? QueueHandlerErrorLooseOptions
-  : QueueHandlerErrorLooseOptions & { readonly typed?: TTyped };
-
-/**
- * Throwable error created by `ctx.error(...)` in a queue handler.
- *
- * The engine records loose fields on the attempt row and validates `typed`
- * against the queue definition's optional `error` schema before persistence.
- */
-export class QueueHandlerError<TTyped = never> extends Error {
-  readonly deadLetter: boolean;
-  readonly errorType: string | null;
-  readonly details: JsonInput | undefined;
-  readonly typed: TTyped | undefined;
-
-  constructor(options: QueueHandlerErrorOptions<TTyped>) {
-    super(options.message ?? options.type ?? "QueueHandlerError");
-    this.name = "QueueHandlerError";
-    this.deadLetter = options.deadLetter;
-    this.errorType = options.type ?? null;
-    this.details = options.details;
-    this.typed = (
-      options as QueueHandlerErrorLooseOptions & { readonly typed?: TTyped }
-    ).typed;
-  }
-}
+export type QueueHandlerAttempt<
+  TErrors extends ErrorDefinitions = Record<string, never>,
+> =
+  | UnhandledQueueHandlerAttempt
+  | ([keyof TErrors & string] extends [never]
+      ? never
+      : {
+          [K in keyof TErrors & string]: DeclaredQueueHandlerAttempt<
+            TErrors,
+            K
+          >;
+        }[keyof TErrors & string]);
 
 /**
  * Lazy, async-iterable accessor over queue handler attempt records for a
  * dead-lettered (or in-flight retried) message.
  */
-export interface QueueHandlerAttemptAccessor<TTyped = never> {
-  last(): Promise<QueueHandlerAttempt<TTyped>>;
-  all(): Promise<QueueHandlerAttempt<TTyped>[]>;
+export interface QueueHandlerAttemptAccessor<
+  TErrors extends ErrorDefinitions = Record<string, never>,
+> {
+  last(): Promise<QueueHandlerAttempt<TErrors>>;
+  all(): Promise<QueueHandlerAttempt<TErrors>[]>;
   count(): Promise<number>;
-  [Symbol.asyncIterator](): AsyncIterableIterator<QueueHandlerAttempt<TTyped>>;
-  reverse(): AsyncIterable<QueueHandlerAttempt<TTyped>>;
+  [Symbol.asyncIterator](): AsyncIterableIterator<QueueHandlerAttempt<TErrors>>;
+  reverse(): AsyncIterable<QueueHandlerAttempt<TErrors>>;
 }
 
 /**

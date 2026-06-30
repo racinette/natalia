@@ -1,10 +1,7 @@
-import type { JsonInput } from "../json-input";
-import type {
-  QueueHandlerError,
-  QueueHandlerErrorOptions,
-} from "../results";
-import type { RetryPolicyOptions } from "./policies";
+import type { ErrorDefinitions } from "./errors";
 import type { RequestCompensationInfo } from "./steps";
+import type { QueueErrorFactories } from "../results";
+import type { RetryPolicyOptions } from "./policies";
 
 /**
  * Function returned by client/runtime handler registration APIs.
@@ -21,23 +18,21 @@ export interface HandlerContext {
 /**
  * Queue handler context.
  *
- * `TTyped` is `never` when the queue definition omits `error` — `ctx.error`
- * then has no `typed` field. When an `error` schema is declared, `typed` is
- * optional and validated against that schema.
+ * When the queue declares an `errors` map, `ctx.errors` exposes a factory per
+ * code. Queues with no declared errors omit usable factories — only unhandled
+ * throws remain.
  */
-export interface QueueHandlerContext<TTyped = never> extends HandlerContext {
-  /**
-   * Build a throwable queue handler error. Throw the return value to record an
-   * attempt and apply `deadLetter` disposition.
-   */
-  error(options: QueueHandlerErrorOptions<TTyped>): QueueHandlerError<TTyped>;
+export interface QueueHandlerContext<
+  TErrors extends ErrorDefinitions = Record<string, never>,
+> extends HandlerContext {
+  readonly errors: QueueErrorFactories<TErrors>;
 }
 
 /**
  * Retry policy for queue handler registration.
  *
  * `maxAttempts: null` retries without an attempt cap until success, message
- * expiry (`ttl_expired`), or `ctx.error({ deadLetter: true })`.
+ * expiry (`ttl_expired`), or `throw ctx.errors.X(..., { deadLetter: true })`.
  */
 export interface QueueHandlerRetryPolicy extends RetryPolicyOptions {
   readonly maxAttempts: number | null;
