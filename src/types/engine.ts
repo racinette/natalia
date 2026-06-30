@@ -65,7 +65,7 @@ import type {
   HasIdempotencyFactory,
   InferWorkflowArgs,
   InferWorkflowArgsInput,
-  InferWorkflowAttachedChildren,
+  InferWorkflowChildren,
   InferWorkflowChannels,
   InferWorkflowErrors,
   InferWorkflowExternal,
@@ -352,21 +352,18 @@ export interface QueueNamespaceExternal<
 }
 
 // =============================================================================
-// ATTACHED / DETACHED CHILD WORKFLOW NAMESPACES
+// CHILD WORKFLOW OPERATOR NAMESPACE
 //
-// Per `REFACTOR.MD` Part 5 §"External introspection of childWorkflows" — operators
-// inspect a parent's childWorkflows through two namespaces. Attached childWorkflows are
-// queryable only via the parent (parent-scoped) and use a **non-lifecycle**
-// handle: no `sigkill` / `sigterm` / `skip`, no `idempotencyKey`, while
-// channels / streams / events / `fetchRow` remain available where typed.
-// Detached childWorkflows are real root workflows; the parent-scoped namespace
-// returns `WorkflowHandleExternal<W>` (full root semantics).
+// Per-parent introspection of owned child workflows. Child workflows are
+// parent-scoped, non-lifecycle handles: no `sigkill` / `sigterm` / `skip`, no
+// `idempotencyKey`. Independent roots started or referenced by this instance
+// appear under `externalWorkflows` instead.
 // =============================================================================
 
 /**
- * Operator handle for an attached child workflow row (**non-lifecycle**).
+ * Operator handle for a child workflow row (**non-lifecycle**).
  *
- * Attached childWorkflows are subordinate to the parent's lifecycle — operators do
+ * Child workflows are subordinate to the parent's lifecycle — operators do
  * not drive terminal actions on them. There is no `idempotencyKey` (not
  * globally addressable). Introspection and messaging surfaces (`channels`,
  * streams, events, `fetchRow`) follow the declared child workflow where the
@@ -418,37 +415,13 @@ export type AttachedChildWorkflowExternalHandle<W extends AnyPublicWorkflowHeade
   AttachedChildWorkflowExternalHandleBase<W> & HeaderOnlyExtendForAttachedChildHandle<W>;
 
 /**
- * Per-parent attached child workflow namespace, keyed by child workflow name
- * on `workflowInstance.childWorkflows.attached.<name>`.
+ * Per-parent child workflow namespace, keyed by child workflow name on
+ * `workflowInstance.childWorkflows.<name>`.
  */
 export type AttachedChildWorkflowNamespaceExternal<
   W extends AnyPublicWorkflowHeader,
 > = QueryableNamespace<
   AttachedChildWorkflowExternalHandle<W>,
-  WorkflowWhereTemplate<
-    InferWorkflowArgs<W>,
-    InferWorkflowResult<W>,
-    InferWorkflowMetadata<W>
-  >,
-  WorkflowRow<
-    InferWorkflowArgs<W>,
-    InferWorkflowResult<W>,
-    InferWorkflowMetadata<W>
-  >,
-  AttachedChildWorkflowId<W>
->;
-
-/**
- * Per-parent detached child workflow namespace.
- *
- * Detached childWorkflows are globally addressable root workflows; the parent-scoped
- * namespace is a convenience filter that returns the standard
- * `WorkflowHandleExternal<W>`.
- */
-export type DetachedChildWorkflowNamespaceExternal<
-  W extends AnyPublicWorkflowHeader,
-> = QueryableNamespace<
-  WorkflowHandleExternal<W>,
   WorkflowWhereTemplate<
     InferWorkflowArgs<W>,
     InferWorkflowResult<W>,
@@ -702,7 +675,7 @@ type WorkflowHandleCompensationsRoot<W extends AnyPublicWorkflowHeader> =
   WorkflowHandleCompensationsTree<W>;
 
 type WorkflowHandleChildWorkflows<W extends AnyPublicWorkflowHeader> =
-  InferWorkflowAttachedChildren<W> extends infer TChildren
+  InferWorkflowChildren<W> extends infer TChildren
     ? [TChildren] extends [never]
       ? WorkflowHandleLooseChildWorkflows
       : IsAny<TChildren> extends true

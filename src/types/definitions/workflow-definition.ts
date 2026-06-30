@@ -48,7 +48,7 @@ export type AnyWorkflowDefinition = WorkflowDefinition<
  * Workflow definition — the blueprint for workflow instances.
  *
  * The body is a single sequential program. Concurrency comes from dispatched
- * entries (steps, requests, attached child workflows) the body awaits. There
+ * entries (steps, requests, child workflows) the body awaits. There
  * is no user-facing branch primitive.
  */
 export interface WorkflowDefinition<
@@ -112,9 +112,9 @@ export interface WorkflowDefinition<
   readonly queues?: TQueues;
 
   /**
-   * Child workflow definitions (one map). Whether a child runs attached or
-   * detached is a call-site choice (`ctx.childWorkflows.X(...)` vs `.start(...)`),
-   * not a declaration property.
+   * Child workflow definitions. Child workflows are always parent-owned and
+   * awaitable. To start an independent root, declare the target under
+   * `externalWorkflows` and call `ctx.externalWorkflows.<name>.start(...)`.
    */
   readonly childWorkflows?: TChildren;
 

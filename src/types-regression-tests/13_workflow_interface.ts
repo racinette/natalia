@@ -6,7 +6,7 @@ import { z } from "zod";
  *
  * Touches workflow primitives that flow into `WorkflowContext`,
  * `WorkflowConcurrencyContext`, and `CompensationContext`: channels, streams,
- * events, patches, rng, errors, steps, requests, childWorkflows (attached + detached),
+ * events, patches, rng, errors, steps, requests, childWorkflows,
  * externalWorkflows accessors, sleep/sleepUntil, schedule, scope helpers, join, listen,
  * and match.
  *
@@ -380,9 +380,8 @@ const ctx13FullWorkflow = ctx13FullInterface.implement({
       string,
       ErrorValue<InferWorkflowErrors<typeof ctx13ChildWorkflow>>
     >;
-    // The unified accessor returns an UnstartedChildWorkflowEntry, which
-    // extends AttachedChildWorkflowEntry (adding `.start()` for detached). The
-    // attached awaited shape is unchanged. (`.start()` is covered in step 15.)
+    // The unified accessor returns AttachedChildWorkflowEntry directly —
+    // await-only, no `.start()` (independent roots use externalWorkflows.start).
     type _ChildAEntry = Assert<
       typeof _childAEntry extends AttachedChildWorkflowEntry<
         typeof ctx13ChildWorkflow,

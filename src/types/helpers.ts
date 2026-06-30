@@ -149,7 +149,7 @@ export type InferWorkflowQueues<W> = W extends { queues?: infer TQueues }
   : never;
 
 /**
- * Extract declared attached child workflows from a full workflow definition.
+ * Extract declared child workflows from a full workflow definition.
  *
  * Header-only workflow descriptors do not carry this field and resolve to
  * `never` so callers can choose an explicit fallback policy.
@@ -159,26 +159,6 @@ export type InferWorkflowChildren<W> = W extends { childWorkflows?: infer TChild
     ? TChildren
     : never
   : never;
-
-/**
- * @deprecated Attached/detached is now a call-site mode over the single
- * declared declared child-workflow set; this alias resolves to the full set. Kept for the
- * operator-side `childWorkflows.attached` query view.
- */
-export type InferWorkflowAttachedChildren<W> = InferWorkflowChildren<W>;
-
-/**
- * Extract declared detached child workflows from a full workflow definition.
- *
- * Header-only workflow descriptors do not carry this field and resolve to
- * `never` so callers can choose an explicit fallback policy.
- */
-/**
- * @deprecated Attached/detached is now a call-site mode over the single
- * declared declared child-workflow set; this alias resolves to the full set. Kept for the
- * operator-side `childWorkflows.detached` query view.
- */
-export type InferWorkflowDetachedChildren<W> = InferWorkflowChildren<W>;
 
 /**
  * Extract declared external workflow dependencies from a full workflow definition.

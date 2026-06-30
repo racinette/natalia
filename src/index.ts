@@ -21,12 +21,12 @@
  *   an awaitable entry; `{ timeout }` adds a timeout variant to the result.
  * - Requests: typed request-response delegated to a registered handler or
  *   resolved manually.
- * - Child workflows: `ctx.childWorkflows.attached.X(args, opts?)` returns an
- *   await-only entry (outcome via `await`); message an attached child while it
- *   runs only inside `ctx.scope` using the scope handle plus `ctx.join`.
- *   `ctx.childWorkflows.detached.X(args, { idempotencyKey, ... })` is a buffered start
- *   (`ExternalWorkflowHandle`).
- *   External workflows: `ctx.externalWorkflows.X.get`.
+ * - Child workflows: `ctx.childWorkflows.<name>(args, opts?)` returns an
+ *   await-only entry (outcome via `await`); message a child while it runs only
+ *   inside `ctx.scope` using the scope handle plus `ctx.join`.
+ * - External workflows: `ctx.externalWorkflows.<name>.get(...)` references an
+ *   independent root; `.start(args, opts)` creates one. Both yield a send-only
+ *   `ExternalWorkflowHandle`.
  * - Engine / static client: `WorkflowEngine` and `createWorkflowClient` expose
  *   the same per-workflow accessors (`start`, `execute`, `get`, introspection
  *   queries) on `engine.workflows.<name>` / `client.workflows.<name>`.
@@ -36,7 +36,7 @@
  *   invocation is a queryable per-instance compensation block.
  * - Errors: `defineWorkflow.errors` declares typed business failures; throw
  *   them with `ctx.errors.X(message, details?)`. The body fails with a typed
- *   `ErrorValue` visible to externalWorkflows callers.
+ *   `ErrorValue` visible to external callers.
  */
 
 // Public API - Types

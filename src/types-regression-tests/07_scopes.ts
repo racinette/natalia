@@ -147,7 +147,7 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
       { orderId: args.orderId },
       { idempotencyKey: "f-detached-1" },
     );
-    // @ts-expect-error detached child handles are not scope entries
+    // @ts-expect-error external workflow handles are not scope entries
     await ctx.scope(
       "DetachedRejected",
       { detached },

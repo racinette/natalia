@@ -161,7 +161,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
 
     ctx.childWorkflows.child(
       { id: "c-1" },
-      // @ts-expect-error attached child options omit idempotencyKey (a detached `.start()` concern)
+      // @ts-expect-error child workflow options omit idempotencyKey (independent roots use externalWorkflows.start)
       { idempotencyKey: "child-1" },
     );
 

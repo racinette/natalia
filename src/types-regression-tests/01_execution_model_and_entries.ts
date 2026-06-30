@@ -174,7 +174,7 @@ export const executionModelAcceptanceWorkflow = defineWorkflow({
     //      - ctx.channels.X.send (when the parent has channels — covered by
     //        the child-workflow handle channel-send surface in step 03)
     //
-    //    Queues, topics, attributes, detached child workflows, and the scope/match
+    //    Queues, topics, attributes, external workflows, and the scope/match
     //    surface are covered by their own steps (13, 12 / 15, 13, 03, 07).
     // =========================================================================
 

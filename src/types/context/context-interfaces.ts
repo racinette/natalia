@@ -179,15 +179,16 @@ export interface CompensationContext<
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
   /**
-   * Child workflows. One accessor per declared child: the bare call runs it
-   * attached (full `WorkflowResult`); `.start(...)` spins it off detached.
+   * Child workflows. One accessor per declared child — the call runs it
+   * attached under the parent (full `WorkflowResult` awaited in compensation).
    */
   readonly childWorkflows: {
     [K in keyof TChildren]: CompensationChildWorkflowAccessor<TChildren[K]>;
   };
 
   /**
-   * Foreign workflow accessors — message-only handles to existing workflow instances.
+   * External workflow accessors — independent roots to reference (`.get`) or
+   * create (`.start`).
    */
   readonly externalWorkflows: {
     [K in keyof TExternalWorkflows]: ExternalWorkflowAccessor<
@@ -289,13 +290,13 @@ export interface CompensationContext<
  * Workflow context provided to the execute function.
  *
  * The body is a single sequential program. Concurrency comes from dispatched
- * entries (steps, requests, attached child workflows) which the body may
+ * entries (steps, requests, child workflows) which the body may
  * directly `await` or pass through `ctx.scope` / `ctx.all` / `ctx.first` /
  * `ctx.atLeast` / `ctx.atMost` / `ctx.some` for structured-concurrency
  * orchestration.
  *
- * Attached child calls (`ctx.childWorkflows.attached`) return an await-only entry in
- * the body; use `ctx.scope` + `ctx.join` when the parent must
+ * Child workflow calls (`ctx.childWorkflows.<name>(...)`) return an await-only
+ * entry in the body; use `ctx.scope` + `ctx.join` when the parent must
  * `channels.*.send` while the child runs (see `AttachedChildWorkflowScopeHandle`
  * in `call-builders.ts`).
  */
@@ -356,16 +357,16 @@ export interface WorkflowContext<
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
   /**
-   * Child workflow accessors. One accessor per declared child: the bare call
-   * runs it attached (parent-owned, awaitable); `.start(...)` spins it off
-   * detached.
+   * Child workflow accessors. One accessor per declared child — the call
+   * runs it parent-owned and awaitable.
    */
   readonly childWorkflows: {
     [K in keyof TChildren]: ChildWorkflowUnifiedAccessor<TChildren[K]>;
   };
 
   /**
-   * Foreign workflow accessors — message-only handles to existing workflow instances.
+   * External workflow accessors — independent roots to reference (`.get`) or
+   * create (`.start`).
    */
   readonly externalWorkflows: {
     [K in keyof TExternalWorkflows]: ExternalWorkflowAccessor<

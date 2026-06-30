@@ -29,7 +29,7 @@ export class ExplicitError<
 /**
  * Serializable representation of a declared business error.
  *
- * Carries the `type: "ExplicitError"` discriminator so externalWorkflows callers can
+ * Carries the `type: "ExplicitError"` discriminator so external callers can
  * distinguish declared business failures from arbitrary thrown values
  * captured as `Failure` records.
  */
@@ -47,7 +47,7 @@ export type ErrorValue<TErrors> = {
 }[keyof TErrors & string];
 
 /**
- * Workflow failure surface visible to externalWorkflows callers.
+ * Workflow failure surface visible to external callers.
  */
 export type FailureInfo<TWorkflowErrors> = ErrorValue<TWorkflowErrors>;
 
@@ -310,7 +310,8 @@ export interface SkipOutcome {
 
 /**
  * Operator-action verbs available on globally-addressable workflows
- * (root execution workflows + detached child workflows).
+ * (root execution workflows and independent roots started via
+ * `externalWorkflows.<name>.start`).
  *
  * The `skip(...)` overload set is conditional on the workflow's result
  * schema: when `TResult` is `void`, `skip()` accepts zero data arguments

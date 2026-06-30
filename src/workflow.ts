@@ -1326,7 +1326,7 @@ export function defineWorkflowInterface<
  * Define a workflow with full type safety.
  *
  * The body is a single sequential program. Concurrency comes from dispatched
- * entries (steps, requests, attached child workflows) the body awaits.
+ * entries (steps, requests, child workflows) the body awaits.
  * Structured-concurrency orchestration is provided by `ctx.scope`, `ctx.all`,
  * `ctx.first`, `ctx.atLeast`, `ctx.atMost`, and `ctx.some`.
  *

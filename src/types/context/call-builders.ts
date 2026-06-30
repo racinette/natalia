@@ -10,17 +10,16 @@ import type {
   InferWorkflowResult,
 } from "../helpers";
 import type { QueueEnqueueOptions } from "../definitions/messaging";
-import type { DeadlineOptions, RetentionSetter, WorkflowInvocationBaseOptions } from "../definitions/policies";
+import type { DeadlineOptions, RetentionSetter } from "../definitions/policies";
 import type { AnyWorkflowHeader } from "../definitions/workflow-headers";
-import type { RetryPolicyOptions } from "../definitions/policies";
 import type { ErrorValue, WorkflowResult } from "../results";
 import type { RequestEntry, SchemaInvocationInput, StepBoundary, TimeoutResult, WorkflowEntry } from "./entries";
 
 // =============================================================================
-// FOREIGN WORKFLOW HANDLE
+// EXTERNAL WORKFLOW HANDLE
 //
-// A handle to a globally addressable workflow instance. Returned by
-// `ctx.externalWorkflows.X.get(...)` and by `ctx.childWorkflows.detached.X(...)`.
+// A handle to a globally addressable independent workflow instance. Returned by
+// `ctx.externalWorkflows.<name>.get(...)` and `.start(...)`.
 // Send-only — no awaitable result, no lifecycle control.
 // =============================================================================
 
@@ -29,14 +28,14 @@ declare const nataliaAttachedChildWorkflowEntryBrand: unique symbol;
 /**
  * Channel-send surface on a handle to a running workflow.
  *
- * Exposed on **detached / foreign** handles (`ExternalWorkflowHandle`), on
- * **`AttachedChildWorkflowScopeHandle`** inside `ctx.scope` bodies, and on
- * operator introspection handles where the type allows.
+ * Exposed on **`ExternalWorkflowHandle`**, on **`AttachedChildWorkflowScopeHandle`**
+ * inside `ctx.scope` bodies, and on operator introspection handles where the
+ * type allows.
  *
- * The **direct** return value of `ctx.childWorkflows.attached.X(...)` in the workflow
+ * The **direct** return value of `ctx.childWorkflows.<name>(...)` in the workflow
  * body is await-only (`AttachedChildWorkflowEntry`) — it intentionally does
- * **not** intersect this surface; message the child from the parent body only
- * via a scope entry + `handles.*.channels.*.send` while the child runs.
+ * **not** intersect this surface. Message a child from the parent body only via
+ * a scope entry + `handles.*.channels.*.send` while the child runs.
  *
  * Send is a buffered operation — returns plain `void`; the message is visible
  * to the receiving workflow only after the caller's next batch commit.
@@ -52,11 +51,11 @@ export interface ChannelSendSurface<
 }
 
 /**
- * A limited handle to an existing (non-child or detached) workflow instance.
+ * A limited handle to an independent (root) workflow instance.
  *
- * Returned by `ctx.externalWorkflows.X.get(...)` and by
- * `ctx.childWorkflows.detached.X(...)`. Send-only: `channels.X.send` plus
- * the workflow's `idempotencyKey`. No awaitable result; no lifecycle control.
+ * Returned by `ctx.externalWorkflows.<name>.get(...)` and `.start(...)`.
+ * Send-only: `channels.<name>.send(...)` plus the workflow's `idempotencyKey`.
+ * No awaitable result; no lifecycle control.
  */
 export interface ExternalWorkflowHandle<
   TChannels extends ChannelDefinitions = Record<string, never>,
@@ -67,63 +66,27 @@ export interface ExternalWorkflowHandle<
 // =============================================================================
 // CHILD WORKFLOW ACCESSORS
 //
-// Child workflow accessors live on `ctx.childWorkflows.attached` (execution +
-// compensation) and `ctx.childWorkflows.detached`. Attached execution calls return
-// `AttachedChildWorkflowEntry` (await-only). Scope bodies receive
-// `AttachedChildWorkflowScopeHandle` (await + channels). Detached starts return
-// `ExternalWorkflowHandle<W>`.
+// `ctx.childWorkflows.<name>(...)` returns an `AttachedChildWorkflowEntry`
+// (await-only). Scope bodies receive `AttachedChildWorkflowScopeHandle`
+// (join + channels). Independent roots are started or referenced through
+// `ctx.externalWorkflows.<name>.get/.start` → `ExternalWorkflowHandle`.
 // =============================================================================
 
 /**
- * Base start options for a child workflow call.
- */
-export type ChildWorkflowStartOptions<W extends AnyWorkflowHeader> =
-  WorkflowInvocationBaseOptions<
-    InferWorkflowArgsInput<W>,
-    InferWorkflowMetadataInput<W>
-  >;
-
-export interface ChildWorkflowCallOptions {
-  readonly retry?: RetryPolicyOptions;
-}
-
-export interface ChildWorkflowTimeoutCallOptions extends ChildWorkflowCallOptions {
-  readonly timeout: StepBoundary;
-}
-
-/**
- * Optional invocation extras for attached child workflow calls (metadata,
- * seed). Workflow args are the first call argument, like `ctx.steps.X(args)`.
+ * Optional invocation extras for child workflow calls (metadata, seed, and an
+ * optional execution deadline). Workflow args are the first call argument,
+ * like `ctx.steps.X(args)`.
  *
- * `idempotencyKey` is omitted — attached child workflows are parent-scoped, not
- * globally keyed.
+ * `idempotencyKey` is omitted — child workflows are parent-scoped, not globally
+ * keyed. To start an independent root, use `ctx.externalWorkflows.<name>.start`.
  */
 export type AttachedChildWorkflowStartOptions<W extends AnyWorkflowHeader> = {
   readonly metadata?: InferWorkflowMetadataInput<W>;
   readonly seed?: string;
 } & DeadlineOptions;
 
-export type AttachedChildWorkflowTimeoutInvocationOptions<W extends AnyWorkflowHeader> =
-  ChildWorkflowTimeoutCallOptions & AttachedChildWorkflowStartOptions<W>;
-
 /**
- * Invocation options for detached child workflow starts. Workflow args are
- * the first call argument; this bag carries `idempotencyKey`, metadata, seed,
- * and retention. Detached childWorkflows may override retention independently from
- * the parent.
- */
-export type DetachedChildWorkflowInvocationOptions<W extends AnyWorkflowHeader> = {
-  readonly idempotencyKey?: string;
-  readonly metadata?: InferWorkflowMetadataInput<W>;
-  readonly seed?: string;
-  readonly retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
-} & DeadlineOptions;
-
-/**
- * Shared start options for a child workflow — the options common to both the
- * attached invocation and the detached `.start()` (metadata, seed, retention,
- * and an optional execution deadline). The detached form adds only the identity
- * key on top of this (see `DetachedChildWorkflowInvocationOptions`).
+ * Start options for attached child workflow calls in the execute body.
  */
 export type ChildStartOptions<W extends AnyWorkflowHeader> = {
   readonly metadata?: InferWorkflowMetadataInput<W>;
@@ -131,12 +94,8 @@ export type ChildStartOptions<W extends AnyWorkflowHeader> = {
   readonly retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
 } & DeadlineOptions;
 
-/** @deprecated Use `DetachedChildWorkflowInvocationOptions` — args are no longer nested here. */
-export type DetachedStartOptions<W extends AnyWorkflowHeader> =
-  DetachedChildWorkflowInvocationOptions<W>;
-
 /**
- * Optional invocation extras for attached child calls in compensation blocks.
+ * Optional invocation extras for child workflow calls in compensation blocks.
  */
 export type CompensationChildWorkflowStartOptions<W extends AnyWorkflowHeader> =
   AttachedChildWorkflowStartOptions<W>;
@@ -151,8 +110,8 @@ export type AttachedChildWorkflowResult<T, TError = unknown> =
   | { ok: false; status: "failed"; error: TError };
 
 /**
- * The unstarted attached child workflow entry returned by
- * `ctx.childWorkflows.attached.X(args, opts?)`.
+ * The unstarted child workflow entry returned by
+ * `ctx.childWorkflows.<name>(args, opts?)`.
  *
  * **Await-only** in the parent body: use `await entry` (or pass the entry into
  * `ctx.scope` / join it from there) for the success/failure (and optional
@@ -188,88 +147,13 @@ type AttachedChildWorkflowTimedAwaited<W extends AnyWorkflowHeader> =
   | AttachedChildWorkflowAwaited<W>
   | { ok: false; status: "timeout" };
 
-interface ChildWorkflowAccessorWithArgs<
-  W extends AnyWorkflowHeader,
-  TArgsSchema extends StandardSchemaV1<unknown, unknown>,
-> {
-  (
-    args: SchemaInvocationInput<TArgsSchema>,
-  ): AttachedChildWorkflowEntry<W, AttachedChildWorkflowAwaited<W>>;
-
-  (
-    args: SchemaInvocationInput<TArgsSchema>,
-    opts: AttachedChildWorkflowTimeoutInvocationOptions<W>,
-  ): AttachedChildWorkflowEntry<W, AttachedChildWorkflowTimedAwaited<W>>;
-}
-
-interface ChildWorkflowAccessorNoArgs<W extends AnyWorkflowHeader> {
-  (): AttachedChildWorkflowEntry<W, AttachedChildWorkflowAwaited<W>>;
-
-  (
-    opts: AttachedChildWorkflowTimeoutInvocationOptions<W>,
-  ): AttachedChildWorkflowEntry<W, AttachedChildWorkflowTimedAwaited<W>>;
-}
-
-/**
- * Callable child workflow accessor on `ctx.childWorkflows.attached` in
- * `WorkflowContext`.
- *
- * Workflow args are the first argument (same shape as `ctx.steps.X(args)`).
- * When the child declares no `args` schema, call with `()` instead.
- *
- * - `(args)` — success-or-failure union (no timeout variant).
- * - `(args, { timeout, ... })` — adds `{ ok: false; status: "timeout" }`.
- *
- * Child workflows are not retried by the parent; configure retry/backoff at
- * the child workflow definition level if needed.
- */
-export type ChildWorkflowAccessor<W extends AnyWorkflowHeader> =
-  InferWorkflowArgsSchema<W> extends StandardSchemaV1<unknown, unknown>
-    ? ChildWorkflowAccessorWithArgs<W, InferWorkflowArgsSchema<W>>
-    : ChildWorkflowAccessorNoArgs<W>;
-
-interface DetachedChildWorkflowAccessorWithArgs<
-  W extends AnyWorkflowHeader,
-  TArgsSchema extends StandardSchemaV1<unknown, unknown>,
-> {
-  (
-    args: SchemaInvocationInput<TArgsSchema>,
-    opts: DetachedChildWorkflowInvocationOptions<W>,
-  ): ExternalWorkflowHandle<InferWorkflowChannels<W>>;
-}
-
-interface DetachedChildWorkflowAccessorNoArgs<W extends AnyWorkflowHeader> {
-  (
-    opts: DetachedChildWorkflowInvocationOptions<W>,
-  ): ExternalWorkflowHandle<InferWorkflowChannels<W>>;
-}
-
-/**
- * Callable child workflow accessor on `ctx.childWorkflows.detached`.
- *
- * Workflow args are the first argument (like `ctx.steps.X(args)` and
- * `ctx.childWorkflows.attached.X(args)`). When the child declares no `args` schema,
- * call with a single options bag: `ctx.childWorkflows.detached.X({ idempotencyKey })`.
- *
- * Detached starts are buffered and synchronous; they return a
- * `ExternalWorkflowHandle` immediately. Detached childWorkflows run independently of
- * the parent's lifecycle.
- */
-export type DetachedChildWorkflowAccessor<W extends AnyWorkflowHeader> =
-  InferWorkflowArgsSchema<W> extends StandardSchemaV1<unknown, unknown>
-    ? DetachedChildWorkflowAccessorWithArgs<W, InferWorkflowArgsSchema<W>>
-    : DetachedChildWorkflowAccessorNoArgs<W>;
-
 // =============================================================================
-// UNIFIED CHILD WORKFLOW ACCESSOR
+// CHILD WORKFLOW ACCESSOR
 //
-// One accessor per declared child. The bare call returns an UNSTARTED entry:
-//   - `await` it (or join / hand to `ctx.scope`) => attached, parent-owned.
-//   - `.start(...)` it                            => detached root, ExternalWorkflowHandle.
-// Args + shared start options (metadata/seed/retention/deadline) go in the bare
-// call; `.start()` carries only the identity-key delta (see below). No `retry`
-// (workflows are not retried) and no StepBoundary `timeout` (the execution
-// deadline lives in the shared options; the join timeout lives on `ctx.join`).
+// One accessor per declared child on `ctx.childWorkflows.<name>`. The call
+// returns an unstarted `AttachedChildWorkflowEntry` — parent-owned and
+// awaitable. No `retry` (workflows are not retried). The execution deadline
+// lives in call-time options; the join timeout lives on `ctx.join`.
 // =============================================================================
 
 /** Shared start options with an execution deadline made required. */
@@ -335,7 +219,7 @@ interface CompensationChildWorkflowAccessorNoArgs<W extends AnyWorkflowHeader> {
 }
 
 /**
- * Callable child workflow accessor on `ctx.childWorkflows.attached` in
+ * Callable child workflow accessor on `ctx.childWorkflows.<name>` in
  * `CompensationContext`. Returns a `WorkflowEntry` whose awaited value is a
  * full `WorkflowResult<T>` — compensation must handle all outcomes.
  */
@@ -387,16 +271,9 @@ export interface QueueAccessor<TMessageSchema extends StandardSchemaV1> {
 }
 
 // =============================================================================
-// FOREIGN WORKFLOW ACCESSOR
+// EXTERNAL WORKFLOW ACCESSOR
 // =============================================================================
 
-/**
- * External workflow accessor on `ctx.externalWorkflows` in `WorkflowContext`.
- *
- * Use `.get(idempotencyKey)` to obtain a `ExternalWorkflowHandle` for an
- * existing workflow instance. Only `channels.send()` is available — no
- * events, streams, or lifecycle (prevents tight coupling).
- */
 /**
  * Start options for `externalWorkflows.<name>.start(...)` — the shared start
  * options plus the identity key, made conditional on whether the workflow

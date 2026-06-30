@@ -87,7 +87,7 @@ export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
  *   inherits the same name and schema declarations — single source of truth.
  * - Call **`header.extend({ ... })`** to add streams, events, steps, and other
  *   public interface fields without restating the header slice.
- * - Pass directly to `externalWorkflows` or `childWorkflows.{attached,detached}` in any workflow
+ * - Pass directly to `externalWorkflows` or `childWorkflows` in any workflow
  *   that needs to reference this one.
  *
  * This resolves circular references cleanly: define the header first, use it
@@ -109,7 +109,7 @@ export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
  * // manager spreads its own header + adds full implementation
  * const managerWorkflow = defineWorkflow({
  *   ...managerHeader,
- *   childWorkflows: { attached: { worker: workerWorkflow } },
+ *   childWorkflows: { worker: workerWorkflow },
  *   execute: async (ctx, args) => { ... },
  * });
  * ```
@@ -119,7 +119,7 @@ export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
  * const treeHeader = defineWorkflowHeader({ name: "tree", args: TreeArgs });
  * const treeWorkflow = defineWorkflow({
  *   ...treeHeader,
- *   childWorkflows: { attached: { node: treeHeader } },
+ *   childWorkflows: { node: treeHeader },
  *   execute: async (ctx, args) => { ... },
  * });
  * ```
