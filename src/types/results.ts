@@ -285,8 +285,8 @@ export type RequestErrorDisposition = {
 };
 
 /**
- * Factory map for `ctx.errors` inside request handlers — mirrors workflow
- * `ErrorFactories`, with a required `{ manual }` options bag on each call.
+ * Factory map for `ctx.errors` inside forward request handlers — each call
+ * requires `{ manual }` to choose retry vs manual escalation.
  */
 export type RequestErrorFactories<TErrors extends ErrorDefinitions> = {
   [K in keyof TErrors & string]: TErrors[K] extends true
@@ -299,6 +299,27 @@ export type RequestErrorFactories<TErrors extends ErrorDefinitions> = {
           message: string,
           details: SchemaInvocationInput<TErrors[K]>,
           options: RequestErrorDisposition,
+        ) => RequestHandlerDeclaredError<
+          K,
+          StandardSchemaV1.InferOutput<TErrors[K]>
+        >
+      : never;
+};
+
+/**
+ * Factory map for `ctx.errors` where every throw escalates to manual mode —
+ * used in `onExhausted`, compensation handlers, and their exhaustion paths.
+ * Mirrors workflow `ErrorFactories` (no disposition flag).
+ */
+export type RequestManualEscalationErrorFactories<
+  TErrors extends ErrorDefinitions,
+> = {
+  [K in keyof TErrors & string]: TErrors[K] extends true
+    ? (message: string) => RequestHandlerDeclaredError<K, undefined>
+    : TErrors[K] extends StandardSchemaV1<unknown, unknown>
+      ? (
+          message: string,
+          details: SchemaInvocationInput<TErrors[K]>,
         ) => RequestHandlerDeclaredError<
           K,
           StandardSchemaV1.InferOutput<TErrors[K]>

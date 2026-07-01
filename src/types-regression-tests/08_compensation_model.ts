@@ -207,7 +207,7 @@ const unregisterApprovalCompensation = registerRequestCompensationHandler(
 void unregisterApprovalCompensation;
 
 // `compensation: true` — no result schema; handler returns void or throws
-// `ctx.errors.X(..., { manual: true })`.
+// `ctx.errors.X(...)` to enter manual mode.
 const manualReviewRequest = defineRequest({
   name: "compManualReviewRequest",
   payload: z.object({ chargeId: z.string() }),
@@ -237,19 +237,14 @@ const unregisterManualReviewCompensation = registerRequestCompensationHandler(
       void info.response;
     }
 
-    throw ctx.errors.NeedsOperator("Operator must review compensation", {
-      manual: true,
-    });
+    throw ctx.errors.NeedsOperator("Operator must review compensation");
   },
   {
     retryPolicy: { timeoutSeconds: 30, totalTimeoutSeconds: 120 },
     onExhausted: {
       async callback(_payload, _info, ctx) {
-        throw ctx.errors.NeedsOperator("Exhausted waiting for operator", {
-          manual: true,
-        });
+        throw ctx.errors.NeedsOperator("Exhausted waiting for operator");
       },
-      retryPolicy: { intervalMs: 1_000 },
     },
   },
 );

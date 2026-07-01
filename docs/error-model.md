@@ -122,11 +122,13 @@ Step, request, queue, and topic handlers execute outside the replayed workflow b
 |-----------|-------------------------|-----------------|
 | **Steps** | normal `return` | `throw` (use `AttemptError` for structured attempt records) |
 | **Requests** | `return` response | `throw ctx.errors.X(..., { manual: false })` or unhandled throw → retry |
-| **Requests (manual)** | — | `throw ctx.errors.X(..., { manual: true })` → `status: manual` (non-terminal) |
+| **Requests (manual)** | — | Forward handler: `throw ctx.errors.X(..., { manual: true })`. `onExhausted`, compensation handlers, and their exhaustion paths: any `throw` (including `ctx.errors.X(...)`) → `status: manual` (non-terminal) |
 | **Queues** | `throw ctx.errors.X(..., { deadLetter: true })` | `throw ctx.errors.X(..., { deadLetter: false })` or unhandled throw → retry |
 | **Topics** | `throw UnrecoverableError` → `onConsumeError` immediately | `throw AttemptError` or ordinary error → retry |
 
-Request forward handlers and request compensation handlers each declare an optional **`errors`** map on `defineRequest` (forward map on the definition; compensation map on the `compensation` block). Each intentional non-resolution throw uses **`ctx.errors.<Code>(message, { manual })`** or **`ctx.errors.<Code>(message, details, { manual })`**, producing a **`RequestHandlerDeclaredError`**. `manual: true` parks the invocation for external resolution; it is **not** terminal — the request stays open until `resolve`, `cancel`, or workflow timeout. Business outcomes belong in **`return response`**, not in the error map.
+Request **forward** handlers declare an optional **`errors`** map on `defineRequest`. Each intentional non-resolution throw uses **`ctx.errors.<Code>(message, { manual })`** or **`ctx.errors.<Code>(message, details, { manual })`**, producing a **`RequestHandlerDeclaredError`**. `manual: true` parks the invocation for external resolution; it is **not** terminal — the request stays open until `resolve`, `cancel`, or workflow timeout.
+
+**`onExhausted`**, **compensation handlers**, and **compensation `onExhausted`** use the same `errors` codes but a different disposition surface: factories take only `(message)` or `(message, details)` — no `{ manual }` flag. `return` resolves (or reports compensation outcome); **any throw** moves to manual mode. Business outcomes belong in **`return response`**, not in the error map.
 
 Queue handlers are `void`-returning and declare an optional **`errors`** map on `defineQueue` (same shape as workflow errors: `true` or schema per code). Each throw uses **`ctx.errors.<Code>(message, { deadLetter })`** or **`ctx.errors.<Code>(message, details, { deadLetter })`**, producing a **`QueueHandlerDeclaredError`**. Topic consumers use **`UnrecoverableError`**.
 

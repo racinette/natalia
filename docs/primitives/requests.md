@@ -127,7 +127,7 @@ Business outcomes belong in `return response` — including rejection. A decline
 return { decision: "reject", note: "Policy violation" };
 ```
 
-Optional `onExhausted` runs when handler retries are exhausted. It receives the same `ctx.errors` surface and must `return` a response or throw with `{ manual: true }`:
+Optional `onExhausted` runs when handler retries are exhausted. There are no further retries — `return` a response to resolve the invocation, or throw (including `ctx.errors.X(...)`) to move it to manual mode:
 
 ```typescript
 client.requests.humanReview.registerHandler(handler, {
@@ -135,11 +135,8 @@ client.requests.humanReview.registerHandler(handler, {
   onExhausted: {
     callback: async (payload, ctx) => {
       await notifyReviewQueue(payload);
-      throw ctx.errors.NeedsSeniorReviewer("Retries exhausted — waiting for human", {
-        manual: true,
-      });
+      throw ctx.errors.NeedsSeniorReviewer("Retries exhausted — waiting for human");
     },
-    retryPolicy: { intervalMs: 5000 },
   },
 });
 ```
@@ -193,7 +190,7 @@ registerRequestCompensationHandler(
   reserveFlightTicket,
   async (payload, info, ctx) => {
     if (info.status !== "completed") {
-      throw ctx.errors.ReleaseBlocked("Nothing to release", { manual: true });
+      throw ctx.errors.ReleaseBlocked("Nothing to release");
     }
     await releaseReservation(info.response.reservationId, { signal: ctx.signal });
     return { released: true };
@@ -202,7 +199,7 @@ registerRequestCompensationHandler(
 );
 ```
 
-Compensation uses its own `errors` map — not the forward handler's. The same `{ manual }` disposition applies: `manual: true` parks the compensation block; `return` reports the compensation outcome.
+Compensation uses its own `errors` map — not the forward handler's. `return` reports the compensation outcome; any `throw` (including `ctx.errors.X(...)`) moves the compensation block to manual mode.
 
 ## Example: waitlist via manual mode
 

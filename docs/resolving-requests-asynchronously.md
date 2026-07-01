@@ -5,7 +5,7 @@ A request is resolved when the engine records a typed **response** for that requ
 There are several ways to reach that state:
 
 - A registered request handler returns the response.
-- The handler exhausts its attempts and **`onExhausted`** returns the response or throws **`ctx.errors.X(..., { manual: true })`**.
+- The handler exhausts its attempts and **`onExhausted`** returns the response or throws (any throw, including **`ctx.errors.X(...)`**, moves to manual mode).
 - The handler throws **`ctx.errors.X(..., { manual: true })`**, and a later actor resolves the request through its request handle.
 - No handler is registered, and all resolution happens through the external client API.
 

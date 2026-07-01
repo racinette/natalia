@@ -20,6 +20,7 @@ import type {
   RequestHandlerAttemptDetails,
   RequestHandlerContext,
   RequestHandlerRegistrationOptions,
+  RequestOnExhaustedHandlerContext,
   RequestHandleExternal,
   RequestNamespaceExternal,
   RequestRow,
@@ -329,12 +330,36 @@ const unregisterApprovalCompensation = registerRequestCompensationHandler(
     >;
 
     if (info.status !== "completed") {
-      throw ctx.errors.ReleaseBlocked("Nothing to release", { manual: true });
+      throw ctx.errors.ReleaseBlocked("Nothing to release");
     }
+
+    // @ts-expect-error compensation ctx.errors do not take { manual }
+    ctx.errors.ReleaseBlocked("bad", { manual: true });
 
     return { cancelled: info.response.approved };
   },
   { retryPolicy: { timeoutSeconds: 30 } },
+);
+
+client.requests.approvalRequestAcceptance.registerHandler(
+  async () => ({ approved: true, reviewerId: "fallback" }),
+  {
+    retryPolicy: { maxAttempts: 1 },
+    onExhausted: {
+      callback: async (_payload, ctx) => {
+        type _ExhaustCtx = Assert<
+          typeof ctx extends RequestOnExhaustedHandlerContext<
+            InferRequestErrors<typeof approvalRequest>
+          >
+            ? true
+            : false
+        >;
+        throw ctx.errors.NeedsHumanReview("Retries exhausted — waiting for human");
+        // @ts-expect-error onExhausted ctx.errors do not take { manual }
+        ctx.errors.NeedsHumanReview("bad", { manual: true });
+      },
+    },
+  },
 );
 
 registerRequestCompensationHandler(

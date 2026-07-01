@@ -4,6 +4,7 @@ import type {
   QueueErrorFactories,
   QueueHandlerAttemptAccessor,
   RequestErrorFactories,
+  RequestManualEscalationErrorFactories,
 } from "../results";
 import type { DeadLetterReason } from "../schema";
 import type { RetryPolicyOptions } from "./policies";
@@ -78,11 +79,9 @@ export type QueueRetentionPolicy<
 > = (ctx: QueueRetentionContext<TErrors, TMessage>) => Promise<number | null>;
 
 /**
- * Request handler context.
+ * Request handler context for the forward handler body (retried attempts).
  *
- * When the request declares an `errors` map, `ctx.errors` exposes a factory per
- * code. Requests with no declared errors omit usable factories — only unhandled
- * throws remain.
+ * `ctx.errors` factories require `{ manual }` on every call.
  */
 export interface RequestHandlerContext<
   TErrors extends ErrorDefinitions = Record<string, never>,
@@ -91,13 +90,33 @@ export interface RequestHandlerContext<
 }
 
 /**
+ * Request handler context for `onExhausted` — no retries; `return` resolves or
+ * any `throw` (including `ctx.errors.X(...)`) moves to manual mode.
+ */
+export interface RequestOnExhaustedHandlerContext<
+  TErrors extends ErrorDefinitions = Record<string, never>,
+> extends HandlerContext {
+  readonly errors: RequestManualEscalationErrorFactories<TErrors>;
+}
+
+/**
  * Request compensation handler context — uses the compensation block's own
- * `errors` map, not the forward request handler's.
+ * `errors` map. `return` reports outcome; any `throw` moves to manual mode.
  */
 export interface RequestCompensationHandlerContext<
   TErrors extends ErrorDefinitions = Record<string, never>,
 > extends HandlerContext {
-  readonly errors: RequestErrorFactories<TErrors>;
+  readonly errors: RequestManualEscalationErrorFactories<TErrors>;
+}
+
+/**
+ * Request compensation `onExhausted` context — same manual-only throw semantics
+ * as {@link RequestOnExhaustedHandlerContext}.
+ */
+export interface RequestCompensationOnExhaustedHandlerContext<
+  TErrors extends ErrorDefinitions = Record<string, never>,
+> extends HandlerContext {
+  readonly errors: RequestManualEscalationErrorFactories<TErrors>;
 }
 
 /**
@@ -125,16 +144,9 @@ export interface RequestHandlerRegistrationOptions<
   readonly onExhausted?: {
     readonly callback: (
       payload: TPayload,
-      opts: RequestHandlerContext<TErrors>,
+      opts: RequestOnExhaustedHandlerContext<TErrors>,
     ) => Promise<TResponse>;
-    readonly retryPolicy: RequestForwardOnExhaustedRetryOptions;
   };
-}
-
-export interface RequestForwardOnExhaustedRetryOptions {
-  readonly intervalMs: number;
-  readonly backoffRate?: number;
-  readonly maxIntervalMs?: number;
 }
 
 /**
@@ -153,12 +165,6 @@ export interface RequestCompensationRetryOptions extends HandlerRetryOptions {
   readonly totalTimeoutSeconds?: number;
 }
 
-export interface RequestCompensationOnExhaustedRetryOptions {
-  readonly intervalMs: number;
-  readonly backoffRate?: number;
-  readonly maxIntervalMs?: number;
-}
-
 export interface RequestCompensationHandlerOptions<
   TPayload = unknown,
   TResponse = unknown,
@@ -171,8 +177,7 @@ export interface RequestCompensationHandlerOptions<
     readonly callback: (
       payload: TPayload,
       info: RequestCompensationInfo<TResponse>,
-      opts: RequestCompensationHandlerContext<TCompensationErrors>,
+      opts: RequestCompensationOnExhaustedHandlerContext<TCompensationErrors>,
     ) => Promise<TResult>;
-    readonly retryPolicy: RequestCompensationOnExhaustedRetryOptions;
   };
 }

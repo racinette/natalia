@@ -20,7 +20,8 @@ Add durable requests for workflow code that needs an external handler or manual 
 - Request handler retry policy belongs to registration.
 - Optional `errors` on `defineRequest`; optional `errors` on `compensation` block (separate map).
 - Forward handlers return `TResponse` only; `throw ctx.errors.X(..., { manual: true | false })` for escalation/retry.
-- `manual: true` parks the invocation (non-terminal until `resolve`, `cancel`, or workflow timeout).
+- `onExhausted` and compensation paths: `return` resolves (or reports outcome); any `throw` (including `ctx.errors.X(...)`) moves to manual — no `{ manual }` flag on those contexts.
+- `manual: true` (forward handler) or any throw in exhaustion/compensation contexts parks the invocation (non-terminal until `resolve`, `cancel`, or workflow timeout).
 - `client.requests.<definitionName>.registerHandler` mirrors queue registration.
 - Client request namespaces use the unified searchable surface: `.get(id)`,
   `.findUnique(query)`, `.findMany(query)`, and `.count(query)`.
