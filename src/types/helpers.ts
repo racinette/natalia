@@ -240,3 +240,44 @@ export type HasQueueErrors<Q> = InferQueueErrors<Q> extends Record<string, never
   ? false
   : true;
 
+/**
+ * Declared forward-handler error map from a request definition, or an empty map
+ * when `defineRequest` omitted `errors`.
+ */
+export type InferRequestErrors<R> = R extends { readonly errors?: infer E }
+  ? [E] extends [undefined]
+    ? Record<string, never>
+    : E extends ErrorDefinitions
+      ? E
+      : Record<string, never>
+  : Record<string, never>;
+
+/**
+ * True when `defineRequest` declared a non-empty forward `errors` map.
+ */
+export type HasRequestErrors<R> = InferRequestErrors<R> extends Record<string, never>
+  ? false
+  : true;
+
+/**
+ * Declared compensation-handler error map from a request definition, or an empty
+ * map when compensation omitted `errors`.
+ */
+export type InferRequestCompensationErrors<R> = R extends {
+  readonly compensation?: infer C;
+}
+  ? C extends { readonly errors?: infer E }
+    ? [E] extends [undefined]
+      ? Record<string, never>
+      : E extends ErrorDefinitions
+        ? E
+        : Record<string, never>
+    : Record<string, never>
+  : Record<string, never>;
+
+/**
+ * True when request compensation declared a non-empty `errors` map.
+ */
+export type HasRequestCompensationErrors<R> =
+  InferRequestCompensationErrors<R> extends Record<string, never> ? false : true;
+

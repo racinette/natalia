@@ -93,6 +93,10 @@ export abstract class AbstractWorkflowClient<
 
   private createRequestAccessor(): RequestNamespaceExternal {
     return {
+      registerHandler: (_handler: unknown, _options?: unknown) => {
+        this.assertClientAvailable();
+        return () => undefined;
+      },
       get: ((_id: unknown) => {
         this.assertClientAvailable();
         return this.createRequestHandle();

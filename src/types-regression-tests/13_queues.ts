@@ -4,7 +4,6 @@ import { eq } from "../search";
 import {
   defineQueue,
   defineWorkflow,
-  MANUAL,
   QueueHandlerDeclaredError,
 } from "../workflow";
 import type {
@@ -504,8 +503,8 @@ client.queues.emailQueue.registerHandler(async () => undefined, {
   retryPolicy: retryForever,
 });
 
-// @ts-expect-error queue handlers do not use MANUAL
-client.queues.emailQueue.registerHandler(async () => MANUAL, {
+// @ts-expect-error queue handlers return void
+client.queues.emailQueue.registerHandler(async () => ({ manual: true }), {
   retryPolicy: { maxAttempts: 1 },
 });
 

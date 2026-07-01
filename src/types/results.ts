@@ -273,6 +273,132 @@ export interface QueueHandlerAttemptAccessor<
   reverse(): AsyncIterable<QueueHandlerAttempt<TErrors>>;
 }
 
+// =============================================================================
+// REQUEST HANDLER ERRORS
+// =============================================================================
+
+/**
+ * Manual / retry disposition passed to every request error factory call.
+ */
+export type RequestErrorDisposition = {
+  readonly manual: boolean;
+};
+
+/**
+ * Factory map for `ctx.errors` inside request handlers — mirrors workflow
+ * `ErrorFactories`, with a required `{ manual }` options bag on each call.
+ */
+export type RequestErrorFactories<TErrors extends ErrorDefinitions> = {
+  [K in keyof TErrors & string]: TErrors[K] extends true
+    ? (
+        message: string,
+        options: RequestErrorDisposition,
+      ) => RequestHandlerDeclaredError<K, undefined>
+    : TErrors[K] extends StandardSchemaV1<unknown, unknown>
+      ? (
+          message: string,
+          details: SchemaInvocationInput<TErrors[K]>,
+          options: RequestErrorDisposition,
+        ) => RequestHandlerDeclaredError<
+          K,
+          StandardSchemaV1.InferOutput<TErrors[K]>
+        >
+      : never;
+};
+
+/**
+ * Throwable error created by `ctx.errors.X(...)` in a request handler or
+ * request compensation handler.
+ */
+export class RequestHandlerDeclaredError<
+  TCode extends string = string,
+  TDetails = unknown,
+> extends Error {
+  readonly code: TCode;
+  readonly details: TDetails;
+  readonly manual: boolean;
+
+  constructor(
+    code: TCode,
+    message: string,
+    details: TDetails,
+    manual: boolean,
+  ) {
+    super(message);
+    this.name = "RequestHandlerDeclaredError";
+    this.code = code;
+    this.details = details;
+    this.manual = manual;
+  }
+}
+
+/**
+ * Outcome of persisting a declared error's optional schema-backed `details`
+ * payload on a request handler attempt.
+ */
+export type RequestHandlerAttemptDetails<TDetails> = QueueHandlerAttemptDetails<TDetails>;
+
+/**
+ * Attempt record for a declared request handler error (`code` is non-null).
+ */
+export type DeclaredRequestHandlerAttempt<
+  TErrors extends ErrorDefinitions,
+  TCode extends keyof TErrors & string,
+> = {
+  readonly attempt: number;
+  readonly manual: boolean;
+  readonly code: TCode;
+  readonly message: string;
+  readonly details: TErrors[TCode] extends true
+    ? undefined
+    : RequestHandlerAttemptDetails<
+        StandardSchemaV1.InferOutput<
+          Extract<TErrors[TCode], StandardSchemaV1<unknown, unknown>>
+        >
+      >;
+};
+
+/**
+ * Attempt record for an unhandled request handler throw (no declared `code`).
+ */
+export type UnhandledRequestHandlerAttempt = {
+  readonly attempt: number;
+  readonly manual: boolean;
+  readonly code: null;
+  readonly message: string | null;
+  readonly type: string | null;
+  readonly details: { readonly status: "unspecified" };
+};
+
+/**
+ * Per-try outcome record for a retried request handler (1-indexed `attempt`).
+ */
+export type RequestHandlerAttempt<
+  TErrors extends ErrorDefinitions = Record<string, never>,
+> =
+  | UnhandledRequestHandlerAttempt
+  | ([keyof TErrors & string] extends [never]
+      ? never
+      : {
+          [K in keyof TErrors & string]: DeclaredRequestHandlerAttempt<
+            TErrors,
+            K
+          >;
+        }[keyof TErrors & string]);
+
+/**
+ * Lazy, async-iterable accessor over request handler attempt records.
+ */
+export interface RequestHandlerAttemptAccessor<
+  TErrors extends ErrorDefinitions = Record<string, never>,
+> {
+  last(): Promise<RequestHandlerAttempt<TErrors>>;
+  all(): Promise<RequestHandlerAttempt<TErrors>[]>;
+  count(): Promise<number>;
+  [Symbol.asyncIterator](): AsyncIterableIterator<RequestHandlerAttempt<TErrors>>;
+  reverse(): AsyncIterable<RequestHandlerAttempt<TErrors>>;
+}
+
 /**
  * Signals that a topic consumer failure is permanent — the runtime should not
  * retry and should proceed to the exhaustion path (`onConsumeError`).

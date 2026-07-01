@@ -45,7 +45,18 @@ import type {
   QueuesFromInterfaces,
 } from "./types/definitions/workflow-contract";
 
-export { AttemptError, QueueHandlerDeclaredError, UnrecoverableError } from "./types/results";
+import type {
+  RequestCompensationHandlerContext,
+  RequestHandlerRegistrationOptions,
+} from "./types/definitions/handlers";
+import type { InferRequestCompensationErrors } from "./types/helpers";
+
+export {
+  AttemptError,
+  QueueHandlerDeclaredError,
+  RequestHandlerDeclaredError,
+  UnrecoverableError,
+} from "./types/results";
 
 function isStandardSchema(value: unknown): value is JsonSchemaConstraint {
   return (
@@ -72,13 +83,6 @@ function validateErrorDefinitions(
 }
 
 const noopUnsubscribe = (): void => undefined;
-
-declare const _manualCompensationSentinel: unique symbol;
-/** Sentinel return for request compensation handlers that defer to manual resolution. */
-export const MANUAL: typeof _manualCompensationSentinel =
-  Symbol("MANUAL") as typeof _manualCompensationSentinel;
-
-export type ManualSentinel = typeof MANUAL;
 
 type RequestCompensationHandlerResult<TCompensation> =
   TCompensation extends { readonly result?: infer TResultSchema }
@@ -439,18 +443,69 @@ export function defineRequest<
   TName extends string,
   TPayloadSchema extends JsonSchemaConstraint,
   TResponseSchema extends JsonSchemaConstraint,
+  TErrors extends ErrorDefinitions,
   TCompensationResultSchema extends JsonSchemaConstraint | undefined = undefined,
+  TCompensationErrors extends ErrorDefinitions = Record<string, never>,
 >(config: {
   name: TName;
   payload: TPayloadSchema;
   response: TResponseSchema;
-  compensation: RequestCompensationConfig<TCompensationResultSchema>;
+  errors: TErrors;
+  compensation: RequestCompensationConfig<
+    TCompensationResultSchema,
+    TCompensationErrors
+  >;
 }): RequestDefinition<
   TName,
   TPayloadSchema,
   TResponseSchema,
-  RequestCompensationConfig<TCompensationResultSchema>
+  TErrors,
+  RequestCompensationConfig<TCompensationResultSchema, TCompensationErrors>
 >;
+export function defineRequest<
+  TName extends string,
+  TPayloadSchema extends JsonSchemaConstraint,
+  TResponseSchema extends JsonSchemaConstraint,
+  TCompensationResultSchema extends JsonSchemaConstraint | undefined = undefined,
+  TCompensationErrors extends ErrorDefinitions = Record<string, never>,
+>(config: {
+  name: TName;
+  payload: TPayloadSchema;
+  response: TResponseSchema;
+  compensation: RequestCompensationConfig<
+    TCompensationResultSchema,
+    TCompensationErrors
+  >;
+}): RequestDefinition<
+  TName,
+  TPayloadSchema,
+  TResponseSchema,
+  Record<string, never>,
+  RequestCompensationConfig<TCompensationResultSchema, TCompensationErrors>
+>;
+export function defineRequest<
+  TName extends string,
+  TPayloadSchema extends JsonSchemaConstraint,
+  TResponseSchema extends JsonSchemaConstraint,
+  TErrors extends ErrorDefinitions,
+>(config: {
+  name: TName;
+  payload: TPayloadSchema;
+  response: TResponseSchema;
+  errors: TErrors;
+  compensation: true;
+}): RequestDefinition<TName, TPayloadSchema, TResponseSchema, TErrors, true>;
+export function defineRequest<
+  TName extends string,
+  TPayloadSchema extends JsonSchemaConstraint,
+  TResponseSchema extends JsonSchemaConstraint,
+  TErrors extends ErrorDefinitions,
+>(config: {
+  name: TName;
+  payload: TPayloadSchema;
+  response: TResponseSchema;
+  errors: TErrors;
+}): RequestDefinition<TName, TPayloadSchema, TResponseSchema, TErrors>;
 export function defineRequest<
   TName extends string,
   TPayloadSchema extends JsonSchemaConstraint,
@@ -460,7 +515,13 @@ export function defineRequest<
   payload: TPayloadSchema;
   response: TResponseSchema;
   compensation: true;
-}): RequestDefinition<TName, TPayloadSchema, TResponseSchema, true>;
+}): RequestDefinition<
+  TName,
+  TPayloadSchema,
+  TResponseSchema,
+  Record<string, never>,
+  true
+>;
 export function defineRequest<
   TName extends string,
   TPayloadSchema extends JsonSchemaConstraint,
@@ -469,19 +530,36 @@ export function defineRequest<
   name: TName;
   payload: TPayloadSchema;
   response: TResponseSchema;
-}): RequestDefinition<TName, TPayloadSchema, TResponseSchema>;
-export function defineRequest(config: {
-  name: string;
-  payload: JsonSchemaConstraint;
-  response: JsonSchemaConstraint;
-  compensation?: RequestCompensationDefinition<JsonSchemaConstraint | undefined>;
 }): RequestDefinition<
-  string,
-  JsonSchemaConstraint,
-  JsonSchemaConstraint,
-  | RequestCompensationDefinition<JsonSchemaConstraint | undefined>
-  | true
-  | undefined
+  TName,
+  TPayloadSchema,
+  TResponseSchema,
+  Record<string, never>,
+  undefined
+>;
+export function defineRequest<
+  TName extends string,
+  TPayloadSchema extends JsonSchemaConstraint,
+  TResponseSchema extends JsonSchemaConstraint,
+  TErrors extends ErrorDefinitions = Record<string, never>,
+  TCompensation extends
+    | RequestCompensationDefinition<
+        JsonSchemaConstraint | undefined,
+        ErrorDefinitions
+      >
+    | undefined = undefined,
+>(config: {
+  name: TName;
+  payload: TPayloadSchema;
+  response: TResponseSchema;
+  errors?: TErrors;
+  compensation?: TCompensation;
+}): RequestDefinition<
+  TName,
+  TPayloadSchema,
+  TResponseSchema,
+  TErrors,
+  TCompensation
 > {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Request name must be a non-empty string");
@@ -491,6 +569,15 @@ export function defineRequest(config: {
   }
   if (!config.response || !("~standard" in config.response)) {
     throw new Error("Request response must be a standard schema");
+  }
+  if (config.errors !== undefined) {
+    for (const [key, definition] of Object.entries(config.errors)) {
+      if (definition !== true && !isStandardSchema(definition)) {
+        throw new Error(
+          `Request error "${key}" must be \`true\` or a standard schema`,
+        );
+      }
+    }
   }
   if (config.compensation !== undefined) {
     if (config.compensation !== true) {
@@ -507,6 +594,15 @@ export function defineRequest(config: {
       ) {
         throw new Error("Request compensation result must be a standard schema");
       }
+      if (config.compensation.errors !== undefined) {
+        for (const [key, definition] of Object.entries(config.compensation.errors)) {
+          if (definition !== true && !isStandardSchema(definition)) {
+            throw new Error(
+              `Request compensation error "${key}" must be \`true\` or a standard schema`,
+            );
+          }
+        }
+      }
     }
   }
 
@@ -514,34 +610,63 @@ export function defineRequest(config: {
     name: config.name,
     payload: config.payload,
     response: config.response,
+    errors: config.errors,
     compensation: config.compensation,
     registerHandler: () => noopUnsubscribe,
   } as RequestDefinition<
-    string,
-    JsonSchemaConstraint,
-    JsonSchemaConstraint,
-    | RequestCompensationDefinition<JsonSchemaConstraint | undefined>
-    | true
-    | undefined
+    TName,
+    TPayloadSchema,
+    TResponseSchema,
+    TErrors,
+    TCompensation
   >;
 }
 
 export function registerRequestCompensationHandler<
+  TName extends string,
   TPayloadSchema extends JsonSchemaConstraint,
   TResponseSchema extends JsonSchemaConstraint,
-  TCompensation extends RequestCompensationDefinition<JsonSchemaConstraint | undefined>,
+  TForwardErrors extends ErrorDefinitions,
+  TCompensation extends RequestCompensationDefinition<
+    JsonSchemaConstraint | undefined,
+    ErrorDefinitions
+  >,
 >(
-  definition: RequestDefinition<string, TPayloadSchema, TResponseSchema, TCompensation>,
+  definition: RequestDefinition<
+    TName,
+    TPayloadSchema,
+    TResponseSchema,
+    TForwardErrors,
+    TCompensation
+  > & { readonly compensation: TCompensation },
   handler: (
     payload: StandardSchemaV1.InferOutput<TPayloadSchema>,
     info: RequestCompensationInfo<StandardSchemaV1.InferOutput<TResponseSchema>>,
-    opts: { signal: AbortSignal },
-  ) => Promise<RequestCompensationHandlerResult<TCompensation> | typeof MANUAL>,
+    opts: RequestCompensationHandlerContext<
+      InferRequestCompensationErrors<
+        RequestDefinition<
+          TName,
+          TPayloadSchema,
+          TResponseSchema,
+          TForwardErrors,
+          TCompensation
+        >
+      >
+    >,
+  ) => Promise<RequestCompensationHandlerResult<TCompensation>>,
   options: RequestCompensationHandlerOptions<
     StandardSchemaV1.InferOutput<TPayloadSchema>,
     StandardSchemaV1.InferOutput<TResponseSchema>,
     RequestCompensationHandlerResult<TCompensation>,
-    typeof MANUAL
+    InferRequestCompensationErrors<
+      RequestDefinition<
+        TName,
+        TPayloadSchema,
+        TResponseSchema,
+        TForwardErrors,
+        TCompensation
+      >
+    >
   >,
 ): Unsubscribe {
   if (!("compensation" in definition)) {

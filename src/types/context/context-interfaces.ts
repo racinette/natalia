@@ -163,6 +163,7 @@ export interface CompensationContext<
       any,
       infer TPayload,
       infer TResponseSchema,
+      any,
       any
     >
       ? RequestAccessor<TPayload, StandardSchemaV1.InferOutput<TResponseSchema>>
@@ -348,6 +349,7 @@ export interface WorkflowContext<
       any,
       infer TPayload,
       infer TResponseSchema,
+      any,
       any
     >
       ? RequestAccessor<TPayload, StandardSchemaV1.InferOutput<TResponseSchema>>

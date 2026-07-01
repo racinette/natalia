@@ -54,6 +54,8 @@ import type {
 } from "./definitions/messaging";
 import type {
   QueueHandlerContext,
+  RequestHandlerContext,
+  RequestHandlerRegistrationOptions,
   Unsubscribe,
 } from "./definitions/handlers";
 import type {
@@ -77,6 +79,7 @@ import type {
   InferWorkflowRequests,
   InferWorkflowResult,
   InferQueueErrors,
+  InferRequestErrors,
   InferWorkflowSteps,
   InferWorkflowStreams,
 } from "./helpers";
@@ -279,6 +282,7 @@ export interface RequestHandleExternal<
   TPayload = unknown,
   TResponse = unknown,
   TResponseInput = TResponse,
+  TErrors extends ErrorDefinitions = Record<string, never>,
 > extends FetchableHandle<RequestRow<TRequestName, TPayload, TResponse>> {
   readonly id: RequestId<TRequestName>;
 
@@ -295,12 +299,27 @@ export type RequestNamespaceExternal<
   TPayload = unknown,
   TResponse = unknown,
   TResponseInput = TResponse,
+  TErrors extends ErrorDefinitions = Record<string, never>,
 > = QueryableNamespace<
-  RequestHandleExternal<TRequestName, TPayload, TResponse, TResponseInput>,
+  RequestHandleExternal<
+    TRequestName,
+    TPayload,
+    TResponse,
+    TResponseInput,
+    TErrors
+  >,
   RequestWhereTemplate<TRequestName, TPayload, TResponse>,
   RequestRow<TRequestName, TPayload, TResponse>,
   RequestId<TRequestName>
->;
+> & {
+  registerHandler(
+    handler: (
+      payload: TPayload,
+      opts: RequestHandlerContext<TErrors>,
+    ) => Promise<TResponseInput>,
+    options?: RequestHandlerRegistrationOptions<TErrors, TPayload, TResponseInput>,
+  ): Unsubscribe;
+};
 
 // =============================================================================
 // QUEUE DEAD-LETTER HANDLE
@@ -460,26 +479,28 @@ type WorkflowClientLooseQueues = Record<string, QueueNamespaceExternal>;
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- heterogeneous request definitions; schema slots stay top-like */
 type RequestPayloadForNamespace<TRequest> =
-  TRequest extends RequestDefinition<string, infer TPayloadSchema, any, any>
+  TRequest extends RequestDefinition<string, infer TPayloadSchema, any, any, any>
     ? StandardSchemaV1.InferOutput<TPayloadSchema>
     : unknown;
 
 type RequestResponseForNamespace<TRequest> =
-  TRequest extends RequestDefinition<string, any, infer TResponseSchema, any>
+  TRequest extends RequestDefinition<string, any, infer TResponseSchema, any, any>
     ? StandardSchemaV1.InferOutput<TResponseSchema>
     : unknown;
 
 type RequestResponseInputForNamespace<TRequest> =
-  TRequest extends RequestDefinition<string, any, infer TResponseSchema, any>
+  TRequest extends RequestDefinition<string, any, infer TResponseSchema, any, any>
     ? StandardSchemaV1.InferInput<TResponseSchema>
     : unknown;
+
+type RequestErrorsForNamespace<TRequest> = InferRequestErrors<TRequest>;
 
 type RequestDefinitionUnionFromWorkflow<W> =
   InferWorkflowRequests<W> extends infer TRequests
     ? [TRequests] extends [never]
       ? never
       : IsAny<TRequests> extends true
-        ? RequestDefinition<string, any, any, any>
+        ? RequestDefinition<string, any, any, any, any>
         : TRequests extends RequestDefinitions
           ? TRequests[keyof TRequests & string]
           : never
@@ -496,15 +517,17 @@ type WorkflowClientRequestNamespacesFromUnion<TRequestUnion> = {
     infer TName,
     any,
     any,
+    any,
     any
   >
     ? TName
-    : never]: TRequest extends RequestDefinition<infer TName, any, any, any>
+    : never]: TRequest extends RequestDefinition<infer TName, any, any, any, any>
     ? RequestNamespaceExternal<
         TName,
         RequestPayloadForNamespace<TRequest>,
         RequestResponseForNamespace<TRequest>,
-        RequestResponseInputForNamespace<TRequest>
+        RequestResponseInputForNamespace<TRequest>,
+        RequestErrorsForNamespace<TRequest>
       >
     : never;
 };
@@ -636,12 +659,12 @@ type CompensableRequestKeys<TRequests extends Record<string, unknown>> = {
 }[keyof TRequests & string];
 
 type RequestPayloadForCompensationNamespace<TRequest> =
-  TRequest extends RequestDefinition<string, infer TPayloadSchema, any, infer _Comp>
+  TRequest extends RequestDefinition<string, infer TPayloadSchema, any, any, infer _Comp>
     ? StandardSchemaV1.InferOutput<TPayloadSchema>
     : unknown;
 
 type RequestCompensationResultForNamespace<TRequest> =
-  TRequest extends RequestDefinition<string, any, any, infer TCompensation>
+  TRequest extends RequestDefinition<string, any, any, any, infer TCompensation>
     ? TCompensation extends RequestCompensationConfig<infer TResultSchema>
       ? TResultSchema extends StandardSchemaV1<unknown, unknown>
         ? StandardSchemaV1.InferOutput<TResultSchema>

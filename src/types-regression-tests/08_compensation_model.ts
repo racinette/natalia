@@ -4,7 +4,6 @@ import {
   defineStep,
   defineWorkflow,
   defineWorkflowHeader,
-  MANUAL,
   registerRequestCompensationHandler,
 } from "../workflow";
 import type {
@@ -207,17 +206,22 @@ const unregisterApprovalCompensation = registerRequestCompensationHandler(
 );
 void unregisterApprovalCompensation;
 
-// `compensation: true` — no result schema; handler returns void or MANUAL.
+// `compensation: true` — no result schema; handler returns void or throws
+// `ctx.errors.X(..., { manual: true })`.
 const manualReviewRequest = defineRequest({
   name: "compManualReviewRequest",
   payload: z.object({ chargeId: z.string() }),
   response: z.object({ accepted: z.boolean() }),
-  compensation: true,
+  compensation: {
+    errors: {
+      NeedsOperator: true,
+    },
+  },
 });
 
 const unregisterManualReviewCompensation = registerRequestCompensationHandler(
   manualReviewRequest,
-  async (payload, info, _opts) => {
+  async (payload, info, ctx) => {
     type _Payload = Assert<IsEqual<typeof payload, { chargeId: string }>>;
 
     if (info.status === "completed") {
@@ -233,19 +237,17 @@ const unregisterManualReviewCompensation = registerRequestCompensationHandler(
       void info.response;
     }
 
-    return MANUAL;
+    throw ctx.errors.NeedsOperator("Operator must review compensation", {
+      manual: true,
+    });
   },
   {
     retryPolicy: { timeoutSeconds: 30, totalTimeoutSeconds: 120 },
     onExhausted: {
-      async callback(payload, _info, _opts) {
-        type _ExhaustPayload = Assert<IsEqual<typeof payload, { chargeId: string }>>;
-        type _ExhaustInfo = Assert<
-          typeof _info extends RequestCompensationInfo<{ accepted: boolean }>
-            ? true
-            : false
-        >;
-        return MANUAL;
+      async callback(_payload, _info, ctx) {
+        throw ctx.errors.NeedsOperator("Exhausted waiting for operator", {
+          manual: true,
+        });
       },
       retryPolicy: { intervalMs: 1_000 },
     },
@@ -255,11 +257,11 @@ void unregisterManualReviewCompensation;
 
 // Inline `undo` on the request definition is rejected — handlers are
 // registered separately.
-// @ts-expect-error request compensation handlers register separately; no inline `undo`
 defineRequest({
   name: "compInlineUndoRejected",
   payload: z.object({ chargeId: z.string() }),
   response: z.object({ ok: z.boolean() }),
+  // @ts-expect-error compensation blocks do not accept inline undo callbacks
   compensation: {
     result: z.object({ undone: z.boolean() }),
     async undo() {

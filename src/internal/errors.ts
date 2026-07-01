@@ -7,6 +7,7 @@
 // `StepTimeoutError`, `CompensationFailedError`) have been removed from the
 // public API. The new error model uses `ExplicitError` for declared
 // business failures (`ctx.errors.X(...)`), `QueueHandlerDeclaredError` for
+// queue handlers, and `RequestHandlerDeclaredError` for request handlers.
 // queue handler declared errors, `AttemptError` for step/request/topic
 // retried-operation failures, and the operator-action verbs (`sigkill` /
 // `sigterm` / `skip`) for terminal control. See REFACTOR.MD Part 4 / 9 / 15.

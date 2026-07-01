@@ -90,10 +90,17 @@ export type RequestInterface<
   TName extends string = string,
   TPayloadSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TResponseSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+  TErrors extends ErrorDefinitions = Record<string, never>,
   TCompensation extends
-    | RequestCompensationDefinition<JsonSchemaConstraint | undefined>
+    | RequestCompensationDefinition<
+        JsonSchemaConstraint | undefined,
+        ErrorDefinitions
+      >
     | undefined = undefined,
-> = Omit<RequestDefinition<TName, TPayloadSchema, TResponseSchema, TCompensation>, "registerHandler">;
+> = Omit<
+  RequestDefinition<TName, TPayloadSchema, TResponseSchema, TErrors, TCompensation>,
+  "registerHandler"
+>;
 
 export type RequestInterfaces = Record<
   string,
@@ -101,7 +108,8 @@ export type RequestInterfaces = Record<
     string,
     JsonSchemaConstraint,
     JsonSchemaConstraint,
-    RequestCompensationDefinition<JsonSchemaConstraint | undefined> | undefined
+    Record<string, never>,
+    RequestCompensationDefinition<JsonSchemaConstraint | undefined, ErrorDefinitions> | undefined
   >
 >;
 
@@ -139,9 +147,27 @@ export type StepsFromInterfaces<T extends StepInterfaces> = {
     : never;
 };
 
+type RequestErrorsFromInterfaceSlice<T> = T extends { readonly errors: infer E }
+  ? E extends ErrorDefinitions
+    ? E
+    : Record<string, never>
+  : Record<string, never>;
+
 export type RequestsFromInterfaces<T extends RequestInterfaces> = {
-  [K in keyof T]: T[K] extends RequestInterface<infer N, infer P, infer R, infer Comp>
-    ? RequestDefinition<N, P, R, Comp>
+  [K in keyof T]: T[K] extends RequestInterface<
+    infer N,
+    infer P,
+    infer R,
+    any,
+    infer Comp
+  >
+    ? RequestDefinition<
+        N,
+        P,
+        R,
+        RequestErrorsFromInterfaceSlice<T[K]>,
+        Comp
+      >
     : never;
 };
 

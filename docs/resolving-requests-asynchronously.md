@@ -5,8 +5,8 @@ A request is resolved when the engine records a typed **response** for that requ
 There are several ways to reach that state:
 
 - A registered request handler returns the response.
-- The handler exhausts its attempts and **`onExhausted`** returns the response.
-- The handler or **`onExhausted`** returns **`MANUAL`**, and a later actor resolves the request through its request handle.
+- The handler exhausts its attempts and **`onExhausted`** returns the response or throws **`ctx.errors.X(..., { manual: true })`**.
+- The handler throws **`ctx.errors.X(..., { manual: true })`**, and a later actor resolves the request through its request handle.
 - No handler is registered, and all resolution happens through the external client API.
 
 The later actor can be a human operator, an admin UI, a runbook, a webhook handler, a topic or queue consumer, another service, or a domain event listener. The important boundary is the same in every case: until **`resolve`** succeeds, the workflow has not observed a response.

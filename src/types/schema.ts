@@ -114,7 +114,8 @@ export type WorkflowStatus =
 /**
  * Durable status of a request compensation invocation.
  *
- * `'manual'` reflects that the request compensation handler returned `MANUAL`
+ * `'manual'` reflects that the request handler threw `ctx.errors.X(..., {
+ * manual: true })` or the compensation handler did the same on its error map.
  * (or no handler is registered) — the operator must resolve the invocation
  * externally.
  */

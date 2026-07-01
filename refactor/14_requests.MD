@@ -8,7 +8,7 @@ Add durable requests for workflow code that needs an external handler or manual 
 
 - `REFACTOR.MD` Part 11: Requests.
 - `REFACTOR.MD` Part 5: request call-time options.
-- `REFACTOR.MD` Part 15 and 15b: attempt access and `MANUAL`.
+- `REFACTOR.MD` Part 15 and 15b: attempt access and handler `ctx.errors`.
 - Request compensation tables and query surface.
 
 ## Public API Target
@@ -18,8 +18,10 @@ Add durable requests for workflow code that needs an external handler or manual 
 - No timeout returns the decoded response directly.
 - Timeout returns `{ ok: true; result } | { ok: false; status: "timeout" }`.
 - Request handler retry policy belongs to registration.
-- Handler return type is `TResponse | typeof MANUAL`.
-- `MANUAL` transitions a request to manual mode without exhausting retries.
+- Optional `errors` on `defineRequest`; optional `errors` on `compensation` block (separate map).
+- Forward handlers return `TResponse` only; `throw ctx.errors.X(..., { manual: true | false })` for escalation/retry.
+- `manual: true` parks the invocation (non-terminal until `resolve`, `cancel`, or workflow timeout).
+- `client.requests.<definitionName>.registerHandler` mirrors queue registration.
 - Client request namespaces use the unified searchable surface: `.get(id)`,
   `.findUnique(query)`, `.findMany(query)`, and `.count(query)`.
 - Request search returns typed request handles. Manual resolution and
@@ -45,4 +47,4 @@ Add durable requests for workflow code that needs an external handler or manual 
 
 ## Acceptance Contract
 
-The paired file `src/types-regression-tests/14_requests.ts` verifies request definition inference, workflow-side result unions, handle-based manual client APIs, request search/prefetch typing, request compensation info, and compensation-handler `MANUAL`.
+The paired file `src/types-regression-tests/14_requests.ts` verifies request definition inference, forward/compensation `errors` maps, `ctx.errors` + `{ manual }`, workflow-side result unions, handle-based manual client APIs, request search/prefetch typing, and compensation handler context typing.

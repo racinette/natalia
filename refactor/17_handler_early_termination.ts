@@ -4,10 +4,9 @@ import {
   defineQueue,
   defineRequest,
   defineTopic,
-  MANUAL,
+  RequestHandlerDeclaredError,
   UnrecoverableError,
 } from "../workflow";
-import type { Attempt, ManualSentinel } from "../types";
 
 type Assert<T extends true> = T;
 type IsEqual<A, B> =
@@ -19,20 +18,27 @@ const manualRequest = defineRequest({
   name: "manualRequestAcceptance",
   payload: z.object({ externalId: z.string() }),
   response: z.object({ ok: z.boolean() }),
+  errors: {
+    AwaitingExternalActor: true,
+  },
 });
 
-manualRequest.registerHandler(async (payload, _opts) => {
+manualRequest.registerHandler(async (payload, ctx) => {
   if (payload.externalId === "wait") {
-    return MANUAL;
+    throw ctx.errors.AwaitingExternalActor("Waiting for external actor", {
+      manual: true,
+    });
   }
   return { ok: true };
 });
 
-type _ManualSentinel = Assert<IsEqual<typeof MANUAL, ManualSentinel>>;
+type _DeclaredError = Assert<
+  RequestHandlerDeclaredError extends Error ? true : false
+>;
 
 manualRequest.registerHandler(async () => {
-  // @ts-expect-error request handlers return MANUAL instead of throwing UnrecoverableError
-  throw new UnrecoverableError("use MANUAL for requests");
+  // @ts-expect-error request handlers throw ctx.errors instead of UnrecoverableError
+  throw new UnrecoverableError("use ctx.errors with manual disposition");
 });
 
 const earlyQueue = defineQueue({
@@ -47,12 +53,12 @@ earlyQueue.registerHandler(async (message, _opts) => {
   if (message.id === "transient") {
     throw new AttemptError({ type: "TransientQueueError" });
   }
-});
+}, { retryPolicy: { maxAttempts: 1 } });
 
 earlyQueue.registerHandler(async () => {
-  // @ts-expect-error queues do not use MANUAL
-  return MANUAL;
-});
+  // @ts-expect-error queue handlers return void
+  return { ok: true };
+}, { retryPolicy: { maxAttempts: 1 } });
 
 const earlyTopic = defineTopic({
   name: "earlyTerminationTopic",
@@ -62,10 +68,10 @@ const earlyTopic = defineTopic({
 earlyTopic.registerConsumer(
   "consumer",
   async (record, _opts) => {
-    if (!record.payload.valid) {
+    if (!record.valid) {
       throw new UnrecoverableError("invalid record");
     }
-    if (record.payload.id === "transient") {
+    if (record.id === "transient") {
       throw new AttemptError({ type: "TransientTopicError" });
     }
   },
@@ -74,9 +80,7 @@ earlyTopic.registerConsumer(
       callback: async (_ctx, event) => {
         if (event.type === "attemptsExhausted") {
           const last = await event.attempts.last();
-          type _AttemptRecorded = Assert<
-            IsEqual<typeof last, Attempt>
-          >;
+          type _AttemptRecorded = Assert<IsEqual<typeof last, import("../types").Attempt>>;
           return "skip";
         }
         return "halt";
@@ -86,6 +90,6 @@ earlyTopic.registerConsumer(
 );
 
 earlyTopic.registerConsumer("badConsumer", async () => {
-  // @ts-expect-error topics do not use MANUAL
-  return MANUAL;
+  // @ts-expect-error topic consumers return void
+  return { ok: true };
 });

@@ -52,7 +52,6 @@ export {
   defineWorkflow,
   defineWorkflowHeader,
   defineWorkflowInterface,
-  MANUAL,
   registerRequestCompensationHandler,
 } from "./workflow";
 

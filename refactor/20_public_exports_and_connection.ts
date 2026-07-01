@@ -7,7 +7,7 @@ import {
   defineWorkflow,
   defineWorkflowHeader,
   MAIN_BRANCH,
-  MANUAL,
+  RequestHandlerDeclaredError,
   UnrecoverableError,
 } from "../index";
 import type {
@@ -87,7 +87,9 @@ type _PrimitiveExports =
   | BranchInstanceStatus;
 
 type _MainBranch = Assert<IsEqual<typeof MAIN_BRANCH, "MAIN_BRANCH">>;
-type _Manual = Assert<IsEqual<typeof MANUAL, import("../index").ManualSentinel>>;
+type _RequestHandlerDeclaredError = Assert<
+  typeof RequestHandlerDeclaredError extends typeof Error ? true : false
+>;
 type _Unrecoverable = Assert<typeof UnrecoverableError extends typeof Error ? true : false>;
 type _ConnectionOpaque = Assert<string extends IWorkflowConnection ? false : true>;
 type _TransactionOpaque = Assert<string extends IWorkflowTransaction ? false : true>;
@@ -127,8 +129,8 @@ type _NoScopeCall = import("../index").ScopeCall<any>;
 type _NoFirstCall = import("../index").FirstCall<any>;
 // @ts-expect-error old callback failure info is no longer public
 type _NoStepFailureInfo = import("../index").StepFailureInfo;
-// @ts-expect-error old compensation closure result info is no longer public
-type _NoStepCompensationResult = import("../index").StepCompensationResult<any>;
+// @ts-expect-error MANUAL is no longer public
+type _NoManual = import("../index").ManualSentinel;
 
 void txOrConnUsage;
 void AttemptError;

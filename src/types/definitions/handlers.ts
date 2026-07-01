@@ -3,6 +3,7 @@ import type { RequestCompensationInfo } from "./steps";
 import type {
   QueueErrorFactories,
   QueueHandlerAttemptAccessor,
+  RequestErrorFactories,
 } from "../results";
 import type { DeadLetterReason } from "../schema";
 import type { RetryPolicyOptions } from "./policies";
@@ -78,8 +79,63 @@ export type QueueRetentionPolicy<
 
 /**
  * Request handler context.
+ *
+ * When the request declares an `errors` map, `ctx.errors` exposes a factory per
+ * code. Requests with no declared errors omit usable factories — only unhandled
+ * throws remain.
  */
-export type RequestHandlerContext = HandlerContext;
+export interface RequestHandlerContext<
+  TErrors extends ErrorDefinitions = Record<string, never>,
+> extends HandlerContext {
+  readonly errors: RequestErrorFactories<TErrors>;
+}
+
+/**
+ * Request compensation handler context — uses the compensation block's own
+ * `errors` map, not the forward request handler's.
+ */
+export interface RequestCompensationHandlerContext<
+  TErrors extends ErrorDefinitions = Record<string, never>,
+> extends HandlerContext {
+  readonly errors: RequestErrorFactories<TErrors>;
+}
+
+/**
+ * Retry policy for forward request handler registration.
+ *
+ * `maxAttempts: null` retries without an attempt cap until the handler returns
+ * a response, the workflow call times out, or `throw ctx.errors.X(..., {
+ * manual: true })`.
+ */
+export interface RequestHandlerRetryPolicy extends RetryPolicyOptions {
+  readonly maxAttempts?: number | null;
+  readonly totalTimeoutSeconds?: number;
+}
+
+/**
+ * Client-side forward request handler registration options.
+ */
+export interface RequestHandlerRegistrationOptions<
+  TErrors extends ErrorDefinitions = Record<string, never>,
+  TPayload = unknown,
+  TResponse = unknown,
+> {
+  readonly retryPolicy?: RequestHandlerRetryPolicy;
+  readonly maxConcurrent?: number;
+  readonly onExhausted?: {
+    readonly callback: (
+      payload: TPayload,
+      opts: RequestHandlerContext<TErrors>,
+    ) => Promise<TResponse>;
+    readonly retryPolicy: RequestForwardOnExhaustedRetryOptions;
+  };
+}
+
+export interface RequestForwardOnExhaustedRetryOptions {
+  readonly intervalMs: number;
+  readonly backoffRate?: number;
+  readonly maxIntervalMs?: number;
+}
 
 /**
  * Topic consumer context.
@@ -107,7 +163,7 @@ export interface RequestCompensationHandlerOptions<
   TPayload = unknown,
   TResponse = unknown,
   TResult = void,
-  TManual = unknown,
+  TCompensationErrors extends ErrorDefinitions = Record<string, never>,
 > {
   readonly maxConcurrent?: number;
   readonly retryPolicy: RequestCompensationRetryOptions;
@@ -115,8 +171,8 @@ export interface RequestCompensationHandlerOptions<
     readonly callback: (
       payload: TPayload,
       info: RequestCompensationInfo<TResponse>,
-      opts: { signal: AbortSignal },
-    ) => Promise<TResult | TManual>;
+      opts: RequestCompensationHandlerContext<TCompensationErrors>,
+    ) => Promise<TResult>;
     readonly retryPolicy: RequestCompensationOnExhaustedRetryOptions;
   };
 }
