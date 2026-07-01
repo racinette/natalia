@@ -20,8 +20,12 @@ import type {
   QueueHandlerAttemptAccessor,
   QueueHandlerAttemptDetails,
   QueueHandlerContext,
+  QueueHandlerRegistrationOptions,
   QueueHandlerRetryPolicy,
   QueueNamespaceExternal,
+  QueueRetentionContext,
+  QueueRetentionPolicy,
+  QueueTerminalStatus,
   UnhandledQueueHandlerAttempt,
   Unsubscribe,
 } from "../types";
@@ -394,6 +398,90 @@ noErrorsClient.queues.noErrorsQueue.registerHandler(
   },
   { retryPolicy: { maxAttempts: 1 } },
 );
+
+// =============================================================================
+// `retentionPolicy` — ROW RETENTION AT FINALIZE
+// =============================================================================
+
+type _DecodedEmailMessage = {
+  userId: string;
+  template: "welcome" | "receipt";
+  metadata: { tenantId: string };
+};
+
+type _RetentionContext = Assert<
+  IsEqual<
+    QueueRetentionContext<_EmailQueueErrors, _DecodedEmailMessage>,
+    {
+      readonly status: QueueTerminalStatus;
+      readonly reason: DeadLetterReason | null;
+      readonly message: _DecodedEmailMessage;
+      readonly attempts: QueueHandlerAttemptAccessor<_EmailQueueErrors>;
+    }
+  >
+>;
+
+const retentionPolicy: QueueRetentionPolicy<
+  _EmailQueueErrors,
+  _DecodedEmailMessage
+> = async (ctx) => {
+  type _Ctx = Assert<
+    IsEqual<typeof ctx, QueueRetentionContext<_EmailQueueErrors, _DecodedEmailMessage>>
+  >;
+
+  if (ctx.status === "processed") {
+    return 86400;
+  }
+  if (ctx.reason === "invalid_payload") {
+    return 3600;
+  }
+  const count = await ctx.attempts.count();
+  if (count > 5) {
+    return 86400 * 90;
+  }
+  const last = await ctx.attempts.last();
+  if (last.code === "ProviderRejected") {
+    return 86400 * 30;
+  }
+  return null;
+};
+
+type _RetentionPolicyReturn = Assert<
+  Awaited<ReturnType<typeof retentionPolicy>> extends number | null ? true : false
+>;
+
+const _registrationWithRetention: QueueHandlerRegistrationOptions<
+  _EmailQueueErrors,
+  _DecodedEmailMessage
+> = {
+  retryPolicy: { maxAttempts: 1 },
+  retentionPolicy,
+};
+void _registrationWithRetention;
+
+client.queues.emailQueue.registerHandler(async () => undefined, {
+  retryPolicy: { maxAttempts: 1 },
+  retentionPolicy: async (ctx) => {
+    type _CtxShape = Assert<
+      typeof ctx extends QueueRetentionContext<_EmailQueueErrors, _DecodedEmailMessage>
+        ? true
+        : false
+    >;
+    type _AttemptsAccessor = Assert<
+      typeof ctx.attempts extends QueueHandlerAttemptAccessor<_EmailQueueErrors>
+        ? true
+        : false
+    >;
+    await ctx.attempts.all();
+    return 3600;
+  },
+});
+
+client.queues.emailQueue.registerHandler(async () => undefined, {
+  retryPolicy: { maxAttempts: 1 },
+  // @ts-expect-error retentionPolicy must return number | null
+  retentionPolicy: async () => "forever",
+});
 
 type _QueueHandlerDeclaredError = Assert<
   typeof unregister extends Unsubscribe

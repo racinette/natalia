@@ -1,6 +1,10 @@
 import type { ErrorDefinitions } from "./errors";
 import type { RequestCompensationInfo } from "./steps";
-import type { QueueErrorFactories } from "../results";
+import type {
+  QueueErrorFactories,
+  QueueHandlerAttemptAccessor,
+} from "../results";
+import type { DeadLetterReason } from "../schema";
 import type { RetryPolicyOptions } from "./policies";
 
 /**
@@ -37,6 +41,40 @@ export interface QueueHandlerContext<
 export interface QueueHandlerRetryPolicy extends RetryPolicyOptions {
   readonly maxAttempts: number | null;
 }
+
+/**
+ * Terminal queue message status passed to {@link QueueRetentionPolicy} at
+ * finalize time (after processing succeeds or the message is dead-lettered).
+ */
+export type QueueTerminalStatus = "processed" | "dead_lettered";
+
+/**
+ * Context for {@link QueueRetentionPolicy} — terminal row snapshot plus lazy
+ * access to persisted handler attempt records. The engine invokes the policy
+ * once when the message becomes terminal; `null` retains the row forever.
+ */
+export type QueueRetentionContext<
+  TErrors extends ErrorDefinitions = Record<string, never>,
+  TMessage = unknown,
+> = {
+  readonly status: QueueTerminalStatus;
+  /** Set when `status === "dead_lettered"`; `null` when processed successfully. */
+  readonly reason: DeadLetterReason | null;
+  readonly message: TMessage;
+  readonly attempts: QueueHandlerAttemptAccessor<TErrors>;
+};
+
+/**
+ * Assigns row retention in seconds from finalize time, or `null` to keep forever.
+ *
+ * Should depend only on {@link QueueRetentionContext} (terminal message and
+ * attempt history). The engine runs this once per terminal message before
+ * persisting `retention_deadline_at`.
+ */
+export type QueueRetentionPolicy<
+  TErrors extends ErrorDefinitions = Record<string, never>,
+  TMessage = unknown,
+> = (ctx: QueueRetentionContext<TErrors, TMessage>) => Promise<number | null>;
 
 /**
  * Request handler context.

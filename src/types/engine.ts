@@ -362,7 +362,7 @@ export interface QueueNamespaceExternal<
       message: TMessage,
       opts: QueueHandlerContext<TErrors>,
     ) => Promise<void>,
-    options: QueueHandlerRegistrationOptions,
+    options: QueueHandlerRegistrationOptions<TErrors, TMessage>,
   ): Unsubscribe;
 
   readonly deadLetters: DeadLetterNamespaceExternal<TQueueName, TMessage, TErrors>;

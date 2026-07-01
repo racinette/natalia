@@ -260,7 +260,8 @@ export type QueueHandlerAttempt<
 
 /**
  * Lazy, async-iterable accessor over queue handler attempt records for a
- * dead-lettered (or in-flight retried) message.
+ * dead-lettered message, an in-flight retried message, or
+ * {@link QueueRetentionContext} at finalize time.
  */
 export interface QueueHandlerAttemptAccessor<
   TErrors extends ErrorDefinitions = Record<string, never>,

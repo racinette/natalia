@@ -116,7 +116,7 @@ An unexpected throw inside `undo` **halts that compensation block instance** —
 
 ## Handlers: a separate vocabulary
 
-Step, request, queue, and topic handlers execute outside the replayed workflow body. They never use `ctx.errors`. Each primitive defines how throws and returns map to retries, dead letters, manual mode, or exhaustion callbacks.
+Step, request, queue, and topic handlers execute outside the replayed workflow body. They never use the **workflow body's** `ctx.errors`. Each primitive defines how throws and returns map to retries, dead letters, manual mode, or exhaustion callbacks.
 
 | Primitive | Intentional control flow | Transient fault |
 |-----------|-------------------------|-----------------|
@@ -125,7 +125,9 @@ Step, request, queue, and topic handlers execute outside the replayed workflow b
 | **Queues** | `throw ctx.errors.X(..., { deadLetter: true })` | `throw ctx.errors.X(..., { deadLetter: false })` or unhandled throw → retry |
 | **Topics** | `throw UnrecoverableError` → `onConsumeError` immediately | `throw AttemptError` or ordinary error → retry |
 
-Queue handlers are `void`-returning and declare an optional **`errors`** map on `defineQueue` (same shape as workflow errors: `true` or schema per code). Each throw uses **`ctx.errors.<Code>(message, { deadLetter })`** or **`ctx.errors.<Code>(message, details, { deadLetter })`**, producing a **`QueueHandlerDeclaredError`**. Request handlers use **`return MANUAL`**. Topic consumers use **`UnrecoverableError`**.
+Queue handlers are `void`-returning and declare an optional **`errors`** map on `defineQueue` (same shape as workflow errors: `true` or schema per code). Each throw uses **`ctx.errors.<Code>(message, { deadLetter })`** or **`ctx.errors.<Code>(message, details, { deadLetter })`**, producing a **`QueueHandlerDeclaredError`**. That is a **queue-definition** `ctx.errors` namespace — distinct from the workflow body's declared errors. Request handlers use **`return MANUAL`**. Topic consumers use **`UnrecoverableError`**.
+
+Optional **`retentionPolicy`** on queue handler registration controls how long **terminal** message rows are kept; it is unrelated to **`deadLetter`** disposition on throws. See [queues](./primitives/queues.md#row-retention).
 
 Details and type-level rules live in the primitive docs: [queues](./primitives/queues.md), [requests](./primitives/requests.md), [topics](./primitives/topics.md), [steps](./primitives/steps.md).
 
@@ -147,7 +149,7 @@ Think in terms of **recognition**, not catching:
 
 1. In the body, only `ctx.errors.X(...)` is recognized as business failure. Everything else thrown is a halt.
 2. Dispatched failures arrive as **values** you must branch on before they become business failures.
-3. In handlers, the engine recognizes primitive-specific throws and returns — not `ctx.errors`.
+3. In handlers, the engine recognizes primitive-specific throws and returns — not the workflow body's `ctx.errors` (queue handlers use queue-definition `ctx.errors` instead).
 4. Compensation neither fails the workflow nor shares its error map.
 
 The ergonomics look like conventions (`throw ctx.errors`, `return MANUAL`). Underneath, they are **distinct state machines** wired to durability, replay, compensation, and external contracts. Writing against the wrong surface does not merely read oddly — it changes what gets persisted and what the system does next.

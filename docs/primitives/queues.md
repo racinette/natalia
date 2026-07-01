@@ -1,93 +1,53 @@
 # Queues
 
-## What it is
+A queue holds typed work items that workflows enqueue and client workers process. Each message is handled once: competing handlers claim eligible messages from a shared pool. Workflows record enqueues in their durable batch; handlers run outside workflow replay.
 
-A **queue** is a **global competing-consumer work queue**. Workflows **enqueue typed messages** as a synchronous buffered operation; workers **register handlers** on the client to process messages exactly once.
+## Quick start
 
-`defineQueue` is **data-only** — it declares a **name**, **message** schema, optional **`errors`** map (for handler `ctx.errors`), plus optional **`defaultDelay`** and **`defaultTtl`**. Handler registration lives on the client, not on the definition.
-
-Workflows reference the definition in `queues: { slot: myQueue }` and call **`ctx.queues.<slot>.enqueue(payload, opts?)`**. The client exposes **`client.queues.<definitionName>`** (keyed by the queue definition's `name`, not the workflow-local slot).
-
-Enqueue is available in workflow `execute` bodies and in compensation `undo` callbacks when the compensation declares the queue dependency.
-
-## Definition
+Define the queue (name, message schema, and optional defaults):
 
 ```typescript
 const notifications = defineQueue({
   name: "notifications",
-  message: z.object({ userId: z.string(), body: z.string() }),
+  message: z.object({
+    userId: z.string(),
+    template: z.enum(["welcome", "receipt"]),
+    body: z.string(),
+  }),
   errors: {
-    InvalidPayload: true,
+    UnsupportedTemplate: true,
     ProviderRejected: z.object({ code: z.string(), orderId: z.string() }),
   },
-  defaultDelay: 0,
   defaultTtl: 3600,
 });
 ```
 
-| Field | Meaning |
-|-------|---------|
-| `name` | Globally unique queue name (client namespace key). |
-| `message` | Standard schema — **input** at enqueue, **output** in handlers. |
-| `errors` | Optional map of handler error codes — each entry is `true` (message only) or a standard schema (message + `details`). When omitted, handlers rely on unhandled throws only. |
-| `defaultDelay` | Default enqueue delay. Omit = `0` (immediate). |
-| `defaultTtl` | Default message TTL. Omit = every `enqueue` **must** pass `ttl`. |
-
-**Row retention** (how long processed/dead-lettered DB rows are kept) is not part of the queue definition API yet — deferred.
-
-## Workflow enqueue
-
-`enqueue` returns **`void`** — do not `await` it. The engine records the operation in the workflow's durable batch commit. Exactly-once enqueue: the insert is colocated with the workflow batch; on replay, an existing row is detected and the re-insert is skipped.
+Declare it on a workflow and enqueue from `execute`:
 
 ```typescript
-ctx.queues.notifications.enqueue(
-  { userId: "u1", body: "Hello" },
-  { priority: 0, delay: 60, ttl: 1800 },
-);
+const onboarding = defineWorkflow({
+  name: "onboarding",
+  queues: { notifications },
+  result: z.object({ ok: z.boolean() }),
+  async execute(ctx, args) {
+    ctx.queues.notifications.enqueue(
+      { userId: args.userId, template: "welcome", body: "Welcome!" },
+      { priority: 0, delay: 60, ttl: 1800 },
+    );
+    return { ok: true };
+  },
+});
 ```
 
-### Options
+`enqueue` returns `void`. Do not `await` it — the write commits with the workflow's next durable batch.
 
-| Option | Type | Meaning |
-|--------|------|---------|
-| `priority` | `number` | Lower number = higher urgency. Default `0`. |
-| `delay` | `number \| Date \| 0` | When the message becomes **eligible** for claim. Omit or `0` = immediate. `number` = seconds from commit (logical clock, replay-stable). `Date` = absolute eligible time. |
-| `ttl` | `number \| Date \| null` | When the message **expires**. Omit = use `defaultTtl` (required on enqueue when the definition has no default). `null` = never expires. |
-
-When the definition omits `defaultTtl`, enqueue **must** pass `ttl` (type-enforced via `HasDefaultTtl`).
-
-### Eligibility and expiry
-
-At commit the engine computes and persists two absolute timestamps:
-
-1. **`eligible_at`** — from `delay`: `created_at + delay` (number), `delay` (Date), or `created_at` if no delay.
-2. **`expires_at`** — from `ttl`: `null` (never), the `Date` directly, or **`eligible_at + ttl`** when `ttl` is a number.
-
-**Numeric `ttl` is a processing window after eligibility**, not shelf life from enqueue. Example: `{ delay: 3600, ttl: 1800 }` → eligible in 1h, expires 30m after that.
-
-**`ttl: Date`** is an absolute deadline independent of delay shape — useful for “fire later, but must finish by 5pm.”
-
-**Validation:** `eligible_at < expires_at` at enqueue (reject otherwise).
-
-**Replay:** `eligible_at` and `expires_at` are persisted at first commit and reused on replay (wall-clock for numeric `ttl` is resolved once at commit).
-
-### Claim ordering
-
-Once eligible and not expired, messages are claimed:
-
-`priority ASC, eligible_at ASC, id ASC`
-
-Priority is preserved on dead-letter `retry`.
-
-## Handler registration
-
-Register on **`client.queues.<definitionName>.registerHandler`** only:
+Register a handler on the client (keyed by the queue definition's `name`, not the workflow-local slot name):
 
 ```typescript
 const unregister = client.queues.notifications.registerHandler(
   async (message, ctx) => {
-    if (!isValid(message)) {
-      throw ctx.errors.InvalidPayload("Message failed validation", {
+    if (message.template === "receipt") {
+      throw ctx.errors.UnsupportedTemplate("Receipt emails are not supported", {
         deadLetter: true,
       });
     }
@@ -106,36 +66,71 @@ const unregister = client.queues.notifications.registerHandler(
 );
 ```
 
-| Registration option | Required | Meaning |
-|---------------------|----------|---------|
-| `retryPolicy` | **Yes** | Retry strategy + stop condition. |
-| `retryPolicy.maxAttempts` | **Yes** | `number` = attempt cap before `max_attempts` dead-letter; `null` = retry forever (still subject to `ttl`, etc.). |
-| `maxConcurrent` | No | Cap concurrent handler invocations per consumer instance. |
+Call `unregister()` to stop this registration from claiming new messages. Other handlers on the same queue keep competing.
 
-Handler registration does **not** accept `txOrConn?`.
+## Enqueueing from workflows
 
-Handlers receive **decoded** messages (`z.output`) and **`{ signal, errors }`**. Return type is **`void`** — failures are **throws**.
+Workflows reference a queue in `queues: { slot: myQueue }` and enqueue with `ctx.queues.<slot>.enqueue(payload, opts?)`.
 
-### Handler outcomes
+The workflow slot (`notifications` in the example above) is only for `ctx.queues`. The client namespace uses `defineQueue`'s `name` field — often the same string, but only `name` is guaranteed on `client.queues`.
 
-| Action | Outcome |
-|--------|---------|
-| Normal return | Message processed. |
-| `throw ctx.errors.X(..., { deadLetter: true })` | Immediate dead-letter (`handler_reject`). |
-| `throw ctx.errors.X(..., { deadLetter: false })` | Record attempt, retry per policy. |
-| Unhandled throw | `code: null`, loose extracted fields, retry. |
-
-**`MANUAL`** and **`UnrecoverableError`** are not used for queue handlers (requests and topics respectively).
-
-See [error-model.md](../error-model.md) for how queue handler errors relate to workflow `ctx.errors`.
-
-### `ctx.errors`
-
-Mirrors workflow **`ctx.errors`** — one factory per declared code, plus a required **`{ deadLetter }`** disposition on every call:
+Enqueue is also available in compensation `undo` callbacks when the compensation block declares the queue:
 
 ```typescript
-// errors: { InvalidPayload: true }
-throw ctx.errors.InvalidPayload("reason", { deadLetter: true });
+compensation: {
+  queues: { notifications },
+  async undo(ctx, args, info) {
+    if (info.status === "completed") {
+      ctx.queues.notifications.enqueue({
+        userId: args.userId,
+        template: "welcome",
+        body: "Your order was cancelled",
+      });
+    }
+  },
+},
+```
+
+See [steps.md](./steps.md) for compensation declaration rules.
+
+### Delay and expiry
+
+Per-enqueue options control when a message becomes claimable and when it expires:
+
+```typescript
+ctx.queues.notifications.enqueue(
+  { userId: "u1", template: "welcome", body: "Hello" },
+  { priority: 0, delay: 60, ttl: 1800 },
+);
+```
+
+A numeric `delay` is seconds from commit (replay-stable). A `Date` delay is an absolute eligible time. Omit `delay` or pass `0` for immediate eligibility.
+
+A numeric `ttl` is a processing window measured from eligibility, not from enqueue. With `{ delay: 3600, ttl: 1800 }`, the message becomes eligible after one hour and expires thirty minutes after that. A `Date` ttl is an absolute expiry time. Pass `ttl: null` for a message that never expires.
+
+If the queue definition omits `defaultTtl`, every enqueue must pass `ttl`.
+
+At commit the engine persists `eligible_at` and `expires_at`. Numeric `ttl` resolves against `eligible_at`. Replays reuse the timestamps from the first commit. Enqueue rejects `eligible_at >= expires_at`.
+
+### Claim ordering
+
+Eligible, unexpired messages are claimed in order:
+
+`priority ASC, eligible_at ASC, id ASC`
+
+Lower `priority` values are more urgent. Priority is preserved when a dead-lettered message is retried.
+
+## Handling messages
+
+Handlers register with `client.queues.<definitionName>.registerHandler(handler, options)`. The handler receives the decoded message and a context with `signal` and `errors`. Payloads that fail schema decode are dead-lettered as `invalid_payload` before the handler runs. A normal return marks the message processed.
+
+Declare an optional `errors` map on `defineQueue` to get typed throw helpers on `ctx.errors`:
+
+```typescript
+// errors: { UnsupportedTemplate: true }
+throw ctx.errors.UnsupportedTemplate("Receipt emails are not supported", {
+  deadLetter: true,
+});
 
 // errors: { ProviderRejected: schema }
 throw ctx.errors.ProviderRejected(
@@ -145,16 +140,83 @@ throw ctx.errors.ProviderRejected(
 );
 ```
 
-When **`errors`** is omitted from `defineQueue`, **`ctx.errors`** exposes no factories — only unhandled throws.
+Every `ctx.errors` call requires `{ deadLetter }`. `deadLetter: true` dead-letters immediately. `deadLetter: false` records a failed attempt and retries per `retryPolicy`. An ordinary unhandled throw also records a failed attempt and retries.
+
+`retryPolicy` is required. Set `maxAttempts` to a number to cap retries before dead-lettering, or `null` to retry until the handler succeeds, the message ttl expires, or the handler dead-letters via `ctx.errors`.
+
+```typescript
+client.queues.notifications.registerHandler(handler, {
+  retryPolicy: { maxAttempts: 5, timeoutSeconds: 30 },
+  retentionPolicy: async (ctx) => {
+    if (ctx.status === "processed") return 86400;
+    if (ctx.reason === "invalid_payload") return 3600;
+    const attempts = await ctx.attempts.all();
+    return attempts.length > 5 ? 86400 * 90 : 86400 * 30;
+  },
+});
+```
+
+`retentionPolicy` runs once when a message reaches a terminal state (`processed` or `dead_lettered`). Return seconds to keep the row, or `null` to keep it indefinitely. The callback receives the decoded message, terminal status, dead-letter reason (if any), and an attempts accessor.
+
+See [error-model.md](../error-model.md) for how queue handler errors relate to workflow errors.
+
+## Dead letters
+
+Messages that cannot be processed successfully are dead-lettered. Query them through `client.queues.<name>.deadLetters`:
+
+```typescript
+const matches = await client.queues.notifications.deadLetters.findMany(
+  ({ reason }) => eq(reason, "max_attempts"),
+  { fields: { id: true, payload: true }, limit: 10, txOrConn: tx },
+);
+
+for (const deadLetter of matches) {
+  await deadLetter.retry({ txOrConn: tx });
+}
+
+const handle = client.queues.notifications.deadLetters.get(deadLetterId);
+await handle.fetchRow({ payload: true, reason: true }, { txOrConn: tx });
+
+const attempts = await handle.attempts();
+if (attempts?.status === "unique") {
+  const last = await attempts.value.last();
+  if (last.code === "ProviderRejected" && last.details.ok) {
+    const { orderId } = last.details.result;
+  }
+}
+
+await handle.purge({ txOrConn: tx });
+```
+
+`retry` puts the message back on the queue with its priority and persisted expiry unchanged. `purge` deletes the dead-letter row.
+
+Dead-letter ids are branded per queue definition name.
+
+## Reference
+
+### Message lifecycle
+
+| Phase | Meaning |
+|-------|---------|
+| Pending | Enqueued, waiting until `eligible_at`. |
+| Processing | Claimed; handler running under `retryPolicy`. |
+| Processed | Handler returned successfully. |
+| Dead-lettered | Terminal failure (see reasons below). |
+
+After a terminal transition, `retentionPolicy` (if registered) sets `retention_deadline_at` for eventual row deletion.
+
+### Handler outcomes
+
+| Action | Outcome |
+|--------|---------|
+| Normal return | Processed. |
+| `throw ctx.errors.X(..., { deadLetter: true })` | Dead-letter (`handler_reject`). |
+| `throw ctx.errors.X(..., { deadLetter: false })` | Failed attempt; retry per policy. |
+| Unhandled throw | Failed attempt with `code: null`; retry per policy. |
 
 ### Attempt records
 
-Failed tries are persisted (successful handling writes the outcome directly).
-
-**Declared errors** (`code` is set):
-
-- **`code`** + **`message`** always persist (`message` is `string`, never `null` when `code` is set).
-- **`details`**: absent for `true` codes; for schema codes, a validated payload slot:
+Failed tries are persisted. Successful handling does not create attempt rows.
 
 ```typescript
 type QueueHandlerAttemptDetails<T> =
@@ -163,44 +225,13 @@ type QueueHandlerAttemptDetails<T> =
   | { ok: false; status: "unspecified" };
 ```
 
-**Unhandled throws** (`code: null`): loose `message` / `type` extraction, `details.status: "unspecified"`.
+Unhandled throws use `code: null`, optional `message` and `type`, and `details.status: "unspecified"`. Narrow on `attempt.code` first, then on `attempt.details.ok` for schema-backed codes.
 
-- **`serialized`** — schema-backed `details` validated and stored.
-- **`serialization_error`** — handler offered `details`, but validation/persistence failed; **`deadLetter` and `code`/`message` unchanged**.
-- **`unspecified`** — unhandled throw or no schema-backed slot.
+### Dead-letter reasons
 
-Narrow on **`attempt.code`**, then on **`attempt.details.ok`** for schema codes.
-
-## Dead letters
-
-Dead-letter reasons: **`max_attempts`**, **`ttl_expired`**, **`invalid_payload`** (schema decode before handler runs), **`handler_reject`** (`ctx.errors.X(..., { deadLetter: true })`).
-
-Search via **`client.queues.<name>.deadLetters`** (`findMany`, `findUnique`, `count`, `get`):
-
-```typescript
-const matches = client.queues.notifications.deadLetters.findMany(
-  ({ reason }) => eq(reason, "max_attempts"),
-  { fields: { id: true, payload: true }, limit: 10, txOrConn: tx },
-);
-
-for await (const deadLetter of matches) {
-  await deadLetter.retry({ txOrConn: tx });
-}
-
-const handle = client.queues.notifications.deadLetters.get(deadLetterId);
-await handle.fetchRow({ payload: true, reason: true }, { txOrConn: tx });
-const attempts = await handle.attempts();
-if (attempts?.status === "unique") {
-  const last = await attempts.value.last();
-  if (last.code === "ProviderRejected" && last.details.ok) {
-    // structured details from a prior attempt
-  }
-}
-```
-
-| API | `txOrConn` |
-|-----|------------|
-| `.get(id)` | No (synchronous branded id lookup) |
-| `fetchRow`, `attempts()`, `retry`, `purge`, namespace queries | Optional |
-
-`retry` resets the message to pending, preserves priority, and reuses persisted expiry.
+| Reason | When |
+|--------|------|
+| `max_attempts` | `retryPolicy.maxAttempts` exhausted. |
+| `ttl_expired` | `expires_at` passed before success. |
+| `invalid_payload` | Payload failed schema decode before the handler ran. |
+| `handler_reject` | Handler threw `ctx.errors.X(..., { deadLetter: true })`. |

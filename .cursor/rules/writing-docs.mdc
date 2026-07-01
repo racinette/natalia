@@ -1,0 +1,53 @@
+---
+alwaysApply: false
+description: Use the rule whenever writing user-facing documentation
+---
+
+**Rule: User-facing documentation**
+
+Documentation is written for a reader who has not participated in the design discussion and has no prior context about the feature beyond what the docs themselves provide.
+
+**Audience assumptions**
+
+- Assume the reader knows the surrounding domain (the language, the library's general purpose) but nothing about this specific feature.
+- Do not assume the reader has read the docs for sibling or neighboring features. If a concept from elsewhere in the library is needed, introduce it briefly or link to it — do not lean on it.
+- Prefer prose and plain nouns over internal type names when introducing concepts. Internal type names may appear in reference sections, but should not carry the explanatory weight.
+
+**Content**
+
+- Describe **what** the feature is and **how** to use it. Do not explain **why** it was designed this way, what alternatives were considered, or what tradeoffs were made — unless the reader needs that information to use the feature correctly.
+- Do not reference the design process ("we decided to...", "originally this was...", "note that this differs from..."). The reader was not there.
+- Do not preempt objections the reader has not raised. If you find yourself writing "X is independent of Y" or "there is no Z" or "this is not configurable on W", ask whether a cold reader would have expected otherwise. If not, cut it.
+- Do not describe APIs in the negative. Instead of "does not accept `txOrConn`", describe what the API does accept and where related configuration lives.
+- Do not define a concept primarily by contrast with sibling concepts. Explain what it is on its own terms first. Comparisons, if included at all, come after the reader understands the concept standalone.
+- If you find yourself wanting to capture rationale, design history, or domain knowledge uncovered during implementation, put it in a separate design note or ADR, not in the user docs.
+
+**Structure**
+
+- Lead with the shortest path from "reader has a problem" to "reader has working code." Reference material, taxonomy, edge cases, and exhaustive option tables come after.
+- Prefer concrete usage examples over abstract explanation. If a paragraph can be replaced by a code example, replace it.
+- Reserve a dedicated reference section for exhaustive enumeration. Do not interleave reference material with introductory explanation.
+
+**Reference sections**
+
+- Reference sections should document semantics that types cannot express: invariants, behavioral guarantees, ordering rules, lifecycle transitions, and enumerated outcomes.
+- Do not restate field names, types, or one-line descriptions that are already visible from the code — those go stale and add no information a reader cannot get from their editor.
+- Use tables for enumerable behavior (all possible states, all possible outcomes, all possible reasons) where completeness matters.
+- Use prose for invariants and semantic rules.
+- Use examples for shape — what a call site looks like, what a config object contains.
+
+**Emphasis and tone**
+
+- Use bold sparingly, to highlight terms a reader is likely to search for or return to. Do not bold phrases because they represent settled design decisions — the reader does not know or care which points were contested.
+- Every term introduced should either be defined on the spot, linked to its definition, or be part of the assumed background.
+
+**Self-check**
+
+Before finishing, re-read the document imagining you have never seen the design discussion. For each sentence, ask:
+
+- Would this make sense to someone reading cold?
+- Is this answering a question the reader would actually have at this point?
+- Is this describing the feature, or defending a decision about the feature?
+- Is this restating something the type system already tells the reader?
+
+If a sentence fails these, cut or rewrite it.

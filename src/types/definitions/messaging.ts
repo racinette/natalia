@@ -5,6 +5,7 @@ import type {
   HandlerRetryOptions,
   QueueHandlerContext,
   QueueHandlerRetryPolicy,
+  QueueRetentionPolicy,
   TopicConsumerContext,
   Unsubscribe,
 } from "./handlers";
@@ -45,9 +46,13 @@ export type QueueEnqueueOptionsWithRequiredTtl = QueueEnqueueOptions & {
 /**
  * Client-side queue handler registration options (runtime-owned IO).
  */
-export interface QueueHandlerRegistrationOptions {
+export interface QueueHandlerRegistrationOptions<
+  TErrors extends ErrorDefinitions = Record<string, never>,
+  TMessage = unknown,
+> {
   readonly retryPolicy: QueueHandlerRetryPolicy;
   readonly maxConcurrent?: number;
+  readonly retentionPolicy?: QueueRetentionPolicy<TErrors, TMessage>;
 }
 
 /**
