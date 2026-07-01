@@ -408,6 +408,48 @@ export type RequestHandlerAttempt<
         }[keyof TErrors & string]);
 
 /**
+ * Writable escalation record for {@link RequestHandleExternal.escalateToManual} —
+ * mirrors {@link RequestHandlerAttempt} minus engine-owned `attempt` and
+ * `manual`, with schema-backed `details` as invocation input (not the
+ * persisted `RequestHandlerAttemptDetails` union).
+ */
+/**
+ * Untyped external escalation — `message` only (optional `type`). Omit `code`;
+ * the engine persists `code: null` on the attempt row.
+ */
+export type RequestUntypedManualEscalationInput = {
+  readonly message: string;
+  readonly type?: string | null;
+  readonly code?: never;
+};
+
+export type RequestDeclaredManualEscalationInput<
+  TErrors extends ErrorDefinitions,
+> = {
+  [K in keyof TErrors & string]: TErrors[K] extends true
+    ? { readonly code: K; readonly message: string }
+    : {
+        readonly code: K;
+        readonly message: string;
+        readonly details: SchemaInvocationInput<
+          Extract<TErrors[K], StandardSchemaV1<unknown, unknown>>
+        >;
+      };
+}[keyof TErrors & string];
+
+/**
+ * When `code` is omitted, escalation is untyped (`message`, optional `type`).
+ * When `code` is set, it must be a declared error with the matching shape.
+ */
+export type RequestManualEscalationInput<
+  TErrors extends ErrorDefinitions = Record<string, never>,
+> =
+  | RequestUntypedManualEscalationInput
+  | ([keyof TErrors & string] extends [never]
+      ? never
+      : RequestDeclaredManualEscalationInput<TErrors>);
+
+/**
  * Lazy, async-iterable accessor over request handler attempt records.
  */
 export interface RequestHandlerAttemptAccessor<

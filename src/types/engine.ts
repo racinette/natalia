@@ -45,6 +45,7 @@ import type {
   QueueHandlerAttemptAccessor,
   SkipOutcome,
   OperatorActionOptions,
+  RequestManualEscalationInput,
 } from "./results";
 import type { RequestCompensationInstanceId } from "./schema";
 import type {
@@ -266,8 +267,8 @@ export interface RequestResolveOutcome {
   readonly status: "resolved";
 }
 
-export type RequestCancelOutcome =
-  | { readonly status: "cancelled" }
+export type RequestEscalateToManualOutcome =
+  | { readonly status: "manual" }
   | { readonly status: "already_terminal"; readonly current: RequestStatus };
 
 /**
@@ -276,6 +277,10 @@ export type RequestCancelOutcome =
  * Request namespaces are queryable through the same `get` / `findUnique` /
  * `findMany` / `count` surface as workflows and compensation instances.
  * Individual request actions live on the handle.
+ *
+ * `resolve` and `escalateToManual` both abort an in-flight handler attempt via
+ * `AbortSignal`. Only `resolve` records a typed response and unblocks the
+ * workflow.
  */
 export interface RequestHandleExternal<
   TRequestName extends string = string,
@@ -291,7 +296,10 @@ export interface RequestHandleExternal<
     opts?: OperatorActionOptions,
   ): Promise<RequestResolveOutcome>;
 
-  cancel(opts?: OperatorActionOptions): Promise<RequestCancelOutcome>;
+  escalateToManual(
+    escalation: RequestManualEscalationInput<TErrors>,
+    opts?: OperatorActionOptions,
+  ): Promise<RequestEscalateToManualOutcome>;
 }
 
 export type RequestNamespaceExternal<

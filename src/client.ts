@@ -127,7 +127,7 @@ export abstract class AbstractWorkflowClient<
         this.assertClientAvailable();
         throw new Error("Not implemented");
       },
-      cancel: async (_opts?: unknown) => {
+      escalateToManual: async (_escalation: unknown, _opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
       },

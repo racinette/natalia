@@ -51,8 +51,8 @@ If the resolver crashes after reserving the ticket but before **`resolve`**, a r
 
 ## What Is Not Resolution
 
-Timeouts, cancellations, and compensation are not forward request resolutions.
+Timeouts and compensation are not forward request resolutions.
 
-- A workflow-side **`timeout`** is the caller’s observation boundary.
-- **`cancel`** stops the wait without producing the request’s response type.
+- A workflow-side **`timeout`** is the caller's observation boundary — `{ ok: false, status: "timeout" }` when the call passed `timeout` and the deadline elapsed.
+- **`escalateToManual`** parks the invocation for external resolution without a typed response; the workflow keeps waiting until `resolve` or call-time timeout.
 - Request compensation is a later cleanup lifecycle driven by the forward outcome.

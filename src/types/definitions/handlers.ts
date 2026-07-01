@@ -4,6 +4,7 @@ import type {
   QueueErrorFactories,
   QueueHandlerAttemptAccessor,
   RequestErrorFactories,
+  RequestHandlerAttemptAccessor,
   RequestManualEscalationErrorFactories,
 } from "../results";
 import type { DeadLetterReason } from "../schema";
@@ -79,6 +80,50 @@ export type QueueRetentionPolicy<
 > = (ctx: QueueRetentionContext<TErrors, TMessage>) => Promise<number | null>;
 
 /**
+ * Terminal forward request status passed to {@link RequestRetentionPolicy} at
+ * finalize time. `manual` is not terminal — retention runs only after
+ * `resolved`, `timedOut`.
+ */
+export type RequestTerminalStatus = "resolved" | "timedOut";
+
+/**
+ * Context for {@link RequestRetentionPolicy} — terminal row snapshot plus lazy
+ * access to persisted handler attempt records. The engine invokes the policy
+ * once when the invocation becomes terminal; `null` retains the row forever.
+ */
+export type RequestRetentionContext<
+  TErrors extends ErrorDefinitions = Record<string, never>,
+  TPayload = unknown,
+  TResponse = unknown,
+> =
+  | {
+      readonly status: "resolved";
+      readonly payload: TPayload;
+      readonly response: TResponse;
+      readonly attempts: RequestHandlerAttemptAccessor<TErrors>;
+    }
+  | {
+      readonly status: "timedOut";
+      readonly payload: TPayload;
+      readonly attempts: RequestHandlerAttemptAccessor<TErrors>;
+    };
+
+/**
+ * Assigns row retention in seconds from finalize time, or `null` to keep forever.
+ *
+ * Should depend only on {@link RequestRetentionContext} (terminal payload,
+ * response when resolved, and attempt history). The engine runs this once per
+ * terminal invocation before persisting `retention_deadline_at`.
+ */
+export type RequestRetentionPolicy<
+  TErrors extends ErrorDefinitions = Record<string, never>,
+  TPayload = unknown,
+  TResponse = unknown,
+> = (
+  ctx: RequestRetentionContext<TErrors, TPayload, TResponse>,
+) => Promise<number | null>;
+
+/**
  * Request handler context for the forward handler body (retried attempts).
  *
  * `ctx.errors` factories require `{ manual }` on every call.
@@ -147,6 +192,7 @@ export interface RequestHandlerRegistrationOptions<
       opts: RequestOnExhaustedHandlerContext<TErrors>,
     ) => Promise<TResponse>;
   };
+  readonly retentionPolicy?: RequestRetentionPolicy<TErrors, TPayload, TResponse>;
 }
 
 /**

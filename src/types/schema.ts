@@ -128,14 +128,17 @@ export type RequestCompensationStatus =
 
 /**
  * Durable status of a forward request invocation.
+ *
+ * `'manual'` means automation stopped and the invocation awaits external
+ * `resolve` — from handler `throw ctx.errors.X(..., { manual: true })`,
+ * exhaustion/compensation throws, or `escalateToManual` on the request handle.
  */
 export type RequestStatus =
   | "pending"
   | "claimed"
   | "resolved"
   | "manual"
-  | "timedOut"
-  | "cancelled";
+  | "timedOut";
 
 /**
  * Reason a queue message was dead-lettered.
@@ -277,7 +280,6 @@ export interface RequestRow<
   readonly resolvedAt: Date | null;
   readonly manualAt: Date | null;
   readonly timedOutAt: Date | null;
-  readonly cancelledAt: Date | null;
   readonly deadlineAt: Date | null;
 }
 

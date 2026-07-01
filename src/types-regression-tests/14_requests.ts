@@ -20,7 +20,11 @@ import type {
   RequestHandlerAttemptDetails,
   RequestHandlerContext,
   RequestHandlerRegistrationOptions,
+  RequestManualEscalationInput,
   RequestOnExhaustedHandlerContext,
+  RequestRetentionContext,
+  RequestRetentionPolicy,
+  RequestTerminalStatus,
   RequestHandleExternal,
   RequestNamespaceExternal,
   RequestRow,
@@ -362,6 +366,99 @@ client.requests.approvalRequestAcceptance.registerHandler(
   },
 );
 
+// =============================================================================
+// `retentionPolicy` — ROW RETENTION AT FINALIZE
+// =============================================================================
+
+type _ApprovalPayload = { documentId: string; tenantId: string };
+type _ApprovalResponse = { approved: boolean; reviewerId: string };
+type _ApprovalErrors = InferRequestErrors<typeof approvalRequest>;
+
+type _RetentionContext = Assert<
+  IsEqual<
+    RequestRetentionContext<_ApprovalErrors, _ApprovalPayload, _ApprovalResponse>,
+    | {
+        readonly status: "resolved";
+        readonly payload: _ApprovalPayload;
+        readonly response: _ApprovalResponse;
+        readonly attempts: RequestHandlerAttemptAccessor<_ApprovalErrors>;
+      }
+    | {
+        readonly status: "timedOut";
+        readonly payload: _ApprovalPayload;
+        readonly attempts: RequestHandlerAttemptAccessor<_ApprovalErrors>;
+      }
+  >
+>;
+
+const retentionPolicy: RequestRetentionPolicy<
+  _ApprovalErrors,
+  _ApprovalPayload,
+  _ApprovalResponse
+> = async (ctx) => {
+  type _Ctx = Assert<
+    IsEqual<
+      typeof ctx,
+      RequestRetentionContext<_ApprovalErrors, _ApprovalPayload, _ApprovalResponse>
+    >
+  >;
+  type _TerminalStatus = Assert<IsEqual<RequestTerminalStatus, typeof ctx.status>>;
+
+  if (ctx.status === "resolved") {
+    type _Response = IsEqual<typeof ctx.response, _ApprovalResponse>;
+    void 0 as unknown as _Response;
+    return 86400;
+  }
+  const count = await ctx.attempts.count();
+  return count > 3 ? 86400 * 7 : 86400;
+};
+
+type _RetentionPolicyReturn = Assert<
+  Awaited<ReturnType<typeof retentionPolicy>> extends number | null ? true : false
+>;
+
+const _registrationWithRetention: RequestHandlerRegistrationOptions<
+  _ApprovalErrors,
+  _ApprovalPayload,
+  _ApprovalResponse
+> = {
+  retryPolicy: { maxAttempts: 3 },
+  retentionPolicy,
+};
+void _registrationWithRetention;
+
+client.requests.approvalRequestAcceptance.registerHandler(
+  async () => ({ approved: true, reviewerId: "retention-test" }),
+  {
+    retryPolicy: { maxAttempts: 1 },
+    retentionPolicy: async (ctx) => {
+      type _CtxShape = Assert<
+        typeof ctx extends RequestRetentionContext<
+          _ApprovalErrors,
+          _ApprovalPayload,
+          _ApprovalResponse
+        >
+          ? true
+          : false
+      >;
+      if (ctx.status === "resolved") {
+        void ctx.response.approved;
+      }
+      await ctx.attempts.all();
+      return null;
+    },
+  },
+);
+
+client.requests.approvalRequestAcceptance.registerHandler(
+  async () => ({ approved: true, reviewerId: "retention-test" }),
+  {
+    retryPolicy: { maxAttempts: 1 },
+    // @ts-expect-error retentionPolicy must return number | null
+    retentionPolicy: async () => "forever",
+  },
+);
+
 registerRequestCompensationHandler(
   // @ts-expect-error non-compensable requests cannot have compensation handlers
   pingRequest,
@@ -378,11 +475,84 @@ type _RegistrationOptionsShape = Assert<
     retryPolicy?: unknown;
     maxConcurrent?: number;
     onExhausted?: unknown;
+    retentionPolicy?: unknown;
   }
     ? true
     : false
 >;
 void (0 as unknown as _RegistrationOptionsShape);
+
+// =============================================================================
+// `escalateToManual` — EXTERNAL MANUAL ESCALATION
+// =============================================================================
+
+const _untypedEscalation: RequestManualEscalationInput<_ApprovalErrors> = {
+  message: "Ops took over",
+  type: "OperatorAction",
+};
+
+const _typedMarkerEscalation: RequestManualEscalationInput<_ApprovalErrors> = {
+  code: "NeedsHumanReview",
+  message: "Escalated from admin console",
+};
+
+const _typedSchemaEscalation: RequestManualEscalationInput<_ApprovalErrors> = {
+  code: "RulesEngineRejected",
+  message: "Rules engine unavailable",
+  details: { ruleId: "R-42" },
+};
+
+void _untypedEscalation;
+void _typedMarkerEscalation;
+void _typedSchemaEscalation;
+
+const _badEscalationDetails: RequestManualEscalationInput<_ApprovalErrors> = {
+  code: "RulesEngineRejected",
+  message: "bad",
+  details: {
+    // @ts-expect-error persisted details union is not valid escalation input
+    ok: true,
+    status: "serialized",
+    result: { ruleId: "R-42" },
+  },
+};
+
+type _RejectMissingEscalationDetails = Assert<
+  {
+    code: "RulesEngineRejected";
+    message: string;
+  } extends RequestManualEscalationInput<_ApprovalErrors>
+    ? false
+    : true
+>;
+void (0 as unknown as _RejectMissingEscalationDetails);
+
+const _noErrorsEscalation: RequestManualEscalationInput<
+  InferRequestErrors<typeof noErrorsRequest>
+> = {
+  message: "External escalation",
+};
+
+void _noErrorsEscalation;
+
+const _explicitNullCode: RequestManualEscalationInput<_ApprovalErrors> = {
+  // @ts-expect-error untyped escalation omits code — do not pass code: null
+  code: null,
+  message: "bad",
+  type: null,
+};
+
+type _RejectDeclaredCodeWithoutErrors = Assert<
+  RequestManualEscalationInput<
+    InferRequestErrors<typeof noErrorsRequest>
+  > extends {
+    code: "NeedsHumanReview";
+    message: string;
+  }
+    ? false
+    : true
+>;
+void (0 as unknown as _RejectDeclaredCodeWithoutErrors);
 
 type _AttemptAccessorShape = Assert<
   RequestHandlerAttemptAccessor<InferRequestErrors<typeof approvalRequest>> extends {
@@ -441,10 +611,18 @@ async function manualResolution(): Promise<void> {
     approved: true,
     reviewerId: "manual-reviewer",
   });
-  await request.cancel();
+  await request.escalateToManual({
+    code: "NeedsHumanReview",
+    message: "Escalated while reviewing queue",
+  });
 
   const requestId = "request-id" as RequestId<"approvalRequestAcceptance">;
   const requestHandle = client.requests.approvalRequestAcceptance.get(requestId);
+
+  await requestHandle.escalateToManual({
+    message: "Stop automation",
+    type: "AdminConsole",
+  });
 
   const fetched = await requestHandle.fetchRow({ payload: true, status: true });
   void fetched;

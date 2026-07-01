@@ -119,7 +119,7 @@ throw ctx.errors.RulesEngineUnavailable(
 );
 ```
 
-Every `ctx.errors` call requires `{ manual }`. `manual: true` moves the invocation to `status: manual` with persisted `code`, `message`, and optional `details` for operators. The request stays open until something calls `resolve`, `cancel`, or the workflow observes a call-time timeout. `manual: false` records a failed attempt and retries.
+Every forward-handler `ctx.errors` call requires `{ manual }`. `manual: true` moves the invocation to `status: manual` with persisted `code`, `message`, and optional `details` for operators. The request stays open until something calls `resolve`, or the workflow observes a call-time `timeout`. `manual: false` records a failed attempt and retries.
 
 Business outcomes belong in `return response` — including rejection. A declined approval is still a resolved request:
 
@@ -141,11 +141,23 @@ client.requests.humanReview.registerHandler(handler, {
 });
 ```
 
+Optional `retentionPolicy` runs once when an invocation reaches a terminal state (`resolved` or `timedOut`). Return seconds to keep the row, or `null` to keep it indefinitely. The callback receives the decoded payload, terminal status, response when resolved, and an attempts accessor. `manual` is not terminal — retention runs when the invocation later resolves or the workflow call times out.
+
+```typescript
+client.requests.humanReview.registerHandler(handler, {
+  retryPolicy: { maxAttempts: 3, timeoutSeconds: 60 },
+  retentionPolicy: async (ctx) => {
+    if (ctx.status === "resolved") return 86400;
+    return 86400 * 7;
+  },
+});
+```
+
 See [error-model.md](../error-model.md) for how request handler errors relate to workflow errors.
 
 ## Manual resolution
 
-Manual requests are queryable on the client. An external actor resolves or cancels through the request handle:
+Manual requests are queryable on the client. An external actor resolves or escalates through the request handle. Both `resolve` and `escalateToManual` abort an in-flight handler attempt.
 
 ```typescript
 const waiting = await client.requests.humanReview.findMany(
@@ -162,10 +174,31 @@ for (const request of waiting) {
 }
 
 const handle = client.requests.humanReview.get(requestId);
-await handle.cancel();
+
+// Stop automation and park for manual resolution (untyped)
+await handle.escalateToManual({
+  message: "Ops took over — vendor API degraded",
+  type: "AdminConsole",
+});
+
+// Or use declared error codes when defineRequest declares errors
+await handle.escalateToManual({
+  code: "NeedsSeniorReviewer",
+  message: "Escalated from admin console",
+});
+
+await handle.escalateToManual({
+  code: "RulesEngineUnavailable",
+  message: "Rules engine down",
+  details: { ruleId: "R-42" },
+});
 ```
 
-`resolve` records the response and unblocks the workflow. `cancel` ends the wait without a typed response; the workflow observes `{ ok: false, status: "timeout" }` when it passed a call-time `timeout`.
+`resolve` records the typed response and unblocks the workflow. `escalateToManual` moves the invocation to `manual` without a response — the workflow keeps waiting until `resolve` or its own call-time `timeout`.
+
+Escalation input mirrors handler attempt records: omit `code` for untyped escalation (`message`, optional `type`); set `code` for declared errors with schema-backed `details` as invocation input (not the persisted `serialized` / `serialization_error` union — the engine validates and persists that).
+
+When the workflow passed `{ timeout }` at the call site and the deadline elapses before resolution, it observes `{ ok: false, status: "timeout" }`. That is separate from manual escalation — only the caller's timeout produces that observation.
 
 See [Resolving Requests Asynchronously](../resolving-requests-asynchronously.md) for commit boundaries and idempotent external resolution.
 
@@ -254,12 +287,13 @@ If no ticket arrives before the workflow's call-time `timeout`, the workflow obs
 |--------|---------|
 | `pending` | Recorded; waiting for a handler claim. |
 | `claimed` | Handler running under `retryPolicy`. |
-| `manual` | Parked for external resolution (`throw ctx.errors.X(..., { manual: true })`). |
+| `manual` | Parked for external resolution (handler `manual: true`, exhaustion/compensation throw, or `escalateToManual`). |
 | `resolved` | Response recorded; workflow can proceed. |
 | `timedOut` | Workflow call-time `timeout` elapsed before resolution. |
-| `cancelled` | Operator cancelled via request handle. |
 
-`manual` is not terminal. The invocation stays open until `resolve`, `cancel`, or workflow timeout observation.
+`manual` is not terminal. The invocation stays open until `resolve` or the workflow's call-time timeout observation.
+
+After a terminal transition, `retentionPolicy` (if registered) sets `retention_deadline_at` for eventual row deletion.
 
 ### Handler outcomes
 
