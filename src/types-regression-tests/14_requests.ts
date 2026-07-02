@@ -4,7 +4,6 @@ import { and, eq } from "../search";
 import {
   defineRequest,
   defineWorkflow,
-  registerRequestCompensationHandler,
   RequestHandlerDeclaredError,
 } from "../workflow";
 import type {
@@ -21,7 +20,6 @@ import type {
   RequestHandlerContext,
   RequestHandlerRegistrationOptions,
   RequestManualEscalationInput,
-  RequestOnExhaustedHandlerContext,
   RequestRetentionContext,
   RequestRetentionPolicy,
   RequestTerminalStatus,
@@ -35,6 +33,7 @@ import type { RequestId } from "../types/schema";
 import type {
   HasRequestCompensationErrors,
   HasRequestErrors,
+  InferRequestCompensationDef,
   InferRequestCompensationErrors,
   InferRequestErrors,
 } from "../types/helpers";
@@ -144,7 +143,9 @@ type _RequestNamespace = Assert<
       { documentId: string; tenantId: string },
       { approved: boolean; reviewerId: string },
       { approved: boolean; reviewerId: string },
-      InferRequestErrors<typeof approvalRequest>
+      InferRequestErrors<typeof approvalRequest>,
+      InferRequestCompensationDef<typeof approvalRequest>,
+      InferRequestCompensationErrors<typeof approvalRequest>
     >
   >
 >;
@@ -236,7 +237,41 @@ const unregister = client.requests.approvalRequestAcceptance.registerHandler(
       { manual: false },
     );
   },
-  { retryPolicy: { maxAttempts: 3, timeoutSeconds: 30 } },
+  {
+    retryPolicy: { maxAttempts: 3, timeoutSeconds: 30 },
+    compensation: {
+      handler: async (payload, info, ctx) => {
+        type _Payload = Assert<
+          IsEqual<typeof payload, { documentId: string; tenantId: string }>
+        >;
+        type _Info = Assert<
+          typeof info extends RequestCompensationInfo<{
+            approved: boolean;
+            reviewerId: string;
+          }>
+            ? true
+            : false
+        >;
+        type _Ctx = Assert<
+          typeof ctx extends RequestCompensationHandlerContext<
+            InferRequestCompensationErrors<typeof approvalRequest>
+          >
+            ? true
+            : false
+        >;
+
+        if (info.status !== "completed") {
+          throw ctx.errors.ReleaseBlocked("Nothing to release");
+        }
+
+        // @ts-expect-error compensation ctx.errors do not take { manual }
+        ctx.errors.ReleaseBlocked("bad", { manual: true });
+
+        return { cancelled: info.response.approved };
+      },
+      retryPolicy: { timeoutSeconds: 30 },
+    },
+  },
 );
 
 client.requests.approvalRequestAcceptance.registerHandler(
@@ -306,65 +341,6 @@ type _RequestHandlerAttemptUnion = Assert<
     | UnhandledRequestHandlerAttempt
   >
 >;
-
-// =============================================================================
-// COMPENSATION `ctx.errors`
-// =============================================================================
-
-const unregisterApprovalCompensation = registerRequestCompensationHandler(
-  approvalRequest,
-  async (payload, info, ctx) => {
-    type _Payload = Assert<
-      IsEqual<typeof payload, { documentId: string; tenantId: string }>
-    >;
-    type _Info = Assert<
-      typeof info extends RequestCompensationInfo<{
-        approved: boolean;
-        reviewerId: string;
-      }>
-        ? true
-        : false
-    >;
-    type _Ctx = Assert<
-      typeof ctx extends RequestCompensationHandlerContext<
-        InferRequestCompensationErrors<typeof approvalRequest>
-      >
-        ? true
-        : false
-    >;
-
-    if (info.status !== "completed") {
-      throw ctx.errors.ReleaseBlocked("Nothing to release");
-    }
-
-    // @ts-expect-error compensation ctx.errors do not take { manual }
-    ctx.errors.ReleaseBlocked("bad", { manual: true });
-
-    return { cancelled: info.response.approved };
-  },
-  { retryPolicy: { timeoutSeconds: 30 } },
-);
-
-client.requests.approvalRequestAcceptance.registerHandler(
-  async () => ({ approved: true, reviewerId: "fallback" }),
-  {
-    retryPolicy: { maxAttempts: 1 },
-    onExhausted: {
-      callback: async (_payload, ctx) => {
-        type _ExhaustCtx = Assert<
-          typeof ctx extends RequestOnExhaustedHandlerContext<
-            InferRequestErrors<typeof approvalRequest>
-          >
-            ? true
-            : false
-        >;
-        throw ctx.errors.NeedsHumanReview("Retries exhausted — waiting for human");
-        // @ts-expect-error onExhausted ctx.errors do not take { manual }
-        ctx.errors.NeedsHumanReview("bad", { manual: true });
-      },
-    },
-  },
-);
 
 // =============================================================================
 // `retentionPolicy` — ROW RETENTION AT FINALIZE
@@ -459,23 +435,30 @@ client.requests.approvalRequestAcceptance.registerHandler(
   },
 );
 
-registerRequestCompensationHandler(
-  // @ts-expect-error non-compensable requests cannot have compensation handlers
-  pingRequest,
-  async () => undefined,
-  { retryPolicy: { timeoutSeconds: 30 } },
+client.requests.pingRequestAcceptance.registerHandler(
+  async () => ({ ok: true }),
+  {
+    retryPolicy: { maxAttempts: 1 },
+    // @ts-expect-error non-compensable requests cannot register compensation handlers
+    compensation: {
+      handler: async () => ({ cancelled: false }),
+      retryPolicy: { timeoutSeconds: 30 },
+    },
+  },
 );
 
 type _RegistrationOptionsShape = Assert<
   RequestHandlerRegistrationOptions<
     InferRequestErrors<typeof approvalRequest>,
     { documentId: string; tenantId: string },
-    { approved: boolean; reviewerId: string }
+    { approved: boolean; reviewerId: string },
+    InferRequestCompensationDef<typeof approvalRequest>,
+    InferRequestCompensationErrors<typeof approvalRequest>
   > extends {
     retryPolicy?: unknown;
-    maxConcurrent?: number;
-    onExhausted?: unknown;
+    maxConcurrent?: unknown;
     retentionPolicy?: unknown;
+    compensation?: unknown;
   }
     ? true
     : false
@@ -650,14 +633,10 @@ async function manualResolution(): Promise<void> {
 type _AttemptAccessor = Assert<_AttemptAccessorShape>;
 
 type _Unregister = Assert<IsEqual<typeof unregister, Unsubscribe>>;
-type _UnregisterComp = Assert<
-  IsEqual<typeof unregisterApprovalCompensation, Unsubscribe>
->;
 type _RequestHandlerDeclaredError = Assert<
   RequestHandlerDeclaredError extends Error ? true : false
 >;
 
 void noErrorsClient;
 void unregister;
-void unregisterApprovalCompensation;
 void manualResolution;

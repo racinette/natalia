@@ -19,9 +19,11 @@ A compensable step's compensation declaration carries:
   and the forward operation's outcome `info`.
 
 A compensable request declaration carries `compensation: true` or
-`compensation: { result }` only — the actual handler is registered
-**separately** via `registerRequestCompensationHandler`. There is no
-inline `undo` on `defineRequest`.
+`compensation: { result?, errors? }` on `defineRequest`. Forward and
+compensation handlers register together on
+`client.requests.<definitionName>.registerHandler` — there is no
+inline `undo` on `defineRequest` and no separate compensation
+registration API.
 
 A compensation block instance is a child workflow of the execution
 workflow's sibling base compensation workflow (`REFACTOR.MD` Part 1.6
@@ -81,21 +83,41 @@ existing `CompensationContext` shape.
 ```typescript
 type RequestCompensationDefinition<TResultSchema> =
   | true
-  | { result?: TResultSchema };
+  | { result?: TResultSchema; errors?: ErrorDefinitions };
 ```
 
-Inline `undo` is rejected. Handlers register separately:
+Inline `undo` is rejected. Register forward and compensation handlers
+together:
 
 ```typescript
-registerRequestCompensationHandler(
-  definition,
-  async (ctx, payload, info) => { ... return MANUAL; },
-  { retryPolicy: { ... }, onExhausted?: { callback, retryPolicy } },
+client.requests.reserveFlightTicket.registerHandler(
+  async (payload, ctx) => {
+    return await reserveTicket(payload, { signal: ctx.signal });
+  },
+  {
+    retryPolicy: { maxAttempts: 3, timeoutSeconds: 30 },
+    compensation: {
+      handler: async (payload, info, ctx) => {
+        if (info.status !== "completed") {
+          throw ctx.errors.ReleaseBlocked("Nothing to release");
+        }
+        await releaseReservation(info.response.reservationId, {
+          signal: ctx.signal,
+        });
+        return { released: true };
+      },
+      retryPolicy: { timeoutSeconds: 30 },
+    },
+  },
 );
 ```
 
-The handler signature receives `(ctx, payload, info)` where `info` is
-`RequestCompensationInfo<TResponse>`.
+The compensation handler receives `(payload, info, ctx)` where `info`
+is `RequestCompensationInfo<TResponse>` and `ctx.errors` uses the
+compensation block's own error map (no `{ manual }` flag). `return`
+reports the compensation outcome; any `throw` moves the block to
+manual mode. When compensation retries are exhausted, the block moves
+to `manual` automatically.
 
 ### `CompensationInfo<TResult>`
 
@@ -174,12 +196,15 @@ verifies:
    (covered by step 06; reasserted here).
 7. Compensable steps and compensable requests are rejected as
    `compensation.steps` / `compensation.requests` dependencies.
-8. `defineRequest.compensation` accepts `true` or `{ result }` only;
+8. `defineRequest.compensation` accepts `true` or `{ result?, errors? }`;
    inline `undo` is rejected.
-9. `registerRequestCompensationHandler(definition, handler, options)`
-   accepts a compensable request and a typed handler.
-10. The handler may return `MANUAL` directly or via `onExhausted`.
-11. `registerRequestCompensationHandler` rejects non-compensable
+9. `client.requests.<name>.registerHandler(..., { compensation: { handler,
+   retryPolicy, maxConcurrent? } })` accepts a compensable request and
+   a typed compensation handler nested under forward registration.
+10. Compensation handlers `return` to report outcome; any `throw`
+    (including `ctx.errors.X(...)`) moves to manual. Compensation retry
+    exhaustion also moves to `manual`.
+11. `compensation` on `registerHandler` is rejected for non-compensable
     requests at compile time.
 12. `CompensationId<TStep>` is a branded string type and ids from
     different compensable steps are not interchangeable.

@@ -7,7 +7,6 @@ import type {
   RequestDefinition,
   RequestCompensationConfig,
   RequestCompensationDefinition,
-  RequestCompensationHandlerOptions,
   RequestCompensationInfo,
   NonCompensableRequestDefinitions,
   QueueDefinition,
@@ -46,10 +45,8 @@ import type {
 } from "./types/definitions/workflow-contract";
 
 import type {
-  RequestCompensationHandlerContext,
   RequestHandlerRegistrationOptions,
 } from "./types/definitions/handlers";
-import type { InferRequestCompensationErrors } from "./types/helpers";
 
 export {
   AttemptError,
@@ -83,13 +80,6 @@ function validateErrorDefinitions(
 }
 
 const noopUnsubscribe = (): void => undefined;
-
-type RequestCompensationHandlerResult<TCompensation> =
-  TCompensation extends { readonly result?: infer TResultSchema }
-    ? TResultSchema extends JsonSchemaConstraint
-      ? StandardSchemaV1.InferInput<TResultSchema>
-      : void
-    : void;
 
 // =============================================================================
 // DEFINE STEP
@@ -620,65 +610,6 @@ export function defineRequest<
     TErrors,
     TCompensation
   >;
-}
-
-export function registerRequestCompensationHandler<
-  TName extends string,
-  TPayloadSchema extends JsonSchemaConstraint,
-  TResponseSchema extends JsonSchemaConstraint,
-  TForwardErrors extends ErrorDefinitions,
-  TCompensation extends RequestCompensationDefinition<
-    JsonSchemaConstraint | undefined,
-    ErrorDefinitions
-  >,
->(
-  definition: RequestDefinition<
-    TName,
-    TPayloadSchema,
-    TResponseSchema,
-    TForwardErrors,
-    TCompensation
-  > & { readonly compensation: TCompensation },
-  handler: (
-    payload: StandardSchemaV1.InferOutput<TPayloadSchema>,
-    info: RequestCompensationInfo<StandardSchemaV1.InferOutput<TResponseSchema>>,
-    opts: RequestCompensationHandlerContext<
-      InferRequestCompensationErrors<
-        RequestDefinition<
-          TName,
-          TPayloadSchema,
-          TResponseSchema,
-          TForwardErrors,
-          TCompensation
-        >
-      >
-    >,
-  ) => Promise<RequestCompensationHandlerResult<TCompensation>>,
-  options: RequestCompensationHandlerOptions<
-    StandardSchemaV1.InferOutput<TPayloadSchema>,
-    StandardSchemaV1.InferOutput<TResponseSchema>,
-    RequestCompensationHandlerResult<TCompensation>,
-    InferRequestCompensationErrors<
-      RequestDefinition<
-        TName,
-        TPayloadSchema,
-        TResponseSchema,
-        TForwardErrors,
-        TCompensation
-      >
-    >
-  >,
-): Unsubscribe {
-  if (!("compensation" in definition)) {
-    throw new Error("Request compensation handler requires a compensable request");
-  }
-  if (typeof handler !== "function") {
-    throw new Error("Request compensation handler must be a function");
-  }
-  if (!options || typeof options !== "object" || !options.retryPolicy) {
-    throw new Error("Request compensation handler requires a retry policy");
-  }
-  return noopUnsubscribe;
 }
 
 // =============================================================================

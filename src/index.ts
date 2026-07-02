@@ -52,7 +52,6 @@ export {
   defineWorkflow,
   defineWorkflowHeader,
   defineWorkflowInterface,
-  registerRequestCompensationHandler,
 } from "./workflow";
 
 // Public API - Engine

@@ -308,8 +308,8 @@ export type RequestErrorFactories<TErrors extends ErrorDefinitions> = {
 
 /**
  * Factory map for `ctx.errors` where every throw escalates to manual mode —
- * used in `onExhausted`, compensation handlers, and their exhaustion paths.
- * Mirrors workflow `ErrorFactories` (no disposition flag).
+ * used in compensation handlers. Mirrors workflow `ErrorFactories` (no
+ * disposition flag).
  */
 export type RequestManualEscalationErrorFactories<
   TErrors extends ErrorDefinitions,

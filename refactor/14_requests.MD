@@ -20,15 +20,16 @@ Add durable requests for workflow code that needs an external handler or manual 
 - Request handler retry policy belongs to registration.
 - Optional `errors` on `defineRequest`; optional `errors` on `compensation` block (separate map).
 - Forward handlers return `TResponse` only; `throw ctx.errors.X(..., { manual: true | false })` for escalation/retry.
-- `onExhausted` and compensation paths: `return` resolves (or reports outcome); any `throw` (including `ctx.errors.X(...)`) moves to manual — no `{ manual }` flag on those contexts.
-- `manual: true` (forward handler) or any throw in exhaustion/compensation contexts parks the invocation (non-terminal until `resolve` or workflow call-time timeout).
+- Retry exhaustion moves forward invocations to `manual` with persisted attempt history.
+- Compensation handlers: `return` reports outcome; any `throw` (including `ctx.errors.X(...)`) moves to manual — no `{ manual }` flag. Compensation retry exhaustion also moves to `manual`.
 - `client.requests.<definitionName>.registerHandler` mirrors queue registration; optional async `retentionPolicy` at terminal finalize.
 - Client request namespaces use the unified searchable surface: `.get(id)`,
   `.findUnique(query)`, `.findMany(query)`, and `.count(query)`.
 - Request search returns typed request handles. Operator actions: `request.resolve(response)` and `request.escalateToManual(escalation)`; both abort in-flight handler attempts. Escalation input mirrors writable handler attempt shape (`RequestManualEscalationInput`).
 - Request ids are branded by request definition name, so `.get(id)` cannot mix
   ids from different request types.
-- Requests can declare compensation with typed payload and response info.
+- Forward and compensation handlers register together via `client.requests.<name>.registerHandler(..., { compensation: { handler, retryPolicy, maxConcurrent? } })`; no separate compensation registration API.
+- `retentionPolicy` on forward registration applies to both forward and compensation rows.
 
 ## Runtime Target
 
@@ -46,4 +47,4 @@ Add durable requests for workflow code that needs an external handler or manual 
 
 ## Acceptance Contract
 
-The paired file `src/types-regression-tests/14_requests.ts` verifies request definition inference, forward/compensation `errors` maps, `ctx.errors` + `{ manual }`, `retentionPolicy` / `RequestRetentionContext`, `escalateToManual` / `RequestManualEscalationInput`, workflow-side result unions, handle-based operator APIs, request search/prefetch typing, and compensation handler context typing.
+The paired file `src/types-regression-tests/14_requests.ts` verifies request definition inference, forward/compensation `errors` maps, unified `registerHandler` compensation options, `ctx.errors` + `{ manual }`, `retentionPolicy` / `RequestRetentionContext`, `escalateToManual` / `RequestManualEscalationInput`, workflow-side result unions, handle-based operator APIs, request search/prefetch typing, and compensation handler context typing.

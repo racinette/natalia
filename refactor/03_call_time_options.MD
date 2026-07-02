@@ -152,5 +152,6 @@ verifies:
   step 18.
 - `idempotencyKeyFactory` derivation rules for root and detached starts —
   step 19.
-- The full request handler registration surface (with `onExhausted`,
-  `MANUAL`) — step 14.
+- The full request handler registration surface (retry policy,
+  `ctx.errors` + `{ manual }`, retry exhaustion → `manual`,
+  `retentionPolicy`) — step 14.

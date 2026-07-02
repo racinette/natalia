@@ -26,6 +26,7 @@ import type {
   HaltsNamespaceExternal,
   ProjectedKeys,
   QueryableNamespace,
+  RequestCompensationEscalateToManualOutcome,
   RequestCompensationInstanceId,
   RequestCompensationNamespaceExternal,
   RequestCompensationRow,
@@ -893,7 +894,8 @@ void _exerciseCompSkip;
 
 declare const reqCompHandle: RequestCompensationUniqueHandleExternal<
   { chargeId: string },
-  { cancelled: boolean }
+  { cancelled: boolean },
+  Record<string, never>
 >;
 
 type _ReqCompId = Assert<
@@ -911,6 +913,17 @@ async function _exerciseReqCompSkip(): Promise<void> {
   type _Return = Assert<IsEqual<typeof _r, SkipOutcome>>;
 }
 void _exerciseReqCompSkip;
+
+async function _exerciseReqCompEscalateToManual(): Promise<void> {
+  const _e = await reqCompHandle.escalateToManual({
+    message: "Operator must release manually",
+    type: "OpsConsole",
+  });
+  type _Outcome = Assert<
+    IsEqual<typeof _e, RequestCompensationEscalateToManualOutcome>
+  >;
+}
+void _exerciseReqCompEscalateToManual;
 
 // =============================================================================
 // CLIENT-LEVEL WORKFLOW ACCESSOR — start, execute, get, findUnique, findMany, count.

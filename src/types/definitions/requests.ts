@@ -6,6 +6,7 @@ import type {
   RequestHandlerRegistrationOptions,
   Unsubscribe,
 } from "./handlers";
+import type { InferRequestCompensationErrorsFromBlock } from "../helpers";
 import type { NoDefinitionExtension } from "./type-augmentation";
 
 /**
@@ -41,10 +42,8 @@ export type RequestDefinition<
   TResponseSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TErrors extends ErrorDefinitions = Record<string, never>,
   TCompensation extends
-    | RequestCompensationDefinition<
-        JsonSchemaConstraint | undefined,
-        ErrorDefinitions
-      >
+    | true
+    | RequestCompensationConfig<any, any>
     | undefined = undefined,
 > = {
   readonly name: TName;
@@ -62,7 +61,11 @@ export type RequestDefinition<
     options?: RequestHandlerRegistrationOptions<
       TErrors,
       StandardSchemaV1.InferOutput<TPayloadSchema>,
-      StandardSchemaV1.InferInput<TResponseSchema>
+      StandardSchemaV1.InferInput<TResponseSchema>,
+      TCompensation,
+      TCompensation extends true | RequestCompensationConfig<any, any>
+        ? InferRequestCompensationErrorsFromBlock<TCompensation>
+        : Record<string, never>
     >,
   ): Unsubscribe;
 } & ([TCompensation] extends [undefined]

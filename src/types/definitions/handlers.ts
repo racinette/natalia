@@ -1,4 +1,6 @@
+import type { StandardSchemaV1 } from "../standard-schema";
 import type { ErrorDefinitions } from "./errors";
+import type { RequestCompensationConfig, RequestCompensationDefinition } from "./requests";
 import type { RequestCompensationInfo } from "./steps";
 import type {
   QueueErrorFactories,
@@ -135,30 +137,10 @@ export interface RequestHandlerContext<
 }
 
 /**
- * Request handler context for `onExhausted` — no retries; `return` resolves or
- * any `throw` (including `ctx.errors.X(...)`) moves to manual mode.
- */
-export interface RequestOnExhaustedHandlerContext<
-  TErrors extends ErrorDefinitions = Record<string, never>,
-> extends HandlerContext {
-  readonly errors: RequestManualEscalationErrorFactories<TErrors>;
-}
-
-/**
  * Request compensation handler context — uses the compensation block's own
  * `errors` map. `return` reports outcome; any `throw` moves to manual mode.
  */
 export interface RequestCompensationHandlerContext<
-  TErrors extends ErrorDefinitions = Record<string, never>,
-> extends HandlerContext {
-  readonly errors: RequestManualEscalationErrorFactories<TErrors>;
-}
-
-/**
- * Request compensation `onExhausted` context — same manual-only throw semantics
- * as {@link RequestOnExhaustedHandlerContext}.
- */
-export interface RequestCompensationOnExhaustedHandlerContext<
   TErrors extends ErrorDefinitions = Record<string, never>,
 > extends HandlerContext {
   readonly errors: RequestManualEscalationErrorFactories<TErrors>;
@@ -176,24 +158,64 @@ export interface RequestHandlerRetryPolicy extends RetryPolicyOptions {
   readonly totalTimeoutSeconds?: number;
 }
 
+export type RequestCompensationHandlerReturn<
+  TCompensation extends true | RequestCompensationConfig<any, any>,
+> = TCompensation extends { readonly result?: infer TResultSchema }
+  ? TResultSchema extends StandardSchemaV1<unknown, unknown>
+    ? StandardSchemaV1.InferInput<TResultSchema>
+    : void
+  : void;
+
+/**
+ * Compensation handler registration nested under
+ * {@link RequestHandlerRegistrationOptions.compensation}.
+ *
+ * When `handler` is set, `retryPolicy` is required.
+ */
+export type RequestCompensationRegistrationOptions<
+  TPayload = unknown,
+  TForwardResponse = unknown,
+  TCompensation extends true | RequestCompensationConfig<any, any> = true,
+  TCompensationErrors extends ErrorDefinitions = Record<string, never>,
+> =
+  | {
+      readonly handler: (
+        payload: TPayload,
+        info: RequestCompensationInfo<TForwardResponse>,
+        opts: RequestCompensationHandlerContext<TCompensationErrors>,
+      ) => Promise<RequestCompensationHandlerReturn<TCompensation>>;
+      readonly retryPolicy: RequestCompensationRetryOptions;
+      readonly maxConcurrent?: number;
+    }
+  | {
+      readonly handler?: never;
+      readonly retryPolicy?: never;
+      readonly maxConcurrent?: never;
+    };
+
 /**
  * Client-side forward request handler registration options.
  */
-export interface RequestHandlerRegistrationOptions<
+export type RequestHandlerRegistrationOptions<
   TErrors extends ErrorDefinitions = Record<string, never>,
   TPayload = unknown,
   TResponse = unknown,
-> {
+  TCompensation extends true | RequestCompensationConfig<any, any> | undefined = undefined,
+  TCompensationErrors extends ErrorDefinitions = Record<string, never>,
+> = {
   readonly retryPolicy?: RequestHandlerRetryPolicy;
   readonly maxConcurrent?: number;
-  readonly onExhausted?: {
-    readonly callback: (
-      payload: TPayload,
-      opts: RequestOnExhaustedHandlerContext<TErrors>,
-    ) => Promise<TResponse>;
-  };
   readonly retentionPolicy?: RequestRetentionPolicy<TErrors, TPayload, TResponse>;
-}
+} & ([TCompensation] extends [undefined]
+  ? { readonly compensation?: never }
+  : {
+      readonly compensation?: RequestCompensationRegistrationOptions<
+        TPayload,
+        TResponse,
+        Extract<TCompensation, true | RequestCompensationConfig<any, any>>,
+        TCompensationErrors
+      >;
+    });
 
 /**
  * Topic consumer context.
@@ -209,21 +231,4 @@ export interface HandlerRetryOptions extends RetryPolicyOptions {
 
 export interface RequestCompensationRetryOptions extends HandlerRetryOptions {
   readonly totalTimeoutSeconds?: number;
-}
-
-export interface RequestCompensationHandlerOptions<
-  TPayload = unknown,
-  TResponse = unknown,
-  TResult = void,
-  TCompensationErrors extends ErrorDefinitions = Record<string, never>,
-> {
-  readonly maxConcurrent?: number;
-  readonly retryPolicy: RequestCompensationRetryOptions;
-  readonly onExhausted?: {
-    readonly callback: (
-      payload: TPayload,
-      info: RequestCompensationInfo<TResponse>,
-      opts: RequestCompensationOnExhaustedHandlerContext<TCompensationErrors>,
-    ) => Promise<TResult>;
-  };
 }

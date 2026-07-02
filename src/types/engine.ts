@@ -1,4 +1,5 @@
 import type { ErrorDefinitions } from "./definitions/errors";
+import type { RequestCompensationDefinition } from "./definitions/requests";
 import type { JsonSchemaConstraint } from "./json-input";
 import type { StandardSchemaV1 } from "./standard-schema";
 import type {
@@ -18,6 +19,7 @@ import type {
   RequestId,
   RequestRow,
   RequestStatus,
+  RequestCompensationStatus,
   RequestWhereTemplate,
   RequestCompensationRow,
   RequestCompensationWhereTemplate,
@@ -80,6 +82,8 @@ import type {
   InferWorkflowRequests,
   InferWorkflowResult,
   InferQueueErrors,
+  InferRequestCompensationDef,
+  InferRequestCompensationErrors,
   InferRequestErrors,
   InferWorkflowSteps,
   InferWorkflowStreams,
@@ -227,12 +231,17 @@ export type CompensationBlockNamespaceExternal<
  *   - `fetchRow` (the row scalar columns + JSONB-as-opaque `payload` /
  *     `result` columns);
  *   - `attempts()` — async accessor over the retried-handler attempt log;
- *   - `skip(result, opts?)` — operator skip with the operator-supplied
- *     compensation result.
+ *   - `skip(result, opts?)` — operator completion with compensation metadata;
+ *   - `escalateToManual(escalation, opts?)` — park for external resolution.
  */
+export type RequestCompensationEscalateToManualOutcome =
+  | { readonly status: "manual" }
+  | { readonly status: "already_terminal"; readonly current: RequestCompensationStatus };
+
 export interface RequestCompensationUniqueHandleExternal<
   TPayload = unknown,
   TCompResult = unknown,
+  TCompensationErrors extends ErrorDefinitions = Record<string, never>,
 > extends FetchableHandle<RequestCompensationRow<TPayload, TCompResult>> {
   readonly id: RequestCompensationInstanceId;
 
@@ -243,6 +252,11 @@ export interface RequestCompensationUniqueHandleExternal<
       ? [opts?: OperatorActionOptions]
       : [result: TCompResult, opts?: OperatorActionOptions]
   ): Promise<SkipOutcome>;
+
+  escalateToManual(
+    escalation: RequestManualEscalationInput<TCompensationErrors>,
+    opts?: OperatorActionOptions,
+  ): Promise<RequestCompensationEscalateToManualOutcome>;
 }
 
 /**
@@ -252,8 +266,13 @@ export interface RequestCompensationUniqueHandleExternal<
 export type RequestCompensationNamespaceExternal<
   TPayload = unknown,
   TCompResult = unknown,
+  TCompensationErrors extends ErrorDefinitions = Record<string, never>,
 > = QueryableNamespace<
-  RequestCompensationUniqueHandleExternal<TPayload, TCompResult>,
+  RequestCompensationUniqueHandleExternal<
+    TPayload,
+    TCompResult,
+    TCompensationErrors
+  >,
   RequestCompensationWhereTemplate<TPayload, TCompResult>,
   RequestCompensationRow<TPayload, TCompResult>,
   RequestCompensationInstanceId
@@ -308,6 +327,8 @@ export type RequestNamespaceExternal<
   TResponse = unknown,
   TResponseInput = TResponse,
   TErrors extends ErrorDefinitions = Record<string, never>,
+  TCompensation extends true | RequestCompensationConfig<any, any> | undefined = undefined,
+  TCompensationErrors extends ErrorDefinitions = Record<string, never>,
 > = QueryableNamespace<
   RequestHandleExternal<
     TRequestName,
@@ -325,7 +346,13 @@ export type RequestNamespaceExternal<
       payload: TPayload,
       opts: RequestHandlerContext<TErrors>,
     ) => Promise<TResponseInput>,
-    options?: RequestHandlerRegistrationOptions<TErrors, TPayload, TResponseInput>,
+    options?: RequestHandlerRegistrationOptions<
+      TErrors,
+      TPayload,
+      TResponseInput,
+      TCompensation,
+      TCompensationErrors
+    >,
   ): Unsubscribe;
 };
 
@@ -503,6 +530,12 @@ type RequestResponseInputForNamespace<TRequest> =
 
 type RequestErrorsForNamespace<TRequest> = InferRequestErrors<TRequest>;
 
+type RequestCompensationDefForNamespace<TRequest> =
+  InferRequestCompensationDef<TRequest>;
+
+type RequestCompensationErrorsForNamespace<TRequest> =
+  InferRequestCompensationErrors<TRequest>;
+
 type RequestDefinitionUnionFromWorkflow<W> =
   InferWorkflowRequests<W> extends infer TRequests
     ? [TRequests] extends [never]
@@ -535,7 +568,9 @@ type WorkflowClientRequestNamespacesFromUnion<TRequestUnion> = {
         RequestPayloadForNamespace<TRequest>,
         RequestResponseForNamespace<TRequest>,
         RequestResponseInputForNamespace<TRequest>,
-        RequestErrorsForNamespace<TRequest>
+        RequestErrorsForNamespace<TRequest>,
+        RequestCompensationDefForNamespace<TRequest>,
+        RequestCompensationErrorsForNamespace<TRequest>
       >
     : never;
 };
@@ -661,9 +696,11 @@ type WorkflowHandleCompensationNamespaces<TSteps extends Record<string, unknown>
 };
 
 type CompensableRequestKeys<TRequests extends Record<string, unknown>> = {
-  [K in keyof TRequests & string]: TRequests[K] extends { compensation: unknown }
-    ? K
-    : never;
+  [K in keyof TRequests & string]: InferRequestCompensationDef<
+    TRequests[K]
+  > extends undefined
+    ? never
+    : K;
 }[keyof TRequests & string];
 
 type RequestPayloadForCompensationNamespace<TRequest> =
@@ -688,7 +725,8 @@ type WorkflowHandleRequestCompensationNamespaces<
 > = {
   [K in CompensableRequestKeys<TRequests>]: RequestCompensationNamespaceExternal<
     RequestPayloadForCompensationNamespace<TRequests[K]>,
-    RequestCompensationResultForNamespace<TRequests[K]>
+    RequestCompensationResultForNamespace<TRequests[K]>,
+    InferRequestCompensationErrors<TRequests[K]>
   >;
 };
 

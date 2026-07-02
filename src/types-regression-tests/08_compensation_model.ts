@@ -1,10 +1,10 @@
 import { z } from "zod";
+import { createWorkflowClient } from "../client";
 import {
   defineRequest,
   defineStep,
   defineWorkflow,
   defineWorkflowHeader,
-  registerRequestCompensationHandler,
 } from "../workflow";
 import type {
   CompensationId,
@@ -177,9 +177,8 @@ defineStep({
 // =============================================================================
 // REQUEST COMPENSATION
 //
-// Declared on the request via `compensation: true | { result }`. The handler
-// is registered separately via `registerRequestCompensationHandler` — there
-// is no inline `undo` on `defineRequest`.
+// Declared on the request via `compensation: true | { result }`. Forward and
+// compensation handlers register together on `client.requests.<name>.registerHandler`.
 // =============================================================================
 
 const approvalRequest = defineRequest({
@@ -190,21 +189,6 @@ const approvalRequest = defineRequest({
     result: z.object({ cancelled: z.boolean() }),
   },
 });
-
-const unregisterApprovalCompensation = registerRequestCompensationHandler(
-  approvalRequest,
-  async (payload, info, _opts) => {
-    type _Payload = Assert<IsEqual<typeof payload, { chargeId: string }>>;
-    type _Info = Assert<
-      typeof info extends RequestCompensationInfo<{ approved: boolean }>
-        ? true
-        : false
-    >;
-    return { cancelled: info.status !== "completed" };
-  },
-  { retryPolicy: { timeoutSeconds: 30 } },
-);
-void unregisterApprovalCompensation;
 
 // `compensation: true` — no result schema; handler returns void or throws
 // `ctx.errors.X(...)` to enter manual mode.
@@ -219,39 +203,73 @@ const manualReviewRequest = defineRequest({
   },
 });
 
-const unregisterManualReviewCompensation = registerRequestCompensationHandler(
-  manualReviewRequest,
-  async (payload, info, ctx) => {
-    type _Payload = Assert<IsEqual<typeof payload, { chargeId: string }>>;
-
-    if (info.status === "completed") {
-      type _Response = Assert<IsEqual<typeof info.response, { accepted: boolean }>>;
-      return;
-    }
-
-    if (info.status === "timed_out") {
-      type _Reason = Assert<
-        IsEqual<typeof info.reason, "attempts_exhausted" | "deadline">
-      >;
-      // @ts-expect-error timed-out request outcomes do not expose a response
-      void info.response;
-    }
-
-    throw ctx.errors.NeedsOperator("Operator must review compensation");
+const compRequestsWorkflow = defineWorkflow({
+  name: "compRequestsWorkflow",
+  requests: {
+    compApproval: approvalRequest,
+    compManualReview: manualReviewRequest,
   },
-  {
-    retryPolicy: { timeoutSeconds: 30, totalTimeoutSeconds: 120 },
-    onExhausted: {
-      async callback(_payload, _info, ctx) {
-        throw ctx.errors.NeedsOperator("Exhausted waiting for operator");
+  result: z.object({ ok: z.boolean() }),
+  async execute() {
+    return { ok: true };
+  },
+});
+
+const compRequestsClient = createWorkflowClient({
+  compRequestsWorkflow,
+});
+
+const unregisterApprovalCompensation =
+  compRequestsClient.requests.compApprovalRequest.registerHandler(
+    async () => ({ approved: true }),
+    {
+      compensation: {
+        handler: async (payload, info, _opts) => {
+          type _Payload = Assert<IsEqual<typeof payload, { chargeId: string }>>;
+          type _Info = Assert<
+            typeof info extends RequestCompensationInfo<{ approved: boolean }>
+              ? true
+              : false
+          >;
+          return { cancelled: info.status !== "completed" };
+        },
+        retryPolicy: { timeoutSeconds: 30 },
       },
     },
-  },
-);
+  );
+void unregisterApprovalCompensation;
+
+const unregisterManualReviewCompensation =
+  compRequestsClient.requests.compManualReviewRequest.registerHandler(
+    async () => ({ accepted: true }),
+    {
+      compensation: {
+        handler: async (payload, info, ctx) => {
+          type _Payload = Assert<IsEqual<typeof payload, { chargeId: string }>>;
+
+          if (info.status === "completed") {
+            type _Response = Assert<IsEqual<typeof info.response, { accepted: boolean }>>;
+            return;
+          }
+
+          if (info.status === "timed_out") {
+            type _Reason = Assert<
+              IsEqual<typeof info.reason, "attempts_exhausted" | "deadline">
+            >;
+            // @ts-expect-error timed-out request outcomes do not expose a response
+            void info.response;
+          }
+
+          throw ctx.errors.NeedsOperator("Operator must review compensation");
+        },
+        retryPolicy: { timeoutSeconds: 30, totalTimeoutSeconds: 120 },
+      },
+    },
+  );
 void unregisterManualReviewCompensation;
 
-// Inline `undo` on the request definition is rejected — handlers are
-// registered separately.
+// Inline `undo` on the request definition is rejected — handlers register via
+// `client.requests.<name>.registerHandler({ compensation: { handler, ... } })`.
 defineRequest({
   name: "compInlineUndoRejected",
   payload: z.object({ chargeId: z.string() }),
@@ -272,11 +290,26 @@ const nonCompensableRequest = defineRequest({
   response: z.object({ ok: z.boolean() }),
 });
 
-registerRequestCompensationHandler(
-  // @ts-expect-error non-compensable requests cannot have compensation handlers
-  nonCompensableRequest,
-  async () => undefined,
-  { retryPolicy: { timeoutSeconds: 30 } },
+const nonCompensableWorkflow = defineWorkflow({
+  name: "compNonCompensableWorkflow",
+  requests: { nonCompensable: nonCompensableRequest },
+  result: z.object({ ok: z.boolean() }),
+  async execute() {
+    return { ok: true };
+  },
+});
+
+const nonCompensableClient = createWorkflowClient({ nonCompensableWorkflow });
+
+nonCompensableClient.requests.compNonCompensableRequest.registerHandler(
+  async () => ({ ok: true }),
+  {
+    // @ts-expect-error non-compensable requests cannot register compensation handlers
+    compensation: {
+      handler: async () => undefined,
+      retryPolicy: { timeoutSeconds: 30 },
+    },
+  },
 );
 
 // Compensable requests cannot themselves be compensation dependencies.

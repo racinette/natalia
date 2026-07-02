@@ -3,7 +3,11 @@ import type { ChannelDefinitions, EventDefinitions, StreamDefinitions } from "./
 import type { ErrorDefinitions } from "./definitions/errors";
 import type { QueueDefinition, QueueDefinitions } from "./definitions/messaging";
 import type { JsonSchemaConstraint } from "./json-input";
-import type { RequestDefinitions } from "./definitions/requests";
+import type {
+  RequestCompensationConfig,
+  RequestCompensationDefinition,
+  RequestDefinitions,
+} from "./definitions/requests";
 import type { StepDefinitions } from "./definitions/steps";
 import type { WorkflowDefinitions } from "./definitions/workflow-headers";
 
@@ -276,8 +280,34 @@ export type InferRequestCompensationErrors<R> = R extends {
   : Record<string, never>;
 
 /**
+ * Compensation-block `errors` map from a `defineRequest` `compensation` value.
+ */
+export type InferRequestCompensationErrorsFromBlock<
+  TComp extends true | RequestCompensationConfig<any, any>,
+> = TComp extends { readonly errors?: infer E }
+  ? [E] extends [undefined]
+    ? Record<string, never>
+    : E extends ErrorDefinitions
+      ? E
+      : Record<string, never>
+  : Record<string, never>;
+
+/**
  * True when request compensation declared a non-empty `errors` map.
  */
 export type HasRequestCompensationErrors<R> =
   InferRequestCompensationErrors<R> extends Record<string, never> ? false : true;
+
+/**
+ * `compensation` block from a request definition, or `undefined` when absent.
+ */
+export type InferRequestCompensationDef<R> = R extends {
+  readonly compensation?: infer C;
+}
+  ? [C] extends [undefined]
+    ? undefined
+    : C extends true | RequestCompensationConfig<any, any>
+      ? C
+      : undefined
+  : undefined;
 

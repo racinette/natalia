@@ -127,19 +127,7 @@ Business outcomes belong in `return response` — including rejection. A decline
 return { decision: "reject", note: "Policy violation" };
 ```
 
-Optional `onExhausted` runs when handler retries are exhausted. There are no further retries — `return` a response to resolve the invocation, or throw (including `ctx.errors.X(...)`) to move it to manual mode:
-
-```typescript
-client.requests.humanReview.registerHandler(handler, {
-  retryPolicy: { maxAttempts: 3, timeoutSeconds: 60 },
-  onExhausted: {
-    callback: async (payload, ctx) => {
-      await notifyReviewQueue(payload);
-      throw ctx.errors.NeedsSeniorReviewer("Retries exhausted — waiting for human");
-    },
-  },
-});
-```
+When handler retries are exhausted, the engine moves the invocation to `manual` with persisted attempt history. Use `throw ctx.errors.X(..., { manual: true })` during the handler when external resolution is needed early, or query `status: "manual"` and resolve through request handles.
 
 Optional `retentionPolicy` runs once when an invocation reaches a terminal state (`resolved` or `timedOut`). Return seconds to keep the row, or `null` to keep it indefinitely. The callback receives the decoded payload, terminal status, response when resolved, and an attempts accessor. `manual` is not terminal — retention runs when the invocation later resolves or the workflow call times out.
 
@@ -202,9 +190,15 @@ When the workflow passed `{ timeout }` at the call site and the deadline elapses
 
 See [Resolving Requests Asynchronously](../resolving-requests-asynchronously.md) for commit boundaries and idempotent external resolution.
 
-## Compensation
+## Request compensation
 
-A compensable request declares `compensation: true` or `compensation: { result?, errors? }` on `defineRequest`. The compensation handler registers separately:
+When a workflow fails and enters compensation, the engine schedules a compensation block for each forward request invocation on a **compensable** definition. The compensation handler receives the original request payload and a summary of how the forward invocation ended. It runs on the client under its own retry policy — the same split as forward handlers.
+
+Request compensation mirrors [step compensation](./steps.md): declare on the definition, register a handler on the client, inspect forward outcome via `info`, and report the undo outcome through `return` or manual escalation through `throw`.
+
+### Declaring a compensable request
+
+Add `compensation: true` or `compensation: { result?, errors? }` to `defineRequest`:
 
 ```typescript
 const reserveFlightTicket = defineRequest({
@@ -218,21 +212,113 @@ const reserveFlightTicket = defineRequest({
     },
   },
 });
+```
 
-registerRequestCompensationHandler(
-  reserveFlightTicket,
-  async (payload, info, ctx) => {
-    if (info.status !== "completed") {
-      throw ctx.errors.ReleaseBlocked("Nothing to release");
-    }
-    await releaseReservation(info.response.reservationId, { signal: ctx.signal });
-    return { released: true };
+- `compensation: true` — no typed compensation result; the handler returns `void` and operator `skip()` takes no result argument.
+- `compensation: { result }` — optional schema for the reported undo outcome (same pattern as step `compensation.result`).
+- `compensation.errors` — optional error map for the **compensation handler only**. It is separate from forward `errors` on the same request.
+
+Inline `undo` on `defineRequest` is rejected. There is no separate compensation registration API.
+
+### Registering forward and compensation handlers
+
+Forward and compensation handlers register together on `client.requests.<definitionName>.registerHandler`. When `compensation.handler` is set, `compensation.retryPolicy` is required:
+
+```typescript
+client.requests.reserveFlightTicket.registerHandler(
+  async (payload, ctx) => {
+    const reservation = await reserveTicket(payload, { signal: ctx.signal });
+    return reservation;
   },
-  { retryPolicy: { timeoutSeconds: 30 } },
+  {
+    retryPolicy: { timeoutSeconds: 30, maxAttempts: 3 },
+    maxConcurrent: 5,
+    retentionPolicy: async (ctx) => (ctx.status === "resolved" ? 86400 : null),
+    compensation: {
+      handler: async (payload, info, ctx) => {
+        if (info.status !== "completed") {
+          throw ctx.errors.ReleaseBlocked("Forward did not complete — nothing to release");
+        }
+        await releaseReservation(info.response.reservationId, { signal: ctx.signal });
+        return { released: true };
+      },
+      retryPolicy: { timeoutSeconds: 30, maxAttempts: 3 },
+      maxConcurrent: 2,
+    },
+  },
 );
 ```
 
-Compensation uses its own `errors` map — not the forward handler's. `return` reports the compensation outcome; any `throw` (including `ctx.errors.X(...)`) moves the compensation block to manual mode.
+`retentionPolicy` is declared once on forward registration and applies to both forward and compensation rows for that request definition.
+
+Non-compensable requests reject a `compensation` block at registration time.
+
+### Forward outcome: `info`
+
+The compensation handler receives `(payload, info, ctx)` where `payload` is the original request payload and `info` summarizes the forward invocation:
+
+```typescript
+compensation: {
+  handler: async (payload, info, ctx) => {
+    if (info.status === "completed") {
+      const { reservationId } = info.response;
+      await releaseReservation(reservationId, { signal: ctx.signal });
+      return { released: true };
+    }
+
+    if (info.status === "timed_out") {
+      // reason is "attempts_exhausted" | "deadline"
+      const attempts = await info.attempts.all();
+      // forward never settled — inspect attempts before deciding
+    }
+
+    if (info.status === "terminated") {
+      await info.attempts.last();
+    }
+
+    throw ctx.errors.ReleaseBlocked("Cannot release");
+  },
+  retryPolicy: { timeoutSeconds: 30 },
+},
+```
+
+`info.status === "completed"` exposes `info.response` (the typed forward response). `"timed_out"` and `"terminated"` do not expose a response — use `info.attempts` when the forward path never recorded a resolution.
+
+### Compensation handler outcomes
+
+Compensation `ctx.errors` factories take `(message)` or `(message, details)` only — there is no `{ manual }` flag. Any `throw` (including `ctx.errors.X(...)`) moves the compensation block to `manual`. When compensation handler retries are exhausted, the block moves to `manual` with persisted attempt history.
+
+| Action | Outcome |
+|--------|---------|
+| `return result` | Compensation block completes with the typed result (or `void` when no `compensation.result` schema). |
+| `throw ctx.errors.X(...)` | Moves compensation block to `manual`. |
+| Unhandled throw | Failed attempt; retry per `compensation.retryPolicy`. |
+| Compensation retry budget exhausted | Moves compensation block to `manual`. |
+
+Business outcomes belong in `return`, not in the error map.
+
+### Operator actions on compensation blocks
+
+Query compensation block instances through the workflow handle at `compensations.requests.<workflowSlot>` (the workflow-local request slot, not the definition `name`):
+
+```typescript
+const found = await workflowHandle.compensations.requests.reserveFlightTicket.findUnique(
+  ({ payload }) => eq(payload.customerId, "cust-1"),
+);
+
+if (found.status === "unique") {
+  await found.value.skip({ released: true });
+  await found.value.escalateToManual({
+    code: "ReleaseBlocked",
+    message: "Operator must release manually",
+  });
+}
+```
+
+- `skip(result?)` — record the compensation outcome without running the handler again. Omit `result` when the definition used `compensation: true`.
+- `escalateToManual(...)` — park the block for external completion using the compensation `errors` map shape (same escalation input rules as forward `escalateToManual`).
+
+Both operator actions abort an in-flight compensation handler attempt.
 
 ## Example: waitlist via manual mode
 
@@ -287,7 +373,7 @@ If no ticket arrives before the workflow's call-time `timeout`, the workflow obs
 |--------|---------|
 | `pending` | Recorded; waiting for a handler claim. |
 | `claimed` | Handler running under `retryPolicy`. |
-| `manual` | Parked for external resolution (handler `manual: true`, exhaustion/compensation throw, or `escalateToManual`). |
+| `manual` | Parked for external resolution (handler `manual: true`, retry exhaustion, compensation throw, or `escalateToManual`). |
 | `resolved` | Response recorded; workflow can proceed. |
 | `timedOut` | Workflow call-time `timeout` elapsed before resolution. |
 
@@ -303,6 +389,7 @@ After a terminal transition, `retentionPolicy` (if registered) sets `retention_d
 | `throw ctx.errors.X(..., { manual: true })` | Moves to `manual` with structured escalation metadata. |
 | `throw ctx.errors.X(..., { manual: false })` | Failed attempt; retry per policy. |
 | Unhandled throw | Failed attempt with `code: null`; retry per policy. |
+| Retry budget exhausted | Moves to `manual` with persisted attempt history. |
 
 When `errors` is omitted from `defineRequest`, `ctx.errors` has no factories.
 
@@ -311,3 +398,15 @@ When `errors` is omitted from `defineRequest`, `ctx.errors` has no factories.
 Failed handler tries are persisted. Successful resolution does not create attempt rows.
 
 Declared errors persist `code` and `message`. Schema-backed codes include a `details` slot with `serialized`, `serialization_error`, or `unspecified` status — same shape as [queue handler attempts](./queues.md#attempt-records).
+
+### Request compensation lifecycle
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | Compensation block recorded; waiting for handler claim. |
+| `running` | Compensation handler running under `compensation.retryPolicy`. |
+| `manual` | Parked for external completion (handler throw, retry exhaustion, or `escalateToManual`). |
+| `completed` | Typed compensation result recorded (when `compensation.result` is declared). |
+| `skipped` | Operator recorded completion via `skip` without a handler run. |
+
+Compensable request definitions cannot be listed as compensation dependencies on a step's `compensation.requests` block — each compensable request owns its own compensation lifecycle. See [steps](./steps.md) for step-side compensation.
