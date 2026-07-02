@@ -1,13 +1,9 @@
-import type { StandardSchemaV1 } from "../standard-schema";
 import type { JsonSchemaConstraint } from "../json-input";
 import type { ErrorDefinitions } from "./errors";
 import type {
-  HandlerRetryOptions,
   QueueHandlerContext,
   QueueHandlerRetryPolicy,
   QueueRetentionPolicy,
-  TopicConsumerContext,
-  Unsubscribe,
 } from "./handlers";
 
 /**
@@ -93,8 +89,7 @@ export type QueueDefinitions = Record<
 /**
  * Topic definition — created via `defineTopic()`.
  *
- * `registerConsumer` follows the same transitional pattern as queue handlers
- * historically used; durable registration moves to the engine/client.
+ * Data-only: consumer registration will live on the client (not implemented yet).
  */
 export interface TopicDefinition<
   TName extends string = string,
@@ -107,17 +102,6 @@ export interface TopicDefinition<
   /** Optional metadata schema attached to published records. */
   readonly metadata?: TMetadataSchema;
   readonly retentionSeconds?: number;
-  registerConsumer(
-    name: string,
-    handler: (
-      record: StandardSchemaV1.InferOutput<TRecordSchema>,
-      opts: TopicConsumerContext,
-    ) => Promise<void>,
-    options?: {
-      readonly retryPolicy?: HandlerRetryOptions;
-      readonly neverExpire?: boolean;
-    },
-  ): Unsubscribe;
 }
 
 /**

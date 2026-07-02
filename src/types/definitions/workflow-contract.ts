@@ -83,9 +83,7 @@ export type StepInterfaces = Record<
   StepInterface<string, JsonSchemaConstraint, JsonSchemaConstraint, StepCompensationInterface | undefined>
 >;
 
-/**
- * Request contract without `registerHandler` (declarative slice only).
- */
+/** Request contract (declarative slice only). */
 export type RequestInterface<
   TName extends string = string,
   TPayloadSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
@@ -97,10 +95,7 @@ export type RequestInterface<
         ErrorDefinitions
       >
     | undefined = undefined,
-> = Omit<
-  RequestDefinition<TName, TPayloadSchema, TResponseSchema, TErrors, TCompensation>,
-  "registerHandler"
->;
+> = RequestDefinition<TName, TPayloadSchema, TResponseSchema, TErrors, TCompensation>;
 
 export type RequestInterfaces = Record<
   string,

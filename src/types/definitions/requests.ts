@@ -1,25 +1,21 @@
-import type { StandardSchemaV1 } from "../standard-schema";
 import type { JsonSchemaConstraint } from "../json-input";
 import type { ErrorDefinitions } from "./errors";
-import type {
-  RequestHandlerContext,
-  RequestHandlerRegistrationOptions,
-  Unsubscribe,
-} from "./handlers";
-import type { InferRequestCompensationErrorsFromBlock } from "../helpers";
 import type { NoDefinitionExtension } from "./type-augmentation";
 
 /**
  * Optional compensation payload schema and handler error codes for a
  * compensable request (`compensation` on `defineRequest`).
+ *
+ * When `TResultSchema` is set, `result` is required on the config object.
  */
-export interface RequestCompensationConfig<
+export type RequestCompensationConfig<
   TResultSchema extends JsonSchemaConstraint | undefined = undefined,
   TCompensationErrors extends ErrorDefinitions = Record<string, never>,
-> {
-  readonly result?: TResultSchema;
+> = (TResultSchema extends undefined
+  ? {}
+  : { readonly result: TResultSchema }) & {
   readonly errors?: TCompensationErrors;
-}
+};
 
 export type RequestCompensationDefinition<
   TResultSchema extends JsonSchemaConstraint | undefined = undefined,
@@ -29,12 +25,9 @@ export type RequestCompensationDefinition<
 /**
  * Request definition — created via `defineRequest()`.
  *
- * Typed request/response with external handlers or manual resolution. Workflow
- * code supplies the payload and per-call options (priority, observation timeout)
- * at the accessor.
- *
- * `registerHandler` remains on the definition for early API shaping; durable
- * registration also lives on `client.requests.<definitionName>`.
+ * Data-only: handlers register on `client.requests.<definitionName>`.
+ * Workflow code supplies the payload and per-call options (priority,
+ * observation timeout) at the accessor.
  */
 export type RequestDefinition<
   TName extends string = string,
@@ -53,21 +46,6 @@ export type RequestDefinition<
   readonly response: TResponseSchema;
   /** Optional declared forward-handler error codes (`true` or schema per code). */
   readonly errors?: TErrors;
-  registerHandler(
-    handler: (
-      payload: StandardSchemaV1.InferOutput<TPayloadSchema>,
-      opts: RequestHandlerContext<TErrors>,
-    ) => Promise<StandardSchemaV1.InferInput<TResponseSchema>>,
-    options?: RequestHandlerRegistrationOptions<
-      TErrors,
-      StandardSchemaV1.InferOutput<TPayloadSchema>,
-      StandardSchemaV1.InferInput<TResponseSchema>,
-      TCompensation,
-      TCompensation extends true | RequestCompensationConfig<any, any>
-        ? InferRequestCompensationErrorsFromBlock<TCompensation>
-        : Record<string, never>
-    >,
-  ): Unsubscribe;
 } & ([TCompensation] extends [undefined]
   ? NoDefinitionExtension
   : {

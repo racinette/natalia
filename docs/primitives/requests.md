@@ -236,7 +236,7 @@ client.requests.reserveFlightTicket.registerHandler(
     retentionPolicy: async (ctx) => (ctx.status === "resolved" ? 86400 : null),
     compensation: {
       handler: async (payload, info, ctx) => {
-        if (info.status !== "completed") {
+        if (info.status !== "completed"c) {
           throw ctx.errors.ReleaseBlocked("Forward did not complete — nothing to release");
         }
         await releaseReservation(info.response.reservationId, { signal: ctx.signal });
@@ -288,12 +288,14 @@ compensation: {
 
 Compensation `ctx.errors` factories take `(message)` or `(message, details)` only — there is no `{ manual }` flag. Any `throw` (including `ctx.errors.X(...)`) moves the compensation block to `manual`. When compensation handler retries are exhausted, the block moves to `manual` with persisted attempt history.
 
-| Action | Outcome |
-|--------|---------|
-| `return result` | Compensation block completes with the typed result (or `void` when no `compensation.result` schema). |
-| `throw ctx.errors.X(...)` | Moves compensation block to `manual`. |
-| Unhandled throw | Failed attempt; retry per `compensation.retryPolicy`. |
-| Compensation retry budget exhausted | Moves compensation block to `manual`. |
+
+| Action                              | Outcome                                                                                              |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `return result`                     | Compensation block completes with the typed result (or `void` when no `compensation.result` schema). |
+| `throw ctx.errors.X(...)`           | Moves compensation block to `manual`.                                                                |
+| Unhandled throw                     | Failed attempt; retry per `compensation.retryPolicy`.                                                |
+| Compensation retry budget exhausted | Moves compensation block to `manual`.                                                                |
+
 
 Business outcomes belong in `return`, not in the error map.
 
@@ -369,13 +371,15 @@ If no ticket arrives before the workflow's call-time `timeout`, the workflow obs
 
 ### Invocation lifecycle
 
-| Status | Meaning |
-|--------|---------|
-| `pending` | Recorded; waiting for a handler claim. |
-| `claimed` | Handler running under `retryPolicy`. |
-| `manual` | Parked for external resolution (handler `manual: true`, retry exhaustion, compensation throw, or `escalateToManual`). |
-| `resolved` | Response recorded; workflow can proceed. |
-| `timedOut` | Workflow call-time `timeout` elapsed before resolution. |
+
+| Status     | Meaning                                                                                                               |
+| ---------- | --------------------------------------------------------------------------------------------------------------------- |
+| `pending`  | Recorded; waiting for a handler claim.                                                                                |
+| `claimed`  | Handler running under `retryPolicy`.                                                                                  |
+| `manual`   | Parked for external resolution (handler `manual: true`, retry exhaustion, compensation throw, or `escalateToManual`). |
+| `resolved` | Response recorded; workflow can proceed.                                                                              |
+| `timedOut` | Workflow call-time `timeout` elapsed before resolution.                                                               |
+
 
 `manual` is not terminal. The invocation stays open until `resolve` or the workflow's call-time timeout observation.
 
@@ -383,13 +387,15 @@ After a terminal transition, `retentionPolicy` (if registered) sets `retention_d
 
 ### Handler outcomes
 
-| Action | Outcome |
-|--------|---------|
-| `return response` | Resolved with typed response. |
-| `throw ctx.errors.X(..., { manual: true })` | Moves to `manual` with structured escalation metadata. |
-| `throw ctx.errors.X(..., { manual: false })` | Failed attempt; retry per policy. |
-| Unhandled throw | Failed attempt with `code: null`; retry per policy. |
-| Retry budget exhausted | Moves to `manual` with persisted attempt history. |
+
+| Action                                       | Outcome                                                |
+| -------------------------------------------- | ------------------------------------------------------ |
+| `return response`                            | Resolved with typed response.                          |
+| `throw ctx.errors.X(..., { manual: true })`  | Moves to `manual` with structured escalation metadata. |
+| `throw ctx.errors.X(..., { manual: false })` | Failed attempt; retry per policy.                      |
+| Unhandled throw                              | Failed attempt with `code: null`; retry per policy.    |
+| Retry budget exhausted                       | Moves to `manual` with persisted attempt history.      |
+
 
 When `errors` is omitted from `defineRequest`, `ctx.errors` has no factories.
 
@@ -401,12 +407,14 @@ Declared errors persist `code` and `message`. Schema-backed codes include a `det
 
 ### Request compensation lifecycle
 
-| Status | Meaning |
-|--------|---------|
-| `pending` | Compensation block recorded; waiting for handler claim. |
-| `running` | Compensation handler running under `compensation.retryPolicy`. |
-| `manual` | Parked for external completion (handler throw, retry exhaustion, or `escalateToManual`). |
-| `completed` | Typed compensation result recorded (when `compensation.result` is declared). |
-| `skipped` | Operator recorded completion via `skip` without a handler run. |
+
+| Status      | Meaning                                                                                  |
+| ----------- | ---------------------------------------------------------------------------------------- |
+| `pending`   | Compensation block recorded; waiting for handler claim.                                  |
+| `running`   | Compensation handler running under `compensation.retryPolicy`.                           |
+| `manual`    | Parked for external completion (handler throw, retry exhaustion, or `escalateToManual`). |
+| `completed` | Typed compensation result recorded (when `compensation.result` is declared).             |
+| `skipped`   | Operator recorded completion via `skip` without a handler run.                           |
+
 
 Compensable request definitions cannot be listed as compensation dependencies on a step's `compensation.requests` block — each compensable request owns its own compensation lifecycle. See [steps](./steps.md) for step-side compensation.

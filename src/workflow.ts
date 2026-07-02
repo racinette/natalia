@@ -79,8 +79,6 @@ function validateErrorDefinitions(
   }
 }
 
-const noopUnsubscribe = (): void => undefined;
-
 // =============================================================================
 // DEFINE STEP
 // =============================================================================
@@ -426,8 +424,8 @@ export function defineStepInterface<
 /**
  * Define a typed request-response interaction.
  *
- * See `RequestDefinition` for compensation shapes and the transitional
- * `registerHandler` stub on the returned object.
+ * See `RequestDefinition` for compensation shapes. Handlers register on
+ * `client.requests.<definitionName>`.
  */
 export function defineRequest<
   TName extends string,
@@ -579,6 +577,7 @@ export function defineRequest<
         throw new Error("Request compensation must be true or an object");
       }
       if (
+        "result" in config.compensation &&
         config.compensation.result !== undefined &&
         !isStandardSchema(config.compensation.result)
       ) {
@@ -602,7 +601,6 @@ export function defineRequest<
     response: config.response,
     errors: config.errors,
     compensation: config.compensation,
-    registerHandler: () => noopUnsubscribe,
   } as RequestDefinition<
     TName,
     TPayloadSchema,
@@ -685,7 +683,7 @@ export function defineQueue<
 /**
  * Define a global ordered topic.
  *
- * See `TopicDefinition` for the stub `registerConsumer` on the returned object.
+ * Consumer registration will live on the client (not implemented yet).
  */
 export function defineTopic<
   TName extends string,
@@ -718,7 +716,6 @@ export function defineTopic(config: {
     record: config.record,
     metadata: config.metadata,
     retentionSeconds: config.retentionSeconds,
-    registerConsumer: () => noopUnsubscribe,
   };
 }
 
