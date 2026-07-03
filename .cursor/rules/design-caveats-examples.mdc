@@ -1,0 +1,43 @@
+---
+description: When discussing design caveats/tradeoffs before implementation, illustrate structural or behavioral distinctions with small neutral code snippets instead of prose-only explanations
+globs: 
+alwaysApply: true
+---
+
+# Illustrate design caveats with minimal code snippets
+
+When presenting caveats, tradeoffs, or design decisions **before** implementation (i.e., during discussion, not final code), attach a small code snippet wherever it aids comprehension.
+
+## Trigger condition
+Any time a caveat/point describes a *behavioral or structural distinction* between approaches, states something "differs from X," or requires the reader to picture what a type/shape/call would look like.
+
+## Format
+Show as many variants as are actually relevant to the caveat (often 2, sometimes 1, occasionally 3+) — never pad to a fixed number, and never label them by implied quality.
+
+Use neutral, descriptive labels tied to **what the code does**, not to how good it is:
+
+```ts
+// Plain number as attempt identity
+namespace.get(attemptNumber: number): Attempt
+
+// Branded AttemptNumber type
+type AttemptNumber = number & { __brand: "AttemptNumber" };
+namespace.get(attemptNumber: AttemptNumber): Attempt
+```
+
+Avoid labels like "naive," "proposed," "better," "old way" — instead name the thing itself (e.g., "shared row type," "per-subsystem row type," "lazy namespace read," "eager array snapshot").
+
+## Single-shape caveats
+If the caveat concerns one new shape with no real alternative being weighed, show just that one snippet — don't invent a strawman counterpart just to make a pair.
+
+## Scope discipline
+- Snippets are for comprehension, not implementation.
+- No imports, no boilerplate, no error handling unless that's the point being made.
+- Max ~8 lines per snippet.
+- Don't exceed what's needed to make the distinction visible.
+
+## Skip condition
+If a caveat is purely conceptual with no shape/call-site implication (e.g., "this will need a follow-up migration"), skip the snippet — don't force one.
+
+## Placement
+Snippet(s) go directly after the caveat's explanation, before moving to the next caveat — not batched at the end.
