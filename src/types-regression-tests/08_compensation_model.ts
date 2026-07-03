@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { createWorkflowClient } from "../client";
+import { and } from "../search";
 import {
   defineRequest,
   defineStep,
@@ -113,7 +114,11 @@ const chargeStep = defineStep({
       if (info.status === "terminated") {
         // @ts-expect-error terminated forward outcomes do not expose a result
         void info.result;
-        await info.attempts.last();
+        const _latest = await info.attempts.findMany({
+          sort: [{ path: "attempt", direction: "desc" }],
+          limit: 1,
+        });
+        void _latest[0]?.type;
       }
 
       // ---------------------------------------------------------------------

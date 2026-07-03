@@ -129,7 +129,7 @@ return { decision: "reject", note: "Policy violation" };
 
 When handler retries are exhausted, the engine moves the invocation to `manual` with persisted attempt history. Use `throw ctx.errors.X(..., { manual: true })` during the handler when external resolution is needed early, or query `status: "manual"` and resolve through request handles.
 
-Optional `retentionPolicy` runs once when an invocation reaches a terminal state (`resolved` or `timedOut`). Return seconds to keep the row, or `null` to keep it indefinitely. The callback receives the decoded payload, terminal status, response when resolved, and an attempts accessor. `manual` is not terminal — retention runs when the invocation later resolves or the workflow call times out.
+Optional `retentionPolicy` runs once when an invocation reaches a terminal state (`resolved` or `timedOut`). Return seconds to keep the row, or `null` to keep it indefinitely. The callback receives the decoded payload, terminal status, response when resolved, and a parent-scoped `attempts` read namespace (`findMany`, `count`, …). `manual` is not terminal — retention runs when the invocation later resolves or the workflow call times out.
 
 ```typescript
 client.requests.humanReview.registerHandler(handler, {
@@ -289,7 +289,7 @@ compensation: {
 },
 ```
 
-When forward did not complete cleanly, inspect `ctx.forward.attempts` for reachability hints — then reconcile. Attempt history does not replace external reconciliation.
+When forward did not complete cleanly, inspect `ctx.forward.attempts.findMany(...)` for reachability hints — then reconcile. Attempt history does not replace external reconciliation.
 
 `ctx.forward.status === "completed"` exposes `ctx.forward.response`. `"timed_out"` exposes `reason` (`"attempts_exhausted" | "deadline"`) and `attempts`. `"terminated"` exposes `attempts` only — neither timed-out nor terminated variants expose `response`.
 
@@ -331,6 +331,19 @@ if (found.status === "unique") {
 - `escalateToManual(...)` — park the block for external completion using the compensation `errors` map shape (same escalation input rules as forward `escalateToManual`).
 
 Both operator actions abort an in-flight compensation handler attempt.
+
+From a forward request handle (client or workflow-scoped), compensable definitions also expose a synchronous `.compensation` ref — the same handle type as the workflow namespace above:
+
+```typescript
+const request = client.requests.reserveFlightTicket.get(requestId);
+await request.compensation.fetchRow({ status: true, payload: true });
+await request.compensation.skip({ released: true });
+await request.compensation.attempts.findMany(() => and(), {
+  fields: { code: true, message: true },
+});
+```
+
+Row existence is lazy: `fetchRow` returns `{ status: "missing" }` until the engine registers the compensation instance.
 
 ## Example: waitlist via manual mode
 

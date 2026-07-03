@@ -12,7 +12,8 @@ import {
 } from "../index";
 import type {
   Attempt,
-  AttemptAccessor,
+  AttemptHandle,
+  AttemptWhereTemplate,
   BranchInstanceId,
   BranchInstanceStatus,
   BranchPathItem,
@@ -55,7 +56,8 @@ type _DefinitionHelpers =
 
 type _AttemptExports =
   | Attempt
-  | AttemptAccessor
+  | AttemptHandle<Attempt>
+  | AttemptWhereTemplate
   | Failure
   | AttemptError
   | FailureInfo;
@@ -131,6 +133,8 @@ type _NoFirstCall = import("../index").FirstCall<any>;
 type _NoStepFailureInfo = import("../index").StepFailureInfo;
 // @ts-expect-error MANUAL is no longer public
 type _NoManual = import("../index").ManualSentinel;
+// @ts-expect-error AttemptAccessor was removed in favour of attempt namespaces
+type _NoAttemptAccessor = import("../index").AttemptAccessor;
 
 void txOrConnUsage;
 void AttemptError;

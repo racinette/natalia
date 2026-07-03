@@ -1,14 +1,17 @@
 import { z } from "zod";
 import { AttemptError, defineStep } from "../workflow";
-import type { Attempt, AttemptAccessor, Failure, JsonInput } from "../types";
+import type {
+  Attempt,
+  AttemptHandle,
+  Failure,
+  HandlerAttemptsReadNamespace,
+  JsonInput,
+  OperatorAttemptsNamespaceExternal,
+} from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
 
 // =============================================================================
 // `Failure` BASE RECORD
-//
-// `Failure` is the base captured-throw record. It has no `attempt` field;
-// `Attempt extends Failure` adds the 1-indexed attempt number for retried
-// operations.
 // =============================================================================
 
 const failure: Failure = {
@@ -26,11 +29,6 @@ type _FailureDoesNotRequireAttempt = Assert<
 
 // =============================================================================
 // `Attempt` RECORD
-//
-// Used by `AttemptAccessor` for steps, queue handlers, request handlers, and
-// topic consumers. All fields except `attempt`, `startedAt`, and `failedAt`
-// are nullable because JavaScript can throw any value, and an attempt may
-// reach the I/O boundary without producing structured error info.
 // =============================================================================
 
 const attempt: Attempt = {
@@ -53,46 +51,58 @@ type _AttemptShape = Assert<
 >;
 
 // =============================================================================
-// `AttemptAccessor`
-//
-// Lazy, async-iterable accessor over execution attempt records. Same shape
-// across attempt-bearing forward contexts (steps, requests, topics, and forward
-// outcomes observed from compensation).
+// HANDLER-RUNTIME ATTEMPT READ NAMESPACE — row materialization.
 // =============================================================================
 
-declare const attempts: AttemptAccessor;
+declare const handlerAttempts: HandlerAttemptsReadNamespace<Attempt>;
 
-async function inspectAttempts(): Promise<void> {
-  const _last = await attempts.last();
-  type _Last = Assert<IsEqual<typeof _last, Attempt>>;
+async function inspectHandlerAttempts(): Promise<void> {
+  const _all = await handlerAttempts.findMany();
+  type _All = Assert<IsEqual<typeof _all, readonly Attempt[]>>;
 
-  const _all = await attempts.all();
-  type _All = Assert<IsEqual<typeof _all, Attempt[]>>;
+  const _projected = await handlerAttempts.findMany({
+    fields: { type: true },
+  });
+  type _Projected = Assert<
+    IsEqual<typeof _projected, readonly Pick<Attempt, "type">[]>
+  >;
 
-  // `count` is an async method, not a property.
-  const _count = await attempts.count();
+  const _count = await handlerAttempts.count();
   type _Count = Assert<IsEqual<typeof _count, number>>;
 
-  for await (const _item of attempts) {
+  const _viaTrue = await handlerAttempts.findMany(() => true);
+  type _ViaTrue = Assert<IsEqual<typeof _viaTrue, readonly Attempt[]>>;
+
+  for (const _item of await handlerAttempts.findMany()) {
     type _Item = Assert<IsEqual<typeof _item, Attempt>>;
   }
-
-  for await (const _item of attempts.reverse()) {
-    type _ReverseItem = Assert<IsEqual<typeof _item, Attempt>>;
-  }
-
-  // @ts-expect-error count is async-callable, not a number property
-  const badCount: number = attempts.count;
-  void badCount;
 }
-void inspectAttempts;
+void inspectHandlerAttempts;
+
+// =============================================================================
+// OPERATOR ATTEMPT NAMESPACE — handle materialization.
+// =============================================================================
+
+declare const operatorAttempts: OperatorAttemptsNamespaceExternal<Attempt>;
+
+async function inspectOperatorAttempts(): Promise<void> {
+  const _handles = await operatorAttempts.findMany({
+    fields: { type: true },
+  });
+  type _HandleRow = Assert<
+    IsEqual<
+      (typeof _handles)[number],
+      AttemptHandle<Attempt> & { readonly row: Pick<Attempt, "type"> }
+    >
+  >;
+
+  const _syncHandle = operatorAttempts.get(1);
+  type _SyncHandle = Assert<IsEqual<typeof _syncHandle, AttemptHandle<Attempt>>>;
+}
+void inspectOperatorAttempts;
 
 // =============================================================================
 // `AttemptError` THROWABLE
-//
-// Structured error class for handler code (step execute, queue handlers,
-// topic consumers, request handlers). Extends `Error`. `details` is typed
-// as `JsonInput` at the throw site so non-JSON values are rejected.
 // =============================================================================
 
 const _structured = new AttemptError({
@@ -102,29 +112,17 @@ const _structured = new AttemptError({
 });
 type _AttemptErrorIsError = Assert<typeof _structured extends Error ? true : false>;
 
-// `details` defaults to `JsonInput | undefined`.
 const noDetails = new AttemptError({ type: "RemoteSystemDown" });
-type _NoDetailsIsError = Assert<typeof noDetails extends Error ? true : false>;
 void noDetails;
 
-// All constructor fields are optional.
 const empty = new AttemptError();
 void empty;
 
 // @ts-expect-error details must be JSON-serializable (no Set/Map/etc.)
 new AttemptError({ details: new Set(["not-json"]) });
 
-// =============================================================================
-// USABLE INSIDE A STEP `execute`
-//
-// The handler-side throwable is just an `Error` subclass — the engine's
-// extraction rules (Part 15) persist `type` / `message` / `details` directly
-// when `AttemptError` is caught, falling back to best-effort extraction for
-// other thrown values.
-// =============================================================================
-
 defineStep({
-  name: "attemptAccessorStep",
+  name: "attemptNamespaceStep",
   args: z.object({ id: z.string() }),
   result: z.object({ ok: z.boolean() }),
   async execute(args, _opts) {
@@ -143,5 +141,5 @@ defineStep({
 // REMOVED PUBLIC NAME
 // =============================================================================
 
-// @ts-expect-error StepErrorAccessor was renamed to AttemptAccessor
-import type { StepErrorAccessor as _RemovedStepErrorAccessor } from "../types";
+// @ts-expect-error AttemptAccessor was removed in favour of attempt namespaces
+import type { AttemptAccessor as _RemovedAttemptAccessor } from "../types";

@@ -123,6 +123,7 @@ export abstract class AbstractWorkflowClient<
         this.assertClientAvailable();
         throw new Error("Not implemented");
       },
+      attempts: this.createOperatorAttemptsNamespace(),
       resolve: async (_response: unknown, _opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
@@ -131,7 +132,28 @@ export abstract class AbstractWorkflowClient<
         this.assertClientAvailable();
         throw new Error("Not implemented");
       },
-    } as RequestHandleExternal;
+    } as unknown as RequestHandleExternal;
+  }
+
+  private createOperatorAttemptsNamespace() {
+    return {
+      get: ((_attempt: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      }) as never,
+      findUnique: async (_query: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+      findMany: ((_query: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      }) as never,
+      count: async (_query: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+    };
   }
 
   private createQueueAccessor(): QueueNamespaceExternal {
@@ -180,10 +202,7 @@ export abstract class AbstractWorkflowClient<
         this.assertClientAvailable();
         throw new Error("Not implemented");
       },
-      attempts: async (_opts?: unknown) => {
-        this.assertClientAvailable();
-        throw new Error("Not implemented");
-      },
+      attempts: this.createOperatorAttemptsNamespace(),
     } as DeadLetterHandleExternal;
   }
 }

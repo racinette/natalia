@@ -150,13 +150,13 @@ client.queues.notifications.registerHandler(handler, {
   retentionPolicy: async (ctx) => {
     if (ctx.status === "processed") return 86400;
     if (ctx.reason === "invalid_payload") return 3600;
-    const attempts = await ctx.attempts.all();
+    const attempts = await ctx.attempts.findMany(() => and());
     return attempts.length > 5 ? 86400 * 90 : 86400 * 30;
   },
 });
 ```
 
-`retentionPolicy` runs once when a message reaches a terminal state (`processed` or `dead_lettered`). Return seconds to keep the row, or `null` to keep it indefinitely. The callback receives the decoded message, terminal status, dead-letter reason (if any), and an attempts accessor.
+`retentionPolicy` runs once when a message reaches a terminal state (`processed` or `dead_lettered`). Return seconds to keep the row, or `null` to keep it indefinitely. The callback receives the decoded message, terminal status, dead-letter reason (if any), and a parent-scoped `attempts` read namespace.
 
 See [error-model.md](../error-model.md) for how queue handler errors relate to workflow errors.
 
@@ -177,12 +177,14 @@ for (const deadLetter of matches) {
 const handle = client.queues.notifications.deadLetters.get(deadLetterId);
 await handle.fetchRow({ payload: true, reason: true }, { txOrConn: tx });
 
-const attempts = await handle.attempts();
-if (attempts?.status === "unique") {
-  const last = await attempts.value.last();
-  if (last.code === "ProviderRejected" && last.details.ok) {
-    const { orderId } = last.details.result;
-  }
+const attemptHandles = await handle.attempts.findMany(() => and(), {
+  sort: [{ path: "attempt", direction: "desc" }],
+  limit: 1,
+  fields: { code: true, message: true, details: true },
+});
+const last = attemptHandles[0]?.row;
+if (last?.code === "ProviderRejected" && last.details?.ok === true) {
+  const { orderId } = last.details.result;
 }
 
 await handle.purge({ txOrConn: tx });

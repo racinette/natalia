@@ -18,15 +18,14 @@ import type {
 //                                    handle without I/O. Cardinality is
 //                                    surfaced lazily through the handle's
 //                                    methods.
-//   - `findUnique(query, opts?)`     predicate-based; asserts cardinality at
+//   - `findUnique(query?, opts?)`    predicate-based; asserts cardinality at
 //                                    fetch time; resolves to
-//                                    `FindUniqueResult<Handle>`.
-//   - `findMany(query, opts?)`       predicate-based; resolves to a
-//                                    `FindManyResult<Handle>` that is BOTH
-//                                    awaitable (materialises a `Handle[]`)
-//                                    AND async-iterable (streams handles
-//                                    lazily, paginating internally).
-//   - `count(query, opts?)`           aggregate count over the same predicate.
+//                                    `FindUniqueResult<Handle>`. Omit the
+//                                    predicate to query the full scoped set.
+//   - `findMany(query?, opts?)`      predicate-based; resolves to
+//                                    `Promise<readonly Handle[]>`. Omit the
+//                                    predicate to query the full scoped set.
+//   - `count(query?, opts?)`         aggregate count over the same predicate.
 //
 // Step 09 introduced the operator-action verb signatures
 // (`WorkflowOperatorActions<TResult>`,
@@ -49,15 +48,12 @@ export type FindUniqueResult<T> =
   | { readonly status: "ambiguous"; readonly count: number };
 
 /**
- * Result of `findMany`. Both awaitable (materialises the full array) and
- * async-iterable (streams handles lazily with internal pagination).
+ * Result of `findMany` — a promise that materialises the full matching set.
  *
- * Awaiting:    `const handles = await ns.findMany(query)`
- * Iterating:   `for await (const handle of ns.findMany(query)) { ... }`
+ * Callers bound large scans with `limit` (and sort); pagination beyond that
+ * is caller-owned.
  */
-export interface FindManyResult<T>
-  extends PromiseLike<readonly T[]>,
-    AsyncIterable<T> {}
+export type FindManyResult<T> = Promise<readonly T[]>;
 
 // =============================================================================
 // FETCHABLE HANDLE — fetchRow + optional row prefetch.
@@ -146,7 +142,8 @@ export interface FetchableHandle<TRow> {
  *
  * The callback receives a `WhereScope<TWhereTemplate>` (destructure-friendly).
  * Its return value is an opaque `Predicate` assembled through `natalia/search`
- * combinators (`and`, `eq`, `gt`, `every`, `some`, ...).
+ * combinators (`and`, `eq`, `gt`, `every`, `some`, …), or literal `true` for
+ * an unconditional match within the namespace scope (`WHERE TRUE`).
  */
 export type QueryPredicate<
   TWhereTemplate extends WhereTemplateRecord,
@@ -183,8 +180,17 @@ export interface QueryableNamespace<
   ): HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>;
 
   /**
-   * Predicate-based lookup that asserts cardinality at fetch time.
+   * Predicate-based lookup that asserts cardinality at fetch time. Omit the
+   * predicate when the scoped set is expected to contain at most one row.
    */
+  findUnique(
+    opts?: FindUniqueOptions,
+  ): Promise<FindUniqueResult<THandle>>;
+  findUnique<F extends FieldsMask<TRow>>(
+    opts: FindUniqueOptions & { fields: F },
+  ): Promise<
+    FindUniqueResult<HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>>
+  >;
   findUnique(
     query: QueryPredicate<TWhereTemplate>,
     opts?: FindUniqueOptions,
@@ -197,9 +203,15 @@ export interface QueryableNamespace<
   >;
 
   /**
-   * Predicate-based lookup that may yield zero or more handles. Awaitable
-   * AND async-iterable.
+   * Predicate-based lookup that may yield zero or more handles. Omit the
+   * predicate to return every row in the namespace scope.
    */
+  findMany(
+    opts?: FindManyOptions<TWhereTemplate>,
+  ): FindManyResult<THandle>;
+  findMany<F extends FieldsMask<TRow>>(
+    opts: FindManyOptions<TWhereTemplate> & { fields: F },
+  ): FindManyResult<HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>>;
   findMany(
     query: QueryPredicate<TWhereTemplate>,
     opts?: FindManyOptions<TWhereTemplate>,
@@ -209,9 +221,109 @@ export interface QueryableNamespace<
     opts: FindManyOptions<TWhereTemplate> & { fields: F },
   ): FindManyResult<HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>>;
 
-  /** Aggregate count over the same predicate. */
+  /** Aggregate count over the same predicate (or the full scoped set). */
+  count(opts?: CountOptions): Promise<number>;
   count(
     query: QueryPredicate<TWhereTemplate>,
     opts?: CountOptions,
+  ): Promise<number>;
+}
+
+// =============================================================================
+// READ-ONLY ENTITY HANDLE — operator child rows (attempts, halts, …).
+// =============================================================================
+
+/**
+ * Handle grounded by a numeric row key within a parent scope. Read-only
+ * today (`fetchRow` only); reserved for future operator verbs.
+ */
+export interface EntityHandle<TRow, TId = number> extends FetchableHandle<TRow> {
+  readonly id: TId;
+}
+
+/** Operator-facing handle for a single attempt log row (parent-scoped). */
+export type AttemptHandle<TRow> = EntityHandle<TRow, number>;
+
+/** Operator-facing handle for a single halt row (workflow-scoped). */
+export type HaltHandle = EntityHandle<
+  import("./results").HaltRecord,
+  number
+>;
+
+/**
+ * Parent-scoped attempt namespace on operator handles. Queries return
+ * {@link AttemptHandle} instances; project columns via `fields` and read
+ * `handle.row.*` or call `handle.fetchRow(...)`.
+ */
+export type OperatorAttemptsNamespaceExternal<
+  TRow extends WhereTemplateRecord,
+> = QueryableNamespace<AttemptHandle<TRow>, TRow, TRow, number>;
+
+// =============================================================================
+// HANDLER-RUNTIME ATTEMPT READ NAMESPACE — row materialization (no handles).
+//
+// Same query verbs as {@link QueryableNamespace}, but `findMany` / `findUnique`
+// / `get` materialize plain rows because handler callbacks are the mutation
+// boundary and observations are immutable for the duration of the callback.
+// =============================================================================
+
+/** Option bag for handler-runtime attempt queries (no `txOrConn`). */
+export type HandlerAttemptFindOptions = Record<string, never>;
+
+/** Option bag for handler-runtime `findMany` over attempt rows. */
+export interface HandlerAttemptFindManyOptions<
+  TWhereTemplate extends WhereTemplateRecord,
+> {
+  readonly sort?: readonly SearchSort<TWhereTemplate>[];
+  readonly limit?: number;
+}
+
+/**
+ * Parent-scoped attempt namespace injected into handler callbacks
+ * (`CompensationInfo.attempts`, `RequestRetentionContext.attempts`, …).
+ */
+export interface HandlerAttemptsReadNamespace<
+  TRow extends WhereTemplateRecord,
+> {
+  get(attempt: number): Promise<FindUniqueResult<TRow>>;
+  get<F extends FieldsMask<TRow>>(
+    attempt: number,
+    fields: F,
+  ): Promise<FindUniqueResult<Pick<TRow, ProjectedKeys<TRow, F>>>>;
+
+  findUnique(
+    opts?: HandlerAttemptFindOptions,
+  ): Promise<FindUniqueResult<TRow>>;
+  findUnique<F extends FieldsMask<TRow>>(
+    opts: HandlerAttemptFindOptions & { fields: F },
+  ): Promise<FindUniqueResult<Pick<TRow, ProjectedKeys<TRow, F>>>>;
+  findUnique(
+    query: QueryPredicate<TRow>,
+    opts?: HandlerAttemptFindOptions,
+  ): Promise<FindUniqueResult<TRow>>;
+  findUnique<F extends FieldsMask<TRow>>(
+    query: QueryPredicate<TRow>,
+    opts: HandlerAttemptFindOptions & { fields: F },
+  ): Promise<FindUniqueResult<Pick<TRow, ProjectedKeys<TRow, F>>>>;
+
+  findMany(
+    opts?: HandlerAttemptFindManyOptions<TRow>,
+  ): FindManyResult<TRow>;
+  findMany<F extends FieldsMask<TRow>>(
+    opts: HandlerAttemptFindManyOptions<TRow> & { fields: F },
+  ): FindManyResult<Pick<TRow, ProjectedKeys<TRow, F>>>;
+  findMany(
+    query: QueryPredicate<TRow>,
+    opts?: HandlerAttemptFindManyOptions<TRow>,
+  ): FindManyResult<TRow>;
+  findMany<F extends FieldsMask<TRow>>(
+    query: QueryPredicate<TRow>,
+    opts: HandlerAttemptFindManyOptions<TRow> & { fields: F },
+  ): FindManyResult<Pick<TRow, ProjectedKeys<TRow, F>>>;
+
+  count(opts?: HandlerAttemptFindOptions): Promise<number>;
+  count(
+    query: QueryPredicate<TRow>,
+    opts?: HandlerAttemptFindOptions,
   ): Promise<number>;
 }

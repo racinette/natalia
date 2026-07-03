@@ -4,12 +4,13 @@ import type { RequestCompensationConfig, RequestCompensationDefinition } from ".
 import type { RequestCompensationInfo } from "./steps";
 import type {
   QueueErrorFactories,
-  QueueHandlerAttemptAccessor,
+  QueueHandlerAttempt,
   RequestErrorFactories,
-  RequestHandlerAttemptAccessor,
+  RequestHandlerAttempt,
 } from "../results";
 import type { DeadLetterReason } from "../schema";
 import type { RetryPolicyOptions } from "./policies";
+import type { HandlerAttemptsReadNamespace } from "../introspection";
 
 /**
  * Function returned by client/runtime handler registration APIs.
@@ -65,7 +66,9 @@ export type QueueRetentionContext<
   /** Set when `status === "dead_lettered"`; `null` when processed successfully. */
   readonly reason: DeadLetterReason | null;
   readonly message: TMessage;
-  readonly attempts: QueueHandlerAttemptAccessor<TErrors>;
+  readonly attempts: HandlerAttemptsReadNamespace<
+    QueueHandlerAttempt<TErrors>
+  >;
 };
 
 /**
@@ -101,12 +104,16 @@ export type RequestRetentionContext<
       readonly status: "resolved";
       readonly payload: TPayload;
       readonly response: TResponse;
-      readonly attempts: RequestHandlerAttemptAccessor<TErrors>;
+      readonly attempts: HandlerAttemptsReadNamespace<
+        RequestHandlerAttempt<TErrors>
+      >;
     }
   | {
       readonly status: "timedOut";
       readonly payload: TPayload;
-      readonly attempts: RequestHandlerAttemptAccessor<TErrors>;
+      readonly attempts: HandlerAttemptsReadNamespace<
+        RequestHandlerAttempt<TErrors>
+      >;
     };
 
 /**
@@ -141,13 +148,14 @@ export interface RequestHandlerContext<
  * `throw ctx.errors.X(..., { manual })` chooses retry vs manual escalation.
  */
 export interface RequestCompensationHandlerContext<
-  TErrors extends ErrorDefinitions = Record<string, never>,
+  TCompensationErrors extends ErrorDefinitions = Record<string, never>,
   TPayload = unknown,
   TForwardResponse = unknown,
+  TForwardErrors extends ErrorDefinitions = Record<string, never>,
 > extends HandlerContext {
   readonly payload: TPayload;
-  readonly forward: RequestCompensationInfo<TForwardResponse>;
-  readonly errors: RequestErrorFactories<TErrors>;
+  readonly forward: RequestCompensationInfo<TForwardResponse, TForwardErrors>;
+  readonly errors: RequestErrorFactories<TCompensationErrors>;
 }
 
 /**
@@ -181,13 +189,15 @@ export type RequestCompensationRegistrationOptions<
   TForwardResponse = unknown,
   TCompensation extends true | RequestCompensationConfig<any, any> = true,
   TCompensationErrors extends ErrorDefinitions = Record<string, never>,
+  TForwardErrors extends ErrorDefinitions = Record<string, never>,
 > =
   | {
       readonly handler: (
         ctx: RequestCompensationHandlerContext<
           TCompensationErrors,
           TPayload,
-          TForwardResponse
+          TForwardResponse,
+          TForwardErrors
         >,
       ) => Promise<RequestCompensationHandlerReturn<TCompensation>>;
       readonly retryPolicy: RequestCompensationRetryOptions;
@@ -219,7 +229,8 @@ export type RequestHandlerRegistrationOptions<
         TPayload,
         TResponse,
         Extract<TCompensation, true | RequestCompensationConfig<any, any>>,
-        TCompensationErrors
+        TCompensationErrors,
+        TErrors
       >;
     });
 

@@ -345,7 +345,7 @@ import type { CompensationBlockStatus } from "./definitions/steps";
 import type {
   CompensationInfo,
 } from "./definitions/steps";
-import type { CompensationId, HaltRecord } from "./results";
+import type { CompensationId } from "./results";
 
 /**
  * Full row shape for a compensation block instance. Includes JSONB columns
@@ -358,7 +358,6 @@ export interface CompensationBlockRow<TStep, TArgs = unknown, TResult = unknown>
   readonly args: TArgs;
   readonly result: TResult | null;
   readonly info: CompensationInfo<unknown> | null;
-  readonly halt: HaltRecord | null;
   readonly createdAt: Date;
   readonly startedAt: Date | null;
   readonly completedAt: Date | null;

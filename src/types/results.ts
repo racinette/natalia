@@ -258,20 +258,18 @@ export type QueueHandlerAttempt<
           >;
         }[keyof TErrors & string]);
 
-/**
- * Lazy, async-iterable accessor over queue handler attempt records for a
- * dead-lettered message, an in-flight retried message, or
- * {@link QueueRetentionContext} at finalize time.
- */
-export interface QueueHandlerAttemptAccessor<
+/** Predicate template for generic step/topic attempt rows. */
+export type AttemptWhereTemplate = Attempt;
+
+/** Predicate template for queue handler attempt rows. */
+export type QueueHandlerAttemptWhereTemplate<
   TErrors extends ErrorDefinitions = Record<string, never>,
-> {
-  last(): Promise<QueueHandlerAttempt<TErrors>>;
-  all(): Promise<QueueHandlerAttempt<TErrors>[]>;
-  count(): Promise<number>;
-  [Symbol.asyncIterator](): AsyncIterableIterator<QueueHandlerAttempt<TErrors>>;
-  reverse(): AsyncIterable<QueueHandlerAttempt<TErrors>>;
-}
+> = QueueHandlerAttempt<TErrors>;
+
+/** Predicate template for request handler attempt rows. */
+export type RequestHandlerAttemptWhereTemplate<
+  TErrors extends ErrorDefinitions = Record<string, never>,
+> = RequestHandlerAttempt<TErrors>;
 
 // =============================================================================
 // REQUEST HANDLER ERRORS
@@ -430,19 +428,6 @@ export type RequestManualEscalationInput<
       : RequestDeclaredManualEscalationInput<TErrors>);
 
 /**
- * Lazy, async-iterable accessor over request handler attempt records.
- */
-export interface RequestHandlerAttemptAccessor<
-  TErrors extends ErrorDefinitions = Record<string, never>,
-> {
-  last(): Promise<RequestHandlerAttempt<TErrors>>;
-  all(): Promise<RequestHandlerAttempt<TErrors>[]>;
-  count(): Promise<number>;
-  [Symbol.asyncIterator](): AsyncIterableIterator<RequestHandlerAttempt<TErrors>>;
-  reverse(): AsyncIterable<RequestHandlerAttempt<TErrors>>;
-}
-
-/**
  * Signals that a topic consumer failure is permanent — the runtime should not
  * retry and should proceed to the exhaustion path (`onConsumeError`).
  */
@@ -453,34 +438,8 @@ export class UnrecoverableError extends Error {
   }
 }
 
-/**
- * Lazy, async-iterable accessor over execution attempt records for a retried
- * operation (step, request handler, topic consumer, forward step or request
- * observed from compensation, and similar).
- *
- * Steps and request/topic forward handlers share one attempt lifecycle:
- * retries produce failed or unsettled rows; at most one successful completion
- * persists the typed outcome (when forward completed, read that outcome —
- * not attempt history). Attempt history helps judge reachability and ambiguity
- * when forward did not settle cleanly.
- *
- * Queues use {@link QueueHandlerAttemptAccessor} with per-code attempt rows.
- *
- * When `undo` runs for a compensable step, the forward step was attempted at
- * least once, so `count()` is always at least `1` on `CompensationInfo.attempts`.
- */
-export interface AttemptAccessor {
-  /** Most recent attempt record. */
-  last(): Promise<Attempt>;
-  /** All attempt records, oldest first (by attempt number). */
-  all(): Promise<Attempt[]>;
-  /** Number of persisted attempt records exposed by this accessor. */
-  count(): Promise<number>;
-  /** Async iterate over attempts, oldest first. */
-  [Symbol.asyncIterator](): AsyncIterableIterator<Attempt>;
-  /** Async iterate over attempts, newest first. */
-  reverse(): AsyncIterable<Attempt>;
-}
+/** Predicate template for halt rows on `workflow.halts`. */
+export type HaltWhereTemplate = HaltRecord;
 
 /**
  * Serializable error object for a failed workflow.
@@ -598,7 +557,7 @@ export interface IWorkflowTransaction {
 // addressable workflow rows: `sigkill()`, `sigterm()`, and `skip(result, opts?)`.
 //
 // Step 09 defines the verb signature types here. Step 12 plugs them onto the
-// concrete handles (`WorkflowHandleExternal`, `CompensationBlockUniqueHandle`).
+// concrete handles (`WorkflowHandleExternal`, `CompensationBlockUniqueHandleExternal`).
 // =============================================================================
 
 /**

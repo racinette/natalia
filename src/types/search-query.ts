@@ -60,7 +60,7 @@ export type WhereScope<TValue> = [StripNullish<TValue>] extends [
 
 export type WhereFn<TRowTemplate extends WhereTemplateRecord> = (
   scope: WhereScope<TRowTemplate>,
-) => Predicate;
+) => Predicate | true;
 
 // -----------------------------------------------------------------------------
 // Type-level operator capabilities

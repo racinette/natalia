@@ -1,5 +1,7 @@
 import type { StandardSchemaV1 } from "../standard-schema";
-import type { AttemptAccessor } from "../results";
+import type { Attempt, RequestHandlerAttempt } from "../results";
+import type { ErrorDefinitions } from "./errors";
+import type { HandlerAttemptsReadNamespace } from "../introspection";
 import type { JsonSchemaConstraint } from "../json-input";
 import type { CompensationContext } from "../context/context-interfaces";
 import type { QueueDefinitions, TopicDefinitions } from "./messaging";
@@ -97,20 +99,23 @@ export type NonCompensableStepDefinitions = Record<
  * Forward step outcome passed to compensation `undo` as `info`.
  *
  * `attempts` lists every persisted execution attempt on that forward step. At
- * least one attempt exists whenever `undo` runs (see `AttemptAccessor`).
+ * least one attempt exists whenever `undo` runs.
  */
 export type CompensationInfo<TResult> =
   | {
       readonly status: "completed";
       readonly result: TResult;
-      readonly attempts: AttemptAccessor;
+      readonly attempts: HandlerAttemptsReadNamespace<Attempt>;
     }
   | {
       readonly status: "timed_out";
       readonly reason: "attempts_exhausted" | "deadline";
-      readonly attempts: AttemptAccessor;
+      readonly attempts: HandlerAttemptsReadNamespace<Attempt>;
     }
-  | { readonly status: "terminated"; readonly attempts: AttemptAccessor };
+  | {
+      readonly status: "terminated";
+      readonly attempts: HandlerAttemptsReadNamespace<Attempt>;
+    };
 
 /**
  * Forward request outcome snapshot on request compensation handler `ctx.forward`.
@@ -118,20 +123,32 @@ export type CompensationInfo<TResult> =
  * `attempts` lists forward handler tries the engine persisted for that
  * request invocation. Use with forward settlement status — on `"completed"`,
  * read the typed outcome from `response`; when forward did not complete
- * cleanly, inspect attempts for reachability hints (see `AttemptAccessor`).
+ * cleanly, inspect attempts for reachability hints.
  */
-export type RequestCompensationInfo<TResponse> =
+export type RequestCompensationInfo<
+  TResponse,
+  TForwardErrors extends ErrorDefinitions = Record<string, never>,
+> =
   | {
       readonly status: "completed";
       readonly response: TResponse;
-      readonly attempts: AttemptAccessor;
+      readonly attempts: HandlerAttemptsReadNamespace<
+        RequestHandlerAttempt<TForwardErrors>
+      >;
     }
   | {
       readonly status: "timed_out";
       readonly reason: "attempts_exhausted" | "deadline";
-      readonly attempts: AttemptAccessor;
+      readonly attempts: HandlerAttemptsReadNamespace<
+        RequestHandlerAttempt<TForwardErrors>
+      >;
     }
-  | { readonly status: "terminated"; readonly attempts: AttemptAccessor };
+  | {
+      readonly status: "terminated";
+      readonly attempts: HandlerAttemptsReadNamespace<
+        RequestHandlerAttempt<TForwardErrors>
+      >;
+    };
 
 /**
  * Step-local compensation block definition.
@@ -255,61 +272,3 @@ export type CompensationBlockStatus =
   | "completed"
   | "halted"
   | "skipped";
-
-import type { FindUniqueResult } from "../introspection";
-
-type Simplify<T> = { [K in keyof T]: T[K] };
-
-type DistributeStatusResult<T> = T extends { status: infer TStatus }
-  ? TStatus extends PropertyKey
-    ? Simplify<Omit<T, "status"> & { status: TStatus }>
-    : T
-  : T;
-
-type StepCompensationResultSchema<TStep> =
-  TStep extends StepDefinition<
-    string,
-    JsonSchemaConstraint,
-    JsonSchemaConstraint,
-    infer TCompensation
-  >
-    ? TCompensation extends StepCompensationDefinition<
-        infer _A,
-        infer _FR,
-        infer _Ch,
-        infer _St,
-        infer _Ev,
-        infer _At,
-        infer _Stp,
-        infer _Req,
-        infer _Qu,
-        infer _To,
-        infer _Children,
-        infer _Ext,
-        infer TResultSchema
-      >
-      ? TResultSchema
-      : undefined
-    : undefined;
-
-export type CompensationBlockResult<
-  TStep extends WidestStepDefinition,
-> = StepCompensationResultSchema<TStep> extends JsonSchemaConstraint
-  ? DistributeStatusResult<
-      StandardSchemaV1.InferOutput<StepCompensationResultSchema<TStep>>
-    >
-  : void;
-
-type CompensationBlockStoredResult<TStep extends WidestStepDefinition> =
-  CompensationBlockResult<TStep> extends void
-    ? null
-    : CompensationBlockResult<TStep> | null;
-
-export interface CompensationBlockUniqueHandle<TStep extends WidestStepDefinition> {
-  status(): Promise<FindUniqueResult<CompensationBlockStatus>>;
-  result(): Promise<FindUniqueResult<CompensationBlockStoredResult<TStep>>>;
-}
-
-export interface CompensationBlockHandle<TStep extends WidestStepDefinition> {
-  findUnique(id: string): CompensationBlockUniqueHandle<TStep>;
-}

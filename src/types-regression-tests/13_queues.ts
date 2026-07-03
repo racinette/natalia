@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { createWorkflowClient } from "../client";
-import { eq } from "../search";
+import { eq, and } from "../search";
 import {
   defineQueue,
   defineWorkflow,
@@ -14,9 +14,11 @@ import type {
   FindManyResult,
   FindUniqueResult,
   HandleWithRow,
+  HandlerAttemptsReadNamespace,
+  OperatorAttemptsNamespaceExternal,
   QueueEnqueueOptions,
+  AttemptHandle,
   QueueHandlerAttempt,
-  QueueHandlerAttemptAccessor,
   QueueHandlerAttemptDetails,
   QueueHandlerContext,
   QueueHandlerRegistrationOptions,
@@ -415,7 +417,9 @@ type _RetentionContext = Assert<
       readonly status: QueueTerminalStatus;
       readonly reason: DeadLetterReason | null;
       readonly message: _DecodedEmailMessage;
-      readonly attempts: QueueHandlerAttemptAccessor<_EmailQueueErrors>;
+      readonly attempts: HandlerAttemptsReadNamespace<
+        QueueHandlerAttempt<_EmailQueueErrors>
+      >;
     }
   >
 >;
@@ -438,8 +442,12 @@ const retentionPolicy: QueueRetentionPolicy<
   if (count > 5) {
     return 86400 * 90;
   }
-  const last = await ctx.attempts.last();
-  if (last.code === "ProviderRejected") {
+  const latest = await ctx.attempts.findMany({
+    sort: [{ path: "attempt", direction: "desc" }],
+    limit: 1,
+  });
+  const last = latest[0];
+  if (last?.code === "ProviderRejected") {
     return 86400 * 30;
   }
   return null;
@@ -466,12 +474,14 @@ client.queues.emailQueue.registerHandler(async () => undefined, {
         ? true
         : false
     >;
-    type _AttemptsAccessor = Assert<
-      typeof ctx.attempts extends QueueHandlerAttemptAccessor<_EmailQueueErrors>
+    type _AttemptsNamespace = Assert<
+      typeof ctx.attempts extends HandlerAttemptsReadNamespace<
+        QueueHandlerAttempt<_EmailQueueErrors>
+      >
         ? true
         : false
     >;
-    await ctx.attempts.all();
+    await ctx.attempts.findMany();
     return 3600;
   },
 });
@@ -576,25 +586,35 @@ async function inspectDeadLetters(): Promise<void> {
     return;
   }
 
-  const attemptAccessor = await deadLetter.attempts();
-  type _AttemptAccessor = Assert<
+  const attemptRows = await deadLetter.attempts.findMany({
+    sort: [{ path: "attempt", direction: "desc" }],
+    limit: 1,
+    fields: { code: true, message: true, details: true },
+  });
+  type _AttemptHandles = Assert<
     IsEqual<
-      typeof attemptAccessor,
-      FindUniqueResult<QueueHandlerAttemptAccessor<_EmailQueueErrors>>
+      (typeof attemptRows)[number],
+      HandleWithRow<
+        AttemptHandle<QueueHandlerAttempt<_EmailQueueErrors>>,
+        Pick<
+          QueueHandlerAttempt<_EmailQueueErrors>,
+          "code" | "message" | "details"
+        >
+      >
     >
   >;
-  if (attemptAccessor.status === "unique") {
-    const last = await attemptAccessor.value.last();
-    if (last.code === "ProviderRejected") {
-      if (last.details.ok) {
-        const _orderId: string = last.details.result.orderId;
-        void _orderId;
-      }
+  void (0 as unknown as _AttemptHandles);
+  const lastRow = attemptRows[0]?.row;
+  if (lastRow?.code === "ProviderRejected") {
+    const details = lastRow.details;
+    if (details && "ok" in details && details.ok === true) {
+      const _orderId: string = details.result.orderId;
+      void _orderId;
     }
-    if (last.code === null) {
-      const _nullableMessage: string | null = last.message;
-      void _nullableMessage;
-    }
+  }
+  if (lastRow?.code === null) {
+    const _nullableMessage: string | null = lastRow.message;
+    void _nullableMessage;
   }
 
   await deadLetter.retry({ txOrConn: undefined });

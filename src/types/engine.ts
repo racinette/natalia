@@ -43,12 +43,13 @@ import type {
   StreamReadResult,
   WorkflowOperatorActions,
   WorkflowResult,
-  AttemptAccessor,
-  QueueHandlerAttemptAccessor,
+  QueueHandlerAttempt,
+  RequestHandlerAttempt,
   SkipOutcome,
   OperatorActionOptions,
   RequestManualEscalationInput,
 } from "./results";
+import type { HaltWhereTemplate } from "./results";
 import type { RequestCompensationInstanceId } from "./schema";
 import type {
   QueueDefinition,
@@ -65,6 +66,8 @@ import type {
   FetchableHandle,
   FetchOptions,
   FindUniqueResult,
+  HaltHandle,
+  OperatorAttemptsNamespaceExternal,
   QueryableNamespace,
 } from "./introspection";
 import type {
@@ -164,9 +167,12 @@ export interface StreamReaderAccessorExternal<T> extends AsyncIterable<T> {
 // `'skipped'` and its pending halts to `'skipped'` along with it).
 // =============================================================================
 
-export interface HaltsNamespaceExternal {
-  list(opts?: FetchOptions): Promise<readonly HaltRecord[]>;
-}
+export type HaltsNamespaceExternal = QueryableNamespace<
+  HaltHandle,
+  HaltWhereTemplate,
+  HaltRecord,
+  number
+>;
 
 // =============================================================================
 // COMPENSATION BLOCK INSTANCE HANDLE
@@ -230,7 +236,8 @@ export type CompensationBlockNamespaceExternal<
  * halt records (`REFACTOR.MD` Part 11). The handle exposes:
  *   - `fetchRow` (the row scalar columns + JSONB-as-opaque `payload` /
  *     `result` columns);
- *   - `attempts()` — async accessor over the retried-handler attempt log;
+ *   - `attempts` — parent-scoped query namespace over compensation-handler
+ *     attempt rows;
  *   - `skip(result, opts?)` — operator completion with compensation metadata;
  *   - `escalateToManual(escalation, opts?)` — park for external resolution.
  */
@@ -245,7 +252,9 @@ export interface RequestCompensationUniqueHandleExternal<
 > extends FetchableHandle<RequestCompensationRow<TPayload, TCompResult>> {
   readonly id: RequestCompensationInstanceId;
 
-  attempts(opts?: FetchOptions): Promise<FindUniqueResult<AttemptAccessor>>;
+  readonly attempts: OperatorAttemptsNamespaceExternal<
+    RequestHandlerAttempt<TCompensationErrors>
+  >;
 
   skip(
     ...args: [TCompResult] extends [void]
@@ -282,6 +291,33 @@ export type RequestCompensationNamespaceExternal<
 // FORWARD REQUEST HANDLE
 // =============================================================================
 
+export type RequestCompensationResultFromBlock<
+  TCompensation extends true | RequestCompensationConfig<any, any> | undefined,
+> = TCompensation extends RequestCompensationConfig<infer TResultSchema>
+  ? TResultSchema extends StandardSchemaV1<unknown, unknown>
+    ? StandardSchemaV1.InferOutput<TResultSchema>
+    : void
+  : TCompensation extends true
+    ? void
+    : unknown;
+
+type WithRequestCompensationHandle<
+  TCompensation extends true | RequestCompensationConfig<any, any> | undefined,
+  TPayload,
+  TCompResult,
+  TCompensationErrors extends ErrorDefinitions,
+> = undefined extends TCompensation
+  ? {}
+  : TCompensation extends undefined
+    ? {}
+    : {
+        readonly compensation: RequestCompensationUniqueHandleExternal<
+          TPayload,
+          TCompResult,
+          TCompensationErrors
+        >;
+      };
+
 export interface RequestResolveOutcome {
   readonly status: "resolved";
 }
@@ -290,18 +326,7 @@ export type RequestEscalateToManualOutcome =
   | { readonly status: "manual" }
   | { readonly status: "already_terminal"; readonly current: RequestStatus };
 
-/**
- * Operator-facing handle for a forward request invocation.
- *
- * Request namespaces are queryable through the same `get` / `findUnique` /
- * `findMany` / `count` surface as workflows and compensation instances.
- * Individual request actions live on the handle.
- *
- * `resolve` and `escalateToManual` both abort an in-flight handler attempt via
- * `AbortSignal`. Only `resolve` records a typed response and unblocks the
- * workflow.
- */
-export interface RequestHandleExternal<
+interface RequestHandleExternalBase<
   TRequestName extends string = string,
   TPayload = unknown,
   TResponse = unknown,
@@ -309,6 +334,10 @@ export interface RequestHandleExternal<
   TErrors extends ErrorDefinitions = Record<string, never>,
 > extends FetchableHandle<RequestRow<TRequestName, TPayload, TResponse>> {
   readonly id: RequestId<TRequestName>;
+
+  readonly attempts: OperatorAttemptsNamespaceExternal<
+    RequestHandlerAttempt<TErrors>
+  >;
 
   resolve(
     response: TResponseInput,
@@ -320,6 +349,43 @@ export interface RequestHandleExternal<
     opts?: OperatorActionOptions,
   ): Promise<RequestEscalateToManualOutcome>;
 }
+
+/**
+ * Operator-facing handle for a forward request invocation.
+ *
+ * Request namespaces are queryable through the same `get` / `findUnique` /
+ * `findMany` / `count` surface as workflows and compensation instances.
+ * Individual request actions live on the handle.
+ *
+ * Compensable definitions expose a synchronous `.compensation` handle ref;
+ * row existence is surfaced lazily via `compensation.fetchRow(...)`.
+ *
+ * `resolve` and `escalateToManual` both abort an in-flight handler attempt via
+ * `AbortSignal`. Only `resolve` records a typed response and unblocks the
+ * workflow.
+ */
+export type RequestHandleExternal<
+  TRequestName extends string = string,
+  TPayload = unknown,
+  TResponse = unknown,
+  TResponseInput = TResponse,
+  TErrors extends ErrorDefinitions = Record<string, never>,
+  TCompensation extends true | RequestCompensationConfig<any, any> | undefined = undefined,
+  TCompensationErrors extends ErrorDefinitions = Record<string, never>,
+  TCompResult = unknown,
+> = RequestHandleExternalBase<
+  TRequestName,
+  TPayload,
+  TResponse,
+  TResponseInput,
+  TErrors
+> &
+  WithRequestCompensationHandle<
+    TCompensation,
+    TPayload,
+    TCompResult,
+    TCompensationErrors
+  >;
 
 export type RequestNamespaceExternal<
   TRequestName extends string = string,
@@ -335,7 +401,10 @@ export type RequestNamespaceExternal<
     TPayload,
     TResponse,
     TResponseInput,
-    TErrors
+    TErrors,
+    TCompensation,
+    TCompensationErrors,
+    RequestCompensationResultFromBlock<TCompensation>
   >,
   RequestWhereTemplate<TRequestName, TPayload, TResponse>,
   RequestRow<TRequestName, TPayload, TResponse>,
@@ -379,13 +448,13 @@ export interface DeadLetterHandleExternal<
   readonly id: DeadLetterId<TQueueName>;
 
   /**
-   * Async accessor over handler attempt records for this message (failed tries
-   * only). Declared errors carry `code`, `message`, and optional schema-backed
-   * `details`.
+   * Parent-scoped query namespace over handler attempt records for this
+   * message (failed tries only). Declared errors carry `code`, `message`, and
+   * optional schema-backed `details`.
    */
-  attempts(
-    opts?: FetchOptions,
-  ): Promise<FindUniqueResult<QueueHandlerAttemptAccessor<TErrors>>>;
+  readonly attempts: OperatorAttemptsNamespaceExternal<
+    QueueHandlerAttempt<TErrors>
+  >;
 
   retry(opts?: OperatorActionOptions): Promise<DeadLetterRetryOutcome>;
 

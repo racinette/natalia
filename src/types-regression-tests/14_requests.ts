@@ -12,10 +12,12 @@ import type {
   FindManyResult,
   FindUniqueResult,
   HandleWithRow,
+  HandlerAttemptsReadNamespace,
+  OperatorAttemptsNamespaceExternal,
   RequestCompensationHandlerContext,
   RequestCompensationInfo,
+  RequestCompensationUniqueHandleExternal,
   RequestHandlerAttempt,
-  RequestHandlerAttemptAccessor,
   RequestHandlerAttemptDetails,
   RequestHandlerContext,
   RequestHandlerRegistrationOptions,
@@ -24,6 +26,7 @@ import type {
   RequestRetentionPolicy,
   RequestTerminalStatus,
   RequestHandleExternal,
+  RequestCompensationResultFromBlock,
   RequestNamespaceExternal,
   RequestRow,
   UnhandledRequestHandlerAttempt,
@@ -248,10 +251,10 @@ const unregister = client.requests.approvalRequestAcceptance.registerHandler(
           >
         >;
         type _Forward = Assert<
-          typeof ctx.forward extends RequestCompensationInfo<{
-            approved: boolean;
-            reviewerId: string;
-          }>
+          typeof ctx.forward extends RequestCompensationInfo<
+            { approved: boolean; reviewerId: string },
+            InferRequestErrors<typeof approvalRequest>
+          >
             ? true
             : false
         >;
@@ -259,7 +262,8 @@ const unregister = client.requests.approvalRequestAcceptance.registerHandler(
           typeof ctx extends RequestCompensationHandlerContext<
             InferRequestCompensationErrors<typeof approvalRequest>,
             { documentId: string; tenantId: string },
-            { approved: boolean; reviewerId: string }
+            { approved: boolean; reviewerId: string },
+            InferRequestErrors<typeof approvalRequest>
           >
             ? true
             : false
@@ -372,12 +376,16 @@ type _RetentionContext = Assert<
         readonly status: "resolved";
         readonly payload: _ApprovalPayload;
         readonly response: _ApprovalResponse;
-        readonly attempts: RequestHandlerAttemptAccessor<_ApprovalErrors>;
+        readonly attempts: HandlerAttemptsReadNamespace<
+          RequestHandlerAttempt<_ApprovalErrors>
+        >;
       }
     | {
         readonly status: "timedOut";
         readonly payload: _ApprovalPayload;
-        readonly attempts: RequestHandlerAttemptAccessor<_ApprovalErrors>;
+        readonly attempts: HandlerAttemptsReadNamespace<
+          RequestHandlerAttempt<_ApprovalErrors>
+        >;
       }
   >
 >;
@@ -435,7 +443,7 @@ client.requests.approvalRequestAcceptance.registerHandler(
       if (ctx.status === "resolved") {
         void ctx.response.approved;
       }
-      await ctx.attempts.all();
+      await ctx.attempts.findMany();
       return null;
     },
   },
@@ -552,16 +560,22 @@ type _RejectDeclaredCodeWithoutErrors = Assert<
 >;
 void (0 as unknown as _RejectDeclaredCodeWithoutErrors);
 
-type _AttemptAccessorShape = Assert<
-  RequestHandlerAttemptAccessor<InferRequestErrors<typeof approvalRequest>> extends {
-    last(): Promise<RequestHandlerAttempt<InferRequestErrors<typeof approvalRequest>>>;
-    all(): Promise<RequestHandlerAttempt<InferRequestErrors<typeof approvalRequest>>[]>;
-    count(): Promise<number>;
+type _HandlerAttemptsNamespaceShape = Assert<
+  HandlerAttemptsReadNamespace<
+    RequestHandlerAttempt<InferRequestErrors<typeof approvalRequest>>
+  > extends {
+    findMany(
+      query: unknown,
+      opts?: unknown,
+    ): FindManyResult<
+      RequestHandlerAttempt<InferRequestErrors<typeof approvalRequest>>
+    >;
+    count(query: unknown, opts?: unknown): Promise<number>;
   }
     ? true
     : false
 >;
-void (0 as unknown as _AttemptAccessorShape);
+void (0 as unknown as _HandlerAttemptsNamespaceShape);
 
 async function manualResolution(): Promise<void> {
   const requestMany = client.requests.approvalRequestAcceptance.findMany(
@@ -584,7 +598,12 @@ async function manualResolution(): Promise<void> {
             { documentId: string; tenantId: string },
             { approved: boolean; reviewerId: string },
             { approved: boolean; reviewerId: string },
-            InferRequestErrors<typeof approvalRequest>
+            InferRequestErrors<typeof approvalRequest>,
+            InferRequestCompensationDef<typeof approvalRequest>,
+            InferRequestCompensationErrors<typeof approvalRequest>,
+            RequestCompensationResultFromBlock<
+              InferRequestCompensationDef<typeof approvalRequest>
+            >
           >,
           Pick<
             RequestRow<
@@ -625,6 +644,25 @@ async function manualResolution(): Promise<void> {
   const fetched = await requestHandle.fetchRow({ payload: true, status: true });
   void fetched;
 
+  type _HasCompensation = Assert<
+    typeof requestHandle.compensation extends RequestCompensationUniqueHandleExternal<
+      { documentId: string; tenantId: string },
+      RequestCompensationResultFromBlock<
+        InferRequestCompensationDef<typeof approvalRequest>
+      >,
+      InferRequestCompensationErrors<typeof approvalRequest>
+    >
+      ? true
+      : false
+  >;
+  void (0 as unknown as _HasCompensation);
+
+  await requestHandle.compensation.fetchRow({ status: true });
+  const _forwardAttempts = await requestHandle.attempts.findMany({
+    fields: { manual: true },
+  });
+  void _forwardAttempts[0]?.row.manual;
+
   const count = await client.requests.approvalRequestAcceptance.count((scope) =>
     eq(scope.status, "manual"),
   );
@@ -634,6 +672,23 @@ async function manualResolution(): Promise<void> {
     ({ payload }) => eq(payload.documentId, "doc-1"),
   );
   void found;
+
+  // Non-compensable requests omit `.compensation`.
+  const pingHandle = client.requests.pingRequestAcceptance.get(
+    "ping-id" as RequestId<"pingRequestAcceptance">,
+  );
+  // @ts-expect-error ping request has no compensation block
+  void pingHandle.compensation;
+
+  type _OperatorAttemptsNs = Assert<
+    IsEqual<
+      typeof requestHandle.attempts,
+      OperatorAttemptsNamespaceExternal<
+        RequestHandlerAttempt<InferRequestErrors<typeof approvalRequest>>
+      >
+    >
+  >;
+  void (0 as unknown as _OperatorAttemptsNs);
 
   // @ts-expect-error request ids are branded by request definition name
   client.requests.approvalRequestAcceptance.get("plain-id");
@@ -645,7 +700,7 @@ async function manualResolution(): Promise<void> {
   );
 }
 
-type _AttemptAccessor = Assert<_AttemptAccessorShape>;
+type _HandlerAttemptsNamespace = Assert<_HandlerAttemptsNamespaceShape>;
 
 type _Unregister = Assert<IsEqual<typeof unregister, Unsubscribe>>;
 type _RequestHandlerDeclaredError = Assert<
