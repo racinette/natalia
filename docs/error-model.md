@@ -121,14 +121,12 @@ Step, request, queue, and topic handlers execute outside the replayed workflow b
 | Primitive | Intentional control flow | Transient fault |
 |-----------|-------------------------|-----------------|
 | **Steps** | normal `return` | `throw` (use `AttemptError` for structured attempt records) |
-| **Requests** | `return` response | `throw ctx.errors.X(..., { manual: false })` or unhandled throw → retry |
-| **Requests (manual)** | — | Forward handler: `throw ctx.errors.X(..., { manual: true })`. Retry exhaustion or compensation handler throw (including `ctx.errors.X(...)`) → `status: manual` (non-terminal) |
+| **Requests** | `return` response | Forward or compensation handler: `throw ctx.errors.X(..., { manual: false })` or unhandled throw → retry |
+| **Requests (manual)** | — | Forward or compensation handler: `throw ctx.errors.X(..., { manual: true })`. Retry exhaustion → `status: manual` (non-terminal for forward; compensation block parked) |
 | **Queues** | `throw ctx.errors.X(..., { deadLetter: true })` | `throw ctx.errors.X(..., { deadLetter: false })` or unhandled throw → retry |
 | **Topics** | `throw UnrecoverableError` → `onConsumeError` immediately | `throw AttemptError` or ordinary error → retry |
 
-Request **forward** handlers declare an optional **`errors`** map on `defineRequest`. Each intentional non-resolution throw uses **`ctx.errors.<Code>(message, { manual })`** or **`ctx.errors.<Code>(message, details, { manual })`**, producing a **`RequestHandlerDeclaredError`**. `manual: true` parks the invocation for external resolution; it is **not** terminal — the request stays open until `resolve` or workflow call-time timeout.
-
-**Compensation handlers** use the compensation block's own `errors` map with a different disposition surface: factories take only `(message)` or `(message, details)` — no `{ manual }` flag. `return` reports compensation outcome; **any throw** moves to manual mode. When compensation retries are exhausted, the block moves to manual automatically. Business outcomes belong in **`return response`**, not in the error map.
+Request **forward** and **compensation** handlers each use their definition's own `errors` map when declared. Each intentional non-resolution throw uses **`ctx.errors.<Code>(message, { manual })`** or **`ctx.errors.<Code>(message, details, { manual })`**, producing a **`RequestHandlerDeclaredError`**. `manual: true` parks for external resolution; `manual: false` records a failed attempt and retries per the handler's retry policy. Forward manual is non-terminal until `resolve` or workflow call-time timeout. Compensation manual parks the compensation block until operator action or retry exhaustion.
 
 Queue handlers are `void`-returning and declare an optional **`errors`** map on `defineQueue` (same shape as workflow errors: `true` or schema per code). Each throw uses **`ctx.errors.<Code>(message, { deadLetter })`** or **`ctx.errors.<Code>(message, details, { deadLetter })`**, producing a **`QueueHandlerDeclaredError`**. Topic consumers use **`UnrecoverableError`**.
 
@@ -140,12 +138,15 @@ Details and type-level rules live in the primitive docs: [queues](./primitives/q
 
 ## Attempt history
 
-Retried operations persist tries for inspection. The shape depends on context:
+Retried forward operations (steps, request handlers, topic consumers, and forward outcomes observed from compensation) share one attempt lifecycle:
 
-- **Steps** — `AttemptAccessor` over `Attempt` records; **every** try is stored, including successes.
-- **Requests, topics** — `AttemptAccessor`; **failed tries only**.
-- **Queues** — `QueueHandlerAttemptAccessor` with per-code `details` (`serialized` / `serialization_error` / `unspecified`). When `code` is set, `message` is always `string`.
-- **Requests** — `RequestHandlerAttemptAccessor` with the same `details` union and `manual` disposition on each attempt row.
+- Retries produce **failed** or **unsettled** attempt records (started but no result written — for example worker crash).
+- At most **one successful completion** per forward invocation; the typed outcome is persisted and available on completed forward outcomes.
+- Attempt history helps judge reachability and ambiguity when forward did not settle cleanly; it does not replace external reconciliation.
+
+**Queues** use `QueueHandlerAttemptAccessor` with per-code `details` (`serialized` / `serialization_error` / `unspecified`). When `code` is set, `message` is always `string`.
+
+**Request handler attempts** use the same `details` union and record `manual` disposition from `ctx.errors` throws.
 
 `AttemptError` attaches structured fields to step, request, and topic attempt rows. **`QueueHandlerDeclaredError`** and **`RequestHandlerDeclaredError`** (from handler `ctx.errors`) carry `code`, `message`, optional schema-backed `details`, and a primitive-specific disposition (`deadLetter` or `manual`).
 

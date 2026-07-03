@@ -56,9 +56,8 @@ type _AttemptShape = Assert<
 // `AttemptAccessor`
 //
 // Lazy, async-iterable accessor over execution attempt records. Same shape
-// across every attempt-bearing context: steps (one row per try), queue/request/
-// topic handlers (failed tries only), and `CompensationInfo.attempts` /
-// `RequestCompensationInfo.attempts`.
+// across attempt-bearing forward contexts (steps, requests, topics, and forward
+// outcomes observed from compensation).
 // =============================================================================
 
 declare const attempts: AttemptAccessor;

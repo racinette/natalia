@@ -224,14 +224,20 @@ const unregisterApprovalCompensation =
     async () => ({ approved: true }),
     {
       compensation: {
-        handler: async (payload, info, _opts) => {
-          type _Payload = Assert<IsEqual<typeof payload, { chargeId: string }>>;
-          type _Info = Assert<
-            typeof info extends RequestCompensationInfo<{ approved: boolean }>
+        handler: async (ctx) => {
+          type _Payload = Assert<
+            IsEqual<typeof ctx.payload, { chargeId: string }>
+          >;
+          type _Forward = Assert<
+            typeof ctx.forward extends RequestCompensationInfo<{ approved: boolean }>
               ? true
               : false
           >;
-          return { cancelled: info.status !== "completed" };
+          if (ctx.forward.status === "completed") {
+            return { cancelled: !ctx.forward.response.approved };
+          }
+          // Reconciliation stub: no remote reservation found for payload.
+          return { cancelled: false };
         },
         retryPolicy: { timeoutSeconds: 30 },
       },
@@ -244,23 +250,32 @@ const unregisterManualReviewCompensation =
     async () => ({ accepted: true }),
     {
       compensation: {
-        handler: async (payload, info, ctx) => {
-          type _Payload = Assert<IsEqual<typeof payload, { chargeId: string }>>;
+        handler: async (ctx) => {
+          type _Payload = Assert<
+            IsEqual<typeof ctx.payload, { chargeId: string }>
+          >;
 
-          if (info.status === "completed") {
-            type _Response = Assert<IsEqual<typeof info.response, { accepted: boolean }>>;
+          if (ctx.forward.status === "completed") {
+            type _Response = Assert<
+              IsEqual<typeof ctx.forward.response, { accepted: boolean }>
+            >;
             return;
           }
 
-          if (info.status === "timed_out") {
+          if (ctx.forward.status === "timed_out") {
             type _Reason = Assert<
-              IsEqual<typeof info.reason, "attempts_exhausted" | "deadline">
+              IsEqual<
+                typeof ctx.forward.reason,
+                "attempts_exhausted" | "deadline"
+              >
             >;
             // @ts-expect-error timed-out request outcomes do not expose a response
-            void info.response;
+            void ctx.forward.response;
           }
 
-          throw ctx.errors.NeedsOperator("Operator must review compensation");
+          throw ctx.errors.NeedsOperator("Operator must review compensation", {
+            manual: true,
+          });
         },
         retryPolicy: { timeoutSeconds: 30, totalTimeoutSeconds: 120 },
       },

@@ -194,7 +194,7 @@ See [Resolving Requests Asynchronously](../resolving-requests-asynchronously.md)
 
 When a workflow fails and enters compensation, the engine schedules a compensation block for each forward request invocation on a **compensable** definition. The compensation handler receives the original request payload and a summary of how the forward invocation ended. It runs on the client under its own retry policy — the same split as forward handlers.
 
-Request compensation mirrors [step compensation](./steps.md): declare on the definition, register a handler on the client, inspect forward outcome via `info`, and report the undo outcome through `return` or manual escalation through `throw`.
+Request compensation mirrors [step compensation](./steps.md): declare on the definition, register a handler on the client, inspect forward outcome via `ctx.forward`, and report the undo outcome through `return` or manual escalation through `throw`.
 
 ### Declaring a compensable request
 
@@ -235,11 +235,17 @@ client.requests.reserveFlightTicket.registerHandler(
     maxConcurrent: 5,
     retentionPolicy: async (ctx) => (ctx.status === "resolved" ? 86400 : null),
     compensation: {
-      handler: async (payload, info, ctx) => {
-        if (info.status !== "completed"c) {
-          throw ctx.errors.ReleaseBlocked("Forward did not complete — nothing to release");
+      handler: async (ctx) => {
+        let reservation =
+          ctx.forward.status === "completed"
+            ? ctx.forward.response
+            : await lookForReservedTicket(ctx.payload, ctx.signal);
+
+        if (!reservation) {
+          return { released: false };
         }
-        await releaseReservation(info.response.reservationId, { signal: ctx.signal });
+
+        await releaseReservation(reservation.reservationId, { signal: ctx.signal });
         return { released: true };
       },
       retryPolicy: { timeoutSeconds: 30, maxAttempts: 3 },
@@ -253,48 +259,52 @@ client.requests.reserveFlightTicket.registerHandler(
 
 Non-compensable requests reject a `compensation` block at registration time.
 
-### Forward outcome: `info`
+### Forward outcome and reconciliation
 
-The compensation handler receives `(payload, info, ctx)` where `payload` is the original request payload and `info` summarizes the forward invocation:
+The compensation handler receives a single `ctx` argument. `ctx.payload` is the original request payload; `ctx.forward` summarizes how the forward invocation settled from the engine's point of view.
+
+Forward settlement describes what the engine observed, not what happened remotely. When forward completed, use `ctx.forward.response` directly. When forward timed out or terminated, **do not** treat that as "nothing to undo" — reconcile with external or domain state (lookup APIs, idempotency keys) before returning an explicit no-op outcome.
 
 ```typescript
 compensation: {
-  handler: async (payload, info, ctx) => {
-    if (info.status === "completed") {
-      const { reservationId } = info.response;
-      await releaseReservation(reservationId, { signal: ctx.signal });
-      return { released: true };
+  handler: async (ctx) => {
+    let reservation =
+      ctx.forward.status === "completed"
+        ? ctx.forward.response
+        : await lookForReservedTicket(ctx.payload, ctx.signal);
+
+    if (!reservation) {
+      return { released: false };
     }
 
-    if (info.status === "timed_out") {
-      // reason is "attempts_exhausted" | "deadline"
-      const attempts = await info.attempts.all();
-      // forward never settled — inspect attempts before deciding
+    try {
+      await releaseReservation(reservation.reservationId, { signal: ctx.signal });
+    } catch {
+      throw ctx.errors.ReleaseBlocked("Release transiently failed", { manual: false });
     }
 
-    if (info.status === "terminated") {
-      await info.attempts.last();
-    }
-
-    throw ctx.errors.ReleaseBlocked("Cannot release");
+    return { released: true };
   },
   retryPolicy: { timeoutSeconds: 30 },
 },
 ```
 
-`info.status === "completed"` exposes `info.response` (the typed forward response). `"timed_out"` and `"terminated"` do not expose a response — use `info.attempts` when the forward path never recorded a resolution.
+When forward did not complete cleanly, inspect `ctx.forward.attempts` for reachability hints — then reconcile. Attempt history does not replace external reconciliation.
+
+`ctx.forward.status === "completed"` exposes `ctx.forward.response`. `"timed_out"` exposes `reason` (`"attempts_exhausted" | "deadline"`) and `attempts`. `"terminated"` exposes `attempts` only — neither timed-out nor terminated variants expose `response`.
 
 ### Compensation handler outcomes
 
-Compensation `ctx.errors` factories take `(message)` or `(message, details)` only — there is no `{ manual }` flag. Any `throw` (including `ctx.errors.X(...)`) moves the compensation block to `manual`. When compensation handler retries are exhausted, the block moves to `manual` with persisted attempt history.
+Compensation `ctx.errors` factories mirror forward handlers: `(message, { manual })` or `(message, details, { manual })`. `manual: false` records a failed attempt and retries per `compensation.retryPolicy`. `manual: true` moves the compensation block to `manual`. When compensation retries are exhausted, the block moves to `manual` with persisted attempt history.
 
 
-| Action                              | Outcome                                                                                              |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `return result`                     | Compensation block completes with the typed result (or `void` when no `compensation.result` schema). |
-| `throw ctx.errors.X(...)`           | Moves compensation block to `manual`.                                                                |
-| Unhandled throw                     | Failed attempt; retry per `compensation.retryPolicy`.                                                |
-| Compensation retry budget exhausted | Moves compensation block to `manual`.                                                                |
+| Action                                              | Outcome                                                                                              |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `return result`                                     | Compensation block completes with the typed result (or `void` when no `compensation.result` schema). |
+| `throw ctx.errors.X(..., { manual: false })`        | Failed attempt; retry per `compensation.retryPolicy`.                                                |
+| `throw ctx.errors.X(..., { manual: true })`         | Moves compensation block to `manual`.                                                                |
+| Unhandled throw                                     | Failed attempt; retry per `compensation.retryPolicy`.                                                |
+| Compensation retry budget exhausted                 | Moves compensation block to `manual`.                                                                |
 
 
 Business outcomes belong in `return`, not in the error map.
@@ -376,7 +386,7 @@ If no ticket arrives before the workflow's call-time `timeout`, the workflow obs
 | ---------- | --------------------------------------------------------------------------------------------------------------------- |
 | `pending`  | Recorded; waiting for a handler claim.                                                                                |
 | `claimed`  | Handler running under `retryPolicy`.                                                                                  |
-| `manual`   | Parked for external resolution (handler `manual: true`, retry exhaustion, compensation throw, or `escalateToManual`). |
+| `manual`   | Parked for external resolution (handler `manual: true`, retry exhaustion, compensation `manual: true` throw, or `escalateToManual`). |
 | `resolved` | Response recorded; workflow can proceed.                                                                              |
 | `timedOut` | Workflow call-time `timeout` elapsed before resolution.                                                               |
 

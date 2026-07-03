@@ -1,0 +1,78 @@
+---
+description: Compensation, attempts, and retry invariants for all project work
+alwaysApply: true
+---
+
+# Compensation and retry awareness
+
+Forward operations (steps, requests) run outside durable workflow replay. Compensation exists because forward work can **mutate remote state even when the engine never records a successful return** — for example a POST that lands, then response handling fails, or a worker dies mid-attempt. Compensation reconciles or undoes that uncertainty; it is not a mirror of “did the handler throw.”
+
+## Two compensation surfaces
+
+Same invariants; different registration and runtime shape. Do not teach opposite rules for steps vs requests.
+
+- **Step compensation** — declared on `defineStep`; `undo` runs inside a compensation block instance with declared dependencies.
+- **Request compensation** — declared on `defineRequest`; handler registered on the client alongside the forward handler.
+
+For current signatures, outcome tables, and examples, read `docs/primitives/steps.md` and `docs/primitives/requests.md`. Do not duplicate or contradict them here.
+
+## Forward settlement vs remote truth
+
+Forward **settlement status** describes what the **engine observed**, not what happened externally.
+
+- **Completed** — handler returned and the engine persisted the typed outcome. Use that outcome directly when compensating.
+- **Timed out / terminated** — no successful return was recorded. This does **not** mean “no side effect.” Remote mutation may still exist.
+
+**Never treat non-completed forward status as “nothing to undo.”** When forward did not complete cleanly, reconcile with external or domain truth (lookup, idempotency keys, provider APIs) before concluding compensation is unnecessary.
+
+## Attempt outcomes
+
+Steps and requests share the same attempt lifecycle:
+
+- **Failed** — error captured on the attempt record.
+- **Succeeded** — at most one successful completion per forward invocation; the typed result is persisted and available on completed forward outcomes.
+- **Unsettled (limbo)** — attempt started but no result was written (crash, hard kill, no graceful shutdown). Counts as “we tried”; treat like ambiguous post-reach unless attempt evidence shows pre-reach failure only.
+
+Attempt history helps judge **reachability and ambiguity**. It does not replace external reconciliation when forward outcome is unknown.
+
+## Author responsibilities
+
+**Forward (`execute` / forward handler):**
+
+- Must be **idempotent** under retry for the same attempt identity.
+- Structure work so post-I/O failures are handled deliberately — unhandled throws are retried as transient unless policy says otherwise.
+- Use declared errors with **retry vs manual disposition** when the author knows whether external resolution is needed.
+
+**Compensation (`undo` / compensation handler):**
+
+- Must **not** assume the forward block was atomic.
+- On completed forward: act on the persisted outcome.
+- Otherwise: reconcile, then act — or return an explicit “nothing to undo” outcome only after reconciliation proves it.
+- Design undo/release calls to be **safe on retry** (idempotent reconciliation).
+
+## Exit paths
+
+Every compensation path must end in one of:
+
+| Intent | Mechanism |
+| --- | --- |
+| Auto-complete | Return the compensation outcome (including explicit “no undo needed”) |
+| Transient failure | Declared error with retry disposition, or unhandled throw retried per policy |
+| Operator required | Declared error with manual disposition, or retry exhaustion |
+
+Business outcomes belong in **return**, not in the error map. Do not use errors to encode success or “skipped undo” when a typed return can express it.
+
+## Anti-patterns
+
+When writing docs, types, regression tests, or handler examples, reject:
+
+- Returning “no compensation needed” from forward status alone without reconciliation.
+- Compensation that only runs release logic when forward completed, with no branch for ambiguous or non-completed forward.
+- Treating attempt history as proof that remote state is unchanged.
+- Examples that imply forward handler throw ⇒ no external mutation.
+- All declared compensation errors forcing immediate manual when transient typed retry is needed.
+- Copying handler signatures or field names into this rule — they change; docs are canonical.
+
+## One attempt is enough 
+
+Compensation runs whenever forward had at least one try — whether that try reached I/O, failed during payload parsing, or ended in limbo is not the engine's concern; the author owns idempotent forward retries and idempotent compensation grounded in remote-state awareness.

@@ -240,12 +240,15 @@ const unregister = client.requests.approvalRequestAcceptance.registerHandler(
   {
     retryPolicy: { maxAttempts: 3, timeoutSeconds: 30 },
     compensation: {
-      handler: async (payload, info, ctx) => {
+      handler: async (ctx) => {
         type _Payload = Assert<
-          IsEqual<typeof payload, { documentId: string; tenantId: string }>
+          IsEqual<
+            typeof ctx.payload,
+            { documentId: string; tenantId: string }
+          >
         >;
-        type _Info = Assert<
-          typeof info extends RequestCompensationInfo<{
+        type _Forward = Assert<
+          typeof ctx.forward extends RequestCompensationInfo<{
             approved: boolean;
             reviewerId: string;
           }>
@@ -254,20 +257,32 @@ const unregister = client.requests.approvalRequestAcceptance.registerHandler(
         >;
         type _Ctx = Assert<
           typeof ctx extends RequestCompensationHandlerContext<
-            InferRequestCompensationErrors<typeof approvalRequest>
+            InferRequestCompensationErrors<typeof approvalRequest>,
+            { documentId: string; tenantId: string },
+            { approved: boolean; reviewerId: string }
           >
             ? true
             : false
         >;
 
-        if (info.status !== "completed") {
-          throw ctx.errors.ReleaseBlocked("Nothing to release");
+        if (ctx.forward.status === "completed") {
+          const transientErr = ctx.errors.ProviderUnavailable(
+            "PSP unreachable",
+            { provider: "stripe" },
+            { manual: false },
+          );
+          void transientErr.manual;
+
+          // @ts-expect-error manual is required
+          ctx.errors.ReleaseBlocked("missing disposition");
+
+          return { cancelled: ctx.forward.response.approved };
         }
 
-        // @ts-expect-error compensation ctx.errors do not take { manual }
-        ctx.errors.ReleaseBlocked("bad", { manual: true });
-
-        return { cancelled: info.response.approved };
+        // Non-completed forward: reconcile externally before concluding no-op.
+        throw ctx.errors.ReleaseBlocked("Forward unsettled — release blocked", {
+          manual: true,
+        });
       },
       retryPolicy: { timeoutSeconds: 30 },
     },

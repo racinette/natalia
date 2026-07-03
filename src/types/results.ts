@@ -285,8 +285,9 @@ export type RequestErrorDisposition = {
 };
 
 /**
- * Factory map for `ctx.errors` inside forward request handlers — each call
- * requires `{ manual }` to choose retry vs manual escalation.
+ * Factory map for `ctx.errors` inside forward and compensation request
+ * handlers — each call requires `{ manual }` to choose retry vs manual
+ * escalation.
  */
 export type RequestErrorFactories<TErrors extends ErrorDefinitions> = {
   [K in keyof TErrors & string]: TErrors[K] extends true
@@ -299,27 +300,6 @@ export type RequestErrorFactories<TErrors extends ErrorDefinitions> = {
           message: string,
           details: SchemaInvocationInput<TErrors[K]>,
           options: RequestErrorDisposition,
-        ) => RequestHandlerDeclaredError<
-          K,
-          StandardSchemaV1.InferOutput<TErrors[K]>
-        >
-      : never;
-};
-
-/**
- * Factory map for `ctx.errors` where every throw escalates to manual mode —
- * used in compensation handlers. Mirrors workflow `ErrorFactories` (no
- * disposition flag).
- */
-export type RequestManualEscalationErrorFactories<
-  TErrors extends ErrorDefinitions,
-> = {
-  [K in keyof TErrors & string]: TErrors[K] extends true
-    ? (message: string) => RequestHandlerDeclaredError<K, undefined>
-    : TErrors[K] extends StandardSchemaV1<unknown, unknown>
-      ? (
-          message: string,
-          details: SchemaInvocationInput<TErrors[K]>,
         ) => RequestHandlerDeclaredError<
           K,
           StandardSchemaV1.InferOutput<TErrors[K]>
@@ -475,12 +455,16 @@ export class UnrecoverableError extends Error {
 
 /**
  * Lazy, async-iterable accessor over execution attempt records for a retried
- * operation (step, request handler, queue message, topic consumer, forward
- * step observed from compensation `undo`, and similar).
+ * operation (step, request handler, topic consumer, forward step or request
+ * observed from compensation, and similar).
  *
- * **Steps** persist one row per execution attempt (including attempts whose
- * `execute` returned successfully). **Queues, requests, and topics** persist
- * rows for failed tries only; successful handling writes the outcome directly.
+ * Steps and request/topic forward handlers share one attempt lifecycle:
+ * retries produce failed or unsettled rows; at most one successful completion
+ * persists the typed outcome (when forward completed, read that outcome —
+ * not attempt history). Attempt history helps judge reachability and ambiguity
+ * when forward did not settle cleanly.
+ *
+ * Queues use {@link QueueHandlerAttemptAccessor} with per-code attempt rows.
  *
  * When `undo` runs for a compensable step, the forward step was attempted at
  * least once, so `count()` is always at least `1` on `CompensationInfo.attempts`.

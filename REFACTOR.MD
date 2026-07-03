@@ -2168,7 +2168,7 @@ interface AttemptAccessor {
 
 ### Request handlers
 
-See **[docs/primitives/requests.md](./docs/primitives/requests.md)**. Forward handlers `return` a typed response to resolve; `throw ctx.errors.X(..., { manual })` chooses manual escalation vs retry. Retry exhaustion moves the invocation to `manual`. Compensation handlers `return` to report outcome; any `throw` moves to manual; compensation retry exhaustion also moves to `manual`.
+See **[docs/primitives/requests.md](./docs/primitives/requests.md)**. Forward and compensation handlers `return` to report outcome; `throw ctx.errors.X(..., { manual })` chooses manual escalation vs retry. Retry exhaustion moves the invocation or compensation block to `manual`.
 
 ### Queue handlers
 
@@ -2743,7 +2743,7 @@ Removed context APIs:
 - Compensation is unified with execution at the storage layer: a compensation block instance is a regular workflow row (a child of the execution workflow's sibling base compensation workflow). The schema collapses to `workflow / step / promise / halt` plus the workflow primitive tables. There are no parallel `compensation_block_*` tables.
 - Buffered operations remain synchronous and are committed in batch transactions.
 - `receiveNowait` and `patch` trigger buffer flushes before reading committed state.
-- Request handler manual escalation uses `throw ctx.errors.X(..., { manual: true })`; retry exhaustion and compensation throws move to manual (see [docs/primitives/requests.md](./docs/primitives/requests.md)).
+- Request handler manual escalation uses `throw ctx.errors.X(..., { manual: true })`; forward and compensation retry exhaustion and `manual: true` throws move to manual (see [docs/primitives/requests.md](./docs/primitives/requests.md)).
 - Handler retry policies use seconds for durable persisted retry configuration; runtime retry policies use milliseconds.
 - Search range comparisons and sorting are restricted to homogeneous comparable fields.
 

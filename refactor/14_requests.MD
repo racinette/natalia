@@ -21,7 +21,7 @@ Add durable requests for workflow code that needs an external handler or manual 
 - Optional `errors` on `defineRequest`; optional `errors` on `compensation` block (separate map).
 - Forward handlers return `TResponse` only; `throw ctx.errors.X(..., { manual: true | false })` for escalation/retry.
 - Retry exhaustion moves forward invocations to `manual` with persisted attempt history.
-- Compensation handlers: `return` reports outcome; any `throw` (including `ctx.errors.X(...)`) moves to manual — no `{ manual }` flag. Compensation retry exhaustion also moves to `manual`.
+- Compensation handlers: `return` reports outcome; `throw ctx.errors.X(..., { manual })` chooses retry vs manual. Compensation retry exhaustion also moves to `manual`.
 - `client.requests.<definitionName>.registerHandler` mirrors queue registration; optional async `retentionPolicy` at terminal finalize.
 - Client request namespaces use the unified searchable surface: `.get(id)`,
   `.findUnique(query)`, `.findMany(query)`, and `.count(query)`.

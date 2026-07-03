@@ -113,10 +113,12 @@ export type CompensationInfo<TResult> =
   | { readonly status: "terminated"; readonly attempts: AttemptAccessor };
 
 /**
- * Forward request outcome passed to request compensation handlers as `info`.
+ * Forward request outcome snapshot on request compensation handler `ctx.forward`.
  *
- * `attempts` lists handler tries the engine persisted for that request
- * (failed tries only for request handlers — see `AttemptAccessor`).
+ * `attempts` lists forward handler tries the engine persisted for that
+ * request invocation. Use with forward settlement status — on `"completed"`,
+ * read the typed outcome from `response`; when forward did not complete
+ * cleanly, inspect attempts for reachability hints (see `AttemptAccessor`).
  */
 export type RequestCompensationInfo<TResponse> =
   | {

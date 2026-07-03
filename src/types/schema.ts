@@ -114,10 +114,8 @@ export type WorkflowStatus =
 /**
  * Durable status of a request compensation invocation.
  *
- * `'manual'` reflects that the forward handler threw `ctx.errors.X(..., {
- * manual: true })`, an exhaustion or compensation path threw (any throw in those
- * contexts), or no handler is registered — the operator must resolve the
- * invocation externally.
+ * `'manual'` — the compensation handler threw `ctx.errors.X(..., { manual:
+ * true })`, retry budget was exhausted, or an operator escalated the block.
  */
 export type RequestCompensationStatus =
   | "pending"

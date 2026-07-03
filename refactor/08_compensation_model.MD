@@ -97,11 +97,11 @@ client.requests.reserveFlightTicket.registerHandler(
   {
     retryPolicy: { maxAttempts: 3, timeoutSeconds: 30 },
     compensation: {
-      handler: async (payload, info, ctx) => {
-        if (info.status !== "completed") {
+      handler: async (ctx) => {
+        if (ctx.forward.status !== "completed") {
           throw ctx.errors.ReleaseBlocked("Nothing to release");
         }
-        await releaseReservation(info.response.reservationId, {
+        await releaseReservation(ctx.forward.response.reservationId, {
           signal: ctx.signal,
         });
         return { released: true };
@@ -112,12 +112,15 @@ client.requests.reserveFlightTicket.registerHandler(
 );
 ```
 
-The compensation handler receives `(payload, info, ctx)` where `info`
-is `RequestCompensationInfo<TResponse>` and `ctx.errors` uses the
-compensation block's own error map (no `{ manual }` flag). `return`
-reports the compensation outcome; any `throw` moves the block to
-manual mode. When compensation retries are exhausted, the block moves
-to `manual` automatically.
+The compensation handler receives a single `ctx` argument. `ctx.payload`
+is the original request payload; `ctx.forward` is
+`RequestCompensationInfo<TResponse>`. `ctx.errors` uses the
+compensation block's own error map with `{ manual }` disposition (same
+as forward). Reconcile with remote state when forward did not complete
+cleanly — do not no-op from settlement status alone. `return`
+reports the compensation outcome; `throw ctx.errors.X(..., { manual })`
+chooses retry vs manual. When compensation retries are exhausted, the
+block moves to `manual` automatically.
 
 ### `CompensationInfo<TResult>`
 
@@ -201,9 +204,9 @@ verifies:
 9. `client.requests.<name>.registerHandler(..., { compensation: { handler,
    retryPolicy, maxConcurrent? } })` accepts a compensable request and
    a typed compensation handler nested under forward registration.
-10. Compensation handlers `return` to report outcome; any `throw`
-    (including `ctx.errors.X(...)`) moves to manual. Compensation retry
-    exhaustion also moves to `manual`.
+10. Compensation handlers `return` to report outcome;
+    `throw ctx.errors.X(..., { manual })` chooses retry vs manual.
+    Compensation retry exhaustion also moves to `manual`.
 11. `compensation` on `registerHandler` is rejected for non-compensable
     requests at compile time.
 12. `CompensationId<TStep>` is a branded string type and ids from

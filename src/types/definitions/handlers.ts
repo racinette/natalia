@@ -7,7 +7,6 @@ import type {
   QueueHandlerAttemptAccessor,
   RequestErrorFactories,
   RequestHandlerAttemptAccessor,
-  RequestManualEscalationErrorFactories,
 } from "../results";
 import type { DeadLetterReason } from "../schema";
 import type { RetryPolicyOptions } from "./policies";
@@ -137,13 +136,18 @@ export interface RequestHandlerContext<
 }
 
 /**
- * Request compensation handler context — uses the compensation block's own
- * `errors` map. `return` reports outcome; any `throw` moves to manual mode.
+ * Request compensation handler context — original payload, forward outcome,
+ * and the compensation block's own `errors` map. `return` reports outcome;
+ * `throw ctx.errors.X(..., { manual })` chooses retry vs manual escalation.
  */
 export interface RequestCompensationHandlerContext<
   TErrors extends ErrorDefinitions = Record<string, never>,
+  TPayload = unknown,
+  TForwardResponse = unknown,
 > extends HandlerContext {
-  readonly errors: RequestManualEscalationErrorFactories<TErrors>;
+  readonly payload: TPayload;
+  readonly forward: RequestCompensationInfo<TForwardResponse>;
+  readonly errors: RequestErrorFactories<TErrors>;
 }
 
 /**
@@ -180,9 +184,11 @@ export type RequestCompensationRegistrationOptions<
 > =
   | {
       readonly handler: (
-        payload: TPayload,
-        info: RequestCompensationInfo<TForwardResponse>,
-        opts: RequestCompensationHandlerContext<TCompensationErrors>,
+        ctx: RequestCompensationHandlerContext<
+          TCompensationErrors,
+          TPayload,
+          TForwardResponse
+        >,
       ) => Promise<RequestCompensationHandlerReturn<TCompensation>>;
       readonly retryPolicy: RequestCompensationRetryOptions;
       readonly maxConcurrent?: number;
