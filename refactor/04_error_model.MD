@@ -106,7 +106,7 @@ The paired file `src/types-regression-tests/04_error_model.ts` verifies:
 7. `ErrorValue<TErrors>` external shape carries the four expected
    fields: `type`, `code`, `message`, `details`.
 8. `FailureInfo<TErrors>` equals `ErrorValue<TErrors>`.
-9. `Failure` does not require an `attempt` field.
+9. `Failure` does not require an `attemptNumber` field.
 10. Compensation `undo` has no `ctx.errors`.
 
 ## Out of Scope (Deferred)

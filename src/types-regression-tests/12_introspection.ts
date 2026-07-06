@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { createWorkflowClient } from "../client";
 import {
   defineRequest,
   defineStep,
@@ -38,6 +39,7 @@ import type {
   StreamReaderAccessorExternal,
   EventAccessorExternal,
   WorkflowClientAccessor,
+  WorkflowClientCompensationsTree,
   WorkflowHandleExternal,
   WorkflowId,
   WorkflowResult,
@@ -216,7 +218,9 @@ async function _fetchRow(): Promise<void> {
   type _FullShape = Assert<IsEqual<typeof _full, FindUniqueResult<ExampleRow>>>;
 
   // With fields mask → typed projection.
-  const _projected = await fetchable.fetchRow({ id: true, status: true });
+  const _projected = await fetchable.fetchRow({
+    fields: { id: true, status: true },
+  });
   type _ProjectedShape = Assert<
     IsEqual<
       typeof _projected,
@@ -225,7 +229,7 @@ async function _fetchRow(): Promise<void> {
   >;
 
   // FetchOptions accepts txOrConn.
-  const _withOpts = await fetchable.fetchRow({}, { txOrConn: undefined });
+  const _withOpts = await fetchable.fetchRow({ txOrConn: undefined });
   void _withOpts;
 }
 
@@ -258,7 +262,7 @@ declare const ns: QueryableNamespace<
   AttachedChildWorkflowId<typeof followUpHeader>
 >;
 
-// `.get(id)` — synchronous, no I/O.
+// `.get(id)` — synchronous identity grounding; no I/O, no `.row`.
 declare const someAttachedId: AttachedChildWorkflowId<typeof followUpHeader>;
 const _handleFromGet = ns.get(someAttachedId);
 type _GetReturn = Assert<
@@ -267,18 +271,26 @@ type _GetReturn = Assert<
     AttachedChildWorkflowExternalHandle<typeof followUpHeader>
   >
 >;
+// @ts-expect-error get is identity-only; prefetch via findUnique/findMany fields
+void ns.get(someAttachedId, { id: true, status: true });
 
-// `.get(id, fields)` — adds prefetched `.row`.
-const _handleWithRow = ns.get(someAttachedId, { id: true, status: true });
-type _GetWithFieldsRow = Assert<
-  IsEqual<
-    typeof _handleWithRow.row,
-    Pick<
-      WorkflowRow<{ orderId: string }, { ok: boolean }, { tenantId: string }>,
-      "id" | "status"
-    >
-  >
->;
+// Prefetch attaches `.row` on async query results only.
+async function _findUniqueWithPrefetch(): Promise<void> {
+  const withRow = await ns.findUnique({ fields: { id: true, status: true } });
+  if (withRow.status === "unique") {
+    type _Row = Assert<
+      IsEqual<
+        typeof withRow.value.row,
+        Pick<
+          WorkflowRow<{ orderId: string }, { ok: boolean }, { tenantId: string }>,
+          "id" | "status"
+        >
+      >
+    >;
+    void (0 as unknown as _Row);
+  }
+}
+void _findUniqueWithPrefetch;
 
 // `findUnique` resolves to FindUniqueResult<Handle>.
 async function _findUniqueShape(): Promise<void> {
@@ -387,8 +399,7 @@ async function _exerciseFetchRow(): Promise<void> {
   }
 
   const masked = await workflowHandle.fetchRow({
-    status: true,
-    idempotencyKey: true,
+    fields: { status: true, idempotencyKey: true },
   });
   if (masked.status === "unique") {
     type _Masked = Assert<
@@ -488,24 +499,6 @@ type _ChargeCompGetReturn = Assert<
   >
 >;
 
-const _chargeCompHandleWithRow = workflowHandle.compensations.steps.chargeStep.get(
-  chargeCompensationId,
-  { id: true, args: true },
-);
-type _ChargeCompGetWithRow = Assert<
-  IsEqual<
-    typeof _chargeCompHandleWithRow.row,
-    Pick<
-      CompensationBlockRow<
-        "chargeStep",
-        { customerId: string; amount: number },
-        { status: "refunded" | "manual_review" }
-      >,
-      "id" | "args"
-    >
-  >
->;
-
 async function _exerciseChargeCompensationNamespace(): Promise<void> {
   const found = await workflowHandle.compensations.steps.chargeStep.findUnique();
   if (found.status === "unique") {
@@ -520,7 +513,9 @@ async function _exerciseChargeCompensationNamespace(): Promise<void> {
       >
     >;
 
-    const _row = await found.value.fetchRow({ id: true, result: true });
+    const _row = await found.value.fetchRow({
+      fields: { id: true, result: true },
+    });
     type _FetchedRow = Assert<
       IsEqual<
         typeof _row,
@@ -601,7 +596,9 @@ async function _exerciseRequestCompensationNamespace(): Promise<void> {
       >
     >;
 
-    const _reqRow = await found.value.fetchRow({ id: true, payload: true });
+    const _reqRow = await found.value.fetchRow({
+      fields: { id: true, payload: true },
+    });
     type _FetchedRow = Assert<
       IsEqual<
         typeof _reqRow,
@@ -713,17 +710,11 @@ type _FollowUpEventsFallback = Assert<
 // @ts-expect-error undeclared followUp channel should be absent
 void followUpAttachedHandle.channels.typo;
 
-const _followUpAttachedHandleWithRow =
-  workflowHandle.childWorkflows.followUp.get(followUpAttachedId, {
-    id: true,
-    args: true,
-  });
-type _FollowUpAttachedGetWithRow = Assert<
-  IsEqual<
-    typeof _followUpAttachedHandleWithRow.row,
-    Pick<WorkflowRow<{ orderId: string }, { ok: boolean }, void>, "id" | "args">
-  >
->;
+// @ts-expect-error get is identity-only; prefetch via findUnique/findMany fields
+void workflowHandle.childWorkflows.followUp.get(followUpAttachedId, {
+  id: true,
+  args: true,
+});
 
 declare const opsChildAttachedId: AttachedChildWorkflowId<typeof opsChildWorkflow>;
 const opsChildAttachedHandle =
@@ -987,3 +978,88 @@ void _exerciseClient;
 type _HaltsNamespaceShape = Assert<
   typeof workflowHandle.halts extends HaltsNamespaceExternal ? true : false
 >;
+
+// =============================================================================
+// CLIENT-LEVEL COMPENSATION NAMESPACES — global L1 search keyed by definition name.
+// =============================================================================
+
+const _introspectionClient = createWorkflowClient({
+  order: _orderWorkflow,
+});
+
+type _ClientCompensationsTree = Assert<
+  IsEqual<
+    typeof _introspectionClient.compensations,
+    WorkflowClientCompensationsTree<{ order: typeof _orderWorkflow }>
+  >
+>;
+
+type _ClientCompensationRequestKeys = Assert<
+  IsEqual<
+    keyof typeof _introspectionClient.compensations.requests,
+    "introspectionApprovalRequest"
+  >
+>;
+
+type _ClientCompensationStepKeys = Assert<
+  IsEqual<
+    keyof typeof _introspectionClient.compensations.steps,
+    "introspectionChargeStep" | "introspectionNoResultStep"
+  >
+>;
+
+type _ClientApprovalCompNs = Assert<
+  IsEqual<
+    typeof _introspectionClient.compensations.requests.introspectionApprovalRequest,
+    RequestCompensationNamespaceExternal<
+      { chargeId: string },
+      { cancelled: boolean }
+    >
+  >
+>;
+
+type _ClientChargeCompNs = Assert<
+  IsEqual<
+    typeof _introspectionClient.compensations.steps.introspectionChargeStep,
+    CompensationBlockNamespaceExternal<
+      "introspectionChargeStep",
+      { customerId: string; amount: number },
+      { status: "refunded" | "manual_review" }
+    >
+  >
+>;
+
+async function _exerciseClientCompensations(): Promise<void> {
+  const _found =
+    await _introspectionClient.compensations.requests.introspectionApprovalRequest.findUnique();
+  type _Found = Assert<
+    IsEqual<
+      typeof _found,
+      FindUniqueResult<
+        RequestCompensationUniqueHandleExternal<
+          { chargeId: string },
+          { cancelled: boolean }
+        >
+      >
+    >
+  >;
+  void (0 as unknown as _Found);
+
+  const _blocks =
+    await _introspectionClient.compensations.steps.introspectionChargeStep.findMany({
+      limit: 5,
+    });
+  type _BlockId = Assert<
+    IsEqual<
+      (typeof _blocks)[number]["id"],
+      CompensationId<"introspectionChargeStep">
+    >
+  >;
+  void (0 as unknown as _BlockId);
+
+  // @ts-expect-error non-compensable request definitions are absent
+  void _introspectionClient.compensations.requests.introspectionPingRequest;
+  // @ts-expect-error workflow slot keys are not valid on client-level namespaces
+  void _introspectionClient.compensations.steps.chargeStep;
+}
+void _exerciseClientCompensations;

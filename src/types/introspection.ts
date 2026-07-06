@@ -86,12 +86,21 @@ export type ProjectedKeys<TRow, F extends FieldsMask<TRow>> = Extract<
 export type HandleWithRow<H, TRow> = H & { readonly row: TRow };
 
 /**
- * Common option bag for fetchRow / findUnique / count and other one-shot IO
- * methods on a fetchable handle. Per `REFACTOR.MD` Part 19 every IO method
- * accepts an optional `txOrConn?`.
+ * Common option bag for findUnique / count and other one-shot IO methods
+ * on a fetchable handle. Per `REFACTOR.MD` Part 19 every IO method accepts
+ * an optional `txOrConn?`.
  */
 export interface FetchOptions {
   readonly txOrConn?: IWorkflowConnection | IWorkflowTransaction;
+}
+
+/**
+ * Option bag for {@link FetchableHandle.fetchRow}. Omit `fields` to fetch the
+ * entire row; set `fields` to project columns. Shares `txOrConn?` with other
+ * IO methods.
+ */
+export interface FetchRowOptions<TRow> extends FetchOptions {
+  readonly fields?: FieldsMask<TRow>;
 }
 
 /**
@@ -126,11 +135,10 @@ export type FindUniqueOptions = FetchOptions;
  * at query time; subsequent `.fetchRow()` calls return a fresh snapshot.
  */
 export interface FetchableHandle<TRow> {
-  fetchRow(opts?: FetchOptions): Promise<FindUniqueResult<TRow>>;
   fetchRow<F extends FieldsMask<TRow>>(
-    fields: F,
-    opts?: FetchOptions,
+    opts: FetchRowOptions<TRow> & { readonly fields: F },
   ): Promise<FindUniqueResult<Pick<TRow, ProjectedKeys<TRow, F>>>>;
+  fetchRow(opts?: FetchRowOptions<TRow>): Promise<FindUniqueResult<TRow>>;
 }
 
 // =============================================================================
@@ -169,35 +177,31 @@ export interface QueryableNamespace<
   TId,
 > {
   /**
-   * Identity-based, query-grounding direct access. Returns a handle
-   * synchronously; cardinality / existence is reflected lazily in the
-   * handle methods' `FindUniqueResult` returns.
+   * Identity-based handle construction. Synchronous and query-grounding only —
+   * no I/O, no row materialization. Read row data via {@link FetchableHandle.fetchRow}
+   * or through {@link findUnique} / {@link findMany} with a `fields` prefetch.
    */
   get(id: TId): THandle;
-  get<F extends FieldsMask<TRow>>(
-    id: TId,
-    fields: F,
-  ): HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>;
 
   /**
    * Predicate-based lookup that asserts cardinality at fetch time. Omit the
    * predicate when the scoped set is expected to contain at most one row.
    */
   findUnique(
+    query: QueryPredicate<TWhereTemplate>,
     opts?: FindUniqueOptions,
   ): Promise<FindUniqueResult<THandle>>;
   findUnique<F extends FieldsMask<TRow>>(
-    opts: FindUniqueOptions & { fields: F },
+    query: QueryPredicate<TWhereTemplate>,
+    opts: FindUniqueOptions & { readonly fields: F },
   ): Promise<
     FindUniqueResult<HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>>
   >;
   findUnique(
-    query: QueryPredicate<TWhereTemplate>,
     opts?: FindUniqueOptions,
   ): Promise<FindUniqueResult<THandle>>;
   findUnique<F extends FieldsMask<TRow>>(
-    query: QueryPredicate<TWhereTemplate>,
-    opts: FindUniqueOptions & { fields: F },
+    opts: FindUniqueOptions & { readonly fields: F },
   ): Promise<
     FindUniqueResult<HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>>
   >;
@@ -207,26 +211,26 @@ export interface QueryableNamespace<
    * predicate to return every row in the namespace scope.
    */
   findMany(
+    query: QueryPredicate<TWhereTemplate>,
     opts?: FindManyOptions<TWhereTemplate>,
   ): FindManyResult<THandle>;
   findMany<F extends FieldsMask<TRow>>(
-    opts: FindManyOptions<TWhereTemplate> & { fields: F },
+    query: QueryPredicate<TWhereTemplate>,
+    opts: FindManyOptions<TWhereTemplate> & { readonly fields: F },
   ): FindManyResult<HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>>;
   findMany(
-    query: QueryPredicate<TWhereTemplate>,
     opts?: FindManyOptions<TWhereTemplate>,
   ): FindManyResult<THandle>;
   findMany<F extends FieldsMask<TRow>>(
-    query: QueryPredicate<TWhereTemplate>,
-    opts: FindManyOptions<TWhereTemplate> & { fields: F },
+    opts: FindManyOptions<TWhereTemplate> & { readonly fields: F },
   ): FindManyResult<HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>>;
 
   /** Aggregate count over the same predicate (or the full scoped set). */
-  count(opts?: CountOptions): Promise<number>;
   count(
     query: QueryPredicate<TWhereTemplate>,
     opts?: CountOptions,
   ): Promise<number>;
+  count(opts?: CountOptions): Promise<number>;
 }
 
 // =============================================================================
@@ -268,7 +272,7 @@ export type OperatorAttemptsNamespaceExternal<
 // =============================================================================
 
 /** Option bag for handler-runtime attempt queries (no `txOrConn`). */
-export type HandlerAttemptFindOptions = Record<string, never>;
+export interface HandlerAttemptFindOptions {}
 
 /** Option bag for handler-runtime `findMany` over attempt rows. */
 export interface HandlerAttemptFindManyOptions<
@@ -285,45 +289,45 @@ export interface HandlerAttemptFindManyOptions<
 export interface HandlerAttemptsReadNamespace<
   TRow extends WhereTemplateRecord,
 > {
-  get(attempt: number): Promise<FindUniqueResult<TRow>>;
+  get(attemptNumber: number): Promise<FindUniqueResult<TRow>>;
   get<F extends FieldsMask<TRow>>(
-    attempt: number,
+    attemptNumber: number,
     fields: F,
   ): Promise<FindUniqueResult<Pick<TRow, ProjectedKeys<TRow, F>>>>;
 
   findUnique(
+    query: QueryPredicate<TRow>,
     opts?: HandlerAttemptFindOptions,
   ): Promise<FindUniqueResult<TRow>>;
   findUnique<F extends FieldsMask<TRow>>(
-    opts: HandlerAttemptFindOptions & { fields: F },
+    query: QueryPredicate<TRow>,
+    opts: { readonly fields: F },
   ): Promise<FindUniqueResult<Pick<TRow, ProjectedKeys<TRow, F>>>>;
   findUnique(
-    query: QueryPredicate<TRow>,
     opts?: HandlerAttemptFindOptions,
   ): Promise<FindUniqueResult<TRow>>;
   findUnique<F extends FieldsMask<TRow>>(
-    query: QueryPredicate<TRow>,
-    opts: HandlerAttemptFindOptions & { fields: F },
+    opts: { readonly fields: F },
   ): Promise<FindUniqueResult<Pick<TRow, ProjectedKeys<TRow, F>>>>;
 
   findMany(
+    query: QueryPredicate<TRow>,
     opts?: HandlerAttemptFindManyOptions<TRow>,
   ): FindManyResult<TRow>;
   findMany<F extends FieldsMask<TRow>>(
-    opts: HandlerAttemptFindManyOptions<TRow> & { fields: F },
+    query: QueryPredicate<TRow>,
+    opts: HandlerAttemptFindManyOptions<TRow> & { readonly fields: F },
   ): FindManyResult<Pick<TRow, ProjectedKeys<TRow, F>>>;
   findMany(
-    query: QueryPredicate<TRow>,
     opts?: HandlerAttemptFindManyOptions<TRow>,
   ): FindManyResult<TRow>;
   findMany<F extends FieldsMask<TRow>>(
-    query: QueryPredicate<TRow>,
-    opts: HandlerAttemptFindManyOptions<TRow> & { fields: F },
+    opts: HandlerAttemptFindManyOptions<TRow> & { readonly fields: F },
   ): FindManyResult<Pick<TRow, ProjectedKeys<TRow, F>>>;
 
-  count(opts?: HandlerAttemptFindOptions): Promise<number>;
   count(
     query: QueryPredicate<TRow>,
     opts?: HandlerAttemptFindOptions,
   ): Promise<number>;
+  count(opts?: HandlerAttemptFindOptions): Promise<number>;
 }

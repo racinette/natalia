@@ -150,7 +150,7 @@ client.queues.notifications.registerHandler(handler, {
   retentionPolicy: async (ctx) => {
     if (ctx.status === "processed") return 86400;
     if (ctx.reason === "invalid_payload") return 3600;
-    const attempts = await ctx.attempts.findMany(() => and());
+    const attempts = await ctx.attempts.findMany();
     return attempts.length > 5 ? 86400 * 90 : 86400 * 30;
   },
 });
@@ -175,10 +175,13 @@ for (const deadLetter of matches) {
 }
 
 const handle = client.queues.notifications.deadLetters.get(deadLetterId);
-await handle.fetchRow({ payload: true, reason: true }, { txOrConn: tx });
+await handle.fetchRow({
+  fields: { payload: true, reason: true },
+  txOrConn: tx,
+});
 
-const attemptHandles = await handle.attempts.findMany(() => and(), {
-  sort: [{ path: "attempt", direction: "desc" }],
+const attemptHandles = await handle.attempts.findMany({
+  sort: [{ path: "attemptNumber", direction: "desc" }],
   limit: 1,
   fields: { code: true, message: true, details: true },
 });

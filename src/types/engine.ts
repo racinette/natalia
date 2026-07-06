@@ -708,6 +708,111 @@ type WorkflowClientQueueNamespaces<
         : WorkflowClientQueueNamespacesFromUnion<TQueueUnion>
       : Record<string, never>;
 
+type WorkflowClientLooseCompensationSteps = Record<
+  string,
+  CompensationBlockNamespaceExternal<unknown>
+>;
+
+type WorkflowClientLooseCompensationRequests = Record<
+  string,
+  RequestCompensationNamespaceExternal
+>;
+
+/* eslint-disable @typescript-eslint/no-explicit-any -- heterogeneous step definitions */
+type StepDefinitionUnionFromWorkflow<W> =
+  InferWorkflowSteps<W> extends infer TSteps
+    ? [TSteps] extends [never]
+      ? never
+      : IsAny<TSteps> extends true
+        ? StepDefinition<string, any, any, any>
+        : TSteps extends Record<string, unknown>
+          ? TSteps[keyof TSteps & string]
+          : never
+    : never;
+
+type StepDefinitionUnionFromWorkflows<
+  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+> = {
+  [K in keyof TWfs & string]: StepDefinitionUnionFromWorkflow<TWfs[K]>;
+}[keyof TWfs & string];
+
+type WorkflowClientCompensationStepNamespacesFromUnion<TStepUnion> = {
+  [TStep in TStepUnion as TStep extends StepDefinition<
+    infer TName,
+    any,
+    any,
+    any
+  >
+    ? TStep extends { compensation: unknown }
+      ? TName
+      : never
+    : never]: TStep extends StepDefinition<infer TName, any, any, any>
+    ? CompensationBlockNamespaceExternal<
+        TName,
+        StepArgsForCompensationNamespace<TStep>,
+        StepCompensationResultForNamespace<TStep>
+      >
+    : never;
+};
+
+type WorkflowClientCompensationRequestNamespacesFromUnion<TRequestUnion> = {
+  [TRequest in TRequestUnion as TRequest extends RequestDefinition<
+    infer TName,
+    any,
+    any,
+    any,
+    any
+  >
+    ? InferRequestCompensationDef<TRequest> extends undefined
+      ? never
+      : TName
+    : never]: TRequest extends RequestDefinition<infer TName, any, any, any, any>
+    ? RequestCompensationNamespaceExternal<
+        RequestPayloadForCompensationNamespace<TRequest>,
+        RequestCompensationResultForNamespace<TRequest>,
+        InferRequestCompensationErrors<TRequest>
+      >
+    : never;
+};
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+type WorkflowClientCompensationStepNamespaces<
+  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+> =
+  IsAny<TWfs> extends true
+    ? WorkflowClientLooseCompensationSteps
+    : StepDefinitionUnionFromWorkflows<TWfs> extends infer TStepUnion
+      ? [TStepUnion] extends [never]
+        ? Record<string, never>
+        : WorkflowClientCompensationStepNamespacesFromUnion<TStepUnion>
+      : Record<string, never>;
+
+type WorkflowClientCompensationRequestNamespaces<
+  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+> =
+  IsAny<TWfs> extends true
+    ? WorkflowClientLooseCompensationRequests
+    : RequestDefinitionUnionFromWorkflows<TWfs> extends infer TRequestUnion
+      ? [TRequestUnion] extends [never]
+        ? Record<string, never>
+        : WorkflowClientCompensationRequestNamespacesFromUnion<TRequestUnion>
+      : Record<string, never>;
+
+/**
+ * Client-level global compensation search namespaces.
+ *
+ * Keyed by definition `name` (`defineRequest.name` / `defineStep.name`),
+ * aggregated across all workflows registered on the client. Workflow-scoped
+ * bulk search remains on `workflowHandle.compensations.{requests,steps}` keyed
+ * by workflow slot.
+ */
+export type WorkflowClientCompensationsTree<
+  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+> = {
+  readonly requests: WorkflowClientCompensationRequestNamespaces<TWfs>;
+  readonly steps: WorkflowClientCompensationStepNamespaces<TWfs>;
+};
+
 type WorkflowHandleLooseChildWorkflows = Record<
   string,
   AttachedChildWorkflowNamespaceExternal<AnyPublicWorkflowHeader>
@@ -1186,6 +1291,7 @@ export interface WorkflowClient<
   };
   readonly requests: WorkflowClientRequestNamespaces<TWfs>;
   readonly queues: WorkflowClientQueueNamespaces<TWfs>;
+  readonly compensations: WorkflowClientCompensationsTree<TWfs>;
 }
 
 /**

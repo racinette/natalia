@@ -244,7 +244,7 @@ type _DeclaredTrueAttempt = Assert<
   IsEqual<
     DeclaredQueueHandlerAttempt<_EmailQueueErrors, "InvalidTemplate">,
     {
-      readonly attempt: number;
+      readonly attemptNumber: number;
       readonly deadLetter: boolean;
       readonly code: "InvalidTemplate";
       readonly message: string;
@@ -257,7 +257,7 @@ type _DeclaredSchemaAttempt = Assert<
   IsEqual<
     DeclaredQueueHandlerAttempt<_EmailQueueErrors, "ProviderRejected">,
     {
-      readonly attempt: number;
+      readonly attemptNumber: number;
       readonly deadLetter: boolean;
       readonly code: "ProviderRejected";
       readonly message: string;
@@ -270,7 +270,7 @@ type _UnhandledAttempt = Assert<
   IsEqual<
     UnhandledQueueHandlerAttempt,
     {
-      readonly attempt: number;
+      readonly attemptNumber: number;
       readonly deadLetter: boolean;
       readonly code: null;
       readonly message: string | null;
@@ -443,7 +443,7 @@ const retentionPolicy: QueueRetentionPolicy<
     return 86400 * 90;
   }
   const latest = await ctx.attempts.findMany({
-    sort: [{ path: "attempt", direction: "desc" }],
+    sort: [{ path: "attemptNumber", direction: "desc" }],
     limit: 1,
   });
   const last = latest[0];
@@ -587,7 +587,7 @@ async function inspectDeadLetters(): Promise<void> {
   }
 
   const attemptRows = await deadLetter.attempts.findMany({
-    sort: [{ path: "attempt", direction: "desc" }],
+    sort: [{ path: "attemptNumber", direction: "desc" }],
     limit: 1,
     fields: { code: true, message: true, details: true },
   });
@@ -638,7 +638,9 @@ async function inspectDeadLetters(): Promise<void> {
     >
   >;
 
-  const fetched = await deadLetterHandle.fetchRow({ payload: true, reason: true });
+  const fetched = await deadLetterHandle.fetchRow({
+    fields: { payload: true, reason: true },
+  });
   type _Fetched = Assert<
     IsEqual<
       typeof fetched,

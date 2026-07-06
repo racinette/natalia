@@ -3463,15 +3463,15 @@ Which of the two intents do you want numeric `ttl` to mean? That single choice d
 
 nice thinking! this concept unifies the model neatly. Now as for the other issues:
 
-> docs/queues_divergence.md  
+> docs/queues_divergence.md
 
 we can get rid of the queues_divergence.md completely, since we've basically landed on a different design, essentially diverging from the divergent design. we need to document the current design, though, if we haven't yet.
 
- > docs/error-model.md  
+> docs/error-model.md
 
 fix the error-model.md.
 
- > REFACTOR.MD / refactor/13_queues.MD  
+> REFACTOR.MD / refactor/13_queues.MD
 
 REFACTOR.MD was supposed to begin a transition to a new state, where every section was going to be replaced with a reference to a docs/ file. so if there is still a queues section, we should get rid of it and replace with a reference to a document.
 

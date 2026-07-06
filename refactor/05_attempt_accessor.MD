@@ -44,11 +44,11 @@ interface Failure {
 }
 
 interface Attempt extends Failure {
-  readonly attempt: number; // 1-indexed
+  readonly attemptNumber: number; // 1-indexed
 }
 ```
 
-- `Failure` is the base shape; it has no `attempt` field.
+- `Failure` is the base shape; it has no `attemptNumber` field.
 - `Attempt` extends `Failure` with the 1-indexed attempt number.
 - All error fields are nullable because JavaScript can throw any
   value, including throws that have no message, no type, and no
@@ -115,9 +115,9 @@ class AttemptError extends Error {
 The paired file `src/types-regression-tests/05_attempt_accessor.ts`
 verifies:
 
-1. `Failure` is constructible without an `attempt` field.
+1. `Failure` is constructible without an `attemptNumber` field.
 2. `Attempt extends Failure` and includes a 1-indexed
-   `attempt: number`.
+   `attemptNumber: number`.
 3. The `Attempt` record exposes the documented fields with the
    documented nullability.
 4. `AttemptAccessor` exposes `last() / all() / count() / iteration /

@@ -186,7 +186,7 @@ const chargeCard = defineStep({
       };
 
       if (info.status !== "completed") {
-        const forwardAttempts = await info.attempts.findMany(() => and());
+        const forwardAttempts = await info.attempts.findMany();
         const onlyPreReach = forwardAttempts.every(
           (a) =>
             a.type === "NetworkError" ||

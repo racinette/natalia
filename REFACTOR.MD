@@ -354,7 +354,7 @@ interface CompensationBlockNamespace<TStep, TArgs, TResult, TPrim> extends
   > {}
 ```
 
-A unique handle exposes per-instance reads and operator actions. `findMany` returns a result that is both awaitable (resolves to an array of handles) and async-iterable (yields handles lazily). Bulk operator actions are expressed by mapping over the iterable.
+A unique handle exposes per-instance reads and operator actions. `findMany` returns `Promise<readonly Handle[]>`. Bulk operator actions are expressed by mapping over the awaited array.
 
 ```typescript
 interface CompensationBlockUniqueHandle<TStep, TArgs, TResult, TPrim>
@@ -397,10 +397,9 @@ interface CompensationBlockUniqueHandle<TStep, TArgs, TResult, TPrim>
   };
 }
 
-// FindManyResult is both awaitable (materializes the full array) and async-iterable
-// (streams handles lazily, paginating internally). Used uniformly across every
-// findMany surface in the public API.
-interface FindManyResult<T> extends PromiseLike<readonly T[]>, AsyncIterable<T> {}
+// FindManyResult materialises the full matching set when awaited.
+// Callers bound large scans with `limit`; pagination beyond that is caller-owned.
+type FindManyResult<T> = Promise<readonly T[]>;
 
 // FindManyOptions is parameterized by the same namespaces the predicate is built over,
 // so sort paths get the same type-level safety as filter paths: only paths whose value
@@ -550,10 +549,12 @@ Bulk skipping is expressed by iterating over `findMany(...)` with a `fields` pre
 ```typescript
 await using tx = await client.transaction();
 
-for await (const block of workflowInstance.compensations.steps.bookHotel.findMany(
+const blocks = await workflowInstance.compensations.steps.bookHotel.findMany(
   ({ status }) => eq(status, "halted"),
   { fields: { args: true }, txOrConn: tx },
-)) {
+);
+
+for (const block of blocks) {
   // block.row.args is typed as TArgs (prefetched); no extra fetch needed.
   await block.skip(
     {
@@ -679,7 +680,7 @@ When the engine catches an `ExplicitError`, it resolves it against the current d
 
 ### Failure
 
-`Failure` is the base data record for a single captured throw recorded on a retried operation's attempt log. It is also the base shape that `Attempt` extends; `Attempt` adds an `attempt` number.
+`Failure` is the base data record for a single captured throw recorded on a retried operation's attempt log. It is also the base shape that `Attempt` extends; `Attempt` adds a 1-indexed `attemptNumber`.
 
 ```typescript
 interface Failure {
@@ -691,7 +692,7 @@ interface Failure {
 }
 
 interface Attempt extends Failure {
-  readonly attempt: number;
+  readonly attemptNumber: number;
 }
 ```
 
@@ -900,14 +901,9 @@ interface QueryableNamespace<
 > {
   // Direct-access constructor. Returns a handle synchronously; the handle is
   // query-grounded — actual cardinality / existence is reflected in the
-  // FindUniqueResult that handle methods return.
+  // FindUniqueResult that handle methods return. No I/O; use fetchRow or
+  // findUnique/findMany with `{ fields }` to materialize row data.
   get(id: TId): THandle;
-
-  // Identity lookup with prefetched row fields.
-  get<F extends FieldsMask<TRow>>(
-    id: TId,
-    fields: F,
-  ): HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>;
 
   // Predicate-based lookup that asserts cardinality at fetch time. Returns
   // 'unique' / 'missing' / 'ambiguous'.
@@ -920,11 +916,10 @@ interface QueryableNamespace<
     opts: FindUniqueOptions & { fields: F },
   ): Promise<FindUniqueResult<HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>>>;
 
-  // Predicate-based lookup that may yield zero or more handles. Awaitable
-  // (materializes the array) and async-iterable (streams lazily with internal
-  // pagination).
+  // Predicate-based lookup that may yield zero or more handles. Awaitable;
+  // materialises the full array. Omit the predicate to query the full scoped set.
   findMany(
-    query: (q: SearchQuery<TQueryNamespaces>) => SearchQueryNode,
+    query?: (q: SearchQuery<TQueryNamespaces>) => SearchQueryNode,
     opts?: FindManyOptions<TQueryNamespaces>,
   ): FindManyResult<THandle>;
   findMany<F extends FieldsMask<TRow>>(
@@ -942,7 +937,9 @@ interface QueryableNamespace<
 
 There is no `findUnique(id)` overload. `.get(id)` is the identity-based path; `findUnique(query)` is the assert-uniqueness-at-fetch-time path. They have different shapes because they do different things: `.get` does no I/O and cannot fail synchronously; `findUnique` does I/O and reports cardinality.
 
-`FindManyResult<T>` is both `PromiseLike<readonly T[]>` and `AsyncIterable<T>`. Awaiting it materializes the full array; iterating streams handles lazily with internal pagination.
+`FindManyResult<T>` is `Promise<readonly T[]>`. Awaiting materialises the full matching set; use `limit` to bound large scans.
+
+Predicate callbacks may return literal `true` for an unconditional match within namespace scope (`WHERE TRUE`), or omit the predicate entirely via the optional overloads on `findUnique` / `findMany` / `count`.
 
 `FindUniqueResult<T>` carries cardinality:
 
@@ -965,18 +962,19 @@ A queryable handle exposes:
 
 ```typescript
 interface FetchableHandle<TRow> {
-  // Fetch a fresh row snapshot. Always queries the database — never returns
-  // cached state. Does not mutate any handle state.
-  fetchRow(opts?: { txOrConn?: IWorkflowTransaction | IWorkflowConnection }):
-    Promise<FindUniqueResult<TRow>>;
+  fetchRow(opts?: FetchRowOptions<TRow>): Promise<FindUniqueResult<TRow>>;
   fetchRow<F extends FieldsMask<TRow>>(
-    fields: F,
-    opts?: { txOrConn?: IWorkflowTransaction | IWorkflowConnection },
+    opts: FetchRowOptions<TRow> & { readonly fields: F },
   ): Promise<FindUniqueResult<Pick<TRow, ProjectedKeys<TRow, F>>>>;
+}
+
+interface FetchRowOptions<TRow> {
+  readonly fields?: FieldsMask<TRow>;
+  readonly txOrConn?: IWorkflowTransaction | IWorkflowConnection;
 }
 ```
 
-The optional `fields` parameter is a column mask: `{ status: true, args: true }` returns `{ status, args }` only. Without `fields`, `.fetchRow()` returns the entire row.
+Omit `fields` to fetch the entire row. With `fields`, only the listed columns are projected (`Pick<Row, keys>`).
 
 When a query method (`get`, `findUnique`, `findMany`) is called with a `fields` option, the engine prefetches those columns into a `.row` field on each yielded handle:
 
@@ -1210,6 +1208,26 @@ The `Omit<..., "get">` reflects that the identity-based `.get` is replaced by th
 
 `findMany` excludes attached children automatically (`row.attached = TRUE` rows are filtered out). Detached children appear in `findMany` results because they are globally addressable workflows.
 
+#### `client.compensations` — global compensation search
+
+Compensation block instances are searchable at three levels:
+
+| Level | Path | Keyed by |
+|---|---|---|
+| Client global (L1) | `client.compensations.{requests\|steps}.<definitionName>` | `defineRequest.name` / `defineStep.name` |
+| Workflow bulk (L2) | `workflowHandle.compensations.{requests\|steps}.<slot>` | workflow slot |
+| Instance link (L3) | `requestHandle.compensation` / step dispatch handle (future) | parent forward invocation |
+
+L1 namespaces aggregate compensable definitions across all workflows registered on the client (same machinery as `client.requests`). Only compensable definitions appear; non-compensable slots are absent at the type level.
+
+```typescript
+client.compensations.requests.<requestDefinitionName>:
+  RequestCompensationNamespaceExternal<...>;  // same shape as L2
+
+client.compensations.steps.<stepDefinitionName>:
+  CompensationBlockNamespaceExternal<...>;    // same shape as L2
+```
+
 ##### Worked example: query, prefetch, and act in one transaction
 
 ```typescript
@@ -1220,7 +1238,7 @@ const halted = await client.workflows.processOrder.findMany(
   { fields: { id: true, args: true, idempotencyKey: true }, txOrConn: tx },
 );
 
-for await (const wf of halted) {
+for (const wf of halted) {
   await wf.skip(
     { orderId: wf.row.args.orderId, status: "expired-cleanup" },
     { strategy: "sigkill", txOrConn: tx },
@@ -2079,7 +2097,7 @@ When a `Date` is provided, the receive blocks until a message arrives or the abs
 
 **Rename `StepErrorAccessor` → `AttemptAccessor`:** shared interface for lazy access to per-attempt records across steps, queue dead-lettered messages, topic consumer failures, and request handler failures.
 
-**Introduce `Failure` (base) and `Attempt extends Failure` (with `attempt: number`).** The previous single `StepExecutionError` type leaked the step origin into a type shared across all attempt-bearing contexts. Splitting into `Failure` (the base shape — a single captured throw with no attempt context) and `Attempt extends Failure` (a retried-operation record with a 1-indexed `attempt`) keeps the field set reusable across contexts: `Attempt` is what `AttemptAccessor` exposes for steps, queue handlers, request handlers, and topic consumers; `Failure` is the bare data shape underneath.
+**Introduce `Failure` (base) and `Attempt extends Failure` (with `attemptNumber: number`).** The previous single `StepExecutionError` type leaked the step origin into a type shared across all attempt-bearing contexts. Splitting into `Failure` (the base shape — a single captured throw with no attempt context) and `Attempt extends Failure` (a retried-operation record with a 1-indexed `attemptNumber`) keeps the field set reusable across contexts: `Attempt` is what `AttemptAccessor` exposes for steps, queue handlers, request handlers, and topic consumers; `Failure` is the bare data shape underneath.
 
 **Introduce `AttemptError` class:** a throwable `Error` subclass that handlers can use to attach structured, JSON-serializable details to failures. When the engine catches an `AttemptError`, it persists `type`, `message`, and `details` directly. When it catches a plain `Error`, it extracts `message` and `constructor.name`. When it catches any other thrown value, it best-efforts `String(thrown)` for the message. This means all error fields on `Failure` (and therefore `Attempt`) are nullable — JavaScript's `throw` can throw anything, including values with no message, no type, and no details.
 
@@ -2146,7 +2164,7 @@ A `Failure` augmented with the 1-indexed attempt number. Used by `AttemptAccesso
 ```typescript
 interface Attempt extends Failure {
   /** 1-indexed attempt number */
-  readonly attempt: number;
+  readonly attemptNumber: number;
 }
 ```
 
@@ -2438,7 +2456,7 @@ This applies uniformly to:
 Non-IO methods do **not** take `txOrConn`:
 
 - `.get(id)` (synchronous, no I/O).
-- Iterator methods on `FindManyResult` (the `for await` triggers I/O via the underlying iterator, which inherits the `txOrConn` passed to `findMany`).
+- `findMany` / `findUnique` / `count` accept an optional predicate. Omit the predicate to query the full scoped set; return literal `true` from the callback for an explicit catch-all (`WHERE TRUE`). Use `limit` to bound large scans; pagination beyond that is caller-owned.
 - Constructor-style helpers (e.g., the type-only handle types).
 
 ### Scope rules
@@ -2460,7 +2478,7 @@ const halted = await client.workflows.processOrder.findMany(
 );
 
 // 2. Decide + act: skip each with an operator-supplied result, all in tx.
-for await (const wf of halted) {
+for (const wf of halted) {
   await wf.skip(
     { orderId: wf.row.args.orderId, status: "expired-cleanup" },
     { strategy: "sigkill", txOrConn: tx },
@@ -2481,14 +2499,18 @@ A single transaction can compose operations across different entity kinds becaus
 await using tx = await client.transaction();
 
 const order = client.workflows.processOrder.get("order-jan-2027");
-const orderRow = await order.fetchRow({ status: true, args: true }, { txOrConn: tx });
+const orderRow = await order.fetchRow({
+  fields: { status: true, args: true },
+  txOrConn: tx,
+});
 
 if (orderRow.status === "unique" && orderRow.value.status === "halted") {
   // Read related compensations in same tx.
-  for await (const block of order.compensations.bookHotel.findMany(
+  const blocks = await order.compensations.bookHotel.findMany(
     ({ status }) => eq(status, "halted"),
     { txOrConn: tx },
-  )) {
+  );
+  for (const block of blocks) {
     await block.skip({ kind: "abandoned" }, { txOrConn: tx });
   }
   // Then skip the parent in the same tx.
@@ -2661,20 +2683,21 @@ Removed context APIs:
 
 #### Search and introspection unified
 
-- Every queryable namespace shares the same surface: `.get(id)` → handle (synchronous, query-grounding, no fetch); `findUnique(query, opts?)` → `Promise<FindUniqueResult<Handle>>` (predicate-based, asserts cardinality); `findMany(query, opts?)` → `FindManyResult<Handle>` (awaitable + async-iterable); `count(query, opts?)` → `Promise<number>`.
+- Every queryable namespace shares the same surface: `.get(id)` → handle (synchronous, query-grounding, no fetch); `findUnique(query?, opts?)` → `Promise<FindUniqueResult<Handle>>` (predicate optional); `findMany(query?, opts?)` → `Promise<readonly Handle[]>`; `count(query?, opts?)` → `Promise<number>`.
 - `findUnique` does not have an id overload. `.get(id)` is the identity-based path; `findUnique(query)` is the predicate-based path. They have different shapes because `.get` does no I/O and `findUnique` does.
-- `FindManyResult<T>` is `PromiseLike<readonly T[]> & AsyncIterable<T>`. Awaiting materializes the array; iterating streams handles lazily with internal pagination.
+- `FindManyResult<T>` is `Promise<readonly T[]>`. Awaiting materialises the full matching set.
 - `FindManyOptions<TWhereTemplate>` is parameterized by the same row-shaped predicate template, so sort paths and predicates are checked against one type (`SearchSort<TWhereTemplate>` from Part 9 — only homogeneous comparable paths are sortable).
 - Subset handles (`CompensationBlockSubsetHandle`, `RequestCompensationSubsetHandle`) are removed. Bulk operator actions are expressed by mapping over the iterable handles, with each handle producing its own per-row result.
 - `client.workflows.<def>` adds `findUnique(query, opts?)`, `findMany(query, opts?)`, `count(query, opts?)` alongside `.start(...)` and `.get(idempotencyKey | args)`. `findMany` excludes attached children automatically.
+- `client.compensations.{requests,steps}` adds global L1 compensation search keyed by definition `name`, aggregated across registered workflows. Workflow-scoped L2 remains on `workflowHandle.compensations.{requests,steps}` keyed by slot.
 - `workflowInstance.compensations.steps.<step>`, `workflowInstance.compensations.requests.<request>`, and `workflowInstance.children.attached.<name>` now expose `.get(id)` (with their respective branded ids) in addition to `findUnique` / `findMany` / `count`.
 - `client.workflows.<def>.get(args)` is a new overload available when the workflow declares `idempotencyKeyFactory`. The engine derives the key from args at call time. The same overload is added to `ctx.external.<W>.get(...)` inside workflow logic and to `workflowInstance.children.detached.<name>.get(...)`.
 
 #### Row prefetch and `fetchRow`
 
 - Per-field accessor methods on unique handles (`status()`, `args()`, `result()`, `info()`, `payload()`, `halt()`) are removed. They caused N+1 round trips and were ergonomically bad.
-- Every fetchable handle exposes `fetchRow(fields?, opts?)` which returns a row snapshot. With `fields`, only the listed columns are projected (`Pick<Row, keys>`); without, the whole row.
-- `findMany` / `findUnique` / `get` accept a `fields` option that prefetches the listed columns into a `.row` field on each yielded handle. Handles obtained without `fields` have no `.row` field at all (type-level enforcement).
+- Every fetchable handle exposes `fetchRow(opts?)` which returns a row snapshot. Set `opts.fields` to project columns (`Pick<Row, keys>`); omit `fields` for the whole row. `opts.txOrConn` composes with other IO methods.
+- `findMany` / `findUnique` accept a `fields` option that prefetches the listed columns into a `.row` field on each yielded handle. Handles obtained via sync `.get(id)` have no `.row` field (identity grounding only); use `fetchRow({ fields })` or query with `{ fields }` to materialize row data.
 - `.fetchRow` always re-fetches; it does not consult or modify `.row`. The prefetched `.row` is a snapshot at query time; `.fetchRow` is a fresh read on demand.
 - JSONB columns (`args`, `result`, `metadata`, `info`, `payload`) are first-class row fields for `fetchRow` / prefetch — they are returned as whole opaque values.
 - `RequestCompensationUniqueHandle.attempts()` is preserved as a separate method (it returns an `AttemptAccessor`, not a row column).

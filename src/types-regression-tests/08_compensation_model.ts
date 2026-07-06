@@ -115,7 +115,7 @@ const chargeStep = defineStep({
         // @ts-expect-error terminated forward outcomes do not expose a result
         void info.result;
         const _latest = await info.attempts.findMany({
-          sort: [{ path: "attempt", direction: "desc" }],
+          sort: [{ path: "attemptNumber", direction: "desc" }],
           limit: 1,
         });
         void _latest[0]?.type;

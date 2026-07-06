@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { whereTrue } from "../search";
 import { AttemptError, defineStep } from "../workflow";
 import type {
   Attempt,
@@ -24,7 +25,7 @@ const failure: Failure = {
 void failure;
 
 type _FailureDoesNotRequireAttempt = Assert<
-  "attempt" extends keyof Failure ? false : true
+  "attemptNumber" extends keyof Failure ? false : true
 >;
 
 // =============================================================================
@@ -33,16 +34,16 @@ type _FailureDoesNotRequireAttempt = Assert<
 
 const attempt: Attempt = {
   ...failure,
-  attempt: 1,
+  attemptNumber: 1,
 };
 void attempt;
 
 type _AttemptExtendsFailure = Assert<Attempt extends Failure ? true : false>;
 type _AttemptShape = Assert<
   IsEqual<
-    Pick<Attempt, "attempt" | "message" | "type" | "details">,
+    Pick<Attempt, "attemptNumber" | "message" | "type" | "details">,
     {
-      readonly attempt: number;
+      readonly attemptNumber: number;
       readonly message: string | null;
       readonly type: string | null;
       readonly details: JsonInput | undefined;
@@ -70,7 +71,7 @@ async function inspectHandlerAttempts(): Promise<void> {
   const _count = await handlerAttempts.count();
   type _Count = Assert<IsEqual<typeof _count, number>>;
 
-  const _viaTrue = await handlerAttempts.findMany(() => true);
+  const _viaTrue = await handlerAttempts.findMany(whereTrue);
   type _ViaTrue = Assert<IsEqual<typeof _viaTrue, readonly Attempt[]>>;
 
   for (const _item of await handlerAttempts.findMany()) {

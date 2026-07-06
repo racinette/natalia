@@ -90,10 +90,11 @@ export interface Failure {
 }
 
 /**
- * A single execution attempt on a retried operation (1-indexed `attempt`).
+ * A single execution attempt on a retried operation (1-indexed
+ * `attemptNumber`).
  */
 export interface Attempt extends Failure {
-  readonly attempt: number;
+  readonly attemptNumber: number;
 }
 
 /**
@@ -217,7 +218,7 @@ export type DeclaredQueueHandlerAttempt<
   TErrors extends ErrorDefinitions,
   TCode extends keyof TErrors & string,
 > = {
-  readonly attempt: number;
+  readonly attemptNumber: number;
   readonly deadLetter: boolean;
   readonly code: TCode;
   readonly message: string;
@@ -234,7 +235,7 @@ export type DeclaredQueueHandlerAttempt<
  * Attempt record for an unhandled queue handler throw (no declared `code`).
  */
 export type UnhandledQueueHandlerAttempt = {
-  readonly attempt: number;
+  readonly attemptNumber: number;
   readonly deadLetter: boolean;
   readonly code: null;
   readonly message: string | null;
@@ -243,7 +244,8 @@ export type UnhandledQueueHandlerAttempt = {
 };
 
 /**
- * Per-try outcome record for a retried queue message handler (1-indexed `attempt`).
+ * Per-try outcome record for a retried queue message handler (1-indexed
+ * `attemptNumber`).
  */
 export type QueueHandlerAttempt<
   TErrors extends ErrorDefinitions = Record<string, never>,
@@ -344,7 +346,7 @@ export type DeclaredRequestHandlerAttempt<
   TErrors extends ErrorDefinitions,
   TCode extends keyof TErrors & string,
 > = {
-  readonly attempt: number;
+  readonly attemptNumber: number;
   readonly manual: boolean;
   readonly code: TCode;
   readonly message: string;
@@ -361,7 +363,7 @@ export type DeclaredRequestHandlerAttempt<
  * Attempt record for an unhandled request handler throw (no declared `code`).
  */
 export type UnhandledRequestHandlerAttempt = {
-  readonly attempt: number;
+  readonly attemptNumber: number;
   readonly manual: boolean;
   readonly code: null;
   readonly message: string | null;
@@ -370,7 +372,8 @@ export type UnhandledRequestHandlerAttempt = {
 };
 
 /**
- * Per-try outcome record for a retried request handler (1-indexed `attempt`).
+ * Per-try outcome record for a retried request handler (1-indexed
+ * `attemptNumber`).
  */
 export type RequestHandlerAttempt<
   TErrors extends ErrorDefinitions = Record<string, never>,
@@ -387,7 +390,7 @@ export type RequestHandlerAttempt<
 
 /**
  * Writable escalation record for {@link RequestHandleExternal.escalateToManual} —
- * mirrors {@link RequestHandlerAttempt} minus engine-owned `attempt` and
+ * mirrors {@link RequestHandlerAttempt} minus engine-owned `attemptNumber` and
  * `manual`, with schema-backed `details` as invocation input (not the
  * persisted `RequestHandlerAttemptDetails` union).
  */

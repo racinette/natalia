@@ -19,6 +19,7 @@ export {
   notIn,
   or,
   some,
+  whereTrue,
 } from "./types/search-query";
 
 export type {

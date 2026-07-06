@@ -188,7 +188,7 @@ type _FailureInfoIsErrorValue = Assert<
 
 // =============================================================================
 // `Failure` BASE RECORD — captured single throw on retry attempts.
-// Has no `attempt` field; `Attempt extends Failure` adds it (step 05).
+// Has no `attemptNumber` field; `Attempt extends Failure` adds it (step 05).
 // =============================================================================
 
 const _failure: Failure = {
@@ -201,7 +201,7 @@ const _failure: Failure = {
 void _failure;
 
 type _FailureDoesNotRequireAttempt = Assert<
-  "attempt" extends keyof Failure ? false : true
+  "attemptNumber" extends keyof Failure ? false : true
 >;
 
 // =============================================================================

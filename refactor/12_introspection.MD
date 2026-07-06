@@ -42,18 +42,16 @@ type FindUniqueResult<T> =
   | { readonly status: "missing" }
   | { readonly status: "ambiguous"; readonly count: number };
 
-interface FindManyResult<T>
-  extends PromiseLike<readonly T[]>, AsyncIterable<T> {}
+type FindManyResult<T> = Promise<readonly T[]>;
 
 type FieldsMask<TRow> = { readonly [K in keyof TRow]?: true };
 type ProjectedKeys<TRow, F extends FieldsMask<TRow>> = ...;
 type HandleWithRow<H, TRow> = H & { readonly row: TRow };
 
 interface FetchableHandle<TRow> {
-  fetchRow(opts?: FetchOptions): Promise<FindUniqueResult<TRow>>;
+  fetchRow(opts?: FetchRowOptions<TRow>): Promise<FindUniqueResult<TRow>>;
   fetchRow<F extends FieldsMask<TRow>>(
-    fields: F,
-    opts?: FetchOptions,
+    opts: FetchRowOptions<TRow> & { readonly fields: F },
   ): Promise<FindUniqueResult<Pick<TRow, ProjectedKeys<TRow, F>>>>;
 }
 
@@ -234,13 +232,13 @@ The paired file
 `src/types-regression-tests/12_introspection.ts` verifies:
 
 1. `FindUniqueResult<T>` shape (unique / missing / ambiguous).
-2. `FindManyResult<T>` is both `PromiseLike<readonly T[]>` and
-   `AsyncIterable<T>`.
+2. `FindManyResult<T>` is `Promise<readonly T[]>`.
 3. `FetchableHandle.fetchRow()` returns the full row;
-   `fetchRow(fields)` returns a typed projection
+   `fetchRow({ fields })` returns a typed projection
    (`Pick<TRow, ProjectedKeys<TRow, F>>`).
-4. `QueryableNamespace.get(id)` returns a synchronous handle;
-   `get(id, fields)` adds a typed `.row` snapshot.
+4. `QueryableNamespace.get(id)` returns a synchronous handle (identity
+   grounding only — no I/O, no `.row`). Prefetch attaches `.row` on
+   `findUnique` / `findMany` results when `{ fields }` is supplied.
 5. `findUnique(query)` resolves to `FindUniqueResult<Handle>`.
 6. `findMany(query)` returns `FindManyResult<Handle>`.
 7. `count(query)` returns `Promise<number>`.
@@ -257,7 +255,10 @@ The paired file
     returning `FindUniqueResult<AttemptAccessor>`.
 13. `WorkflowClientAccessor<W>` exposes
     `start / execute / get / findUnique / findMany / count`.
-14. The legacy `search()` method is gone.
+14. `WorkflowClient` exposes `compensations.requests` and
+    `compensations.steps` — global L1 search keyed by definition
+    `name`, aggregated across registered workflows.
+15. The legacy `search()` method is gone.
 
 ## Out of Scope (Deferred)
 

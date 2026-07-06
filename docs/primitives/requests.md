@@ -311,7 +311,13 @@ Business outcomes belong in `return`, not in the error map.
 
 ### Operator actions on compensation blocks
 
-Query compensation block instances through the workflow handle at `compensations.requests.<workflowSlot>` (the workflow-local request slot, not the definition `name`):
+Query compensation block instances at three levels:
+
+- **Global (client):** `client.compensations.requests.<definitionName>` — keyed by `defineRequest.name`, aggregated across all workflows on the client
+- **Workflow bulk:** `workflowHandle.compensations.requests.<workflowSlot>` — keyed by the workflow-local request slot
+- **Instance link:** `requestHandle.compensation` — synchronous ref from a forward request handle
+
+Global and workflow-scoped namespaces share the same `QueryableNamespace` shape (`get` / `findUnique` / `findMany` / `count`). Example workflow-scoped query:
 
 ```typescript
 const found = await workflowHandle.compensations.requests.reserveFlightTicket.findUnique(
@@ -336,9 +342,11 @@ From a forward request handle (client or workflow-scoped), compensable definitio
 
 ```typescript
 const request = client.requests.reserveFlightTicket.get(requestId);
-await request.compensation.fetchRow({ status: true, payload: true });
+await request.compensation.fetchRow({
+  fields: { status: true, payload: true },
+});
 await request.compensation.skip({ released: true });
-await request.compensation.attempts.findMany(() => and(), {
+await request.compensation.attempts.findMany({
   fields: { code: true, message: true },
 });
 ```

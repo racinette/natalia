@@ -32,7 +32,7 @@ The request id is the natural idempotency key. Any external effect performed bef
 
 ```typescript
 const request = client.requests.reserveFlightTicket.get(requestId);
-const row = await request.fetchRow({ payload: true });
+const row = await request.fetchRow({ fields: { payload: true } });
 
 if (row.status !== "unique") {
   return;

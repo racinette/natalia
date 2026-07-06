@@ -186,7 +186,7 @@ type _DeclaredTrueAttempt = Assert<
       "NeedsHumanReview"
     >,
     {
-      readonly attempt: number;
+      readonly attemptNumber: number;
       readonly manual: boolean;
       readonly code: "NeedsHumanReview";
       readonly message: string;
@@ -199,7 +199,7 @@ type _UnhandledAttempt = Assert<
   IsEqual<
     UnhandledRequestHandlerAttempt,
     {
-      readonly attempt: number;
+      readonly attemptNumber: number;
       readonly manual: boolean;
       readonly code: null;
       readonly message: string | null;
@@ -641,7 +641,9 @@ async function manualResolution(): Promise<void> {
     type: "AdminConsole",
   });
 
-  const fetched = await requestHandle.fetchRow({ payload: true, status: true });
+  const fetched = await requestHandle.fetchRow({
+    fields: { payload: true, status: true },
+  });
   void fetched;
 
   type _HasCompensation = Assert<
@@ -657,7 +659,7 @@ async function manualResolution(): Promise<void> {
   >;
   void (0 as unknown as _HasCompensation);
 
-  await requestHandle.compensation.fetchRow({ status: true });
+  await requestHandle.compensation.fetchRow({ fields: { status: true } });
   const _forwardAttempts = await requestHandle.attempts.findMany({
     fields: { manual: true },
   });

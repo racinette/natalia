@@ -1,8 +1,10 @@
 import type {
   AnyPublicWorkflowHeader,
+  CompensationBlockNamespaceExternal,
   DeadLetterHandleExternal,
   DeadLetterNamespaceExternal,
   QueueNamespaceExternal,
+  RequestCompensationNamespaceExternal,
   RequestHandleExternal,
   RequestNamespaceExternal,
   WorkflowClient,
@@ -26,6 +28,7 @@ export abstract class AbstractWorkflowClient<
   };
   public readonly requests: WorkflowClient<TWfs>["requests"];
   public readonly queues: WorkflowClient<TWfs>["queues"];
+  public readonly compensations: WorkflowClient<TWfs>["compensations"];
 
   constructor(workflows: TWfs) {
     const workflowAccessors: Record<
@@ -34,6 +37,14 @@ export abstract class AbstractWorkflowClient<
     > = {};
     const requestAccessors: Record<string, RequestNamespaceExternal> = {};
     const queueAccessors: Record<string, QueueNamespaceExternal> = {};
+    const compensationStepAccessors: Record<
+      string,
+      CompensationBlockNamespaceExternal<unknown>
+    > = {};
+    const compensationRequestAccessors: Record<
+      string,
+      RequestCompensationNamespaceExternal
+    > = {};
     for (const [name] of Object.entries(workflows)) {
       workflowAccessors[name] = {
         start: async (_options: unknown) => {
@@ -62,12 +73,35 @@ export abstract class AbstractWorkflowClient<
         },
       } as WorkflowClientAccessor<AnyPublicWorkflowHeader>;
 
-      const requests = (workflows[name] as { requests?: Record<string, { name?: string }> })
+      const requests = (workflows[name] as { requests?: Record<string, { name?: string; compensation?: unknown }> })
         .requests;
       if (requests) {
         for (const request of Object.values(requests)) {
           if (request.name && !requestAccessors[request.name]) {
             requestAccessors[request.name] = this.createRequestAccessor();
+          }
+          if (
+            request.name &&
+            request.compensation !== undefined &&
+            !compensationRequestAccessors[request.name]
+          ) {
+            compensationRequestAccessors[request.name] =
+              this.createRequestCompensationNamespace();
+          }
+        }
+      }
+
+      const steps = (workflows[name] as { steps?: Record<string, { name?: string; compensation?: unknown }> })
+        .steps;
+      if (steps) {
+        for (const step of Object.values(steps)) {
+          if (
+            step.name &&
+            step.compensation !== undefined &&
+            !compensationStepAccessors[step.name]
+          ) {
+            compensationStepAccessors[step.name] =
+              this.createCompensationBlockNamespace();
           }
         }
       }
@@ -87,6 +121,10 @@ export abstract class AbstractWorkflowClient<
     };
     this.requests = requestAccessors as WorkflowClient<TWfs>["requests"];
     this.queues = queueAccessors as WorkflowClient<TWfs>["queues"];
+    this.compensations = {
+      requests: compensationRequestAccessors,
+      steps: compensationStepAccessors,
+    } as WorkflowClient<TWfs>["compensations"];
   }
 
   protected abstract assertClientAvailable(): void;
@@ -119,7 +157,7 @@ export abstract class AbstractWorkflowClient<
   private createRequestHandle(): RequestHandleExternal {
     return {
       id: "" as RequestHandleExternal["id"],
-      fetchRow: async (_fieldsOrOpts?: unknown, _opts?: unknown) => {
+      fetchRow: async (_opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
       },
@@ -149,6 +187,50 @@ export abstract class AbstractWorkflowClient<
         this.assertClientAvailable();
         throw new Error("Not implemented");
       }) as never,
+      count: async (_query: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+    };
+  }
+
+  private createRequestCompensationNamespace(): RequestCompensationNamespaceExternal {
+    return {
+      get: ((_id: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      }) as RequestCompensationNamespaceExternal["get"],
+      findUnique: async (_query: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+      findMany: ((_query: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      }) as RequestCompensationNamespaceExternal["findMany"],
+      count: async (_query: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+    };
+  }
+
+  private createCompensationBlockNamespace(): CompensationBlockNamespaceExternal<
+    unknown
+  > {
+    return {
+      get: ((_id: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      }) as CompensationBlockNamespaceExternal<unknown>["get"],
+      findUnique: async (_query: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+      findMany: ((_query: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      }) as CompensationBlockNamespaceExternal<unknown>["findMany"],
       count: async (_query: unknown, _opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
@@ -190,7 +272,7 @@ export abstract class AbstractWorkflowClient<
   private createDeadLetterHandle(): DeadLetterHandleExternal {
     return {
       id: "" as DeadLetterHandleExternal["id"],
-      fetchRow: async (_fieldsOrOpts?: unknown, _opts?: unknown) => {
+      fetchRow: async (_opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
       },

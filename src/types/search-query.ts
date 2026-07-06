@@ -62,6 +62,13 @@ export type WhereFn<TRowTemplate extends WhereTemplateRecord> = (
   scope: WhereScope<TRowTemplate>,
 ) => Predicate | true;
 
+/** Unconditional match within namespace scope (`WHERE TRUE`). */
+export const whereTrue = <
+  TRowTemplate extends WhereTemplateRecord,
+>(
+  _scope: WhereScope<TRowTemplate>,
+): true => true;
+
 // -----------------------------------------------------------------------------
 // Type-level operator capabilities
 // -----------------------------------------------------------------------------
