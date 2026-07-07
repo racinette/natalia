@@ -21,8 +21,7 @@ import type {
   ErrorValue,
   FetchableHandle,
   FieldsMask,
-  FindManyResult,
-  FindUniqueResult,
+  FindResult,
   HandleWithRow,
   HaltsNamespaceExternal,
   HaltHandle,
@@ -177,23 +176,13 @@ const _orderWorkflow = defineWorkflow({
 });
 
 // =============================================================================
-// FIND-RESULT SHAPES
+// FIND RESULT
 // =============================================================================
 
-type _FindUniqueShape = Assert<
-  IsEqual<
-    FindUniqueResult<{ x: number }>,
-    | { readonly status: "unique"; readonly value: { x: number } }
-    | { readonly status: "missing" }
-    | { readonly status: "ambiguous"; readonly count: number }
-  >
->;
+declare const findResult: FindResult<{ id: string }>;
 
-declare const findManyResult: FindManyResult<{ id: string }>;
-
-// Awaiting materialises the full array.
-async function _materialise(): Promise<void> {
-  const _arr = await findManyResult;
+async function _materialiseFind(): Promise<void> {
+  const _arr = await findResult;
   type _MaterialisedArr = Assert<
     IsEqual<typeof _arr, readonly { id: string }[]>
   >;
@@ -215,7 +204,7 @@ declare const fetchable: FetchableHandle<ExampleRow>;
 async function _fetchRow(): Promise<void> {
   // No fields → entire row.
   const _full = await fetchable.fetchRow();
-  type _FullShape = Assert<IsEqual<typeof _full, FindUniqueResult<ExampleRow>>>;
+  type _FullShape = Assert<IsEqual<typeof _full, ExampleRow | undefined>>;
 
   // With fields mask → typed projection.
   const _projected = await fetchable.fetchRow({
@@ -224,7 +213,7 @@ async function _fetchRow(): Promise<void> {
   type _ProjectedShape = Assert<
     IsEqual<
       typeof _projected,
-      FindUniqueResult<Pick<ExampleRow, "id" | "status">>
+      Pick<ExampleRow, "id" | "status"> | undefined
     >
   >;
 
@@ -252,7 +241,7 @@ type _HandleWithRow = Assert<
 >;
 
 // =============================================================================
-// QUERYABLE NAMESPACE — `.get`, `findUnique`, `findMany`, `count`.
+// QUERYABLE NAMESPACE — `.get`, `find`, `count`.
 // =============================================================================
 
 declare const ns: QueryableNamespace<
@@ -271,16 +260,17 @@ type _GetReturn = Assert<
     AttachedChildWorkflowExternalHandle<typeof followUpHeader>
   >
 >;
-// @ts-expect-error get is identity-only; prefetch via findUnique/findMany fields
+// @ts-expect-error get is identity-only; prefetch via find fields
 void ns.get(someAttachedId, { id: true, status: true });
 
-// Prefetch attaches `.row` on async query results only.
-async function _findUniqueWithPrefetch(): Promise<void> {
-  const withRow = await ns.findUnique({ fields: { id: true, status: true } });
-  if (withRow.status === "unique") {
+// Prefetch attaches `.row` on query results only.
+async function _findWithPrefetch(): Promise<void> {
+  const handles = await ns.find({ fields: { id: true, status: true } });
+  const first = handles[0];
+  if (first) {
     type _Row = Assert<
       IsEqual<
-        typeof withRow.value.row,
+        typeof first.row,
         Pick<
           WorkflowRow<{ orderId: string }, { ok: boolean }, { tenantId: string }>,
           "id" | "status"
@@ -290,30 +280,20 @@ async function _findUniqueWithPrefetch(): Promise<void> {
     void (0 as unknown as _Row);
   }
 }
-void _findUniqueWithPrefetch;
+void _findWithPrefetch;
 
-// `findUnique` resolves to FindUniqueResult<Handle>.
-async function _findUniqueShape(): Promise<void> {
-  const result = await ns.findUnique();
-  if (result.status === "unique") {
-    type _UniqueValue = Assert<
-      IsEqual<
-        typeof result.value,
-        AttachedChildWorkflowExternalHandle<typeof followUpHeader>
-      >
-    >;
-  }
+// `find` returns `Promise<readonly Handle[]>`.
+async function _findShape(): Promise<void> {
+  const handles = await ns.find();
+  type _FindType = Assert<
+    IsEqual<
+      typeof handles,
+      readonly AttachedChildWorkflowExternalHandle<typeof followUpHeader>[]
+    >
+  >;
+  void (0 as unknown as _FindType);
 }
-
-// `findMany` returns `Promise<readonly Handle[]>`.
-const _manyResult = ns.findMany();
-type _FindManyType = Assert<
-  typeof _manyResult extends FindManyResult<
-    AttachedChildWorkflowExternalHandle<typeof followUpHeader>
-  >
-    ? true
-    : false
->;
+void _findShape;
 
 // `count` resolves to a number.
 async function _countShape(): Promise<void> {
@@ -389,22 +369,23 @@ void _exerciseSkip;
 // FetchableHandle methods.
 async function _exerciseFetchRow(): Promise<void> {
   const full = await workflowHandle.fetchRow();
-  if (full.status === "unique") {
+  if (full) {
     type _Full = Assert<
       IsEqual<
-        typeof full.value,
+        typeof full,
         WorkflowRow<{ orderId: string }, { ok: boolean }, { tenantId: string }>
       >
     >;
+    void (0 as unknown as _Full);
   }
 
   const masked = await workflowHandle.fetchRow({
     fields: { status: true, idempotencyKey: true },
   });
-  if (masked.status === "unique") {
+  if (masked) {
     type _Masked = Assert<
       IsEqual<
-        typeof masked.value,
+        typeof masked,
         Pick<
           WorkflowRow<
             { orderId: string },
@@ -415,6 +396,7 @@ async function _exerciseFetchRow(): Promise<void> {
         >
       >
     >;
+    void (0 as unknown as _Masked);
   }
 }
 void _exerciseFetchRow;
@@ -435,8 +417,10 @@ void _exerciseWait;
 
 // Halts namespace — queryable like other introspection surfaces.
 async function _exerciseHalts(): Promise<void> {
-  const _many = workflowHandle.halts.findMany();
-  type _HaltsMany = Assert<IsEqual<typeof _many, FindManyResult<HaltHandle>>>;
+  const _many = await workflowHandle.halts.find();
+  type _HaltsMany = Assert<
+    IsEqual<typeof _many, readonly HaltHandle[]>
+  >;
 
   // @ts-expect-error halts namespace has no skip(); resolution is patch+replay or skip on the workflow itself
   void workflowHandle.halts.skip;
@@ -500,11 +484,12 @@ type _ChargeCompGetReturn = Assert<
 >;
 
 async function _exerciseChargeCompensationNamespace(): Promise<void> {
-  const found = await workflowHandle.compensations.steps.chargeStep.findUnique();
-  if (found.status === "unique") {
-    type _FoundUnique = Assert<
+  const handles = await workflowHandle.compensations.steps.chargeStep.find();
+  const found = handles[0];
+  if (found) {
+    type _FoundHandle = Assert<
       IsEqual<
-        typeof found.value,
+        typeof found,
         CompensationBlockUniqueHandleExternal<
           "chargeStep",
           { customerId: string; amount: number },
@@ -513,14 +498,13 @@ async function _exerciseChargeCompensationNamespace(): Promise<void> {
       >
     >;
 
-    const _row = await found.value.fetchRow({
+    const _row = await found.fetchRow({
       fields: { id: true, result: true },
     });
     type _FetchedRow = Assert<
       IsEqual<
         typeof _row,
-        FindUniqueResult<
-          Pick<
+        | Pick<
             CompensationBlockRow<
               "chargeStep",
               { customerId: string; amount: number },
@@ -528,16 +512,18 @@ async function _exerciseChargeCompensationNamespace(): Promise<void> {
             >,
             "id" | "result"
           >
-        >
+        | undefined
       >
     >;
+    void (0 as unknown as _FetchedRow);
   }
 
-  const _many = workflowHandle.compensations.steps.chargeStep.findMany({
+  const _many = await workflowHandle.compensations.steps.chargeStep.find({
     fields: { id: true, status: true },
   });
   type _ManyWithFields = Assert<
-    typeof _many extends FindManyResult<
+    IsEqual<
+      (typeof _many)[number],
       HandleWithRow<
         CompensationBlockUniqueHandleExternal<
           "chargeStep",
@@ -554,9 +540,8 @@ async function _exerciseChargeCompensationNamespace(): Promise<void> {
         >
       >
     >
-      ? true
-      : false
   >;
+  void (0 as unknown as _ManyWithFields);
 }
 void _exerciseChargeCompensationNamespace;
 
@@ -583,12 +568,13 @@ void workflowHandle.compensations.requests.typo;
 void workflowHandle.requestCompensations;
 
 async function _exerciseRequestCompensationNamespace(): Promise<void> {
-  const found =
-    await workflowHandle.compensations.requests.approvalRequest.findUnique();
-  if (found.status === "unique") {
-    type _FoundUnique = Assert<
+  const handles =
+    await workflowHandle.compensations.requests.approvalRequest.find();
+  const found = handles[0];
+  if (found) {
+    type _FoundHandle = Assert<
       IsEqual<
-        typeof found.value,
+        typeof found,
         RequestCompensationUniqueHandleExternal<
           { chargeId: string },
           { cancelled: boolean }
@@ -596,30 +582,32 @@ async function _exerciseRequestCompensationNamespace(): Promise<void> {
       >
     >;
 
-    const _reqRow = await found.value.fetchRow({
+    const _reqRow = await found.fetchRow({
       fields: { id: true, payload: true },
     });
     type _FetchedRow = Assert<
       IsEqual<
         typeof _reqRow,
-        FindUniqueResult<
-          Pick<
+        | Pick<
             RequestCompensationRow<
               { chargeId: string },
               { cancelled: boolean }
             >,
             "id" | "payload"
           >
-        >
+        | undefined
       >
     >;
+    void (0 as unknown as _FetchedRow);
   }
 
-  const _reqMany = workflowHandle.compensations.requests.approvalRequest.findMany({
-    fields: { id: true, status: true },
-  });
+  const _reqMany =
+    await workflowHandle.compensations.requests.approvalRequest.find({
+      fields: { id: true, status: true },
+    });
   type _ManyWithFields = Assert<
-    typeof _reqMany extends FindManyResult<
+    IsEqual<
+      (typeof _reqMany)[number],
       HandleWithRow<
         RequestCompensationUniqueHandleExternal<
           { chargeId: string },
@@ -634,9 +622,8 @@ async function _exerciseRequestCompensationNamespace(): Promise<void> {
         >
       >
     >
-      ? true
-      : false
   >;
+  void (0 as unknown as _ManyWithFields);
 }
 void _exerciseRequestCompensationNamespace;
 
@@ -660,22 +647,23 @@ type _FollowUpAttachedType = Assert<
     AttachedChildWorkflowNamespaceExternal<typeof followUpHeader>
   >
 >;
-async function _attachedFindUniqueShape(): Promise<void> {
-  const found = await workflowHandle.childWorkflows.followUp.findUnique();
-  if (found.status === "unique") {
-    type _AttachedUniqueHandle = Assert<
+async function _attachedFindShape(): Promise<void> {
+  const handles = await workflowHandle.childWorkflows.followUp.find();
+  const found = handles[0];
+  if (found) {
+    type _AttachedHandle = Assert<
       IsEqual<
-        typeof found.value,
+        typeof found,
         AttachedChildWorkflowExternalHandle<typeof followUpHeader>
       >
     >;
     // @ts-expect-error attached child handle has no lifecycle verbs
-    void found.value.sigkill;
+    void found.sigkill;
     // @ts-expect-error attached child workflows are not globally addressable
-    void found.value.idempotencyKey;
+    void found.idempotencyKey;
   }
 }
-void _attachedFindUniqueShape;
+void _attachedFindShape;
 
 declare const followUpAttachedId: AttachedChildWorkflowId<typeof followUpHeader>;
 const followUpAttachedHandle = workflowHandle.childWorkflows.followUp.get(
@@ -710,7 +698,7 @@ type _FollowUpEventsFallback = Assert<
 // @ts-expect-error undeclared followUp channel should be absent
 void followUpAttachedHandle.channels.typo;
 
-// @ts-expect-error get is identity-only; prefetch via findUnique/findMany fields
+// @ts-expect-error get is identity-only; prefetch via find fields
 void workflowHandle.childWorkflows.followUp.get(followUpAttachedId, {
   id: true,
   args: true,
@@ -889,7 +877,7 @@ type _ReqCompAttemptsNs = Assert<
 void (0 as unknown as _ReqCompAttemptsNs);
 
 async function _exerciseReqCompAttempts(): Promise<void> {
-  const _many = await reqCompHandle.attempts.findMany();
+  const _many = await reqCompHandle.attempts.find();
   type _Attempts = Assert<
     IsEqual<
       (typeof _many)[number],
@@ -917,7 +905,7 @@ async function _exerciseReqCompEscalateToManual(): Promise<void> {
 void _exerciseReqCompEscalateToManual;
 
 // =============================================================================
-// CLIENT-LEVEL WORKFLOW ACCESSOR — start, execute, get, findUnique, findMany, count.
+// CLIENT-LEVEL WORKFLOW ACCESSOR — start, execute, get, find, count.
 // =============================================================================
 
 declare const clientAcc: WorkflowClientAccessor<typeof _orderWorkflow>;
@@ -949,22 +937,15 @@ async function _exerciseClient(): Promise<void> {
     >
   >;
 
-  // findUnique / findMany / count from the unified queryable surface.
-  const found = await clientAcc.findUnique();
-  if (found.status === "unique") {
-    type _FoundValue = Assert<
-      IsEqual<typeof found.value, WorkflowHandleExternal<typeof _orderWorkflow>>
-    >;
-  }
-
-  const _many = clientAcc.findMany();
-  type _ManyAwaited = Assert<
-    typeof _many extends FindManyResult<
-      WorkflowHandleExternal<typeof _orderWorkflow>
+  // find / count from the unified queryable surface.
+  const handles = await clientAcc.find();
+  type _FindValue = Assert<
+    IsEqual<
+      typeof handles,
+      readonly WorkflowHandleExternal<typeof _orderWorkflow>[]
     >
-      ? true
-      : false
   >;
+  void (0 as unknown as _FindValue);
 
   const _total = await clientAcc.count();
   type _CountReturn = Assert<IsEqual<typeof _total, number>>;
@@ -1030,23 +1011,21 @@ type _ClientChargeCompNs = Assert<
 >;
 
 async function _exerciseClientCompensations(): Promise<void> {
-  const _found =
-    await _introspectionClient.compensations.requests.introspectionApprovalRequest.findUnique();
+  const _handles =
+    await _introspectionClient.compensations.requests.introspectionApprovalRequest.find();
   type _Found = Assert<
     IsEqual<
-      typeof _found,
-      FindUniqueResult<
-        RequestCompensationUniqueHandleExternal<
-          { chargeId: string },
-          { cancelled: boolean }
-        >
-      >
+      typeof _handles,
+      readonly RequestCompensationUniqueHandleExternal<
+        { chargeId: string },
+        { cancelled: boolean }
+      >[]
     >
   >;
   void (0 as unknown as _Found);
 
   const _blocks =
-    await _introspectionClient.compensations.steps.introspectionChargeStep.findMany({
+    await _introspectionClient.compensations.steps.introspectionChargeStep.find({
       limit: 5,
     });
   type _BlockId = Assert<

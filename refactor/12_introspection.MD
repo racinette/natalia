@@ -19,7 +19,7 @@ steps 10–11.
 
 - `REFACTOR.MD` Part 5 §"Search and introspection — unified shape" —
   `QueryableNamespace<...>`, `FetchableHandle<TRow>`,
-  `FindManyResult` / `FindUniqueResult`, `FieldsMask` /
+  `FindResult`, `FieldsMask` /
   `ProjectedKeys` / `HandleWithRow`.
 - `REFACTOR.MD` Part 5 §"Workflow row, query namespaces, and
   `WorkflowHandleExternal`" — the new workflow handle shape.
@@ -37,42 +37,32 @@ steps 10–11.
 ### Unified introspection types (`src/types/introspection.ts`)
 
 ```typescript
-type FindUniqueResult<T> =
-  | { readonly status: "unique"; readonly value: T }
-  | { readonly status: "missing" }
-  | { readonly status: "ambiguous"; readonly count: number };
-
-type FindManyResult<T> = Promise<readonly T[]>;
+type FindResult<T> = Promise<readonly T[]>;
 
 type FieldsMask<TRow> = { readonly [K in keyof TRow]?: true };
 type ProjectedKeys<TRow, F extends FieldsMask<TRow>> = ...;
 type HandleWithRow<H, TRow> = H & { readonly row: TRow };
 
 interface FetchableHandle<TRow> {
-  fetchRow(opts?: FetchRowOptions<TRow>): Promise<FindUniqueResult<TRow>>;
+  fetchRow(opts?: FetchRowOptions<TRow>): Promise<TRow | undefined>;
   fetchRow<F extends FieldsMask<TRow>>(
     opts: FetchRowOptions<TRow> & { readonly fields: F },
-  ): Promise<FindUniqueResult<Pick<TRow, ProjectedKeys<TRow, F>>>>;
+  ): Promise<Pick<TRow, ProjectedKeys<TRow, F>> | undefined>;
 }
 
 interface QueryableNamespace<THandle, TNamespaces, TRow, TId> {
   get(id: TId): THandle;
-  get<F>(id: TId, fields: F): HandleWithRow<THandle, Pick<TRow, ...>>;
 
-  findUnique(query, opts?): Promise<FindUniqueResult<THandle>>;
-  findUnique<F>(query, opts: { fields: F; ... }): Promise<FindUniqueResult<HandleWithRow<...>>>;
+  find(query?, opts?): FindResult<THandle>;
+  find<F>(query, opts: { fields: F; ... }): FindResult<HandleWithRow<...>>;
 
-  findMany(query, opts?): FindManyResult<THandle>;
-  findMany<F>(query, opts: { fields: F; ... }): FindManyResult<HandleWithRow<...>>;
-
-  count(query, opts?): Promise<number>;
+  count(query?, opts?): Promise<number>;
 }
 ```
 
 Per Part 19 every option bag carries `txOrConn?:
 IWorkflowConnection | IWorkflowTransaction`. `FetchOptions`,
-`FindUniqueOptions`, `FindManyOptions<TNamespaces>`, `CountOptions`
-are the option shapes.
+`FindOptions`, `CountOptions` are the option shapes.
 
 ### Workflow handle (`WorkflowHandleExternal<W>`)
 
@@ -84,10 +74,10 @@ Single-generic shape parameterised over the workflow header. Wires:
   `sigkill / sigterm / skip(result, opts?)`.
 - **Primitive plane** — `channels` / `streams` / `events` accessors
   (existing shapes; step 16 adds `attributes`).
-- **`halts: HaltsNamespaceExternal`** — read-only `list()` over
-  workflow execution halt records. No `skip` on the namespace
-  itself (resolution is patch + replay or `skip(...)` on the
-  workflow itself, which transitions the workflow to `'skipped'`).
+- **`halts: HaltsNamespaceExternal`** — full `QueryableNamespace` over
+  workflow execution halt records. Resolution is patch + replay or
+  `skip(...)` on the workflow itself (which transitions the workflow to
+  `'skipped'`).
 - **Parent-scoped namespaces** —
   `children.attached.<name>` /
   `children.detached.<name>` /
@@ -131,9 +121,8 @@ Single-generic shape parameterised over the workflow header. Wires:
 (`RequestCompensationUniqueHandleExternal<TPayload, TCompResult>`)
 
 - `FetchableHandle<RequestCompensationRow<TPayload, TCompResult>>`
-- `attempts(opts?): Promise<FindUniqueResult<AttemptAccessor>>` —
-  separate accessor (not a row column) because `AttemptAccessor`
-  exposes its own methods (Part 15).
+- `attempts` — {@link HandlerAttemptsReadNamespace} for row reads (Part 15).
+  Not a row column; handler-side materialization only.
 - `skip(result, opts?)` for non-void result; `skip(opts?)` for void.
 - `id: RequestCompensationInstanceId`.
 - No per-instance primitives; no halts (Part 11).
@@ -166,7 +155,7 @@ lifecycle verbs are absent; messaging / introspection may still exist where type
 ### Detached child workflow namespace
 (`DetachedChildWorkflowNamespaceExternal<W>`)
 
-Returns **`WorkflowHandleExternal<W>`** through `findUnique` / `findMany` /
+Returns **`WorkflowHandleExternal<W>`** through `find` /
 `get` — the **full root** operator handle (including lifecycle actions and
 `idempotencyKey`), same family as `client.workflows.<def>`. The parent-scoped
 namespace only **filters** to detached children of this parent; it does **not**
@@ -181,7 +170,7 @@ workflows keep the loose `Record<string, ...>` fallback. Step 18
 ### Client workflow accessor (`WorkflowClientAccessor<W>`)
 
 `extends Omit<QueryableNamespace<...>, "get">` — gains
-`findUnique` / `findMany` / `count` over the workflow query
+`find` / `count` over the workflow query
 namespaces, alongside `start` / `execute` / `get(idempotencyKey)`.
 
 The omitted `get` is replaced with the identity-based
@@ -189,16 +178,16 @@ The omitted `get` is replaced with the identity-based
 Step 18 will add the `get(args)` overload conditional on
 `idempotencyKeyFactory` being declared on the workflow.
 
-`findMany` excludes attached children automatically at runtime
+`find` excludes attached children automatically at runtime
 (filter on `row.attached = TRUE`) — runtime guarantee; the type
 surface is unchanged.
 
 ### Halts namespace
 
-`HaltsNamespaceExternal` exposes `list(opts?)` only. No `findUnique`
-or `skip` — REFACTOR.MD Part 3 specifies execution halt resolution
-is patch + replay (automatic on worker restart) or `skip(...)` on
-the workflow itself.
+`HaltsNamespaceExternal` is a full `QueryableNamespace` — same
+`get` / `find` / `count` shape as other namespaces. Execution halt
+resolution remains patch + replay (automatic on worker restart) or
+`skip(...)` on the workflow itself.
 
 ## Affected Areas
 
@@ -224,41 +213,38 @@ the workflow itself.
   - legacy `.execution` / `.compensation` / `.lifecycle` removed.
 - `src/types/helpers.ts` — added `InferWorkflowMetadata<W>`.
 - `src/client.ts` — runtime stub updated to mirror
-  `findUnique` / `findMany` / `count` instead of the old `search`.
+  `find` / `count` instead of the old `search`.
 
 ## Acceptance Contract
 
 The paired file
 `src/types-regression-tests/12_introspection.ts` verifies:
 
-1. `FindUniqueResult<T>` shape (unique / missing / ambiguous).
-2. `FindManyResult<T>` is `Promise<readonly T[]>`.
-3. `FetchableHandle.fetchRow()` returns the full row;
-   `fetchRow({ fields })` returns a typed projection
-   (`Pick<TRow, ProjectedKeys<TRow, F>>`).
-4. `QueryableNamespace.get(id)` returns a synchronous handle (identity
+1. `FindResult<T>` is `Promise<readonly T[]>`.
+2. `FetchableHandle.fetchRow()` returns `TRow | undefined`;
+   `fetchRow({ fields })` returns `Pick<TRow, ProjectedKeys<TRow, F>> | undefined`.
+3. `QueryableNamespace.get(id)` returns a synchronous handle (identity
    grounding only — no I/O, no `.row`). Prefetch attaches `.row` on
-   `findUnique` / `findMany` results when `{ fields }` is supplied.
-5. `findUnique(query)` resolves to `FindUniqueResult<Handle>`.
-6. `findMany(query)` returns `FindManyResult<Handle>`.
-7. `count(query)` returns `Promise<number>`.
-8. `WorkflowHandleExternal<W>` exposes
+   `find` results when `{ fields }` is supplied.
+4. `find(query?)` returns `FindResult<Handle>`.
+5. `count(query?)` returns `Promise<number>`.
+6. `WorkflowHandleExternal<W>` exposes
    `sigkill / sigterm / skip(result, opts?)` from step 09.
-9. `WorkflowHandleExternal<W>` exposes `fetchRow`, `wait`,
-   `setRetention`, `halts.list()`, plus the four parent-scoped
-   namespaces.
-10. The `halts` namespace exposes `list()` only — no `skip`.
-11. `CompensationBlockUniqueHandleExternal` exposes `skip(result)`
-    only — no `sigkill` / `sigterm`; the `strategy` option is
-    rejected.
-12. `RequestCompensationUniqueHandleExternal` exposes `attempts()`
-    returning `FindUniqueResult<AttemptAccessor>`.
-13. `WorkflowClientAccessor<W>` exposes
-    `start / execute / get / findUnique / findMany / count`.
-14. `WorkflowClient` exposes `compensations.requests` and
+7. `WorkflowHandleExternal<W>` exposes `fetchRow`, `wait`,
+   `setRetention`, `halts`, plus the four parent-scoped namespaces.
+8. The `halts` namespace is a full `QueryableNamespace` — no `skip`.
+9. `CompensationBlockUniqueHandleExternal` exposes `skip(result)`
+   only — no `sigkill` / `sigterm`; the `strategy` option is
+   rejected.
+10. `RequestCompensationUniqueHandleExternal` exposes `attempts`
+    query namespace.
+11. `WorkflowClientAccessor<W>` exposes
+    `start / execute / get / find / count`.
+12. `WorkflowClient` exposes `compensations.requests` and
     `compensations.steps` — global L1 search keyed by definition
     `name`, aggregated across registered workflows.
-15. The legacy `search()` method is gone.
+13. The legacy `search()` method is gone.
+14. `FindUniqueResult` is not exported.
 
 ## Out of Scope (Deferred)
 

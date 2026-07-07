@@ -188,7 +188,7 @@ verifies:
   request-compensation handle, attached-child external handle) —
   step 12.
 - The unified `QueryableNamespace<...>` /
-  `FetchableHandle<TRow>` / `findUnique` / `findMany` / `count`
+  `FetchableHandle<TRow>` / `find` / `count`
   surface that consumes the row types — step 12.
 - The search-query namespace generalization
   (`row` / `args` / `result` / `metadata` / `error` / `payload`

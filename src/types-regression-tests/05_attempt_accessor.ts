@@ -58,10 +58,10 @@ type _AttemptShape = Assert<
 declare const handlerAttempts: HandlerAttemptsReadNamespace<Attempt>;
 
 async function inspectHandlerAttempts(): Promise<void> {
-  const _all = await handlerAttempts.findMany();
+  const _all = await handlerAttempts.find();
   type _All = Assert<IsEqual<typeof _all, readonly Attempt[]>>;
 
-  const _projected = await handlerAttempts.findMany({
+  const _projected = await handlerAttempts.find({
     fields: { type: true },
   });
   type _Projected = Assert<
@@ -71,10 +71,10 @@ async function inspectHandlerAttempts(): Promise<void> {
   const _count = await handlerAttempts.count();
   type _Count = Assert<IsEqual<typeof _count, number>>;
 
-  const _viaTrue = await handlerAttempts.findMany(whereTrue);
+  const _viaTrue = await handlerAttempts.find(whereTrue);
   type _ViaTrue = Assert<IsEqual<typeof _viaTrue, readonly Attempt[]>>;
 
-  for (const _item of await handlerAttempts.findMany()) {
+  for (const _item of await handlerAttempts.find()) {
     type _Item = Assert<IsEqual<typeof _item, Attempt>>;
   }
 }
@@ -87,7 +87,7 @@ void inspectHandlerAttempts;
 declare const operatorAttempts: OperatorAttemptsNamespaceExternal<Attempt>;
 
 async function inspectOperatorAttempts(): Promise<void> {
-  const _handles = await operatorAttempts.findMany({
+  const _handles = await operatorAttempts.find({
     fields: { type: true },
   });
   type _HandleRow = Assert<

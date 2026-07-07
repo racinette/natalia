@@ -37,7 +37,7 @@ No author-facing `row` / `args` / `metadata` namespace map.
 ```typescript
 import { and, eq, gt, every, some } from "natalia/search";
 
-findMany(({ args, metadata, createdAt }) =>
+find(({ args, metadata, createdAt }) =>
   and(
     eq(args.provider, "metamask"),
     eq(metadata.tenant.id, "acme"),

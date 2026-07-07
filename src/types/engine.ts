@@ -65,7 +65,6 @@ import type {
 import type {
   FetchableHandle,
   FetchOptions,
-  FindUniqueResult,
   HaltHandle,
   OperatorAttemptsNamespaceExternal,
   QueryableNamespace,
@@ -186,9 +185,9 @@ export type HaltsNamespaceExternal = QueryableNamespace<
  * land in steps 13/15/16 alongside their per-instance primitive
  * declarations on `StepCompensationDefinition` (step 08).
  *
- * Each accessor read returns `FindUniqueResult<T>` to surface row-level
- * absence and ambiguity, mirroring how the parent compensation block row is
- * looked up.
+ * Each accessor read returns `T | undefined` to surface row-level absence,
+ * mirroring how the parent compensation block row is looked up via
+ * {@link FetchableHandle.fetchRow}.
  */
 export interface CompensationBlockPrimitivePlane {
   readonly attributes: Record<string, unknown>;
@@ -353,8 +352,8 @@ interface RequestHandleExternalBase<
 /**
  * Operator-facing handle for a forward request invocation.
  *
- * Request namespaces are queryable through the same `get` / `findUnique` /
- * `findMany` / `count` surface as workflows and compensation instances.
+ * Request namespaces are queryable through the same `get` / `find` / `count`
+ * surface as workflows and compensation instances.
  * Individual request actions live on the handle.
  *
  * Compensable definitions expose a synchronous `.compensation` handle ref;
@@ -1232,7 +1231,7 @@ export type WorkflowGetArgs<W extends AnyPublicWorkflowHeader> =
 // Per `REFACTOR.MD` Part 5 §"`client.workflows.<def>` surface" — gain the
 // unified queryable namespace surface alongside `start` / `execute` / `get`.
 //
-// `findMany` automatically excludes attached child workflows (Part 5 §"Global
+// `find` automatically excludes attached child workflows (Part 5 §"Global
 // queries filter out attached child workflows" — the filter is a runtime guarantee;
 // the type-level surface returns the same `WorkflowHandleExternal<W>` shape
 // regardless).

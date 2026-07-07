@@ -320,10 +320,7 @@ type CompensationBlockStatus =
   | "halted"
   | "skipped";
 
-type FindUniqueResult<T> =
-  | { readonly status: "unique"; readonly value: T }
-  | { readonly status: "missing" }
-  | { readonly status: "ambiguous"; readonly count: number };
+type FindResult<T> = Promise<readonly T[]>;
 
 // Single row-shaped predicate template.
 type CompensationBlockWhereTemplate<TStep, TArgs, TResult> =
@@ -354,7 +351,7 @@ interface CompensationBlockNamespace<TStep, TArgs, TResult, TPrim> extends
   > {}
 ```
 
-A unique handle exposes per-instance reads and operator actions. `findMany` returns `Promise<readonly Handle[]>`. Bulk operator actions are expressed by mapping over the awaited array.
+A unique handle exposes per-instance reads and operator actions. `find` returns `Promise<readonly Handle[]>`. Bulk operator actions are expressed by mapping over the array.
 
 ```typescript
 interface CompensationBlockUniqueHandle<TStep, TArgs, TResult, TPrim>
@@ -374,7 +371,7 @@ interface CompensationBlockUniqueHandle<TStep, TArgs, TResult, TPrim>
           opts?: { txOrConn?: IWorkflowTransaction | IWorkflowConnection },
         ]
   ): Promise<
-    | FindUniqueResult<{ skipped: true }>
+    | SkipOutcome
     | {
         readonly status: "already_terminal";
         readonly current: "completed" | "skipped";
@@ -384,7 +381,7 @@ interface CompensationBlockUniqueHandle<TStep, TArgs, TResult, TPrim>
   // Per-instance primitive accessors. Each operation accepts a txOrConn? in
   // its options bag (where applicable) per Part 19.
   attributes: {
-    /* declared attributes; per-instance reads, FindUniqueResult-wrapped */
+    /* declared attributes; per-instance reads */
   };
   streams: {
     /* declared streams; per-instance reads */
@@ -397,15 +394,15 @@ interface CompensationBlockUniqueHandle<TStep, TArgs, TResult, TPrim>
   };
 }
 
-// FindManyResult materialises the full matching set when awaited.
+// FindResult materialises the full matching set when awaited.
 // Callers bound large scans with `limit`; pagination beyond that is caller-owned.
-type FindManyResult<T> = Promise<readonly T[]>;
+type FindResult<T> = Promise<readonly T[]>;
 
-// FindManyOptions is parameterized by the same namespaces the predicate is built over,
+// FindOptions is parameterized by the same namespaces the predicate is built over,
 // so sort paths get the same type-level safety as filter paths: only paths whose value
 // resolves to purely `string` or purely `number` (no booleans, no unions, no arrays).
 // See Part 9 for the generalization of SearchSort<TNamespaces>.
-interface FindManyOptions<TNamespaces extends Record<string, SearchMetadataRecord>> {
+interface FindOptions<TNamespaces extends Record<string, SearchMetadataRecord>> {
   readonly sort?: readonly SearchSort<TNamespaces>[];
   readonly limit?: number;
 }
@@ -415,7 +412,7 @@ interface FindManyOptions<TNamespaces extends Record<string, SearchMetadataRecor
 
 The compensation context has no workflow `ctx.errors`. Compensation reports its outcome through the optional `result` schema on its definition. Early `return` is the explicit short-circuit. Throws are reserved for halts.
 
-Aggregate workflow-level compensation APIs such as `handle.compensation.wait()` and `CompensationFailureInfo` are removed. Per-instance reads through `findUnique(...)` + `fetchRow(...)` and developer-declared events replace them.
+Aggregate workflow-level compensation APIs such as `handle.compensation.wait()` and `CompensationFailureInfo` are removed. Per-instance reads through `find(...)` + `fetchRow(...)` and developer-declared events replace them.
 
 ### Type-level discrimination
 
@@ -514,9 +511,7 @@ Compensation block instances cannot be `sigterm`-ed because they have no compens
 For ordinary workflows (root + detached child), `skip` is meaningful when the workflow is halted and the operator can supply a valid result:
 
 ```typescript
-const handle = client.workflows.processOrder.findUnique((q) =>
-  q.idempotencyKey.eq("order-jan-2027"),
-);
+const handle = client.workflows.processOrder.get("order-jan-2027");
 
 await handle.skip({ orderId: "order-jan-2027", status: "manual-cancellation" });
 // equivalent to: handle.skip(result, { strategy: "sigterm" })
@@ -534,9 +529,11 @@ The result must conform to the workflow's `defineWorkflow.result` schema. If the
 For compensation block instances, `skip(result)` takes the result and nothing else — no `opts`, no strategy. The result argument is required when the compensation declared a `result` schema; only when the schema was omitted (effectively `TResult = void`) does `skip()` accept zero arguments. It abandons the running `undo`, sets the operator-supplied result, and transitions the block to `'skipped'`:
 
 ```typescript
-const halted = workflowInstance.compensations.steps.bookHotel.findUnique(({ args }) =>
-  eq(args.firstName, "Bob"),
+const [halted] = await workflowInstance.compensations.steps.bookHotel.find(
+  ({ args }) => eq(args.firstName, "Bob"),
+  { limit: 1 },
 );
+if (!halted) throw new Error("missing");
 
 await halted.skip({
   kind: "operator-resolved",
@@ -544,12 +541,12 @@ await halted.skip({
 });
 ```
 
-Bulk skipping is expressed by iterating over `findMany(...)` with a `fields` prefetch and calling `skip(result)` on each yielded handle. Each block receives a different operator-supplied result based on its prefetched args, and the whole transaction can be scoped through a single `txOrConn`:
+Bulk skipping is expressed by iterating over `find(...)` with a `fields` prefetch and calling `skip(result)` on each yielded handle. Each block receives a different operator-supplied result based on its prefetched args, and the whole transaction can be scoped through a single `txOrConn`:
 
 ```typescript
 await using tx = await client.transaction();
 
-const blocks = await workflowInstance.compensations.steps.bookHotel.findMany(
+const blocks = await workflowInstance.compensations.steps.bookHotel.find(
   ({ status }) => eq(status, "halted"),
   { fields: { args: true }, txOrConn: tx },
 );
@@ -731,7 +728,7 @@ There is no outer discriminant for error categories. The external caller discrim
 
 Compensation `undo` callbacks do not receive `ctx.errors`. They report intended outcomes by returning values through the optional `result` schema declared on the compensation definition. Unexpected throws halt the compensation block instance.
 
-`CompensationFailureInfo` and `handle.compensation.wait()` are removed. Operators observe compensation block instances through `workflowInstance.compensations.steps.<step>.findUnique(...)` + `fetchRow(...)`, declared events, and `skip()`.
+`CompensationFailureInfo` and `handle.compensation.wait()` are removed. Operators observe compensation block instances through `workflowInstance.compensations.steps.<step>.find(...)` + `fetchRow(...)`, declared events, and `skip()`.
 
 ### Rationale recap
 
@@ -890,7 +887,7 @@ await ctx.scope(
 
 #### Search and introspection — unified shape
 
-Every queryable namespace in the system shares the same shape: a direct-access `.get(id)` that constructs a handle without fetching, plus three predicate-based methods that fetch.
+Every queryable namespace in the system shares the same shape: a direct-access `.get(id)` that constructs a handle without fetching, plus predicate-based `find` and `count`.
 
 ```typescript
 interface QueryableNamespace<
@@ -899,35 +896,19 @@ interface QueryableNamespace<
   TRow extends RowNamespaceRecord,
   TId,
 > {
-  // Direct-access constructor. Returns a handle synchronously; the handle is
-  // query-grounded — actual cardinality / existence is reflected in the
-  // FindUniqueResult that handle methods return. No I/O; use fetchRow or
-  // findUnique/findMany with `{ fields }` to materialize row data.
+  // Identity grounding — synchronous; no I/O. Row data via fetchRow or find+fields.
   get(id: TId): THandle;
 
-  // Predicate-based lookup that asserts cardinality at fetch time. Returns
-  // 'unique' / 'missing' / 'ambiguous'.
-  findUnique(
-    query: (q: SearchQuery<TQueryNamespaces>) => SearchQueryNode,
-    opts?: FindUniqueOptions,
-  ): Promise<FindUniqueResult<THandle>>;
-  findUnique<F extends FieldsMask<TRow>>(
-    query: (q: SearchQuery<TQueryNamespaces>) => SearchQueryNode,
-    opts: FindUniqueOptions & { fields: F },
-  ): Promise<FindUniqueResult<HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>>>;
-
-  // Predicate-based lookup that may yield zero or more handles. Awaitable;
-  // materialises the full array. Omit the predicate to query the full scoped set.
-  findMany(
+  // Predicate-based query — zero or more handles. Omit predicate for full scoped set.
+  find(
     query?: (q: SearchQuery<TQueryNamespaces>) => SearchQueryNode,
-    opts?: FindManyOptions<TQueryNamespaces>,
-  ): FindManyResult<THandle>;
-  findMany<F extends FieldsMask<TRow>>(
+    opts?: FindOptions<TQueryNamespaces>,
+  ): FindResult<THandle>;
+  find<F extends FieldsMask<TRow>>(
     query: (q: SearchQuery<TQueryNamespaces>) => SearchQueryNode,
-    opts: FindManyOptions<TQueryNamespaces> & { fields: F },
-  ): FindManyResult<HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>>;
+    opts: FindOptions<TQueryNamespaces> & { fields: F },
+  ): FindResult<HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>>;
 
-  // Aggregate count over the same predicate.
   count(
     query: (q: SearchQuery<TQueryNamespaces>) => SearchQueryNode,
     opts?: CountOptions,
@@ -935,24 +916,13 @@ interface QueryableNamespace<
 }
 ```
 
-There is no `findUnique(id)` overload. `.get(id)` is the identity-based path; `findUnique(query)` is the assert-uniqueness-at-fetch-time path. They have different shapes because they do different things: `.get` does no I/O and cannot fail synchronously; `findUnique` does I/O and reports cardinality.
+`.get(id)` constructs a handle synchronously; existence is surfaced lazily via `fetchRow() → TRow | undefined`. `find(query?, opts?)` returns every matching handle (use `limit` to bound scans). Cardinality checks (e.g. "exactly one") are caller-owned.
 
-`FindManyResult<T>` is `Promise<readonly T[]>`. Awaiting materialises the full matching set; use `limit` to bound large scans.
+`FindResult<T>` is `Promise<readonly T[]>`. Predicate callbacks may return literal `true` for an unconditional match within namespace scope (`WHERE TRUE`), or omit the predicate entirely via the optional overloads on `find` / `count`.
 
-Predicate callbacks may return literal `true` for an unconditional match within namespace scope (`WHERE TRUE`), or omit the predicate entirely via the optional overloads on `findUnique` / `findMany` / `count`.
+There are no "subset handles" with curated bulk operations. The handle returned by `find` is the canonical handle for that entity; bulk operator actions are expressed by mapping over the array.
 
-`FindUniqueResult<T>` carries cardinality:
-
-```typescript
-type FindUniqueResult<T> =
-  | { readonly status: "unique"; readonly value: T }
-  | { readonly status: "missing" }
-  | { readonly status: "ambiguous"; readonly count: number };
-```
-
-There are no "subset handles" with curated bulk operations. The handle returned by `findUnique` and yielded by `findMany` is the canonical handle for that entity; bulk operator actions are expressed by mapping over the iterable.
-
-Where an entity has more than one identity-based addressing scheme (e.g. root workflows are addressable by `idempotencyKey` and, when an `idempotencyKeyFactory` is declared, by `args`), the namespace adds extra `.get(...)` overloads. The `findUnique`/`findMany`/`count` shape is unaffected.
+Where an entity has more than one identity-based addressing scheme (e.g. root workflows are addressable by `idempotencyKey` and, when an `idempotencyKeyFactory` is declared, by `args`), the namespace adds extra `.get(...)` overloads. The `find` / `count` shape is unaffected.
 
 ##### Row prefetch and `fetchRow`
 
@@ -962,10 +932,10 @@ A queryable handle exposes:
 
 ```typescript
 interface FetchableHandle<TRow> {
-  fetchRow(opts?: FetchRowOptions<TRow>): Promise<FindUniqueResult<TRow>>;
+  fetchRow(opts?: FetchRowOptions<TRow>): Promise<TRow | undefined>;
   fetchRow<F extends FieldsMask<TRow>>(
     opts: FetchRowOptions<TRow> & { readonly fields: F },
-  ): Promise<FindUniqueResult<Pick<TRow, ProjectedKeys<TRow, F>>>>;
+  ): Promise<Pick<TRow, ProjectedKeys<TRow, F>> | undefined>;
 }
 
 interface FetchRowOptions<TRow> {
@@ -976,7 +946,7 @@ interface FetchRowOptions<TRow> {
 
 Omit `fields` to fetch the entire row. With `fields`, only the listed columns are projected (`Pick<Row, keys>`).
 
-When a query method (`get`, `findUnique`, `findMany`) is called with a `fields` option, the engine prefetches those columns into a `.row` field on each yielded handle:
+When a query method (`find`) is called with a `fields` option, the engine prefetches those columns into a `.row` field on each yielded handle:
 
 ```typescript
 type HandleWithRow<H, TRow> = H & { readonly row: TRow };
@@ -1006,11 +976,7 @@ The mask is type-validated: only keys of `TRow` are accepted. The engine additio
 ##### Common query/option types
 
 ```typescript
-interface FindUniqueOptions {
-  readonly txOrConn?: IWorkflowTransaction | IWorkflowConnection;
-}
-
-interface FindManyOptions<TNamespaces extends Record<string, SearchNamespaceRecord>> {
+interface FindOptions<TNamespaces extends Record<string, SearchNamespaceRecord>> {
   readonly sort?: readonly SearchSort<TNamespaces>[];
   readonly limit?: number;
   readonly txOrConn?: IWorkflowTransaction | IWorkflowConnection;
@@ -1049,20 +1015,20 @@ The two namespaces return **different handle types** because attached and detach
 
 ##### Detached children
 
-`workflowInstance.children.detached.<name>.findUnique(...)` returns a regular `WorkflowHandleExternal<W>` — the same handle type that `client.workflows.<name>.findUnique(...)` returns. The detachedness is metadata: `parent_step_id` is set, but the child is otherwise globally addressable, has its own `idempotencyKey`, and supports the full operator action surface (`sigkill()`, `sigterm()`, `skip(result, opts?)`).
+`workflowInstance.children.detached.<name>.find(...)` returns a regular `WorkflowHandleExternal<W>` — the same handle type that `client.workflows.<name>.find(...)` returns. The detachedness is metadata: `parent_step_id` is set, but the child is otherwise globally addressable, has its own `idempotencyKey`, and supports the full operator action surface (`sigkill()`, `sigterm()`, `skip(result, opts?)`).
 
-Detached children also appear in the global `client.workflows.<def>.findMany(...)` query. The parent-scoped namespace is a convenience: it pre-filters to detached children of this parent. `.get(idempotencyKey | args)` is available there too, though its semantics narrow correspondingly: "this detached child must be an immediate child of this parent AND have this idempotency key (or args that derive it)."
+Detached children also appear in the global `client.workflows.<def>.find(...)` query. The parent-scoped namespace is a convenience: it pre-filters to detached children of this parent. `.get(idempotencyKey | args)` is available there too, though its semantics narrow correspondingly: "this detached child must be an immediate child of this parent AND have this idempotency key (or args that derive it)."
 
 ##### Attached children
 
-`workflowInstance.children.attached.<name>.findUnique(...)` returns an `AttachedChildWorkflowExternalHandle<W>` — **non-lifecycle** (not "read-only" in the blanket sense): no terminal-action verbs and no `idempotencyKey`, while `channels` / streams / events / `fetchRow` remain on the type where declared.
+`workflowInstance.children.attached.<name>.find(...)` returns an `AttachedChildWorkflowExternalHandle<W>` — **non-lifecycle** (not "read-only" in the blanket sense): no terminal-action verbs and no `idempotencyKey`, while `channels` / streams / events / `fetchRow` remain on the type where declared.
 
 ```typescript
 interface AttachedChildWorkflowExternalHandle<W extends AnyWorkflowHeader>
   extends FetchableHandle<WorkflowRow<InferWorkflowArgs<W>, InferWorkflowResult<W>>> {
   readonly id: AttachedChildWorkflowId<W>;
 
-  attributes: { /* declared attributes; per-instance reads, FindUniqueResult-wrapped */ };
+  attributes: { /* declared attributes; per-instance reads */ };
   streams:    { /* declared streams; per-instance reads */ };
   events:     { /* declared events; per-instance wait/isSet */ };
   channels:   { /* declared channels; send fan-in to this instance */ };
@@ -1088,7 +1054,7 @@ Internally an `AttachedChildWorkflowId<W>` is a workflow id; externally that is 
 
 ##### Global queries filter out attached children
 
-`client.workflows.<def>.findMany(...)` returns only globally addressable workflows. Workflow rows where `attached = TRUE` are filtered out at query time. To inspect attached children, operators must go through the parent's `children.attached.<name>` namespace.
+`client.workflows.<def>.find(...)` returns only globally addressable workflows. Workflow rows where `attached = TRUE` are filtered out at query time. To inspect attached children, operators must go through the parent's `children.attached.<name>` namespace.
 
 This matches the actor-model framing: attached children are subordinate to a parent workflow's lifecycle and not independently addressable in the system.
 
@@ -1174,7 +1140,7 @@ interface WorkflowHandleExternal<W extends AnyWorkflowHeader>
 
 #### `client.workflows.<def>` surface
 
-The root client namespace gains the same `findUnique` / `findMany` / `count` surface, alongside `.start` and the identity-based `.get` direct-access methods:
+The root client namespace gains the same `find` / `count` surface, alongside `.start` and the identity-based `.get` direct-access methods:
 
 ```typescript
 client.workflows.<def>:
@@ -1200,13 +1166,13 @@ client.workflows.<def>:
     >;
 ```
 
-The `Omit<..., "get">` reflects that the identity-based `.get` is replaced by the two domain-specific overloads (`idempotencyKey` and, when factory is declared, `args`). The shape of `findUnique` / `findMany` / `count` is unchanged from the unified shape.
+The `Omit<..., "get">` reflects that the identity-based `.get` is replaced by the two domain-specific overloads (`idempotencyKey` and, when factory is declared, `args`). The shape of `find` / `count` is unchanged from the unified shape.
 
 `.get(args)` is the new overload: when the workflow definition declares an `idempotencyKeyFactory`, the engine derives the idempotency key from the args at call time and performs the same fast direct-access lookup. The same overload is added to `ctx.external.<W>.get(...)` inside workflow logic.
 
-`findUnique(query)` is for predicate-based lookup that must match exactly one row. `.get` is the fast path when the operator already knows the addressing key. Operators use whichever fits.
+`.get(idempotencyKey | args)` is the fast path when the operator already knows the addressing key. `find(query?, opts?)` returns every matching handle; singleton checks are caller-owned (e.g. `find(..., { limit: 2 })` and inspect `length`).
 
-`findMany` excludes attached children automatically (`row.attached = TRUE` rows are filtered out). Detached children appear in `findMany` results because they are globally addressable workflows.
+`find` excludes attached children automatically (`row.attached = TRUE` rows are filtered out). Detached children appear in `find` results because they are globally addressable workflows.
 
 #### `client.compensations` — global compensation search
 
@@ -1233,7 +1199,7 @@ client.compensations.steps.<stepDefinitionName>:
 ```typescript
 await using tx = await client.transaction();
 
-const halted = await client.workflows.processOrder.findMany(
+const halted = await client.workflows.processOrder.find(
   ({ status, createdAt }) => and(eq(status, "halted"), lt(createdAt, sevenDaysAgo)),
   { fields: { id: true, args: true, idempotencyKey: true }, txOrConn: tx },
 );
@@ -1566,7 +1532,7 @@ CREATE TABLE workflow_attributes (
 );
 ```
 
-`channel_message`, `stream_record`, and `workflow_event` follow the same pattern. There is no `compensation_block_id` discriminator on these tables: when an operator queries `workflowInstance.compensations.steps.bookHotel.findUnique(...).attributes.progress.get()`, the engine resolves that to a `workflow_id` (the compensation block instance) and reads from `workflow_attributes` directly.
+`channel_message`, `stream_record`, and `workflow_event` follow the same pattern. There is no `compensation_block_id` discriminator on these tables: when an operator queries `(await workflowInstance.compensations.steps.bookHotel.find(..., { limit: 1 }))[0]?.attributes.progress.get()`, the engine resolves that to a `workflow_id` (the compensation block instance) and reads from `workflow_attributes` directly.
 
 ### Request compensation tables
 
@@ -1617,7 +1583,7 @@ CREATE TABLE halt (
 
 There is no `branch_halt` table because there are no branches. There is no separate `compensation_block_halt` table because compensation block instances are themselves workflows — their halts are halts on a workflow row, indistinguishable at the table layer.
 
-The differences between operator-facing halt resolution surfaces (`workflowInstance.halts.list()` for execution-workflow halts, `workflowInstance.compensations.steps.X.findUnique(...).halt()` for compensation-block-instance halts) are implemented as views/queries over this single table, joined against the `workflow` row's kind columns (`is_compensation`, `compensation_step_name`) when needed.
+The differences between operator-facing halt resolution surfaces (`workflowInstance.halts.find(...)` for execution-workflow halts, `workflowInstance.compensations.steps.X.find(...)` for compensation-block-instance halts) are implemented as views/queries over this single table, joined against the `workflow` row's kind columns (`is_compensation`, `compensation_step_name`) when needed.
 
 Implementation details below this level — indexes, retention, and exact FK choices — should be finalized with the public API implementation.
 
@@ -1679,7 +1645,7 @@ Public predicate authoring is function-based and row-scoped:
 ```typescript
 import { and, eq, gt, every, some } from "natalia/search";
 
-findMany(({ args, metadata, createdAt }) =>
+find(({ args, metadata, createdAt }) =>
   and(
     eq(args.provider, "metamask"),
     eq(metadata.tenant.id, "acme"),
@@ -2397,7 +2363,7 @@ For most schemas (no transforms), `InferInput` and `InferOutput` are identical a
 
 ### Goal
 
-Every read or write operation against the engine's durable state must be composable into a single database transaction so that operators can read state, decide on actions, and apply those actions as one atomic unit. This is the foundation that lets `findMany` + `skip` + `findUnique` flow safely through one transaction without race windows.
+Every read or write operation against the engine's durable state must be composable into a single database transaction so that operators can read state, decide on actions, and apply those actions as one atomic unit. This is the foundation that lets `find` + `skip` + `fetchRow` flow safely through one transaction without race windows.
 
 ### Two opaque types
 
@@ -2444,7 +2410,7 @@ If the block exits via exception, the disposer rolls back automatically.
 This applies uniformly to:
 
 - `client.workflows.<def>.start(opts)` — `opts.txOrConn?`.
-- `client.workflows.<def>.findUnique`, `.findMany`, `.count` — second `opts` argument carries `txOrConn?`.
+- `client.workflows.<def>.find`, `.count` — second `opts` argument carries `txOrConn?`.
 - `client.workflows.<def>.get(...)` — synchronous handle constructor; the *handle's* methods carry `txOrConn?`, not `.get` itself.
 - All workflow-handle methods (`fetchRow`, `sigkill`, `sigterm`, `skip`, `attributes.X.get`, `streams.X.read`, `events.X.wait`, `channels.X.send`, `halts.list`, etc.).
 - All compensation-block-handle methods (`fetchRow`, `skip`, primitive accessors).
@@ -2456,7 +2422,7 @@ This applies uniformly to:
 Non-IO methods do **not** take `txOrConn`:
 
 - `.get(id)` (synchronous, no I/O).
-- `findMany` / `findUnique` / `count` accept an optional predicate. Omit the predicate to query the full scoped set; return literal `true` from the callback for an explicit catch-all (`WHERE TRUE`). Use `limit` to bound large scans; pagination beyond that is caller-owned.
+- `find` / `count` accept an optional predicate. Omit the predicate to query the full scoped set; return literal `true` from the callback for an explicit catch-all (`WHERE TRUE`). Use `limit` to bound large scans; pagination beyond that is caller-owned.
 - Constructor-style helpers (e.g., the type-only handle types).
 
 ### Scope rules
@@ -2471,7 +2437,7 @@ The `txOrConn?` parameter is exclusively for **client-side / operator-facing** I
 await using tx = await client.transaction();
 
 // 1. Read: find halted bookings with prefetched args.
-const halted = await client.workflows.processOrder.findMany(
+const halted = await client.workflows.processOrder.find(
   ({ status, createdAt }) =>
     and(eq(status, "halted"), lt(createdAt, sevenDaysAgo)),
   { fields: { id: true, args: true }, txOrConn: tx },
@@ -2506,7 +2472,7 @@ const orderRow = await order.fetchRow({
 
 if (orderRow.status === "unique" && orderRow.value.status === "halted") {
   // Read related compensations in same tx.
-  const blocks = await order.compensations.bookHotel.findMany(
+  const blocks = await order.compensations.bookHotel.find(
     ({ status }) => eq(status, "halted"),
     { txOrConn: tx },
   );
@@ -2633,7 +2599,7 @@ Removed context APIs:
 - `DeadLetterId`, `DeadLetterRow`, `DeadLetterWhereTemplate`, `DeadLetterHandleExternal`, `DeadLetterNamespaceExternal`, `QueueNamespaceExternal`.
 - `AttemptAccessor`, `Failure`, `Attempt`, `AttemptError`.
 - `ExplicitError`, `ErrorValue`, `FailureInfo`.
-- `CompensationInfo`, `CompensationBlockStatus`, `CompensationId`, `FindUniqueResult`, `FindManyResult`, `FindManyOptions`, `FindUniqueOptions`, `CountOptions`.
+- `CompensationInfo`, `CompensationBlockStatus`, `CompensationId`, `FindResult`, `FindOptions`, `CountOptions`.
 - `FieldsMask`, `ProjectedKeys`, `HandleWithRow`, `FetchableHandle`.
 - `WorkflowRow`, `WorkflowWhereTemplate`, `CompensationBlockRow`, `CompensationBlockWhereTemplate`, `RequestCompensationRow`, `RequestCompensationWhereTemplate`.
 - `RequestCompensationInfo`, `RequestCompensationStatus`, `RequestCompensationInstanceId`.
@@ -2655,6 +2621,7 @@ Removed context APIs:
 - `TimeoutInfo`, `StepFailureInfo`, `ChildWorkflowFailureInfo` callback-info types.
 - `StepCompensationResult`, `RequestCompensationResult` closure-info types.
 - `CompensationFailureInfo`.
+- `FindUniqueResult`, `FindManyResult`, `FindManyOptions`, `FindUniqueOptions`.
 
 ### Breaking changes
 
@@ -2677,30 +2644,30 @@ Removed context APIs:
 
 #### Attached vs detached child workflows
 
-- Attached children have no `idempotencyKey` on starts or on the operator handle and are not globally addressable. They appear only via `workflowInstance.children.attached.<name>.findUnique/findMany`. The returned handle is `AttachedChildWorkflowExternalHandle<W>`: **non-lifecycle** (no `sigkill` / `sigterm` / `skip`), with introspection and typed `channels` / streams / events / `fetchRow` where declared.
-- Detached children are real root workflows with an `idempotencyKey`, addressable both globally (`client.workflows.<def>.findUnique/findMany`) and through `workflowInstance.children.detached.<name>` as a parent-scoped convenience. The returned handle is the standard `WorkflowHandleExternal<W>`.
-- Global `client.workflows.<def>.findMany(...)` queries filter out workflow rows where `attached = TRUE`. Attached children never appear in the global view.
+- Attached children have no `idempotencyKey` on starts or on the operator handle and are not globally addressable. They appear only via `workflowInstance.children.attached.<name>.find`. The returned handle is `AttachedChildWorkflowExternalHandle<W>`: **non-lifecycle** (no `sigkill` / `sigterm` / `skip`), with introspection and typed `channels` / streams / events / `fetchRow` where declared.
+- Detached children are real root workflows with an `idempotencyKey`, addressable both globally (`client.workflows.<def>.find`) and through `workflowInstance.children.detached.<name>` as a parent-scoped convenience. The returned handle is the standard `WorkflowHandleExternal<W>`.
+- Global `client.workflows.<def>.find(...)` queries filter out workflow rows where `attached = TRUE`. Attached children never appear in the global view.
 
 #### Search and introspection unified
 
-- Every queryable namespace shares the same surface: `.get(id)` → handle (synchronous, query-grounding, no fetch); `findUnique(query?, opts?)` → `Promise<FindUniqueResult<Handle>>` (predicate optional); `findMany(query?, opts?)` → `Promise<readonly Handle[]>`; `count(query?, opts?)` → `Promise<number>`.
-- `findUnique` does not have an id overload. `.get(id)` is the identity-based path; `findUnique(query)` is the predicate-based path. They have different shapes because `.get` does no I/O and `findUnique` does.
-- `FindManyResult<T>` is `Promise<readonly T[]>`. Awaiting materialises the full matching set.
-- `FindManyOptions<TWhereTemplate>` is parameterized by the same row-shaped predicate template, so sort paths and predicates are checked against one type (`SearchSort<TWhereTemplate>` from Part 9 — only homogeneous comparable paths are sortable).
-- Subset handles (`CompensationBlockSubsetHandle`, `RequestCompensationSubsetHandle`) are removed. Bulk operator actions are expressed by mapping over the iterable handles, with each handle producing its own per-row result.
-- `client.workflows.<def>` adds `findUnique(query, opts?)`, `findMany(query, opts?)`, `count(query, opts?)` alongside `.start(...)` and `.get(idempotencyKey | args)`. `findMany` excludes attached children automatically.
+- Every queryable namespace shares the same surface: `.get(id)` → handle (sync identity grounding); `find(query?, opts?)` → `Promise<readonly Handle[]>`; `count(query?, opts?)` → `Promise<number>`.
+- `.get(id)` does no I/O. Row existence on a grounded handle is `fetchRow() → TRow | undefined`.
+- `FindResult<T>` is `Promise<readonly T[]>`. Use `limit` to bound large scans; singleton checks are caller-owned (`find(..., { limit: 2 })`).
+- `FindOptions<TWhereTemplate>` is parameterized by the same row-shaped predicate template, so sort paths and predicates are checked against one type (`SearchSort<TWhereTemplate>` from Part 9 — only homogeneous comparable paths are sortable).
+- Subset handles (`CompensationBlockSubsetHandle`, `RequestCompensationSubsetHandle`) are removed. Bulk operator actions are expressed by mapping over `find` results.
+- `client.workflows.<def>` adds `find(query, opts?)`, `count(query, opts?)` alongside `.start(...)` and `.get(idempotencyKey | args)`. Global `find` excludes attached children automatically.
 - `client.compensations.{requests,steps}` adds global L1 compensation search keyed by definition `name`, aggregated across registered workflows. Workflow-scoped L2 remains on `workflowHandle.compensations.{requests,steps}` keyed by slot.
-- `workflowInstance.compensations.steps.<step>`, `workflowInstance.compensations.requests.<request>`, and `workflowInstance.children.attached.<name>` now expose `.get(id)` (with their respective branded ids) in addition to `findUnique` / `findMany` / `count`.
+- `workflowInstance.compensations.steps.<step>`, `workflowInstance.compensations.requests.<request>`, and `workflowInstance.children.attached.<name>` expose `.get(id)` plus `find` / `count`.
 - `client.workflows.<def>.get(args)` is a new overload available when the workflow declares `idempotencyKeyFactory`. The engine derives the key from args at call time. The same overload is added to `ctx.external.<W>.get(...)` inside workflow logic and to `workflowInstance.children.detached.<name>.get(...)`.
 
 #### Row prefetch and `fetchRow`
 
 - Per-field accessor methods on unique handles (`status()`, `args()`, `result()`, `info()`, `payload()`, `halt()`) are removed. They caused N+1 round trips and were ergonomically bad.
-- Every fetchable handle exposes `fetchRow(opts?)` which returns a row snapshot. Set `opts.fields` to project columns (`Pick<Row, keys>`); omit `fields` for the whole row. `opts.txOrConn` composes with other IO methods.
-- `findMany` / `findUnique` accept a `fields` option that prefetches the listed columns into a `.row` field on each yielded handle. Handles obtained via sync `.get(id)` have no `.row` field (identity grounding only); use `fetchRow({ fields })` or query with `{ fields }` to materialize row data.
+- Every fetchable handle exposes `fetchRow(opts?)` which returns `TRow | undefined`. Set `opts.fields` to project columns (`Pick<Row, keys>`); omit `fields` for the whole row. `opts.txOrConn` composes with other IO methods.
+- `find` accepts a `fields` option that prefetches listed columns into `.row` on each returned handle. Handles from sync `.get(id)` have no `.row`; use `fetchRow({ fields })` or `find({ fields })`.
 - `.fetchRow` always re-fetches; it does not consult or modify `.row`. The prefetched `.row` is a snapshot at query time; `.fetchRow` is a fresh read on demand.
 - JSONB columns (`args`, `result`, `metadata`, `info`, `payload`) are first-class row fields for `fetchRow` / prefetch — they are returned as whole opaque values.
-- `RequestCompensationUniqueHandle.attempts()` is preserved as a separate method (it returns an `AttemptAccessor`, not a row column).
+- `RequestCompensationUniqueHandle.attempts` is a parent-scoped query namespace (not a row column).
 
 #### Query predicates
 
@@ -2728,7 +2695,7 @@ Removed context APIs:
 - `ctx.branches.X(...)` is removed. Concurrent isolated work is modelled with child workflows orchestrated through `ctx.scope` / `ctx.all` / etc.
 - `MAIN_BRANCH`, `BranchPathItem`, `BranchEntry`, `BranchHandle`, `BranchAccessor`, `BranchInstanceStatus`, `BranchHaltStatus`, `BranchErrors`, and the `start_branch` step type are removed.
 - The `branch` database table is removed; the workflow body's sequential execution is implicit in step rows under `workflow.id`.
-- Branch-instance external query handles (`workflowInstance.branches.X.findUnique(...)`, `.findMany(...)`) are removed; the equivalent introspection for child workflows reuses existing handle types.
+- Branch-instance external query handles (`workflowInstance.branches.X.find(...)`) are removed; the equivalent introspection for child workflows reuses existing handle types.
 
 #### Errors
 

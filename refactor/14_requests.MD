@@ -24,7 +24,7 @@ Add durable requests for workflow code that needs an external handler or manual 
 - Compensation handlers: `return` reports outcome; `throw ctx.errors.X(..., { manual })` chooses retry vs manual. Compensation retry exhaustion also moves to `manual`.
 - `client.requests.<definitionName>.registerHandler` mirrors queue registration; optional async `retentionPolicy` at terminal finalize.
 - Client request namespaces use the unified searchable surface: `.get(id)`,
-  `.findUnique(query)`, `.findMany(query)`, and `.count(query)`.
+  `.find(query)`, `.count(query)`.
 - Request search returns typed request handles. Operator actions: `request.resolve(response)` and `request.escalateToManual(escalation)`; both abort in-flight handler attempts. Escalation input mirrors writable handler attempt shape (`RequestManualEscalationInput`).
 - Request ids are branded by request definition name, so `.get(id)` cannot mix
   ids from different request types.

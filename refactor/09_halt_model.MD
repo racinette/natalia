@@ -167,7 +167,7 @@ verifies:
 - Wiring the verb signatures onto concrete handles
   (`WorkflowHandleExternal`, `CompensationBlockUniqueHandle`) — step
   12.
-- The `findUnique` / `findMany` / `count` query surface that produces
+- The `find` / `count` query surface that produces
   those handles — step 12.
 - The legacy `sigterm()` / `sigkill()` on `src/types/engine.ts`'s
   workflow handle stays as-is for this step; step 12 sweeps it away

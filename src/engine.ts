@@ -22,8 +22,7 @@ export interface WorkflowEngineConfig<
    *
    * Workflows must be registered at construction time for type safety.
    * Each `engine.workflows.<name>` exposes the client accessor surface:
-   * `start`, `execute`, `get` (by idempotency key), `findUnique`, `findMany`,
-   * and `count` (see `WorkflowClientAccessor` in `./types`).
+   * `start`, `execute`, `get` (by idempotency key), `find`, and `count` (see `WorkflowClientAccessor` in `./types`).
    */
   workflows: TWfs;
 
@@ -108,7 +107,7 @@ export interface WorkflowEngineConfig<
  * Wraps a Postgres pool with workflow execution capabilities. All workflow
  * operations go through the engine; the engine extends `AbstractWorkflowClient`
  * so `engine.workflows.<name>` exposes the standard client surface
- * (`start` / `execute` / `get` / `findUnique` / `findMany` / `count`) per
+ * (`start` / `execute` / `get` / `find` / `count`) per
  * `REFACTOR.MD` Part 5.
  *
  * @example

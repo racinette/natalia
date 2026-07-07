@@ -155,5 +155,5 @@ The paired file `src/types-regression-tests/07_scopes.ts` verifies:
   resolution — step 09.
 - The persistence layout for `execute_scope` step rows and
   `step.parent_step_id` self-references — step 10.
-- External introspection of scope entries (`workflowInstance.compensations.<step>.findUnique`,
-  `workflowInstance.attachedChildWorkflows.<name>.findUnique`) — step 12.
+- External introspection of scope entries (`workflowInstance.compensations.<step>.find`,
+  `workflowInstance.attachedChildWorkflows.<name>.find`) — step 12.

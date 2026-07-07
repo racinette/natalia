@@ -15,7 +15,7 @@ import type {
  * Generic client surface shared by concrete clients and the executable engine.
  *
  * `workflows` is keyed by workflow name; each value matches `WorkflowClientAccessor`
- * (`start`, `execute`, `get`, `findUnique`, `findMany`, `count`). Subclasses
+ * (`start`, `execute`, `get`, `find`, `count`). Subclasses
  * supply lifecycle/state guards via `assertClientAvailable()` before invoking
  * the stubbed runtime methods.
  */
@@ -59,14 +59,10 @@ export abstract class AbstractWorkflowClient<
           this.assertClientAvailable();
           throw new Error("Not implemented");
         },
-        findUnique: async (_query: unknown, _opts?: unknown) => {
+        find: ((_query: unknown, _opts?: unknown) => {
           this.assertClientAvailable();
           throw new Error("Not implemented");
-        },
-        findMany: ((_query: unknown, _opts?: unknown) => {
-          this.assertClientAvailable();
-          throw new Error("Not implemented");
-        }) as WorkflowClientAccessor<AnyPublicWorkflowHeader>["findMany"],
+        }) as WorkflowClientAccessor<AnyPublicWorkflowHeader>["find"],
         count: async (_query: unknown, _opts?: unknown) => {
           this.assertClientAvailable();
           throw new Error("Not implemented");
@@ -139,14 +135,10 @@ export abstract class AbstractWorkflowClient<
         this.assertClientAvailable();
         return this.createRequestHandle();
       }) as RequestNamespaceExternal["get"],
-      findUnique: async (_query: unknown, _opts?: unknown) => {
+      find: ((_query: unknown, _opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
-      },
-      findMany: ((_query: unknown, _opts?: unknown) => {
-        this.assertClientAvailable();
-        throw new Error("Not implemented");
-      }) as RequestNamespaceExternal["findMany"],
+      }) as RequestNamespaceExternal["find"],
       count: async (_query: unknown, _opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
@@ -179,11 +171,7 @@ export abstract class AbstractWorkflowClient<
         this.assertClientAvailable();
         throw new Error("Not implemented");
       }) as never,
-      findUnique: async (_query: unknown, _opts?: unknown) => {
-        this.assertClientAvailable();
-        throw new Error("Not implemented");
-      },
-      findMany: ((_query: unknown, _opts?: unknown) => {
+      find: ((_query: unknown, _opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
       }) as never,
@@ -200,14 +188,10 @@ export abstract class AbstractWorkflowClient<
         this.assertClientAvailable();
         throw new Error("Not implemented");
       }) as RequestCompensationNamespaceExternal["get"],
-      findUnique: async (_query: unknown, _opts?: unknown) => {
+      find: ((_query: unknown, _opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
-      },
-      findMany: ((_query: unknown, _opts?: unknown) => {
-        this.assertClientAvailable();
-        throw new Error("Not implemented");
-      }) as RequestCompensationNamespaceExternal["findMany"],
+      }) as RequestCompensationNamespaceExternal["find"],
       count: async (_query: unknown, _opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
@@ -223,14 +207,10 @@ export abstract class AbstractWorkflowClient<
         this.assertClientAvailable();
         throw new Error("Not implemented");
       }) as CompensationBlockNamespaceExternal<unknown>["get"],
-      findUnique: async (_query: unknown, _opts?: unknown) => {
+      find: ((_query: unknown, _opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
-      },
-      findMany: ((_query: unknown, _opts?: unknown) => {
-        this.assertClientAvailable();
-        throw new Error("Not implemented");
-      }) as CompensationBlockNamespaceExternal<unknown>["findMany"],
+      }) as CompensationBlockNamespaceExternal<unknown>["find"],
       count: async (_query: unknown, _opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
@@ -254,14 +234,10 @@ export abstract class AbstractWorkflowClient<
         this.assertClientAvailable();
         return this.createDeadLetterHandle();
       }) as DeadLetterNamespaceExternal["get"],
-      findUnique: async (_query: unknown, _opts?: unknown) => {
+      find: ((_query: unknown, _opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
-      },
-      findMany: ((_query: unknown, _opts?: unknown) => {
-        this.assertClientAvailable();
-        throw new Error("Not implemented");
-      }) as DeadLetterNamespaceExternal["findMany"],
+      }) as DeadLetterNamespaceExternal["find"],
       count: async (_query: unknown, _opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");

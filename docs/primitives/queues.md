@@ -150,7 +150,7 @@ client.queues.notifications.registerHandler(handler, {
   retentionPolicy: async (ctx) => {
     if (ctx.status === "processed") return 86400;
     if (ctx.reason === "invalid_payload") return 3600;
-    const attempts = await ctx.attempts.findMany();
+    const attempts = await ctx.attempts.find();
     return attempts.length > 5 ? 86400 * 90 : 86400 * 30;
   },
 });
@@ -165,7 +165,7 @@ See [error-model.md](../error-model.md) for how queue handler errors relate to w
 Messages that cannot be processed successfully are dead-lettered. Query them through `client.queues.<name>.deadLetters`:
 
 ```typescript
-const matches = await client.queues.notifications.deadLetters.findMany(
+const matches = await client.queues.notifications.deadLetters.find(
   ({ reason }) => eq(reason, "max_attempts"),
   { fields: { id: true, payload: true }, limit: 10, txOrConn: tx },
 );
@@ -180,7 +180,7 @@ await handle.fetchRow({
   txOrConn: tx,
 });
 
-const attemptHandles = await handle.attempts.findMany({
+const attemptHandles = await handle.attempts.find({
   sort: [{ path: "attemptNumber", direction: "desc" }],
   limit: 1,
   fields: { code: true, message: true, details: true },

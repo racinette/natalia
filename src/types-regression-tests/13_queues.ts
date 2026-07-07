@@ -11,8 +11,7 @@ import type {
   DeadLetterHandleExternal,
   DeadLetterNamespaceExternal,
   DeclaredQueueHandlerAttempt,
-  FindManyResult,
-  FindUniqueResult,
+  FindResult,
   HandleWithRow,
   HandlerAttemptsReadNamespace,
   OperatorAttemptsNamespaceExternal,
@@ -442,7 +441,7 @@ const retentionPolicy: QueueRetentionPolicy<
   if (count > 5) {
     return 86400 * 90;
   }
-  const latest = await ctx.attempts.findMany({
+  const latest = await ctx.attempts.find({
     sort: [{ path: "attemptNumber", direction: "desc" }],
     limit: 1,
   });
@@ -481,7 +480,7 @@ client.queues.emailQueue.registerHandler(async () => undefined, {
         ? true
         : false
     >;
-    await ctx.attempts.findMany();
+    await ctx.attempts.find();
     return 3600;
   },
 });
@@ -541,7 +540,7 @@ type _QueueHandlerAttemptUnion = Assert<
 >;
 
 async function inspectDeadLetters(): Promise<void> {
-  const deadLetterMany = client.queues.emailQueue.deadLetters.findMany(
+  const deadLetterMany = client.queues.emailQueue.deadLetters.find(
     ({ reason }) => eq(reason, "handler_reject"),
     {
       fields: { id: true, payload: true },
@@ -553,7 +552,7 @@ async function inspectDeadLetters(): Promise<void> {
   type _DeadLetterMany = Assert<
     IsEqual<
       typeof deadLetterMany,
-      FindManyResult<
+      FindResult<
         HandleWithRow<
           DeadLetterHandleExternal<
             "emailQueue",
@@ -586,7 +585,7 @@ async function inspectDeadLetters(): Promise<void> {
     return;
   }
 
-  const attemptRows = await deadLetter.attempts.findMany({
+  const attemptRows = await deadLetter.attempts.find({
     sort: [{ path: "attemptNumber", direction: "desc" }],
     limit: 1,
     fields: { code: true, message: true, details: true },
@@ -644,8 +643,7 @@ async function inspectDeadLetters(): Promise<void> {
   type _Fetched = Assert<
     IsEqual<
       typeof fetched,
-      FindUniqueResult<
-        Pick<
+      | Pick<
           DeadLetterRow<
             "emailQueue",
             {
@@ -656,7 +654,7 @@ async function inspectDeadLetters(): Promise<void> {
           >,
           "payload" | "reason"
         >
-      >
+      | undefined
     >
   >;
   void fetched;
@@ -668,24 +666,22 @@ async function inspectDeadLetters(): Promise<void> {
   type _Count = Assert<IsEqual<typeof count, number>>;
   void count;
 
-  const found = await client.queues.emailQueue.deadLetters.findUnique(
+  const found = await client.queues.emailQueue.deadLetters.find(
     ({ payload }) => eq(payload.userId, "u-1"),
     { txOrConn: undefined },
   );
   type _Found = Assert<
     IsEqual<
       typeof found,
-      FindUniqueResult<
-        DeadLetterHandleExternal<
-          "emailQueue",
-          {
-            userId: string;
-            template: "welcome" | "receipt";
-            metadata: { tenantId: string };
-          },
-          _EmailQueueErrors
-        >
-      >
+      readonly DeadLetterHandleExternal<
+        "emailQueue",
+        {
+          userId: string;
+          template: "welcome" | "receipt";
+          metadata: { tenantId: string };
+        },
+        _EmailQueueErrors
+      >[]
     >
   >;
   void found;
@@ -694,7 +690,7 @@ async function inspectDeadLetters(): Promise<void> {
   client.queues.emailQueue.deadLetters.get("plain-id");
   // @ts-expect-error get is synchronous and does not accept txOrConn
   client.queues.emailQueue.deadLetters.get(deadLetterId, { txOrConn: undefined });
-  client.queues.emailQueue.deadLetters.findMany(
+  client.queues.emailQueue.deadLetters.find(
     // @ts-expect-error predicates are typed to the dead-letter payload shape
     ({ payload }) => eq(payload.unknownField, "x"),
   );

@@ -1,6 +1,6 @@
 /**
  * Client registry typing: `createWorkflowClient`, search predicates (`eq`, `and`,
- * `or`, `in_`, `gt`, `not`, …), `findUnique` / `findMany` / `count` + `sort`
+ * `or`, `in_`, `gt`, `not`, …), `find` / `count` + `sort`
  * (typed literal paths per `SearchSort`, like `11_search_query_generalization`),
  * and **`extend`** on header-derived handles (weak root + attached child).
  */
@@ -13,8 +13,7 @@ import {
 } from "../workflow";
 import type {
   AttachedChildWorkflowExternalHandle,
-  FindManyResult,
-  FindUniqueResult,
+  FindResult,
   InferWorkflowArgs,
   InferWorkflowMetadata,
   InferWorkflowResult,
@@ -142,7 +141,7 @@ async function _client14SearchSurface(
   );
   type _CatalogCount = Assert<IsEqual<typeof _catalogCount, number>>;
 
-  const _catalogUnique = await c.workflows.catalog.findUnique((s) =>
+  const _catalogFind = await c.workflows.catalog.find((s) =>
     and(
       eq(s.status, "completed"),
       eq(s.args.sku, "A-1"),
@@ -150,15 +149,17 @@ async function _client14SearchSurface(
       not(eq(s.idempotencyKey, "exclude-me")),
       ne(s.definitionName, "other"),
     ),
+    { limit: 2 },
   );
-  type _CatalogUnique = Assert<
+  type _CatalogFind = Assert<
     IsEqual<
-      typeof _catalogUnique,
-      FindUniqueResult<WorkflowHandleExternal<typeof catalogInterface>>
+      typeof _catalogFind,
+      readonly WorkflowHandleExternal<typeof catalogInterface>[]
     >
   >;
+  void _catalogFind;
 
-  const catalogMany = c.workflows.catalog.findMany(
+  const catalogMany = c.workflows.catalog.find(
     (s) =>
       or(
         eq(s.status, "halted"),
@@ -172,7 +173,7 @@ async function _client14SearchSurface(
   type _CatalogManyHandle = Assert<
     IsEqual<
       typeof catalogMany,
-      FindManyResult<WorkflowHandleExternal<typeof catalogInterface>>
+      FindResult<WorkflowHandleExternal<typeof catalogInterface>>
     >
   >;
   const catalogManyRows = await catalogMany;
@@ -184,28 +185,27 @@ async function _client14SearchSurface(
   >;
   void catalogManyRows;
 
-  const _shadowUnique = await c.workflows.shadow.findUnique((s) =>
-    eq(s.args.flag, true),
-  );
-  type _ShadowUnique = Assert<
+  const _shadowFind = await c.workflows.shadow.find((s) => eq(s.args.flag, true));
+  type _ShadowFind = Assert<
     IsEqual<
-      typeof _shadowUnique,
-      FindUniqueResult<WorkflowHandleExternal<typeof shadowInterface>>
+      typeof _shadowFind,
+      readonly WorkflowHandleExternal<typeof shadowInterface>[]
     >
   >;
+  void _shadowFind;
 
   const orch = c.workflows.orchestrator.get("idem-orch");
   type _OrchHandle = Assert<
     IsEqual<typeof orch, WorkflowHandleExternal<typeof orchestratorWorkflow>>
   >;
 
-  const workerMany = orch.childWorkflows.worker.findMany((s) =>
+  const workerMany = orch.childWorkflows.worker.find((s) =>
     eq(s.args.task, "ping"),
   );
   type _WorkerManyHandle = Assert<
     IsEqual<
       typeof workerMany,
-      FindManyResult<AttachedChildWorkflowExternalHandle<typeof workerHeader>>
+      FindResult<AttachedChildWorkflowExternalHandle<typeof workerHeader>>
     >
   >;
   const workerManyRows = await workerMany;
@@ -224,13 +224,13 @@ async function _client14SearchSurface(
   void workerCount;
 
   // @ts-expect-error — `shadow` rows have `{ flag: boolean }` args, not `sku`
-  await c.workflows.shadow.findUnique((s) => eq(s.args.sku, "nope"));
+  await c.workflows.shadow.find((s) => eq(s.args.sku, "nope"));
 
   // @ts-expect-error — not a valid `WorkflowStatus` literal
-  await c.workflows.catalog.findUnique((s) => eq(s.status, "not-a-status"));
+  await c.workflows.catalog.find((s) => eq(s.status, "not-a-status"));
 
   // @ts-expect-error — child namespace is typed to worker args (`task`), not catalog `sku`
-  await orch.childWorkflows.worker.findUnique((s) => eq(s.args.sku, "x"));
+  await orch.childWorkflows.worker.find((s) => eq(s.args.sku, "x"));
 }
 
 void _client14SearchSurface(client14);

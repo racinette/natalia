@@ -129,7 +129,7 @@ return { decision: "reject", note: "Policy violation" };
 
 When handler retries are exhausted, the engine moves the invocation to `manual` with persisted attempt history. Use `throw ctx.errors.X(..., { manual: true })` during the handler when external resolution is needed early, or query `status: "manual"` and resolve through request handles.
 
-Optional `retentionPolicy` runs once when an invocation reaches a terminal state (`resolved` or `timedOut`). Return seconds to keep the row, or `null` to keep it indefinitely. The callback receives the decoded payload, terminal status, response when resolved, and a parent-scoped `attempts` read namespace (`findMany`, `count`, …). `manual` is not terminal — retention runs when the invocation later resolves or the workflow call times out.
+Optional `retentionPolicy` runs once when an invocation reaches a terminal state (`resolved` or `timedOut`). Return seconds to keep the row, or `null` to keep it indefinitely. The callback receives the decoded payload, terminal status, response when resolved, and a parent-scoped `attempts` read namespace (`find`, `count`, …). `manual` is not terminal — retention runs when the invocation later resolves or the workflow call times out.
 
 ```typescript
 client.requests.humanReview.registerHandler(handler, {
@@ -148,7 +148,7 @@ See [error-model.md](../error-model.md) for how request handler errors relate to
 Manual requests are queryable on the client. An external actor resolves or escalates through the request handle. Both `resolve` and `escalateToManual` abort an in-flight handler attempt.
 
 ```typescript
-const waiting = await client.requests.humanReview.findMany(
+const waiting = await client.requests.humanReview.find(
   ({ status, payload }) =>
     and(eq(status, "manual"), eq(payload.documentId, "doc-1")),
   { fields: { id: true, payload: true }, limit: 10 },
@@ -289,7 +289,7 @@ compensation: {
 },
 ```
 
-When forward did not complete cleanly, inspect `ctx.forward.attempts.findMany(...)` for reachability hints — then reconcile. Attempt history does not replace external reconciliation.
+When forward did not complete cleanly, inspect `ctx.forward.attempts.find(...)` for reachability hints — then reconcile. Attempt history does not replace external reconciliation.
 
 `ctx.forward.status === "completed"` exposes `ctx.forward.response`. `"timed_out"` exposes `reason` (`"attempts_exhausted" | "deadline"`) and `attempts`. `"terminated"` exposes `attempts` only — neither timed-out nor terminated variants expose `response`.
 
@@ -317,16 +317,17 @@ Query compensation block instances at three levels:
 - **Workflow bulk:** `workflowHandle.compensations.requests.<workflowSlot>` — keyed by the workflow-local request slot
 - **Instance link:** `requestHandle.compensation` — synchronous ref from a forward request handle
 
-Global and workflow-scoped namespaces share the same `QueryableNamespace` shape (`get` / `findUnique` / `findMany` / `count`). Example workflow-scoped query:
+Global and workflow-scoped namespaces share the same `QueryableNamespace` shape (`get` / `find` / `count`). Example workflow-scoped query:
 
 ```typescript
-const found = await workflowHandle.compensations.requests.reserveFlightTicket.findUnique(
+const [block] = await workflowHandle.compensations.requests.reserveFlightTicket.find(
   ({ payload }) => eq(payload.customerId, "cust-1"),
+  { limit: 1 },
 );
 
-if (found.status === "unique") {
-  await found.value.skip({ released: true });
-  await found.value.escalateToManual({
+if (block) {
+  await block.skip({ released: true });
+  await block.escalateToManual({
     code: "ReleaseBlocked",
     message: "Operator must release manually",
   });
@@ -346,12 +347,12 @@ await request.compensation.fetchRow({
   fields: { status: true, payload: true },
 });
 await request.compensation.skip({ released: true });
-await request.compensation.attempts.findMany({
+await request.compensation.attempts.find({
   fields: { code: true, message: true },
 });
 ```
 
-Row existence is lazy: `fetchRow` returns `{ status: "missing" }` until the engine registers the compensation instance.
+Row existence is lazy: `fetchRow` returns `undefined` until the engine registers the compensation instance.
 
 ## Example: waitlist via manual mode
 
@@ -377,7 +378,7 @@ client.requests.reserveFlightTicket.registerHandler(
 );
 
 async function onTicketReturned(event: TicketReturnedEvent) {
-  const [request] = await client.requests.reserveFlightTicket.findMany(
+  const [request] = await client.requests.reserveFlightTicket.find(
     ({ status, payload }) =>
       and(
         eq(status, "manual"),

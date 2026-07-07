@@ -9,8 +9,7 @@ import {
 import type {
   BaseError,
   DeclaredRequestHandlerAttempt,
-  FindManyResult,
-  FindUniqueResult,
+  FindResult,
   HandleWithRow,
   HandlerAttemptsReadNamespace,
   OperatorAttemptsNamespaceExternal,
@@ -443,7 +442,7 @@ client.requests.approvalRequestAcceptance.registerHandler(
       if (ctx.status === "resolved") {
         void ctx.response.approved;
       }
-      await ctx.attempts.findMany();
+      await ctx.attempts.find();
       return null;
     },
   },
@@ -564,10 +563,10 @@ type _HandlerAttemptsNamespaceShape = Assert<
   HandlerAttemptsReadNamespace<
     RequestHandlerAttempt<InferRequestErrors<typeof approvalRequest>>
   > extends {
-    findMany(
+    find(
       query: unknown,
       opts?: unknown,
-    ): FindManyResult<
+    ): FindResult<
       RequestHandlerAttempt<InferRequestErrors<typeof approvalRequest>>
     >;
     count(query: unknown, opts?: unknown): Promise<number>;
@@ -578,7 +577,7 @@ type _HandlerAttemptsNamespaceShape = Assert<
 void (0 as unknown as _HandlerAttemptsNamespaceShape);
 
 async function manualResolution(): Promise<void> {
-  const requestMany = client.requests.approvalRequestAcceptance.findMany(
+  const requestMany = client.requests.approvalRequestAcceptance.find(
     ({ status, payload }) =>
       and(eq(status, "manual"), eq(payload.documentId, "doc-1")),
     {
@@ -591,7 +590,7 @@ async function manualResolution(): Promise<void> {
   type _RequestMany = Assert<
     IsEqual<
       typeof requestMany,
-      FindManyResult<
+      FindResult<
         HandleWithRow<
           RequestHandleExternal<
             "approvalRequestAcceptance",
@@ -660,7 +659,7 @@ async function manualResolution(): Promise<void> {
   void (0 as unknown as _HasCompensation);
 
   await requestHandle.compensation.fetchRow({ fields: { status: true } });
-  const _forwardAttempts = await requestHandle.attempts.findMany({
+  const _forwardAttempts = await requestHandle.attempts.find({
     fields: { manual: true },
   });
   void _forwardAttempts[0]?.row.manual;
@@ -670,7 +669,7 @@ async function manualResolution(): Promise<void> {
   );
   void count;
 
-  const found = await client.requests.approvalRequestAcceptance.findUnique(
+  const found = await client.requests.approvalRequestAcceptance.find(
     ({ payload }) => eq(payload.documentId, "doc-1"),
   );
   void found;
@@ -696,7 +695,7 @@ async function manualResolution(): Promise<void> {
   client.requests.approvalRequestAcceptance.get("plain-id");
   // @ts-expect-error resolve payload must match the request response schema
   await requestHandle.resolve({ approved: true });
-  client.requests.approvalRequestAcceptance.findMany(
+  client.requests.approvalRequestAcceptance.find(
     // @ts-expect-error predicates are typed to the request payload shape
     ({ payload }) => eq(payload.unknownField, "x"),
   );

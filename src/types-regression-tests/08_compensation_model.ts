@@ -114,7 +114,7 @@ const chargeStep = defineStep({
       if (info.status === "terminated") {
         // @ts-expect-error terminated forward outcomes do not expose a result
         void info.result;
-        const _latest = await info.attempts.findMany({
+        const _latest = await info.attempts.find({
           sort: [{ path: "attemptNumber", direction: "desc" }],
           limit: 1,
         });
@@ -412,4 +412,4 @@ export const compensationModelAcceptanceWorkflow = defineWorkflow({
 });
 
 // Introspection over compensation block instances (status, result, args,
-// skip, findUnique by query, findMany, etc.) is verified in step 12.
+// skip, find by query, count, etc.) is verified in step 12.

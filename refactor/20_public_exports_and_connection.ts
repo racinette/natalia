@@ -25,7 +25,6 @@ import type {
   ExplicitError,
   Failure,
   FailureInfo,
-  FindUniqueResult,
   IWorkflowConnection,
   IWorkflowTransaction,
   RequestCompensationInfo,
@@ -67,8 +66,7 @@ type _ErrorExports = ExplicitError<any, any> | ErrorValue<any>;
 type _CompensationExports =
   | CompensationInfo<any>
   | CompensationBlockStatus
-  | CompensationBlockInstanceId
-  | FindUniqueResult<any>;
+  | CompensationBlockInstanceId;
 
 type _RequestCompensationExports =
   | RequestCompensationInfo<any>
@@ -135,6 +133,10 @@ type _NoStepFailureInfo = import("../index").StepFailureInfo;
 type _NoManual = import("../index").ManualSentinel;
 // @ts-expect-error AttemptAccessor was removed in favour of attempt namespaces
 type _NoAttemptAccessor = import("../index").AttemptAccessor;
+// @ts-expect-error FindUniqueResult was removed
+type _NoFindUniqueResult = import("../index").FindUniqueResult<any>;
+// @ts-expect-error FindManyResult was renamed to FindResult
+type _NoFindManyResult = import("../index").FindManyResult<any>;
 
 void txOrConnUsage;
 void AttemptError;

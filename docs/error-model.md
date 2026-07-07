@@ -144,7 +144,7 @@ Retried forward operations (steps, request handlers, topic consumers, and forwar
 - At most **one successful completion** per forward invocation; the typed outcome is persisted and available on completed forward outcomes.
 - Attempt history helps judge reachability and ambiguity when forward did not settle cleanly; it does not replace external reconciliation.
 
-**Queues** use `QueueHandlerAttempt` rows with per-code `details` (`serialized` / `serialization_error` / `unspecified`). When `code` is set, `message` is always `string`. Query them through `handle.attempts.findMany(...)` on the client or `ctx.attempts.findMany(...)` in handler callbacks.
+**Queues** use `QueueHandlerAttempt` rows with per-code `details` (`serialized` / `serialization_error` / `unspecified`). When `code` is set, `message` is always `string`. Query them through `handle.attempts.find(...)` on the client or `ctx.attempts.find(...)` in handler callbacks.
 
 **Request handler attempts** use the same `details` union and record `manual` disposition from `ctx.errors` throws.
 
