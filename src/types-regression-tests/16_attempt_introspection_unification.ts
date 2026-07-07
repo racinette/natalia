@@ -825,7 +825,7 @@ async function _exerciseCompBlockHandleFetchRow(): Promise<void> {
 }
 void _exerciseCompBlockHandleFetchRow;
 
-declare const _compId: CompensationId<"aiuChargeStep">;
+declare const _compId: CompensationId<typeof chargeStep>;
 void _compId;
 
 // =============================================================================
@@ -894,7 +894,7 @@ type _DirectClientStepNs =
 
 type _DirectStepCompNs = Assert<
   _DirectClientStepNs extends CompensationBlockNamespaceExternal<
-    "aiuChargeStep",
+    typeof chargeStep,
     { amount: number },
     void
   >
@@ -929,7 +929,7 @@ async function _exerciseClientCompensationNamespaces(): Promise<void> {
   type _Blocks = Assert<
     IsEqual<
       (typeof blocks)[number]["id"],
-      CompensationId<"aiuChargeStep">
+      CompensationId<typeof chargeStep>
     >
   >;
   void (0 as unknown as _Blocks);

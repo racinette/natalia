@@ -38,8 +38,7 @@ import type {
   HaltRecord,
   IWorkflowConnection,
   IWorkflowTransaction,
-  StreamIteratorReadResult,
-  StreamOpenResult,
+  StreamReadNowaitResult,
   StreamReadResult,
   WorkflowOperatorActions,
   WorkflowResult,
@@ -89,6 +88,7 @@ import type {
   InferRequestErrors,
   InferWorkflowSteps,
   InferWorkflowStreams,
+  InferStepCompensationStreams,
 } from "./helpers";
 import type { StepCompensationDefinition, StepDefinition } from "./definitions/steps";
 import type {
@@ -132,29 +132,48 @@ export interface EventAccessorExternal {
 }
 
 /**
- * Stream iterator handle at engine level.
+ * Option bag for external stream reads. Shares {@link ExternalWaitOptions}
+ * with other engine-level waits; adds `txOrConn?` per Part 19.
  */
-export interface StreamIteratorHandleExternal<T> extends AsyncIterable<T> {
-  read(options?: ExternalWaitOptions): Promise<StreamIteratorReadResult<T>>;
-  [Symbol.asyncIterator](): AsyncIterableIterator<T>;
-}
+export type StreamExternalReadOptions = ExternalWaitOptions & {
+  readonly txOrConn?: IWorkflowConnection | IWorkflowTransaction;
+};
 
 /**
- * Stream reader at engine level.
+ * External stream reader on a workflow or compensation block handle.
+ *
+ * Sequential consumption is caller-owned: loop over offsets with
+ * {@link StreamReaderAccessorExternal.read} so each step carries
+ * {@link StreamExternalReadOptions} (`signal`, `txOrConn`).
  */
-export interface StreamReaderAccessorExternal<T> extends AsyncIterable<T> {
+export interface StreamReaderAccessorExternal<T> {
+  /**
+   * Read the record at `offset`, waiting until it is committed.
+   * Resolves `{ status: "never" }` when the instance is terminal and the
+   * offset will not appear. Signal abort rejects with `AbortError`.
+   */
   read(
     offset: number,
-    options?: ExternalWaitOptions,
+    options?: StreamExternalReadOptions,
   ): Promise<StreamReadResult<T>>;
-  iterator(
-    startOffset?: number,
-    endOffset?: number,
-  ): StreamIteratorHandleExternal<T>;
-  isOpen(opts?: {
-    txOrConn?: IWorkflowConnection | IWorkflowTransaction;
-  }): Promise<StreamOpenResult>;
-  [Symbol.asyncIterator](): AsyncIterableIterator<T>;
+
+  /**
+   * Non-blocking read at `offset`. When `defaultValue` is supplied, that
+   * value is returned instead of `{ status: "not_found" }`.
+   */
+  readNowait(
+    offset: number,
+    options?: StreamExternalReadOptions,
+  ): Promise<StreamReadNowaitResult<T>>;
+  readNowait<D>(
+    offset: number,
+    defaultValue: D,
+    options?: StreamExternalReadOptions,
+  ): Promise<
+    | { ok: true; status: "received"; data: T; offset: number }
+    | { ok: false; status: "never" }
+    | D
+  >;
 }
 
 // =============================================================================
@@ -180,18 +199,13 @@ export type HaltsNamespaceExternal = QueryableNamespace<
 /**
  * Per-instance primitive plane on a compensation block handle.
  *
- * Step 12 publishes the namespace placeholders. The full accessor surfaces
- * (`attributes.X.get`, `streams.X.read`, `events.X.wait`, `channels.X.send`)
- * land in steps 13/15/16 alongside their per-instance primitive
- * declarations on `StepCompensationDefinition` (step 08).
- *
- * Each accessor read returns `T | undefined` to surface row-level absence,
- * mirroring how the parent compensation block row is looked up via
- * {@link FetchableHandle.fetchRow}.
+ * Step 12 publishes typed {@link StreamReaderAccessorExternal} on
+ * `streams`; `attributes`, `events`, and `channels` placeholders land in
+ * step 16 alongside their per-instance primitive declarations on
+ * `StepCompensationDefinition` (step 08).
  */
 export interface CompensationBlockPrimitivePlane {
   readonly attributes: Record<string, unknown>;
-  readonly streams: Record<string, unknown>;
   readonly events: Record<string, unknown>;
   readonly channels: Record<string, unknown>;
 }
@@ -207,6 +221,14 @@ export interface CompensationBlockUniqueHandleExternal<
     CompensationBlockOperatorActions<TResult>,
     CompensationBlockPrimitivePlane {
   readonly id: CompensationId<TStep>;
+
+  readonly streams: {
+    [K in keyof InferStepCompensationStreams<TStep>]: StreamReaderAccessorExternal<
+      StandardSchemaV1.InferOutput<
+        InferStepCompensationStreams<TStep>[K]
+      >
+    >;
+  };
 }
 
 /**
@@ -745,9 +767,9 @@ type WorkflowClientCompensationStepNamespacesFromUnion<TStepUnion> = {
     ? TStep extends { compensation: unknown }
       ? TName
       : never
-    : never]: TStep extends StepDefinition<infer TName, any, any, any>
+    : never]: TStep extends StepDefinition<infer _TName, any, any, any>
     ? CompensationBlockNamespaceExternal<
-        TName,
+        TStep,
         StepArgsForCompensationNamespace<TStep>,
         StepCompensationResultForNamespace<TStep>
       >
@@ -862,7 +884,7 @@ type StepCompensationResultForNamespace<TStep> =
 
 type WorkflowHandleCompensationNamespaces<TSteps extends Record<string, unknown>> = {
   [K in CompensableStepKeys<TSteps>]: CompensationBlockNamespaceExternal<
-    K,
+    TSteps[K],
     StepArgsForCompensationNamespace<TSteps[K]>,
     StepCompensationResultForNamespace<TSteps[K]>
   >;

@@ -672,27 +672,30 @@ export type ChannelSendResult =
   | { ok: false; status: "not_found" };
 
 /**
- * Result of reading from a stream (engine level / random access).
+ * Result of a blocking external stream read at a fixed offset.
+ *
+ * Waits until the record is committed. When the owning instance has reached a
+ * terminal state and `offset` is at or beyond the append length, resolves
+ * immediately with `{ status: "never" }` — no further records will appear.
+ *
+ * Pass {@link ExternalWaitOptions.signal} to stop waiting; an aborted signal
+ * rejects with `AbortError` (native behaviour — no typed timeout outcome).
  */
 export type StreamReadResult<T> =
   | { ok: true; status: "received"; data: T; offset: number }
-  | { ok: false; status: "closed" }
-  | { ok: false; status: "not_found" };
+  | { ok: false; status: "never" };
 
 /**
- * Result of reading the next record from a stream iterator.
+ * Result of a non-blocking external stream read at a fixed offset.
+ *
+ * `{ status: "not_found" }` means the record is not committed yet but the
+ * instance is still running. `{ status: "never" }` means the instance is
+ * terminal and the offset will never exist.
  */
-export type StreamIteratorReadResult<T> =
-  | { ok: true; status: "record"; data: T; offset: number }
-  | { ok: false; status: "closed" };
-
-/**
- * Result of checking if a stream is open (engine level).
- */
-export type StreamOpenResult =
-  | { ok: true; status: "open" }
-  | { ok: false; status: "closed" }
-  | { ok: false; status: "not_found" };
+export type StreamReadNowaitResult<T> =
+  | { ok: true; status: "received"; data: T; offset: number }
+  | { ok: false; status: "not_found" }
+  | { ok: false; status: "never" };
 
 /**
  * Result of waiting for an event.

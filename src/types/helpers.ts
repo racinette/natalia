@@ -47,6 +47,20 @@ export type InferWorkflowStreams<W> = W extends { streams?: infer TStreams }
   : Record<string, never>;
 
 /**
+ * Extract per-instance stream definitions from a compensable step's
+ * `compensation` block.
+ */
+export type InferStepCompensationStreams<S> = S extends {
+  compensation?: infer C;
+}
+  ? C extends { streams?: infer TStreams }
+    ? TStreams extends StreamDefinitions
+      ? TStreams
+      : Record<string, never>
+    : Record<string, never>
+  : Record<string, never>;
+
+/**
  * Extract events from a workflow definition or public header.
  */
 export type InferWorkflowEvents<W> = W extends { events?: infer TEvents }

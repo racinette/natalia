@@ -93,17 +93,18 @@ export interface ChannelHandle<T> extends AsyncIterable<T> {
  * T is the encoded type (z.input<Schema>).
  *
  * `write` is a buffered operation — synchronous return at the public API,
- * committed in the next batch transaction. The assigned offset is observable
- * only externally via the stream's read APIs.
+ * committed in the next batch transaction. Returns the assigned offset for
+ * this record (monotonic within the stream for the instance).
  *
  * @typeParam T - The encoded record type.
  */
 export interface StreamAccessor<T> {
   /**
-   * Write a record to the stream.
+   * Append a record to the stream.
    * @param data - Record data (z.input type — encoded).
+   * @returns The offset assigned to this record.
    */
-  write(data: T): void;
+  write(data: T): number;
 }
 
 /**

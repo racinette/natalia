@@ -73,6 +73,9 @@ const chargeStep = defineStep({
   result: z.object({ chargeId: z.string() }),
   compensation: {
     steps: { refundStep },
+    streams: {
+      undoAudit: z.object({ entry: z.string() }),
+    },
     result: z.object({
       status: z.enum(["refunded", "manual_review"]),
     }),
@@ -443,7 +446,7 @@ type _ChargeCompensationNamespace = Assert<
   IsEqual<
     typeof _chargeCompensationNs,
     CompensationBlockNamespaceExternal<
-      "chargeStep",
+      typeof chargeStep,
       { customerId: string; amount: number },
       { status: "refunded" | "manual_review" }
     >
@@ -456,7 +459,7 @@ type _NoResultCompensationNamespace = Assert<
   IsEqual<
     typeof _noResultCompensationNs,
     CompensationBlockNamespaceExternal<
-      "noResultCompensableStep",
+      typeof noResultCompensableStep,
       { id: string },
       void
     >
@@ -469,14 +472,14 @@ void workflowHandle.compensations.steps["chrage"];
 // @ts-expect-error non-compensable step should be absent
 void workflowHandle.compensations.steps.notifyStep;
 
-declare const chargeCompensationId: CompensationId<"chargeStep">;
+declare const chargeCompensationId: CompensationId<typeof chargeStep>;
 const _chargeCompHandleFromGet =
   workflowHandle.compensations.steps.chargeStep.get(chargeCompensationId);
 type _ChargeCompGetReturn = Assert<
   IsEqual<
     typeof _chargeCompHandleFromGet,
     CompensationBlockUniqueHandleExternal<
-      "chargeStep",
+      typeof chargeStep,
       { customerId: string; amount: number },
       { status: "refunded" | "manual_review" }
     >
@@ -491,7 +494,7 @@ async function _exerciseChargeCompensationNamespace(): Promise<void> {
       IsEqual<
         typeof found,
         CompensationBlockUniqueHandleExternal<
-          "chargeStep",
+          typeof chargeStep,
           { customerId: string; amount: number },
           { status: "refunded" | "manual_review" }
         >
@@ -506,7 +509,7 @@ async function _exerciseChargeCompensationNamespace(): Promise<void> {
         typeof _row,
         | Pick<
             CompensationBlockRow<
-              "chargeStep",
+              typeof chargeStep,
               { customerId: string; amount: number },
               { status: "refunded" | "manual_review" }
             >,
@@ -526,13 +529,13 @@ async function _exerciseChargeCompensationNamespace(): Promise<void> {
       (typeof _many)[number],
       HandleWithRow<
         CompensationBlockUniqueHandleExternal<
-          "chargeStep",
+          typeof chargeStep,
           { customerId: string; amount: number },
           { status: "refunded" | "manual_review" }
         >,
         Pick<
           CompensationBlockRow<
-            "chargeStep",
+            typeof chargeStep,
             { customerId: string; amount: number },
             { status: "refunded" | "manual_review" }
           >,
@@ -830,8 +833,13 @@ type _CompensationPrimitiveAttributes = Assert<
   IsEqual<typeof compHandle.attributes, Record<string, unknown>>
 >;
 type _CompensationPrimitiveStreams = Assert<
-  IsEqual<typeof compHandle.streams, Record<string, unknown>>
+  IsEqual<
+    typeof compHandle.streams.undoAudit,
+    StreamReaderAccessorExternal<{ entry: string }>
+  >
 >;
+// @ts-expect-error undeclared compensation stream should be absent
+void compHandle.streams.typo;
 type _CompensationPrimitiveEvents = Assert<
   IsEqual<typeof compHandle.events, Record<string, unknown>>
 >;
@@ -1003,7 +1011,7 @@ type _ClientChargeCompNs = Assert<
   IsEqual<
     typeof _introspectionClient.compensations.steps.introspectionChargeStep,
     CompensationBlockNamespaceExternal<
-      "introspectionChargeStep",
+      typeof chargeStep,
       { customerId: string; amount: number },
       { status: "refunded" | "manual_review" }
     >
@@ -1031,7 +1039,7 @@ async function _exerciseClientCompensations(): Promise<void> {
   type _BlockId = Assert<
     IsEqual<
       (typeof _blocks)[number]["id"],
-      CompensationId<"introspectionChargeStep">
+      CompensationId<typeof chargeStep>
     >
   >;
   void (0 as unknown as _BlockId);

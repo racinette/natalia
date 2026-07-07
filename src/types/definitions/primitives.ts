@@ -17,7 +17,7 @@ export type ChannelDefinitions = Record<
 
 /**
  * Stream definitions map - keys are stream names, values are standard schemas.
- * Streams are append-only logs for externalWorkflows consumption.
+ * Streams are append-only per-instance logs; external readers consume by offset.
  */
 export type StreamDefinitions = Record<
   string,
