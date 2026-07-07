@@ -363,13 +363,11 @@ interface CompensationBlockUniqueHandle<TStep, TArgs, TResult, TPrim>
   // The result argument is required when the compensation declared a result
   // schema; only when the schema was omitted (TResult = void) does skip()
   // accept zero arguments.
-  skip(
+  skip<TRaw>(
+    session: OperatorSession<TRaw>,
     ...args: TResult extends void
-      ? [opts?: { txOrConn?: IWorkflowTransaction | IWorkflowConnection }]
-      : [
-          result: InferInput<TResult>,
-          opts?: { txOrConn?: IWorkflowTransaction | IWorkflowConnection },
-        ]
+      ? []
+      : [result: InferInput<TResult>]
   ): Promise<
     | SkipOutcome
     | {
@@ -378,8 +376,8 @@ interface CompensationBlockUniqueHandle<TStep, TArgs, TResult, TPrim>
       }
   >;
 
-  // Per-instance primitive accessors. Each operation accepts a txOrConn? in
-  // its options bag (where applicable) per Part 19.
+  // Per-instance primitive accessors. Snapshot/command IO takes session first
+  // (Part 19); watch IO (event wait) does not.
   attributes: {
     /* declared attributes; per-instance reads */
   };
@@ -541,28 +539,23 @@ await halted.skip({
 });
 ```
 
-Bulk skipping is expressed by iterating over `find(...)` with a `fields` prefetch and calling `skip(result)` on each yielded handle. Each block receives a different operator-supplied result based on its prefetched args, and the whole transaction can be scoped through a single `txOrConn`:
+Bulk skipping is expressed inside `client.session` by iterating over `find(session, …)` with a `fields` prefetch and calling `skip(session, result)` on each yielded handle:
 
 ```typescript
-await using tx = await client.transaction();
+await client.session(async (session) => {
+  const blocks = await workflowInstance.compensations.steps.bookHotel.find(
+    session,
+    ({ status }) => eq(status, "halted"),
+    { fields: { args: true } },
+  );
 
-const blocks = await workflowInstance.compensations.steps.bookHotel.find(
-  ({ status }) => eq(status, "halted"),
-  { fields: { args: true }, txOrConn: tx },
-);
-
-for (const block of blocks) {
-  // block.row.args is typed as TArgs (prefetched); no extra fetch needed.
-  await block.skip(
-    {
+  for (const block of blocks) {
+    await block.skip(session, {
       kind: "operator-resolved",
       action: `confirm-no-booking-for-${block.row.args.firstName}`,
-    },
-    { txOrConn: tx },
-  );
-}
-
-await tx.commit();
+    });
+  }
+});
 ```
 
 #### Halt resolution paths
@@ -932,15 +925,15 @@ A queryable handle exposes:
 
 ```typescript
 interface FetchableHandle<TRow> {
-  fetchRow(opts?: FetchRowOptions<TRow>): Promise<TRow | undefined>;
-  fetchRow<F extends FieldsMask<TRow>>(
+  fetchRow<TRaw>(session: OperatorSession<TRaw>, opts?: FetchRowOptions<TRow>): Promise<TRow | undefined>;
+  fetchRow<TRaw, F extends FieldsMask<TRow>>(
+    session: OperatorSession<TRaw>,
     opts: FetchRowOptions<TRow> & { readonly fields: F },
   ): Promise<Pick<TRow, ProjectedKeys<TRow, F>> | undefined>;
 }
 
 interface FetchRowOptions<TRow> {
   readonly fields?: FieldsMask<TRow>;
-  readonly txOrConn?: IWorkflowTransaction | IWorkflowConnection;
 }
 ```
 
@@ -979,15 +972,14 @@ The mask is type-validated: only keys of `TRow` are accepted. The engine additio
 interface FindOptions<TNamespaces extends Record<string, SearchNamespaceRecord>> {
   readonly sort?: readonly SearchSort<TNamespaces>[];
   readonly limit?: number;
-  readonly txOrConn?: IWorkflowTransaction | IWorkflowConnection;
 }
 
 interface CountOptions {
-  readonly txOrConn?: IWorkflowTransaction | IWorkflowConnection;
+  // reserved
 }
 ```
 
-Per the connection-and-transaction model (Part 19), every IO method exposes `txOrConn?` so that reads and writes can be combined into a single transaction. The `opts` parameter pattern keeps signatures uniform: every IO method accepts an options object as its last parameter, with `txOrConn?` always present and entity-specific options layered on top.
+Per the operator session model (Part 19), snapshot/command IO methods take `session` as the first argument. `find(session, query?, opts?)` and `count(session, query?)` follow the unified namespace shape; entity-specific options (`fields`, `sort`, `limit`, `strategy`) remain in trailing option bags where applicable.
 
 #### External introspection of children
 
@@ -1098,32 +1090,24 @@ interface WorkflowHandleExternal<W extends AnyWorkflowHeader>
   extends FetchableHandle<WorkflowRow<InferWorkflowArgs<W>, InferWorkflowResult<W>, InferWorkflowMetadata<W>>> {
   readonly id: string;
 
-  // Operator-action verbs. Per Part 19, every IO method takes an optional
-  // txOrConn for transaction composition.
-  sigkill(opts?: { txOrConn?: IWorkflowTransaction | IWorkflowConnection }):
-    Promise<{ /* terminal outcome */ }>;
-  sigterm(opts?: { txOrConn?: IWorkflowTransaction | IWorkflowConnection }):
-    Promise<{ /* terminal outcome */ }>;
-  skip(
+  // Operator-action verbs. Per Part 19, snapshot/command IO takes session first.
+  sigkill<TRaw>(session: OperatorSession<TRaw>): Promise<{ /* terminal outcome */ }>;
+  sigterm<TRaw>(session: OperatorSession<TRaw>): Promise<{ /* terminal outcome */ }>;
+  skip<TRaw>(
+    session: OperatorSession<TRaw>,
     ...args: InferWorkflowResult<W> extends void
-      ? [opts?: { strategy?: "sigterm" | "sigkill"; txOrConn?: IWorkflowTransaction | IWorkflowConnection }]
-      : [
-          result: InferInput<InferWorkflowResult<W>>,
-          opts?: { strategy?: "sigterm" | "sigkill"; txOrConn?: IWorkflowTransaction | IWorkflowConnection },
-        ]
+      ? [opts?: SkipOptions]
+      : [result: InferInput<InferWorkflowResult<W>>, opts?: SkipOptions]
   ): Promise<{ /* skip outcome */ }>;
 
-  // Primitive plane. Each operation accepts a txOrConn? in its options bag
-  // (see Part 13/14/etc. for individual primitive shapes).
+  // Primitive plane. Snapshot/command IO takes session first (Part 19).
   attributes: { /* declared attributes; reads */ };
   streams:    { /* declared streams; reads */ };
   events:     { /* declared events; wait/isSet */ };
   channels:   { /* declared channels; send (write) only */ };
 
   halts: {
-    list(opts?: {
-      txOrConn?: IWorkflowTransaction | IWorkflowConnection;
-    }): Promise<readonly HaltRecord[]>;
+    list<TRaw>(session: OperatorSession<TRaw>): Promise<readonly HaltRecord[]>;
   };
 
   // Per-parent-scoped namespaces.
@@ -1145,10 +1129,9 @@ The root client namespace gains the same `find` / `count` surface, alongside `.s
 ```typescript
 client.workflows.<def>:
   & {
-      start(
-        opts: StartWorkflowOptions<TArgs, HasFactory> & {
-          txOrConn?: IWorkflowTransaction | IWorkflowConnection;
-        },
+      start<TRaw>(
+        session: OperatorSession<TRaw>,
+        opts: StartWorkflowOptions<TArgs, HasFactory>,
       ): Promise<WorkflowHandleExternal<W>>;
 
       // Identity-based lookups. Synchronous, query-grounding, no I/O.
@@ -1170,7 +1153,7 @@ The `Omit<..., "get">` reflects that the identity-based `.get` is replaced by th
 
 `.get(args)` is the new overload: when the workflow definition declares an `idempotencyKeyFactory`, the engine derives the idempotency key from the args at call time and performs the same fast direct-access lookup. The same overload is added to `ctx.external.<W>.get(...)` inside workflow logic.
 
-`.get(idempotencyKey | args)` is the fast path when the operator already knows the addressing key. `find(query?, opts?)` returns every matching handle; singleton checks are caller-owned (e.g. `find(..., { limit: 2 })` and inspect `length`).
+`.get(idempotencyKey | args)` is the fast path when the operator already knows the addressing key. `find(session, query?, opts?)` returns every matching handle; singleton checks are caller-owned (e.g. `find(session, …, { limit: 2 })` and inspect `length`).
 
 `find` excludes attached children automatically (`row.attached = TRUE` rows are filtered out). Detached children appear in `find` results because they are globally addressable workflows.
 
@@ -1194,27 +1177,27 @@ client.compensations.steps.<stepDefinitionName>:
   CompensationBlockNamespaceExternal<...>;    // same shape as L2
 ```
 
-##### Worked example: query, prefetch, and act in one transaction
+##### Worked example: query, prefetch, and act in one session
 
 ```typescript
-await using tx = await client.transaction();
-
-const halted = await client.workflows.processOrder.find(
-  ({ status, createdAt }) => and(eq(status, "halted"), lt(createdAt, sevenDaysAgo)),
-  { fields: { id: true, args: true, idempotencyKey: true }, txOrConn: tx },
-);
-
-for (const wf of halted) {
-  await wf.skip(
-    { orderId: wf.row.args.orderId, status: "expired-cleanup" },
-    { strategy: "sigkill", txOrConn: tx },
+await client.session(async (session) => {
+  const halted = await client.workflows.processOrder.find(
+    session,
+    ({ status, createdAt }) => and(eq(status, "halted"), lt(createdAt, sevenDaysAgo)),
+    { fields: { id: true, args: true, idempotencyKey: true } },
   );
-}
 
-await tx.commit();
+  for (const wf of halted) {
+    await wf.skip(
+      session,
+      { orderId: wf.row.args.orderId, status: "expired-cleanup" },
+      { strategy: "sigkill" },
+    );
+  }
+});
 ```
 
-Predicate uses direct row fields (`status`, `createdAt`) from one scope template; prefetch hoists `id`, `args`, `idempotencyKey` into `wf.row` so no extra reads happen during the loop; the entire scan + N skips run in one transaction.
+Predicate uses direct row fields (`status`, `createdAt`) from one scope template; prefetch hoists `id`, `args`, `idempotencyKey` into `wf.row` so no extra reads happen during the loop; the entire scan + N skips run in one session scope.
 
 ### Requests
 
@@ -2359,139 +2342,138 @@ For most schemas (no transforms), `InferInput` and `InferOutput` are identical a
 
 ---
 
-## Part 19: Connection and Transaction Model
+## Part 19: Operator Session Model
 
 ### Goal
 
-Every read or write operation against the engine's durable state must be composable into a single database transaction so that operators can read state, decide on actions, and apply those actions as one atomic unit. This is the foundation that lets `find` + `skip` + `fetchRow` flow safely through one transaction without race windows.
+Every read or write operation against the engine's durable state from **operator/client code** must run inside an explicit **session** so callers can compose snapshot reads, queries, and mutations into one unit of work. Sessions are provided by a **storage driver** attached to the client; the driver defines what `session.raw` is and what `session.capabilities` mean on that backend.
 
-### Two opaque types
-
-```typescript
-type IWorkflowConnection;
-type IWorkflowTransaction;
-
-type TxOrConn = IWorkflowTransaction | IWorkflowConnection;
-```
-
-`IWorkflowConnection` represents a database connection (auto-commit, no transaction scope). `IWorkflowTransaction` represents a transaction within a connection. Both are opaque to user code; the engine acquires and manages them through the configured driver.
-
-The client exposes:
+### Core types
 
 ```typescript
-interface NataliaClient {
-  // Acquire a connection. Most operations don't need this — they use a default
-  // connection from the engine's pool. Useful when an operator wants to pin
-  // multiple operations to the same connection without a transaction.
-  connection(): Promise<IWorkflowConnection & AsyncDisposable>;
+interface SessionCapabilities {
+  readonly atomic: boolean;
+  readonly isolated: boolean;
+}
 
-  // Begin a transaction. Returns a disposable handle that commits on success
-  // or rolls back on error.
-  transaction(): Promise<IWorkflowTransaction & AsyncDisposable>;
-  transaction(opts: { connection: IWorkflowConnection }):
-    Promise<IWorkflowTransaction & AsyncDisposable>;
+type SessionOrigin = "engine" | "adopted";
+
+interface OperatorSession<TRaw, TOrigin extends SessionOrigin = SessionOrigin> {
+  readonly capabilities: SessionCapabilities;
+  readonly origin: TOrigin;
+  readonly raw: TRaw;
+}
+
+interface StorageDriver<TRaw> {
+  session<R>(fn: (session: OperatorSession<TRaw, "engine">) => Promise<R>): Promise<R>;
+  adoptSession(raw: TRaw): OperatorSession<TRaw, "adopted">;
+}
+
+interface WorkflowClient<TWfs, TDriver extends StorageDriver<any>> {
+  readonly driver: TDriver;
+  session<R>(fn: (session: OperatorSession<InferSessionRaw<TDriver>, "engine">) => Promise<R>): Promise<R>;
+  adoptSession(raw: InferSessionRaw<TDriver>): OperatorSession<InferSessionRaw<TDriver>, "adopted">;
+  // … workflows, requests, queues, compensations
 }
 ```
 
-Both `IWorkflowConnection` and `IWorkflowTransaction` are `AsyncDisposable`, so `await using` cleans them up automatically:
+`TRaw` is the driver-specific handle for an **already-open transaction** (or equivalent). For engine-managed sessions, the driver opens `raw` before invoking the callback. For adopted sessions, `session.raw === raw` passed to `adoptSession`; the caller owns finalize.
 
-```typescript
-await using tx = await client.transaction();
-// ... perform reads and writes through tx ...
-await tx.commit();
-```
+Postgres is the **reference semantics** (`atomic: true`, `isolated: true`). Other backends implement the same interface with honest capabilities.
 
-If the block exits via exception, the disposer rolls back automatically.
+User-facing documentation: [`docs/operator-sessions.md`](./docs/operator-sessions.md).
 
-### Normative rule: every IO method accepts `txOrConn?`
+### Two session entry points
 
-**Every** IO method in the public API exposes an optional `txOrConn?: IWorkflowTransaction | IWorkflowConnection` as part of its options bag. When provided, the operation runs through that connection or transaction. When omitted, the engine uses a default connection from its pool.
+**Engine-managed** — `client.session(fn)`. The driver acquires a session, runs the callback, and finalizes on success or throw.
 
-This applies uniformly to:
+**Adopted** — `client.adoptSession(foreignRaw)` when operator scripts run inside a foreign transaction. Natalia does not commit or roll back adopted sessions.
 
-- `client.workflows.<def>.start(opts)` — `opts.txOrConn?`.
-- `client.workflows.<def>.find`, `.count` — second `opts` argument carries `txOrConn?`.
-- `client.workflows.<def>.get(...)` — synchronous handle constructor; the *handle's* methods carry `txOrConn?`, not `.get` itself.
-- All workflow-handle methods (`fetchRow`, `sigkill`, `sigterm`, `skip`, `attributes.X.get`, `streams.X.read`, `events.X.wait`, `channels.X.send`, `halts.list`, etc.).
-- All compensation-block-handle methods (`fetchRow`, `skip`, primitive accessors).
-- All request-compensation-handle methods.
-- All attached-child-workflow external-handle methods.
-- All client-level dead-letter, request-resolution, and primitive subscription APIs.
-- Halt records, search queries, count queries.
+Adopt accepts only an **already-started transaction** (or driver equivalent), not a bare pool connection.
 
-Non-IO methods do **not** take `txOrConn`:
+### Two classes of operator IO
 
-- `.get(id)` (synchronous, no I/O).
-- `find` / `count` accept an optional predicate. Omit the predicate to query the full scoped set; return literal `true` from the callback for an explicit catch-all (`WHERE TRUE`). Use `limit` to bound large scans; pagination beyond that is caller-owned.
-- Constructor-style helpers (e.g., the type-only handle types).
+**Snapshot / command** — session is the **first argument** (required):
+
+- `find(session, query?, opts?)`, `count(session, query?)`
+- `fetchRow(session, opts?)`
+- `start(session, opts)`, operator verbs (`skip(session, …)`, `sigkill(session)`, …)
+- `readNowait(session, offset, default?)`, `isSet(session)`, `channels.X.send(session, data)`, dead-letter actions, request `resolve(session, …)`, etc.
+
+**Watch** — **no session**; `{ signal? }` only:
+
+- stream blocking `read(offset, { signal? })`
+- `events.X.wait({ signal? })`
+- `handle.wait({ signal? })`
+
+Watch IO must not hold a transactional scope while blocking. Implementation pattern: short snapshot → release → wait → short snapshot to deliver.
 
 ### Scope rules
 
-A workflow body's `ctx.*` calls do **not** accept `txOrConn` — they run inside the engine's durable execution transaction (the batch commit, see Part 1.4). Workflow-internal IO is scheduled by the engine, not by user code.
+- Workflow body `ctx.*` does **not** take a session — engine-owned batch commit (Part 1.4).
+- Handler-runtime read namespaces (`CompensationInfo.attempts`, queue/request retention `ctx.attempts`, …) do **not** take a session.
+- Sync `.get(id)` is identity grounding only — no I/O, no session.
 
-The `txOrConn?` parameter is exclusively for **client-side / operator-facing** IO: the client API and the external workflow handles. Inside workflow logic, transaction scoping is the engine's responsibility.
-
-### Worked example: read-decide-act in one transaction
+### Worked example: read-decide-act
 
 ```typescript
-await using tx = await client.transaction();
-
-// 1. Read: find halted bookings with prefetched args.
-const halted = await client.workflows.processOrder.find(
-  ({ status, createdAt }) =>
-    and(eq(status, "halted"), lt(createdAt, sevenDaysAgo)),
-  { fields: { id: true, args: true }, txOrConn: tx },
-);
-
-// 2. Decide + act: skip each with an operator-supplied result, all in tx.
-for (const wf of halted) {
-  await wf.skip(
-    { orderId: wf.row.args.orderId, status: "expired-cleanup" },
-    { strategy: "sigkill", txOrConn: tx },
+await client.session(async (session) => {
+  const halted = await client.workflows.processOrder.find(
+    session,
+    ({ status, createdAt }) =>
+      and(eq(status, "halted"), lt(createdAt, sevenDaysAgo)),
+    { fields: { id: true, args: true } },
   );
-}
 
-// 3. Commit: everything atomic, or nothing happens.
-await tx.commit();
+  for (const wf of halted) {
+    await wf.skip(
+      session,
+      { orderId: wf.row.args.orderId, status: "expired-cleanup" },
+      { strategy: "sigkill" },
+    );
+  }
+});
 ```
-
-The same pattern applies to compensation-block sweeps, attached-child inspection batches, request-compensation resolution flows, and any other operator-facing workflow.
 
 ### Composing across multiple entities
 
-A single transaction can compose operations across different entity kinds because everything goes through the same `txOrConn`:
-
 ```typescript
-await using tx = await client.transaction();
+await client.session(async (session) => {
+  const order = client.workflows.processOrder.get("order-jan-2027");
+  const orderRow = await order.fetchRow(session, {
+    fields: { status: true, args: true },
+  });
 
-const order = client.workflows.processOrder.get("order-jan-2027");
-const orderRow = await order.fetchRow({
-  fields: { status: true, args: true },
-  txOrConn: tx,
-});
-
-if (orderRow.status === "unique" && orderRow.value.status === "halted") {
-  // Read related compensations in same tx.
-  const blocks = await order.compensations.bookHotel.find(
-    ({ status }) => eq(status, "halted"),
-    { txOrConn: tx },
-  );
-  for (const block of blocks) {
-    await block.skip({ kind: "abandoned" }, { txOrConn: tx });
+  if (orderRow?.status === "halted") {
+    const blocks = await order.compensations.bookHotel.find(
+      session,
+      ({ status }) => eq(status, "halted"),
+    );
+    for (const block of blocks) {
+      await block.skip(session, { kind: "abandoned" });
+    }
+    await order.skip(
+      session,
+      { orderId: orderRow.args.orderId, status: "force-cleared" },
+      { strategy: "sigkill" },
+    );
   }
-  // Then skip the parent in the same tx.
-  await order.skip(
-    { orderId: orderRow.value.args.orderId, status: "force-cleared" },
-    { strategy: "sigkill", txOrConn: tx },
-  );
-}
-
-await tx.commit();
+});
 ```
 
-### Implementation note: `txOrConn` validation
+### Foreign transaction interop
 
-The engine validates `txOrConn` against the configured driver at runtime: a transaction or connection from a different driver / engine instance is rejected with a clear error. This prevents accidental cross-engine transaction passing.
+```typescript
+await foreignDb.transaction(async (foreignTx) => {
+  const session = client.adoptSession(foreignTx);
+  await nataliaHandle.skip(session, result);
+  await foreignDb.insert(auditTable).values({ ... });
+});
+```
+
+### Driver validation
+
+The engine rejects `adoptSession` handles from a different driver instance or incompatible type at runtime.
 
 ---
 
@@ -2609,7 +2591,8 @@ Removed context APIs:
 - `TopicRecord`.
 - `RegisterTopicConsumerError`, `RegisterTopicConsumerErrorEvent`, `TopicConsumerAlreadyActiveError`, `TopicConsumerConsumeErrorEvent`.
 - `ScheduledDeliveryOptions`.
-- `IWorkflowConnection`, `IWorkflowTransaction`.
+- `OperatorSession`, `SessionCapabilities`, `StorageDriver`, `InferSessionRaw`.
+- `SkipOptions`.
 - `RetentionSetter`.
 
 ### Removed exports
@@ -2663,8 +2646,8 @@ Removed context APIs:
 #### Row prefetch and `fetchRow`
 
 - Per-field accessor methods on unique handles (`status()`, `args()`, `result()`, `info()`, `payload()`, `halt()`) are removed. They caused N+1 round trips and were ergonomically bad.
-- Every fetchable handle exposes `fetchRow(opts?)` which returns `TRow | undefined`. Set `opts.fields` to project columns (`Pick<Row, keys>`); omit `fields` for the whole row. `opts.txOrConn` composes with other IO methods.
-- `find` accepts a `fields` option that prefetches listed columns into `.row` on each returned handle. Handles from sync `.get(id)` have no `.row`; use `fetchRow({ fields })` or `find({ fields })`.
+- Every fetchable handle exposes `fetchRow(session, opts?)` which returns `TRow | undefined`. Set `opts.fields` to project columns (`Pick<Row, keys>`); omit `fields` for the whole row.
+- `find(session, query?, opts?)` accepts a `fields` option that prefetches listed columns into `.row` on each returned handle. Handles from sync `.get(id)` have no `.row`; use `fetchRow(session, { fields })` or `find(session, …, { fields })`.
 - `.fetchRow` always re-fetches; it does not consult or modify `.row`. The prefetched `.row` is a snapshot at query time; `.fetchRow` is a fresh read on demand.
 - JSONB columns (`args`, `result`, `metadata`, `info`, `payload`) are first-class row fields for `fetchRow` / prefetch — they are returned as whole opaque values.
 - `RequestCompensationUniqueHandle.attempts` is a parent-scoped query namespace (not a row column).
@@ -2676,12 +2659,12 @@ Removed context APIs:
 - There is no public namespace split (`q.row`, `q.args`, `q.metadata`, etc.) and no public builder object.
 - Scalar columns and JSON-backed fields are siblings on the same template; operator availability follows each field's declared type.
 
-#### Connection and transaction model
+#### Operator session model
 
-- `IWorkflowConnection` and `IWorkflowTransaction` are opaque types exposed via `client.connection()` and `client.transaction()`. Both are `AsyncDisposable`.
-- **Every IO method** accepts an optional `txOrConn?: IWorkflowTransaction | IWorkflowConnection` in its options bag. This applies uniformly to client-level methods, workflow-handle methods, compensation-handle methods, attached-child external-handle methods, request-compensation-handle methods, and primitive accessors.
-- Workflow-internal `ctx.*` calls do not accept `txOrConn` — they run inside the engine's batch-commit transaction (Part 1.4).
-- The unified shape lets operators read state, decide on actions, and apply those actions in one atomic transaction across multiple entity kinds. See Part 19 for the normative rule and worked examples.
+- `WorkflowClient<TWfs, TDriver extends StorageDriver<any>>` is constructed with a storage driver. `InferSessionRaw<TDriver>` is the adoptable/raw handle type.
+- `client.session(fn)` and `client.adoptSession(raw)` are the only session entry points. Snapshot/command operator IO takes `session` as the **first argument**; watch IO (`streams.read`, `events.wait`, `handle.wait`) takes `{ signal? }` only.
+- Workflow-internal `ctx.*` calls do not take a session — they run inside the engine's batch-commit transaction (Part 1.4).
+- See Part 19 and [`docs/operator-sessions.md`](./docs/operator-sessions.md).
 
 #### Halts
 

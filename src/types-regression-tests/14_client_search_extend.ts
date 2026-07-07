@@ -5,7 +5,7 @@
  * and **`extend`** on header-derived handles (weak root + attached child).
  */
 import { z } from "zod";
-import { createWorkflowClient } from "../client";
+import { createTestWorkflowClient } from "./test-client";
 import {
   defineWorkflow,
   defineWorkflowHeader,
@@ -35,6 +35,7 @@ import {
   type SearchSort,
 } from "../types/search-query";
 import type { Assert, IsEqual } from "./type-assertions";
+import { session } from "./test-session";
 
 // =============================================================================
 // Contracts — catalog (rich row), shadow (different args), worker header + iface
@@ -104,7 +105,7 @@ const client14Registry = {
   workerWeak: workerHeader,
 } as const;
 
-const client14 = createWorkflowClient(client14Registry);
+const client14 = createTestWorkflowClient(client14Registry);
 
 type _ClientKeys = Assert<
   IsEqual<
@@ -136,12 +137,12 @@ async function _client14SearchSurface(
     workerWeak: typeof workerHeader;
   }>,
 ) {
-  const _catalogCount = await c.workflows.catalog.count((s) =>
+  const _catalogCount = await c.workflows.catalog.count(session, (s) =>
     in_(s.status, ["running", "pending"] as const),
   );
   type _CatalogCount = Assert<IsEqual<typeof _catalogCount, number>>;
 
-  const _catalogFind = await c.workflows.catalog.find((s) =>
+  const _catalogFind = await c.workflows.catalog.find(session, (s) =>
     and(
       eq(s.status, "completed"),
       eq(s.args.sku, "A-1"),
@@ -160,6 +161,7 @@ async function _client14SearchSurface(
   void _catalogFind;
 
   const catalogMany = c.workflows.catalog.find(
+    session,
     (s) =>
       or(
         eq(s.status, "halted"),
@@ -185,7 +187,7 @@ async function _client14SearchSurface(
   >;
   void catalogManyRows;
 
-  const _shadowFind = await c.workflows.shadow.find((s) => eq(s.args.flag, true));
+  const _shadowFind = await c.workflows.shadow.find(session, (s) => eq(s.args.flag, true));
   type _ShadowFind = Assert<
     IsEqual<
       typeof _shadowFind,
@@ -199,7 +201,7 @@ async function _client14SearchSurface(
     IsEqual<typeof orch, WorkflowHandleExternal<typeof orchestratorWorkflow>>
   >;
 
-  const workerMany = orch.childWorkflows.worker.find((s) =>
+  const workerMany = orch.childWorkflows.worker.find(session, (s) =>
     eq(s.args.task, "ping"),
   );
   type _WorkerManyHandle = Assert<
@@ -217,20 +219,20 @@ async function _client14SearchSurface(
   >;
   void workerManyRows;
 
-  const workerCount = await orch.childWorkflows.worker.count((s) =>
+  const workerCount = await orch.childWorkflows.worker.count(session, (s) =>
     gt(s.createdAt, new Date(0)),
   );
   type _WorkerCount = Assert<IsEqual<typeof workerCount, number>>;
   void workerCount;
 
   // @ts-expect-error — `shadow` rows have `{ flag: boolean }` args, not `sku`
-  await c.workflows.shadow.find((s) => eq(s.args.sku, "nope"));
+  await c.workflows.shadow.find(session, (s) => eq(s.args.sku, "nope"));
 
   // @ts-expect-error — not a valid `WorkflowStatus` literal
-  await c.workflows.catalog.find((s) => eq(s.status, "not-a-status"));
+  await c.workflows.catalog.find(session, (s) => eq(s.status, "not-a-status"));
 
   // @ts-expect-error — child namespace is typed to worker args (`task`), not catalog `sku`
-  await orch.childWorkflows.worker.find((s) => eq(s.args.sku, "x"));
+  await orch.childWorkflows.worker.find(session, (s) => eq(s.args.sku, "x"));
 }
 
 void _client14SearchSurface(client14);
@@ -268,7 +270,7 @@ async function _client14ExtendSurface(
       : false
   >;
   void workerStrong.streams.progress.read(0);
-  void workerStrong.events.done.isSet();
+  void workerStrong.events.done.isSet(session);
   // @ts-expect-error — after widen, `extend` is omitted / possibly undefined (`extend?: never`); cannot invoke
   void workerStrong.extend(workerInterface);
 
@@ -371,7 +373,7 @@ const extendChPayloadIfaceWrong = defineWorkflowInterface({
   channels: { ch1: z.object({ n: z.string() }) },
 });
 
-const extendContractClient = createWorkflowClient({
+const extendContractClient = createTestWorkflowClient({
   wrongName: extendWrongNameHeader,
   wrongCh: extendChHeader,
   wrongArgs: extendArgsHeader,

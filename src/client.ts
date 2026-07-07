@@ -3,10 +3,13 @@ import type {
   CompensationBlockNamespaceExternal,
   DeadLetterHandleExternal,
   DeadLetterNamespaceExternal,
+  InferSessionRaw,
+  OperatorSession,
   QueueNamespaceExternal,
   RequestCompensationNamespaceExternal,
   RequestHandleExternal,
   RequestNamespaceExternal,
+  StorageDriver,
   WorkflowClient,
   WorkflowClientAccessor,
 } from "./types";
@@ -21,16 +24,20 @@ import type {
  */
 export abstract class AbstractWorkflowClient<
   TWfs extends Record<string, AnyPublicWorkflowHeader>,
-> implements WorkflowClient<TWfs>
+  TDriver extends StorageDriver<any>,
+> implements WorkflowClient<TWfs, TDriver>
 {
+  public readonly driver: TDriver;
+
   public readonly workflows: {
     [K in keyof TWfs]: WorkflowClientAccessor<TWfs[K]>;
   };
-  public readonly requests: WorkflowClient<TWfs>["requests"];
-  public readonly queues: WorkflowClient<TWfs>["queues"];
-  public readonly compensations: WorkflowClient<TWfs>["compensations"];
+  public readonly requests: WorkflowClient<TWfs, TDriver>["requests"];
+  public readonly queues: WorkflowClient<TWfs, TDriver>["queues"];
+  public readonly compensations: WorkflowClient<TWfs, TDriver>["compensations"];
 
-  constructor(workflows: TWfs) {
+  constructor(workflows: TWfs, driver: TDriver) {
+    this.driver = driver;
     const workflowAccessors: Record<
       string,
       WorkflowClientAccessor<AnyPublicWorkflowHeader>
@@ -47,11 +54,11 @@ export abstract class AbstractWorkflowClient<
     > = {};
     for (const [name] of Object.entries(workflows)) {
       workflowAccessors[name] = {
-        start: async (_options: unknown) => {
+        start: async (_session: unknown, _options: unknown) => {
           this.assertClientAvailable();
           throw new Error("Not implemented");
         },
-        execute: async (_options: unknown) => {
+        execute: async (_session: unknown, _options: unknown) => {
           this.assertClientAvailable();
           throw new Error("Not implemented");
         },
@@ -59,11 +66,11 @@ export abstract class AbstractWorkflowClient<
           this.assertClientAvailable();
           throw new Error("Not implemented");
         },
-        find: ((_query: unknown, _opts?: unknown) => {
+        find: ((_session: unknown, _query: unknown, _opts?: unknown) => {
           this.assertClientAvailable();
           throw new Error("Not implemented");
         }) as WorkflowClientAccessor<AnyPublicWorkflowHeader>["find"],
-        count: async (_query: unknown, _opts?: unknown) => {
+        count: async (_session: unknown, _query?: unknown) => {
           this.assertClientAvailable();
           throw new Error("Not implemented");
         },
@@ -115,148 +122,141 @@ export abstract class AbstractWorkflowClient<
     this.workflows = workflowAccessors as unknown as {
       [K in keyof TWfs]: WorkflowClientAccessor<TWfs[K]>;
     };
-    this.requests = requestAccessors as WorkflowClient<TWfs>["requests"];
-    this.queues = queueAccessors as WorkflowClient<TWfs>["queues"];
+    this.requests = requestAccessors as WorkflowClient<TWfs, TDriver>["requests"];
+    this.queues = queueAccessors as WorkflowClient<TWfs, TDriver>["queues"];
     this.compensations = {
-      requests: compensationRequestAccessors,
       steps: compensationStepAccessors,
-    } as WorkflowClient<TWfs>["compensations"];
+      requests: compensationRequestAccessors,
+    } as WorkflowClient<TWfs, TDriver>["compensations"];
+  }
+
+  session<R>(
+    _fn: (session: OperatorSession<InferSessionRaw<TDriver>, "engine">) => Promise<R>,
+  ): Promise<R> {
+    this.assertClientAvailable();
+    throw new Error("Not implemented");
+  }
+
+  adoptSession(
+    _raw: InferSessionRaw<TDriver>,
+  ): OperatorSession<InferSessionRaw<TDriver>, "adopted"> {
+    this.assertClientAvailable();
+    throw new Error("Not implemented");
   }
 
   protected abstract assertClientAvailable(): void;
 
-  private createRequestAccessor(): RequestNamespaceExternal {
+  protected createRequestAccessor(): RequestNamespaceExternal {
     return {
-      registerHandler: (_handler: unknown, _options?: unknown) => {
+      get: (_id: unknown) => {
         this.assertClientAvailable();
-        return () => undefined;
+        throw new Error("Not implemented");
       },
-      get: ((_id: unknown) => {
-        this.assertClientAvailable();
-        return this.createRequestHandle();
-      }) as RequestNamespaceExternal["get"],
-      find: ((_query: unknown, _opts?: unknown) => {
+      find: ((_session: unknown, _query?: unknown, _opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
       }) as RequestNamespaceExternal["find"],
-      count: async (_query: unknown, _opts?: unknown) => {
+      count: async (_session: unknown, _query?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+      registerHandler: () => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
       },
     };
   }
 
-  private createRequestHandle(): RequestHandleExternal {
+  protected createRequestCompensationNamespace(): RequestCompensationNamespaceExternal {
     return {
-      id: "" as RequestHandleExternal["id"],
-      fetchRow: async (_opts?: unknown) => {
+      get: (_id: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
       },
-      attempts: this.createOperatorAttemptsNamespace(),
-      resolve: async (_response: unknown, _opts?: unknown) => {
-        this.assertClientAvailable();
-        throw new Error("Not implemented");
-      },
-      escalateToManual: async (_escalation: unknown, _opts?: unknown) => {
-        this.assertClientAvailable();
-        throw new Error("Not implemented");
-      },
-    } as unknown as RequestHandleExternal;
-  }
-
-  private createOperatorAttemptsNamespace() {
-    return {
-      get: ((_attempt: unknown) => {
-        this.assertClientAvailable();
-        throw new Error("Not implemented");
-      }) as never,
-      find: ((_query: unknown, _opts?: unknown) => {
-        this.assertClientAvailable();
-        throw new Error("Not implemented");
-      }) as never,
-      count: async (_query: unknown, _opts?: unknown) => {
-        this.assertClientAvailable();
-        throw new Error("Not implemented");
-      },
-    };
-  }
-
-  private createRequestCompensationNamespace(): RequestCompensationNamespaceExternal {
-    return {
-      get: ((_id: unknown) => {
-        this.assertClientAvailable();
-        throw new Error("Not implemented");
-      }) as RequestCompensationNamespaceExternal["get"],
-      find: ((_query: unknown, _opts?: unknown) => {
+      find: ((_session: unknown, _query?: unknown, _opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
       }) as RequestCompensationNamespaceExternal["find"],
-      count: async (_query: unknown, _opts?: unknown) => {
+      count: async (_session: unknown, _query?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
       },
     };
   }
 
-  private createCompensationBlockNamespace(): CompensationBlockNamespaceExternal<
-    unknown
-  > {
+  protected createCompensationBlockNamespace(): CompensationBlockNamespaceExternal<unknown> {
     return {
-      get: ((_id: unknown) => {
+      get: (_id: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
-      }) as CompensationBlockNamespaceExternal<unknown>["get"],
-      find: ((_query: unknown, _opts?: unknown) => {
+      },
+      find: ((_session: unknown, _query?: unknown, _opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
       }) as CompensationBlockNamespaceExternal<unknown>["find"],
-      count: async (_query: unknown, _opts?: unknown) => {
+      count: async (_session: unknown, _query?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
       },
     };
   }
 
-  private createQueueAccessor(): QueueNamespaceExternal {
+  protected createQueueAccessor(): QueueNamespaceExternal {
     return {
-      registerHandler: (_handler: unknown, _options?: unknown) => {
+      registerHandler: () => {
         this.assertClientAvailable();
-        return () => undefined;
+        throw new Error("Not implemented");
       },
       deadLetters: this.createDeadLetterNamespace(),
     };
   }
 
-  private createDeadLetterNamespace(): DeadLetterNamespaceExternal {
+  protected createDeadLetterNamespace(): DeadLetterNamespaceExternal {
     return {
-      get: ((_id: unknown) => {
+      get: (_id: unknown) => {
         this.assertClientAvailable();
-        return this.createDeadLetterHandle();
-      }) as DeadLetterNamespaceExternal["get"],
-      find: ((_query: unknown, _opts?: unknown) => {
+        throw new Error("Not implemented");
+      },
+      find: ((_session: unknown, _query?: unknown, _opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
       }) as DeadLetterNamespaceExternal["find"],
-      count: async (_query: unknown, _opts?: unknown) => {
+      count: async (_session: unknown, _query?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
       },
     };
   }
 
-  private createDeadLetterHandle(): DeadLetterHandleExternal {
+  protected createOperatorAttemptsNamespace(): DeadLetterHandleExternal["attempts"] {
+    return {
+      get: (_id: number) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+      find: ((_session: unknown, _query?: unknown, _opts?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      }) as DeadLetterHandleExternal["attempts"]["find"],
+      count: async (_session: unknown, _query?: unknown) => {
+        this.assertClientAvailable();
+        throw new Error("Not implemented");
+      },
+    };
+  }
+
+  protected createDeadLetterHandle(): DeadLetterHandleExternal {
     return {
       id: "" as DeadLetterHandleExternal["id"],
-      fetchRow: async (_opts?: unknown) => {
+      fetchRow: async (_session: unknown, _opts?: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
       },
-      retry: async (_opts?: unknown) => {
+      retry: async (_session: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
       },
-      purge: async (_opts?: unknown) => {
+      purge: async (_session: unknown) => {
         this.assertClientAvailable();
         throw new Error("Not implemented");
       },
@@ -267,7 +267,8 @@ export abstract class AbstractWorkflowClient<
 
 class StaticWorkflowClient<
   TWfs extends Record<string, AnyPublicWorkflowHeader>,
-> extends AbstractWorkflowClient<TWfs>
+  TDriver extends StorageDriver<any>,
+> extends AbstractWorkflowClient<TWfs, TDriver>
 {
   protected assertClientAvailable(): void {
     // The static client has no lifecycle guard of its own.
@@ -280,10 +281,15 @@ class StaticWorkflowClient<
  * Accepts `PublicWorkflowHeader`, **`WorkflowInterface`**, or full
  * `WorkflowDefinition` maps (structural typing). Use when callers need the
  * typed client API (start/execute/get and introspection) without owning engine
- * lifecycle; method bodies are stubs until wired to a real runtime.
+ * lifecycle; method bodies are stubs until wired to a real runtime. Requires an
+ * explicit {@link StorageDriver} — there is no default driver.
  */
 export function createWorkflowClient<
   TWfs extends Record<string, AnyPublicWorkflowHeader>,
->(workflows: TWfs): WorkflowClient<TWfs> {
-  return new StaticWorkflowClient(workflows);
+  TDriver extends StorageDriver<any>,
+>(
+  workflows: TWfs,
+  driver: TDriver,
+): WorkflowClient<TWfs, TDriver> {
+  return new StaticWorkflowClient(workflows, driver);
 }

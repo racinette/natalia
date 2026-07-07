@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createWorkflowClient } from "../client";
+import { createTestWorkflowClient } from "./test-client";
 import {
   defineRequest,
   defineStep,
@@ -45,6 +45,7 @@ import type {
   WorkflowRow,
 } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
+import { session } from "./test-session";
 
 // =============================================================================
 // FIXTURES
@@ -206,11 +207,11 @@ declare const fetchable: FetchableHandle<ExampleRow>;
 
 async function _fetchRow(): Promise<void> {
   // No fields → entire row.
-  const _full = await fetchable.fetchRow();
+  const _full = await fetchable.fetchRow(session);
   type _FullShape = Assert<IsEqual<typeof _full, ExampleRow | undefined>>;
 
   // With fields mask → typed projection.
-  const _projected = await fetchable.fetchRow({
+  const _projected = await fetchable.fetchRow(session, {
     fields: { id: true, status: true },
   });
   type _ProjectedShape = Assert<
@@ -220,8 +221,8 @@ async function _fetchRow(): Promise<void> {
     >
   >;
 
-  // FetchOptions accepts txOrConn.
-  const _withOpts = await fetchable.fetchRow({ txOrConn: undefined });
+  // FetchRow accepts session as the first argument.
+  const _withOpts = await fetchable.fetchRow(session);
   void _withOpts;
 }
 
@@ -268,7 +269,7 @@ void ns.get(someAttachedId, { id: true, status: true });
 
 // Prefetch attaches `.row` on query results only.
 async function _findWithPrefetch(): Promise<void> {
-  const handles = await ns.find({ fields: { id: true, status: true } });
+  const handles = await ns.find(session, { fields: { id: true, status: true } });
   const first = handles[0];
   if (first) {
     type _Row = Assert<
@@ -287,7 +288,7 @@ void _findWithPrefetch;
 
 // `find` returns `Promise<readonly Handle[]>`.
 async function _findShape(): Promise<void> {
-  const handles = await ns.find();
+  const handles = await ns.find(session);
   type _FindType = Assert<
     IsEqual<
       typeof handles,
@@ -300,7 +301,7 @@ void _findShape;
 
 // `count` resolves to a number.
 async function _countShape(): Promise<void> {
-  const _c = await ns.count();
+  const _c = await ns.count(session);
   type _CountType = Assert<IsEqual<typeof _c, number>>;
 }
 
@@ -355,23 +356,23 @@ type _HandleHasSkip = Assert<
 
 // `skip` requires a result argument because the workflow has a non-void result.
 async function _exerciseSkip(): Promise<void> {
-  const _r = await workflowHandle.skip({ ok: true });
+  const _r = await workflowHandle.skip(session, { ok: true });
   type _SkipReturn = Assert<IsEqual<typeof _r, SkipOutcome>>;
 
-  await workflowHandle.skip({ ok: true }, { strategy: "sigterm" });
-  await workflowHandle.skip({ ok: true }, { strategy: "sigkill" });
+  await workflowHandle.skip(session, { ok: true }, { strategy: "sigterm" });
+  await workflowHandle.skip(session, { ok: true }, { strategy: "sigkill" });
 
   // @ts-expect-error result is required when the workflow result schema is non-void
-  await workflowHandle.skip();
+  await workflowHandle.skip(session);
 
   // @ts-expect-error result must conform to the workflow's result schema
-  await workflowHandle.skip({ wrong: true });
+  await workflowHandle.skip(session, { wrong: true });
 }
 void _exerciseSkip;
 
 // FetchableHandle methods.
 async function _exerciseFetchRow(): Promise<void> {
-  const full = await workflowHandle.fetchRow();
+  const full = await workflowHandle.fetchRow(session);
   if (full) {
     type _Full = Assert<
       IsEqual<
@@ -382,7 +383,7 @@ async function _exerciseFetchRow(): Promise<void> {
     void (0 as unknown as _Full);
   }
 
-  const masked = await workflowHandle.fetchRow({
+  const masked = await workflowHandle.fetchRow(session, {
     fields: { status: true, idempotencyKey: true },
   });
   if (masked) {
@@ -420,7 +421,7 @@ void _exerciseWait;
 
 // Halts namespace — queryable like other introspection surfaces.
 async function _exerciseHalts(): Promise<void> {
-  const _many = await workflowHandle.halts.find();
+  const _many = await workflowHandle.halts.find(session);
   type _HaltsMany = Assert<
     IsEqual<typeof _many, readonly HaltHandle[]>
   >;
@@ -487,7 +488,7 @@ type _ChargeCompGetReturn = Assert<
 >;
 
 async function _exerciseChargeCompensationNamespace(): Promise<void> {
-  const handles = await workflowHandle.compensations.steps.chargeStep.find();
+  const handles = await workflowHandle.compensations.steps.chargeStep.find(session);
   const found = handles[0];
   if (found) {
     type _FoundHandle = Assert<
@@ -501,7 +502,7 @@ async function _exerciseChargeCompensationNamespace(): Promise<void> {
       >
     >;
 
-    const _row = await found.fetchRow({
+    const _row = await found.fetchRow(session, {
       fields: { id: true, result: true },
     });
     type _FetchedRow = Assert<
@@ -521,7 +522,7 @@ async function _exerciseChargeCompensationNamespace(): Promise<void> {
     void (0 as unknown as _FetchedRow);
   }
 
-  const _many = await workflowHandle.compensations.steps.chargeStep.find({
+  const _many = await workflowHandle.compensations.steps.chargeStep.find(session, {
     fields: { id: true, status: true },
   });
   type _ManyWithFields = Assert<
@@ -572,7 +573,7 @@ void workflowHandle.requestCompensations;
 
 async function _exerciseRequestCompensationNamespace(): Promise<void> {
   const handles =
-    await workflowHandle.compensations.requests.approvalRequest.find();
+    await workflowHandle.compensations.requests.approvalRequest.find(session);
   const found = handles[0];
   if (found) {
     type _FoundHandle = Assert<
@@ -585,7 +586,7 @@ async function _exerciseRequestCompensationNamespace(): Promise<void> {
       >
     >;
 
-    const _reqRow = await found.fetchRow({
+    const _reqRow = await found.fetchRow(session, {
       fields: { id: true, payload: true },
     });
     type _FetchedRow = Assert<
@@ -605,7 +606,7 @@ async function _exerciseRequestCompensationNamespace(): Promise<void> {
   }
 
   const _reqMany =
-    await workflowHandle.compensations.requests.approvalRequest.find({
+    await workflowHandle.compensations.requests.approvalRequest.find(session, {
       fields: { id: true, status: true },
     });
   type _ManyWithFields = Assert<
@@ -651,7 +652,7 @@ type _FollowUpAttachedType = Assert<
   >
 >;
 async function _attachedFindShape(): Promise<void> {
-  const handles = await workflowHandle.childWorkflows.followUp.find();
+  const handles = await workflowHandle.childWorkflows.followUp.find(session);
   const found = handles[0];
   if (found) {
     type _AttachedHandle = Assert<
@@ -848,7 +849,7 @@ type _CompensationPrimitiveChannels = Assert<
 >;
 
 async function _exerciseCompSkip(): Promise<void> {
-  const _r = await compHandle.skip({ status: "refunded" });
+  const _r = await compHandle.skip(session, { status: "refunded" });
   type _SkipReturn = Assert<IsEqual<typeof _r, SkipOutcome>>;
 
   // @ts-expect-error compensation blocks have no sigkill
@@ -856,7 +857,7 @@ async function _exerciseCompSkip(): Promise<void> {
   // @ts-expect-error compensation blocks have no sigterm
   void compHandle.sigterm;
   // @ts-expect-error compensation skip has no strategy option
-  await compHandle.skip({ status: "refunded" }, { strategy: "sigkill" });
+  await compHandle.skip(session, { status: "refunded" }, { strategy: "sigkill" });
 }
 void _exerciseCompSkip;
 
@@ -885,7 +886,7 @@ type _ReqCompAttemptsNs = Assert<
 void (0 as unknown as _ReqCompAttemptsNs);
 
 async function _exerciseReqCompAttempts(): Promise<void> {
-  const _many = await reqCompHandle.attempts.find();
+  const _many = await reqCompHandle.attempts.find(session);
   type _Attempts = Assert<
     IsEqual<
       (typeof _many)[number],
@@ -896,13 +897,13 @@ async function _exerciseReqCompAttempts(): Promise<void> {
 void _exerciseReqCompAttempts;
 
 async function _exerciseReqCompSkip(): Promise<void> {
-  const _r = await reqCompHandle.skip({ cancelled: true });
+  const _r = await reqCompHandle.skip(session, { cancelled: true });
   type _Return = Assert<IsEqual<typeof _r, SkipOutcome>>;
 }
 void _exerciseReqCompSkip;
 
 async function _exerciseReqCompEscalateToManual(): Promise<void> {
-  const _e = await reqCompHandle.escalateToManual({
+  const _e = await reqCompHandle.escalateToManual(session, {
     message: "Operator must release manually",
     type: "OpsConsole",
   });
@@ -919,7 +920,7 @@ void _exerciseReqCompEscalateToManual;
 declare const clientAcc: WorkflowClientAccessor<typeof _orderWorkflow>;
 
 async function _exerciseClient(): Promise<void> {
-  const _handle = await clientAcc.start({
+  const _handle = await clientAcc.start(session, {
     idempotencyKey: "wf-1",
     args: { orderId: "o-1" },
     metadata: { tenantId: "acme" },
@@ -928,7 +929,7 @@ async function _exerciseClient(): Promise<void> {
     IsEqual<typeof _handle, WorkflowHandleExternal<typeof _orderWorkflow>>
   >;
 
-  const _result = await clientAcc.execute({
+  const _result = await clientAcc.execute(session, {
     idempotencyKey: "wf-2",
     args: { orderId: "o-2" },
     metadata: { tenantId: "acme" },
@@ -946,7 +947,7 @@ async function _exerciseClient(): Promise<void> {
   >;
 
   // find / count from the unified queryable surface.
-  const handles = await clientAcc.find();
+  const handles = await clientAcc.find(session);
   type _FindValue = Assert<
     IsEqual<
       typeof handles,
@@ -955,7 +956,7 @@ async function _exerciseClient(): Promise<void> {
   >;
   void (0 as unknown as _FindValue);
 
-  const _total = await clientAcc.count();
+  const _total = await clientAcc.count(session);
   type _CountReturn = Assert<IsEqual<typeof _total, number>>;
 }
 void _exerciseClient;
@@ -972,7 +973,7 @@ type _HaltsNamespaceShape = Assert<
 // CLIENT-LEVEL COMPENSATION NAMESPACES — global L1 search keyed by definition name.
 // =============================================================================
 
-const _introspectionClient = createWorkflowClient({
+const _introspectionClient = createTestWorkflowClient({
   order: _orderWorkflow,
 });
 
@@ -1020,7 +1021,7 @@ type _ClientChargeCompNs = Assert<
 
 async function _exerciseClientCompensations(): Promise<void> {
   const _handles =
-    await _introspectionClient.compensations.requests.introspectionApprovalRequest.find();
+    await _introspectionClient.compensations.requests.introspectionApprovalRequest.find(session);
   type _Found = Assert<
     IsEqual<
       typeof _handles,
@@ -1033,7 +1034,7 @@ async function _exerciseClientCompensations(): Promise<void> {
   void (0 as unknown as _Found);
 
   const _blocks =
-    await _introspectionClient.compensations.steps.introspectionChargeStep.find({
+    await _introspectionClient.compensations.steps.introspectionChargeStep.find(session, {
       limit: 5,
     });
   type _BlockId = Assert<

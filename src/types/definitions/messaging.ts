@@ -17,7 +17,7 @@ export type ScheduledDeliveryOptions =
   | { readonly delaySeconds?: undefined; readonly scheduledAt?: undefined };
 
 /**
- * Workflow-side queue enqueue options (buffered; no `txOrConn`).
+ * Workflow-side queue enqueue options (buffered; no operator session).
  *
  * `delay`: omit or `0` = immediate; `number` = commit-relative seconds;
  * `Date` = absolute eligible time.

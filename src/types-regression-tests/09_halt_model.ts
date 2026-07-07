@@ -5,9 +5,6 @@ import type {
   CompensationBlockOperatorActions,
   ErrorFactories,
   HaltRecord,
-  IWorkflowConnection,
-  IWorkflowTransaction,
-  OperatorActionOptions,
   SigkillOutcome,
   SigtermOutcome,
   SkipOutcome,
@@ -16,6 +13,7 @@ import type {
   WorkflowOperatorActions,
 } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
+import { session } from "./test-session";
 
 // =============================================================================
 // HALT STATUS UNIONS
@@ -147,65 +145,66 @@ declare const voidCompBlockActions: CompensationBlockOperatorActions<void>;
 
 // `sigkill()` returns a SigkillOutcome; takes optional opts.
 async function _exerciseSigkill(): Promise<void> {
-  const _k1 = await workflowActions.sigkill();
+  const _k1 = await workflowActions.sigkill(session);
   type _K1 = Assert<IsEqual<typeof _k1, SigkillOutcome>>;
-  await workflowActions.sigkill({});
-  await workflowActions.sigkill({ txOrConn: undefined });
+  await workflowActions.sigkill(session);
 }
 
 // `sigterm()` returns a SigtermOutcome union (`completed` | `failed`).
 async function _exerciseSigterm(): Promise<void> {
-  const _t1 = await workflowActions.sigterm();
+  const _t1 = await workflowActions.sigterm(session);
   type _T1 = Assert<IsEqual<typeof _t1, SigtermOutcome>>;
 }
 
 // `skip(result, opts?)` for non-void result requires the result argument.
 async function _exerciseSkipWithResult(): Promise<void> {
-  const _s1 = await workflowActions.skip({ orderId: "x" });
+  const _s1 = await workflowActions.skip(session, { orderId: "x" });
   type _S1 = Assert<IsEqual<typeof _s1, SkipOutcome>>;
 
   await workflowActions.skip(
+    session,
     { orderId: "x" },
     { strategy: "sigterm" satisfies SkipStrategy },
   );
 
   await workflowActions.skip(
+    session,
     { orderId: "x" },
     { strategy: "sigkill" satisfies SkipStrategy },
   );
 
   // @ts-expect-error result is required when the workflow's result schema is non-void
-  await workflowActions.skip();
+  await workflowActions.skip(session);
 
   // @ts-expect-error result must conform to the workflow's result schema
-  await workflowActions.skip({ wrongShape: 1 });
+  await workflowActions.skip(session, { wrongShape: 1 });
 }
 
 // `skip(opts?)` for void result skips the result argument.
 async function _exerciseSkipVoid(): Promise<void> {
-  const _s1 = await voidWorkflowActions.skip();
+  const _s1 = await voidWorkflowActions.skip(session);
   type _S1 = Assert<IsEqual<typeof _s1, SkipOutcome>>;
 
-  await voidWorkflowActions.skip({ strategy: "sigkill" });
+  await voidWorkflowActions.skip(session, { strategy: "sigkill" });
 }
 
-// Compensation block actions: `skip(result)` only; no opts beyond txOrConn,
-// no strategy choice, no sigkill / sigterm.
+// Compensation block actions: `skip(result)` only; no strategy choice,
+// no sigkill / sigterm.
 async function _exerciseCompensationSkip(): Promise<void> {
-  const _s1 = await compBlockActions.skip({ kind: "refunded" });
+  const _s1 = await compBlockActions.skip(session, { kind: "refunded" });
   type _S1 = Assert<IsEqual<typeof _s1, SkipOutcome>>;
 
-  await compBlockActions.skip({ kind: "manual" }, {});
+  await compBlockActions.skip(session, { kind: "manual" });
 
   // Void compensation result accepts skip() with no args.
-  await voidCompBlockActions.skip();
+  await voidCompBlockActions.skip(session);
 
   // @ts-expect-error compensation blocks cannot be sigkill-ed
   void compBlockActions.sigkill;
   // @ts-expect-error compensation blocks cannot be sigterm-ed
   void compBlockActions.sigterm;
   // @ts-expect-error compensation skip has no strategy option
-  await compBlockActions.skip({ kind: "refunded" }, { strategy: "sigkill" });
+  await compBlockActions.skip(session, { kind: "refunded" }, { strategy: "sigkill" });
 }
 
 void _exerciseSigkill;
@@ -213,17 +212,3 @@ void _exerciseSigterm;
 void _exerciseSkipWithResult;
 void _exerciseSkipVoid;
 void _exerciseCompensationSkip;
-
-// =============================================================================
-// OperatorActionOptions — shared `txOrConn?` shape
-// =============================================================================
-
-declare const conn: IWorkflowConnection;
-declare const tx: IWorkflowTransaction;
-
-const _opts1: OperatorActionOptions = { txOrConn: conn };
-const _opts2: OperatorActionOptions = { txOrConn: tx };
-const _opts3: OperatorActionOptions = {};
-void _opts1;
-void _opts2;
-void _opts3;

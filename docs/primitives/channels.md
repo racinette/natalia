@@ -69,10 +69,12 @@ async execute(ctx) {
 }
 ```
 
-**Sending from a caller that holds a handle** (external workflow, operator API, etc.)
+**Sending from a caller that holds a handle** (inside `client.session`)
 
 ```typescript
-agent.channels.humanReply.send({ text: "Ship it." });
+await client.session(async (session) => {
+  await agent.channels.humanReply.send(session, { text: "Ship it." });
+});
 ```
 
 **Relay (proxy): parent receives on its own channel, forwards to a child workflow** (`ctx.scope` + `join`)

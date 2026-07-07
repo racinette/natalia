@@ -9,8 +9,9 @@ these signatures onto concrete handles (`WorkflowHandleExternal`,
 `CompensationBlockUniqueHandle`).
 
 This step also publishes the durable `HaltRecord` row shape and the
-opaque `IWorkflowConnection` / `IWorkflowTransaction` brands that step 19
-firms up.
+`SkipOptions` type used by operator-action verbs. The operator session
+model (Part 19) is finalized in step 20; here the verbs take `session`
+as their first argument at the type level.
 
 ## Source Coverage
 
@@ -19,8 +20,8 @@ firms up.
   workflows; one `halt` table covers every workflow kind.
 - `REFACTOR.MD` Part 4: per-context throw rules (workflow body / scope
   body share `ctx.errors`; compensation `undo` has none).
-- `REFACTOR.MD` Part 19: `IWorkflowConnection` / `IWorkflowTransaction`
-  opaque types (forward-declared here, finalised in step 19).
+- `REFACTOR.MD` Part 19: operator session model — snapshot/command IO takes
+  `session` first (finalised in step 20).
 
 ## Public API Target
 
@@ -65,8 +66,8 @@ rows, modulo the capability matrix below.
 ```typescript
 type SkipStrategy = "sigterm" | "sigkill";
 
-interface OperatorActionOptions {
-  readonly txOrConn?: IWorkflowConnection | IWorkflowTransaction;
+interface SkipOptions {
+  readonly strategy?: SkipStrategy;
 }
 
 interface SigkillOutcome { readonly status: "terminated"; }
@@ -76,25 +77,24 @@ type SigtermOutcome =
 interface SkipOutcome { readonly status: "skipped"; }
 
 interface WorkflowOperatorActions<TResult> {
-  sigkill(opts?: OperatorActionOptions): Promise<SigkillOutcome>;
-  sigterm(opts?: OperatorActionOptions): Promise<SigtermOutcome>;
-  skip(
+  sigkill<TRaw>(session: OperatorSession<TRaw>): Promise<SigkillOutcome>;
+  sigterm<TRaw>(session: OperatorSession<TRaw>): Promise<SigtermOutcome>;
+  skip<TRaw>(
+    session: OperatorSession<TRaw>,
     ...args: [TResult] extends [void]
-      ? [opts?: OperatorActionOptions & { strategy?: SkipStrategy }]
-      : [
-          result: TResult,
-          opts?: OperatorActionOptions & { strategy?: SkipStrategy },
-        ]
+      ? [opts?: SkipOptions]
+      : [result: TResult, opts?: SkipOptions]
   ): Promise<SkipOutcome>;
 }
 
 interface CompensationBlockOperatorActions<TResult> {
-  // skip(result) only — no sigkill, no sigterm, no strategy choice.
+  // skip(session, result) only — no sigkill, no sigterm, no strategy choice.
   // For compensation, skip IS abandonment with an operator-supplied result.
-  skip(
+  skip<TRaw>(
+    session: OperatorSession<TRaw>,
     ...args: [TResult] extends [void]
-      ? [opts?: OperatorActionOptions]
-      : [result: TResult, opts?: OperatorActionOptions]
+      ? []
+      : [result: TResult]
   ): Promise<SkipOutcome>;
 }
 ```
@@ -120,19 +120,16 @@ Step 12 attaches these verb signatures to the concrete external handles.
 | Step / request timeout or child workflow failure | return-value union from the awaited entry                | no throw machinery involved  |
 | Compensation `undo`                            | none; typed return values via the optional `result` schema | compensation block halt      |
 
-### `IWorkflowConnection` / `IWorkflowTransaction`
+### Operator session (Part 19)
 
-Opaque branded types forward-declared here so step 12 can wire
-`txOrConn?: IWorkflowConnection | IWorkflowTransaction` onto every IO
-method's options bag without circular imports. Step 19 adds the
-`client.connection()` / `client.transaction()` constructors and the
-acquisition / disposal lifecycle.
+Snapshot/command operator IO takes `OperatorSession<TRaw>` as the first
+argument. Step 20 adds `client.session(fn)` / `client.adoptSession(raw)`
+and the `StorageDriver` surface; this step only fixes verb signatures.
 
 ## Affected Areas
 
-- `src/types/results.ts` — adds `HaltRecord`,
-  `IWorkflowConnection`, `IWorkflowTransaction`, `SkipStrategy`,
-  `OperatorActionOptions`, `SigkillOutcome`, `SigtermOutcome`,
+- `src/types/results.ts` — adds `HaltRecord`, `SkipStrategy`,
+  `SkipOptions`, `SigkillOutcome`, `SigtermOutcome`,
   `SkipOutcome`, `WorkflowOperatorActions`,
   `CompensationBlockOperatorActions`. Updates the `WorkflowHaltStatus`
   / `CompensationBlockHaltStatus` JSDoc.
@@ -159,8 +156,7 @@ verifies:
 8. `CompensationBlockOperatorActions<TResult>` exposes `skip` only;
    `sigkill` and `sigterm` access is rejected.
 9. Compensation `skip` rejects the `strategy` option.
-10. `OperatorActionOptions.txOrConn` accepts both
-    `IWorkflowConnection` and `IWorkflowTransaction`.
+10. Operator verbs require `session` as the first argument.
 
 ## Out of Scope (Deferred)
 
@@ -172,8 +168,8 @@ verifies:
 - The legacy `sigterm()` / `sigkill()` on `src/types/engine.ts`'s
   workflow handle stays as-is for this step; step 12 sweeps it away
   alongside the unified `WorkflowHandleExternal` landing.
-- The `client.connection()` / `client.transaction()` constructors and
-  disposal lifecycle — step 19.
+- The `client.session()` / `client.adoptSession()` entry points and
+  `StorageDriver` lifecycle — step 20.
 - Halt resolution paths at the runtime layer (patch + replay
   resolves; `skip(...)` skips; `sigkill` / `sigterm` archive) —
   documented in REFACTOR.MD Part 3 but not type-testable.

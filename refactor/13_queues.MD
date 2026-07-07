@@ -37,4 +37,4 @@ Highlights:
 
 ## Acceptance Contract
 
-`src/types-regression-tests/13_queues.ts` verifies definition inference, `HasDefaultTtl` / `HasQueueErrors`, workflow enqueue typing, client handler registration, `ctx.errors` factory typing, `retentionPolicy` / `QueueRetentionContext`, dead-letter namespace/handle typing, and `txOrConn?` placement.
+`src/types-regression-tests/13_queues.ts` verifies definition inference, `HasDefaultTtl` / `HasQueueErrors`, workflow enqueue typing, client handler registration, `ctx.errors` factory typing, `retentionPolicy` / `QueueRetentionContext`, dead-letter namespace/handle typing, and session-first placement on operator IO.

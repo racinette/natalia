@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createWorkflowClient } from "../client";
+import { createTestWorkflowClient } from "../src/types-regression-tests/test-client";
 import { defineWorkflow } from "../workflow";
 import type {
   AttributeGetNowaitResult,
@@ -65,7 +65,7 @@ export const attributesAndStreamsAcceptanceWorkflow = defineWorkflow({
   },
 });
 
-const client = createWorkflowClient({
+const client = createTestWorkflowClient({
   attributesAndStreamsAcceptance: attributesAndStreamsAcceptanceWorkflow,
 });
 

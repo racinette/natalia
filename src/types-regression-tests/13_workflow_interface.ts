@@ -23,7 +23,7 @@ import {
   defineWorkflowHeader,
   defineWorkflowInterface,
 } from "../workflow";
-import { createWorkflowClient } from "../client";
+import { createTestWorkflowClient } from "./test-client";
 import type { StandardSchemaV1 } from "../types/standard-schema";
 import type {
   AttachedChildWorkflowEntry,
@@ -860,7 +860,7 @@ type _HeaderMarkedForExtend = Assert<
 // Client registry prefers interface / definition (not header-only)
 // =============================================================================
 
-const _ctx13Client = createWorkflowClient({
+const _ctx13Client = createTestWorkflowClient({
   order: orderInterface,
   full: ctx13FullInterface,
 });

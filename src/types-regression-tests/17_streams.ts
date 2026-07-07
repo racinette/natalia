@@ -2,15 +2,15 @@
 // readNowait, sequential read loops, compensation-block readers).
 
 import { z } from "zod";
-import { createWorkflowClient } from "../client";
+import { createTestWorkflowClient } from "./test-client";
 import { defineStep, defineWorkflow } from "../workflow";
 import type {
-  StreamExternalReadOptions,
   StreamReadNowaitResult,
   StreamReadResult,
   StreamReaderAccessorExternal,
 } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
+import { session } from "./test-session";
 
 const auditStream = z.object({ line: z.string() });
 
@@ -52,12 +52,12 @@ const streamsWorkflow = defineWorkflow({
   },
 });
 
-const client = createWorkflowClient({
+const client = createTestWorkflowClient({
   streamsRegressionWorkflow: streamsWorkflow,
 });
 
 async function externalStreamReads(): Promise<void> {
-  const handle = await client.workflows.streamsRegressionWorkflow.start({
+  const handle = await client.workflows.streamsRegressionWorkflow.start(session, {
     idempotencyKey: "streams-regression-1",
   });
 
@@ -86,7 +86,7 @@ async function externalStreamReads(): Promise<void> {
   }
 
   const nowait: StreamReadNowaitResult<{ line: string }> =
-    await handle.streams.log.readNowait(0);
+    await handle.streams.log.readNowait(session, 0);
   type _NowaitShape = Assert<
     typeof nowait extends
       | { ok: true; status: "read"; data: { line: string }; offset: number }
@@ -96,7 +96,7 @@ async function externalStreamReads(): Promise<void> {
       : false
   >;
 
-  const withDefault = await handle.streams.log.readNowait(99, {
+  const withDefault = await handle.streams.log.readNowait(session, 99, {
     line: "placeholder",
   });
   type _DefaultShape = Assert<
@@ -127,7 +127,7 @@ async function externalStreamReads(): Promise<void> {
   }
 
   const compNs = handle.compensations.steps.compStep;
-  const [compHandle] = await compNs.find({ limit: 1 });
+  const [compHandle] = await compNs.find(session, { limit: 1 });
   if (compHandle) {
     type _CompStreamReader = Assert<
       IsEqual<
@@ -135,7 +135,7 @@ async function externalStreamReads(): Promise<void> {
         StreamReaderAccessorExternal<{ line: string }>
       >
     >;
-    await compHandle.streams.undoAudit.readNowait(0);
+    await compHandle.streams.undoAudit.readNowait(session, 0);
   }
 }
 
@@ -143,9 +143,3 @@ void externalStreamReads();
 
 // @ts-expect-error StreamOpenResult was removed
 import type { StreamOpenResult as _RemovedStreamOpenResult } from "../types";
-
-const _opts: StreamExternalReadOptions = {
-  signal: new AbortController().signal,
-};
-
-void _opts;

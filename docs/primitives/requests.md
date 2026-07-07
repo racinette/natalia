@@ -145,40 +145,41 @@ See [error-model.md](../error-model.md) for how request handler errors relate to
 
 ## Manual resolution
 
-Manual requests are queryable on the client. An external actor resolves or escalates through the request handle. Both `resolve` and `escalateToManual` abort an in-flight handler attempt.
+Manual requests are queryable on the client. An external actor resolves or escalates through the request handle inside `client.session`. Both `resolve` and `escalateToManual` abort an in-flight handler attempt.
 
 ```typescript
-const waiting = await client.requests.humanReview.find(
-  ({ status, payload }) =>
-    and(eq(status, "manual"), eq(payload.documentId, "doc-1")),
-  { fields: { id: true, payload: true }, limit: 10 },
-);
+await client.session(async (session) => {
+  const waiting = await client.requests.humanReview.find(
+    session,
+    ({ status, payload }) =>
+      and(eq(status, "manual"), eq(payload.documentId, "doc-1")),
+    { fields: { id: true, payload: true }, limit: 10 },
+  );
 
-for (const request of waiting) {
-  await request.resolve({
-    decision: "approve",
-    note: "Approved by operator",
+  for (const request of waiting) {
+    await request.resolve(session, {
+      decision: "approve",
+      note: "Approved by operator",
+    });
+  }
+
+  const handle = client.requests.humanReview.get(requestId);
+
+  await handle.escalateToManual(session, {
+    message: "Ops took over — vendor API degraded",
+    type: "AdminConsole",
   });
-}
 
-const handle = client.requests.humanReview.get(requestId);
+  await handle.escalateToManual(session, {
+    code: "NeedsSeniorReviewer",
+    message: "Escalated from admin console",
+  });
 
-// Stop automation and park for manual resolution (untyped)
-await handle.escalateToManual({
-  message: "Ops took over — vendor API degraded",
-  type: "AdminConsole",
-});
-
-// Or use declared error codes when defineRequest declares errors
-await handle.escalateToManual({
-  code: "NeedsSeniorReviewer",
-  message: "Escalated from admin console",
-});
-
-await handle.escalateToManual({
-  code: "RulesEngineUnavailable",
-  message: "Rules engine down",
-  details: { ruleId: "R-42" },
+  await handle.escalateToManual(session, {
+    code: "RulesEngineUnavailable",
+    message: "Rules engine down",
+    details: { ruleId: "R-42" },
+  });
 });
 ```
 
@@ -320,35 +321,40 @@ Query compensation block instances at three levels:
 Global and workflow-scoped namespaces share the same `QueryableNamespace` shape (`get` / `find` / `count`). Example workflow-scoped query:
 
 ```typescript
-const [block] = await workflowHandle.compensations.requests.reserveFlightTicket.find(
-  ({ payload }) => eq(payload.customerId, "cust-1"),
-  { limit: 1 },
-);
+await client.session(async (session) => {
+  const [block] = await workflowHandle.compensations.requests.reserveFlightTicket.find(
+    session,
+    ({ payload }) => eq(payload.customerId, "cust-1"),
+    { limit: 1 },
+  );
 
-if (block) {
-  await block.skip({ released: true });
-  await block.escalateToManual({
-    code: "ReleaseBlocked",
-    message: "Operator must release manually",
-  });
-}
+  if (block) {
+    await block.skip(session, { released: true });
+    await block.escalateToManual(session, {
+      code: "ReleaseBlocked",
+      message: "Operator must release manually",
+    });
+  }
+});
 ```
 
-- `skip(result?)` — record the compensation outcome without running the handler again. Omit `result` when the definition used `compensation: true`.
-- `escalateToManual(...)` — park the block for external completion using the compensation `errors` map shape (same escalation input rules as forward `escalateToManual`).
+- `skip(session, result?)` — record the compensation outcome without running the handler again. Omit `result` when the definition used `compensation: true`.
+- `escalateToManual(session, …)` — park the block for external completion using the compensation `errors` map shape (same escalation input rules as forward `escalateToManual`).
 
 Both operator actions abort an in-flight compensation handler attempt.
 
 From a forward request handle (client or workflow-scoped), compensable definitions also expose a synchronous `.compensation` ref — the same handle type as the workflow namespace above:
 
 ```typescript
-const request = client.requests.reserveFlightTicket.get(requestId);
-await request.compensation.fetchRow({
-  fields: { status: true, payload: true },
-});
-await request.compensation.skip({ released: true });
-await request.compensation.attempts.find({
-  fields: { code: true, message: true },
+await client.session(async (session) => {
+  const request = client.requests.reserveFlightTicket.get(requestId);
+  await request.compensation.fetchRow(session, {
+    fields: { status: true, payload: true },
+  });
+  await request.compensation.skip(session, { released: true });
+  await request.compensation.attempts.find(session, {
+    fields: { code: true, message: true },
+  });
 });
 ```
 
@@ -378,22 +384,25 @@ client.requests.reserveFlightTicket.registerHandler(
 );
 
 async function onTicketReturned(event: TicketReturnedEvent) {
-  const [request] = await client.requests.reserveFlightTicket.find(
-    ({ status, payload }) =>
-      and(
-        eq(status, "manual"),
-        eq(payload.flightDate, event.date),
-      ),
-    { fields: { id: true, payload: true }, limit: 1, sort: [{ path: "priority", direction: "desc" }] },
-  );
-  if (!request) return;
+  await client.session(async (session) => {
+    const [request] = await client.requests.reserveFlightTicket.find(
+      session,
+      ({ status, payload }) =>
+        and(
+          eq(status, "manual"),
+          eq(payload.flightDate, event.date),
+        ),
+      { fields: { id: true, payload: true }, limit: 1, sort: [{ path: "priority", direction: "desc" }] },
+    );
+    if (!request) return;
 
-  const reservation = await reserveTicketForCustomer({
-    ticketId: event.ticketId,
-    customerId: request.row.payload.customerId,
-    idempotencyKey: request.id,
+    const reservation = await reserveTicketForCustomer({
+      ticketId: event.ticketId,
+      customerId: request.row.payload.customerId,
+      idempotencyKey: request.id,
+    });
+    await request.resolve(session, reservation);
   });
-  await request.resolve(reservation);
 }
 ```
 

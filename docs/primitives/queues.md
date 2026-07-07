@@ -162,35 +162,37 @@ See [error-model.md](../error-model.md) for how queue handler errors relate to w
 
 ## Dead letters
 
-Messages that cannot be processed successfully are dead-lettered. Query them through `client.queues.<name>.deadLetters`:
+Messages that cannot be processed successfully are dead-lettered. Query and act on them inside `client.session`:
 
 ```typescript
-const matches = await client.queues.notifications.deadLetters.find(
-  ({ reason }) => eq(reason, "max_attempts"),
-  { fields: { id: true, payload: true }, limit: 10, txOrConn: tx },
-);
+await client.session(async (session) => {
+  const matches = await client.queues.notifications.deadLetters.find(
+    session,
+    ({ reason }) => eq(reason, "max_attempts"),
+    { fields: { id: true, payload: true }, limit: 10 },
+  );
 
-for (const deadLetter of matches) {
-  await deadLetter.retry({ txOrConn: tx });
-}
+  for (const deadLetter of matches) {
+    await deadLetter.retry(session);
+  }
 
-const handle = client.queues.notifications.deadLetters.get(deadLetterId);
-await handle.fetchRow({
-  fields: { payload: true, reason: true },
-  txOrConn: tx,
+  const handle = client.queues.notifications.deadLetters.get(deadLetterId);
+  await handle.fetchRow(session, {
+    fields: { payload: true, reason: true },
+  });
+
+  const attemptHandles = await handle.attempts.find(session, {
+    sort: [{ path: "attemptNumber", direction: "desc" }],
+    limit: 1,
+    fields: { code: true, message: true, details: true },
+  });
+  const last = attemptHandles[0]?.row;
+  if (last?.code === "ProviderRejected" && last.details?.ok === true) {
+    const { orderId } = last.details.result;
+  }
+
+  await handle.purge(session);
 });
-
-const attemptHandles = await handle.attempts.find({
-  sort: [{ path: "attemptNumber", direction: "desc" }],
-  limit: 1,
-  fields: { code: true, message: true, details: true },
-});
-const last = attemptHandles[0]?.row;
-if (last?.code === "ProviderRejected" && last.details?.ok === true) {
-  const { orderId } = last.details.result;
-}
-
-await handle.purge({ txOrConn: tx });
 ```
 
 `retry` puts the message back on the queue with its priority and persisted expiry unchanged. `purge` deletes the dead-letter row.

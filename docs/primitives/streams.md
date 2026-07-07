@@ -66,25 +66,29 @@ const got = await runHandle.streams.metrics.read(nextOffset, {
 });
 ```
 
-**Non-blocking read**
+**Non-blocking read** (inside `client.session`)
 
 ```typescript
-const snap = await runHandle.streams.metrics.readNowait(0);
-// read | not_found (not yet committed) | never (terminal, offset won't exist)
+await client.session(async (session) => {
+  const snap = await runHandle.streams.metrics.readNowait(session, 0);
+  // read | not_found | never
 
-const withDefault = await runHandle.streams.metrics.readNowait(99, {
-  step: -1,
-  loss: 0,
-}); // returns default instead of not_found
+  const withDefault = await runHandle.streams.metrics.readNowait(session, 99, {
+    step: -1,
+    loss: 0,
+  });
+});
 ```
+
+See [Operator sessions](../operator-sessions.md) for session entry points and the snapshot vs watch split.
 
 **Reading a range of offsets**
 
-Loop over offsets with `read(n)` so each step accepts `signal` and `txOrConn`.
+Loop over offsets with `read(n)` for watch IO (no session) or `readNowait(session, n)` for snapshots.
 
 ```typescript
 for (let n = 0; n < 100; n++) {
-  const got = await runHandle.streams.metrics.read(n, { txOrConn: tx });
+  const got = await runHandle.streams.metrics.read(n);
   if (!got.ok) break; // never — terminal, offset won't exist
   renderChart(got.data);
 }

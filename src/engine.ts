@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import type { AnyWorkflowDefinition, ExternalWaitOptions } from "./types";
 import { EngineShutdownError } from "./internal/errors";
 import { ScopeRuntimeRegistry } from "./internal/scope-runtime-registry";
+import type { StorageDriver } from "./types";
 import { AbstractWorkflowClient } from "./client";
 
 // =============================================================================
@@ -148,7 +149,8 @@ export interface WorkflowEngineConfig<
  */
 export class WorkflowEngine<
   TWfs extends Record<string, AnyWorkflowDefinition> = Record<string, never>,
-> extends AbstractWorkflowClient<TWfs> {
+  TDriver extends StorageDriver<any> = StorageDriver<any>,
+> extends AbstractWorkflowClient<TWfs, TDriver> {
   private readonly config: WorkflowEngineConfig<TWfs>;
   private gcInterval: NodeJS.Timeout | null = null;
   private isStarted = false;
@@ -160,8 +162,12 @@ export class WorkflowEngine<
    */
   private readonly scopeRuntimeRegistry = new ScopeRuntimeRegistry();
 
-  constructor(config: WorkflowEngineConfig<TWfs>) {
-    super(config.workflows);
+  constructor(
+    config: WorkflowEngineConfig<TWfs> & {
+      driver: TDriver;
+    },
+  ) {
+    super(config.workflows, config.driver);
     this.config = config;
   }
 

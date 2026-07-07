@@ -57,18 +57,22 @@ const indexingRun = defineWorkflow({
 
 **Reading the current value from a handle (non-blocking)**
 
+Operator snapshot reads run inside `client.session`:
+
 ```typescript
-const now = await handle.attributes.progress.getNowait();
-if (now.status === "ok") {
-  // now.value.percent, now.version
-} else {
-  // now.status === "not_set" — never written
-}
+await client.session(async (session) => {
+  const now = await handle.attributes.progress.getNowait(session);
+  if (now.status === "ok") {
+    // now.value.percent, now.version
+  } else {
+    // now.status === "not_set" — never written
+  }
+});
 ```
 
 **Long-polling for the next change**
 
-Pass the last version you observed; the call blocks until a newer value is written, or the workflow terminates.
+Pass the last version you observed; the call blocks until a newer value is written, or the workflow terminates. Watch IO does not take a session — pass `signal` only:
 
 ```typescript
 const result = await handle.attributes.progress.get({ afterVersion: 3, signal });

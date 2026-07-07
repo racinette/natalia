@@ -2,6 +2,7 @@ import type { ErrorDefinitions } from "./definitions/errors";
 import type { JsonInput } from "./json-input";
 import type { SchemaInvocationInput } from "./context/entries";
 import type { StandardSchemaV1 } from "./standard-schema";
+import type { OperatorSession } from "./session";
 
 // =============================================================================
 // ERROR TYPES
@@ -520,40 +521,6 @@ export interface HaltRecord {
 }
 
 // =============================================================================
-// CONNECTION AND TRANSACTION (forward-declared; step 19 firms up)
-// =============================================================================
-
-declare const workflowConnectionBrand: unique symbol;
-declare const workflowTransactionBrand: unique symbol;
-
-/**
- * Opaque database connection for engine IO.
- *
- * Step 19 introduces the `client.connection()` constructor and the
- * acquisition / disposal lifecycle. Step 12 wires `txOrConn?: IWorkflowConnection
- * | IWorkflowTransaction` onto every IO method on operator-facing handles.
- *
- * The brand is non-enumerable at runtime; user code cannot construct values of
- * this type directly.
- */
-export interface IWorkflowConnection {
-  /** @internal */
-  readonly [workflowConnectionBrand]: true;
-}
-
-/**
- * Opaque database transaction for engine IO.
- *
- * `await using tx = await client.transaction(); ... await tx.commit();` is the
- * canonical usage pattern (step 19). Operations passed `{ txOrConn: tx }`
- * participate in the same transaction.
- */
-export interface IWorkflowTransaction {
-  /** @internal */
-  readonly [workflowTransactionBrand]: true;
-}
-
-// =============================================================================
 // OPERATOR-ACTION VERBS — TYPE-LEVEL SIGNATURES
 //
 // `REFACTOR.MD` Part 3 defines three terminal-action verbs on operator-
@@ -574,13 +541,10 @@ export interface IWorkflowTransaction {
 export type SkipStrategy = "sigterm" | "sigkill";
 
 /**
- * Common options bag accepted by every operator-action verb.
- *
- * Step 19 makes `txOrConn?` mandatory across every IO method; step 12 plugs
- * this options shape onto the concrete handle methods.
+ * Options for {@link WorkflowOperatorActions.skip} beyond the required session.
  */
-export interface OperatorActionOptions {
-  readonly txOrConn?: IWorkflowConnection | IWorkflowTransaction;
+export interface SkipOptions {
+  readonly strategy?: SkipStrategy;
 }
 
 /** Outcome of a `sigkill()` invocation. Status is set on the workflow row. */
@@ -612,15 +576,13 @@ export interface SkipOutcome {
  * (just options); otherwise the operator-supplied result is required.
  */
 export interface WorkflowOperatorActions<TResult> {
-  sigkill(opts?: OperatorActionOptions): Promise<SigkillOutcome>;
-  sigterm(opts?: OperatorActionOptions): Promise<SigtermOutcome>;
-  skip(
+  sigkill<TRaw>(session: OperatorSession<TRaw>): Promise<SigkillOutcome>;
+  sigterm<TRaw>(session: OperatorSession<TRaw>): Promise<SigtermOutcome>;
+  skip<TRaw>(
+    session: OperatorSession<TRaw>,
     ...args: [TResult] extends [void]
-      ? [opts?: OperatorActionOptions & { strategy?: SkipStrategy }]
-      : [
-          result: TResult,
-          opts?: OperatorActionOptions & { strategy?: SkipStrategy },
-        ]
+      ? [opts?: SkipOptions]
+      : [result: TResult, opts?: SkipOptions]
   ): Promise<SkipOutcome>;
 }
 
@@ -634,10 +596,11 @@ export interface WorkflowOperatorActions<TResult> {
  * (Part 6 forbids recursive compensation).
  */
 export interface CompensationBlockOperatorActions<TResult> {
-  skip(
+  skip<TRaw>(
+    session: OperatorSession<TRaw>,
     ...args: [TResult] extends [void]
-      ? [opts?: OperatorActionOptions]
-      : [result: TResult, opts?: OperatorActionOptions]
+      ? []
+      : [result: TResult]
   ): Promise<SkipOutcome>;
 }
 

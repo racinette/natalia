@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createWorkflowClient } from "../client";
+import { createTestWorkflowClient } from "./test-client";
 import { and } from "../search";
 import {
   defineRequest,
@@ -220,7 +220,7 @@ const compRequestsWorkflow = defineWorkflow({
   },
 });
 
-const compRequestsClient = createWorkflowClient({
+const compRequestsClient = createTestWorkflowClient({
   compRequestsWorkflow,
 });
 
@@ -319,7 +319,7 @@ const nonCompensableWorkflow = defineWorkflow({
   },
 });
 
-const nonCompensableClient = createWorkflowClient({ nonCompensableWorkflow });
+const nonCompensableClient = createTestWorkflowClient({ nonCompensableWorkflow });
 
 nonCompensableClient.requests.compNonCompensableRequest.registerHandler(
   async () => ({ ok: true }),

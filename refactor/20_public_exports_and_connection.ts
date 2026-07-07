@@ -1,5 +1,7 @@
+import { createWorkflowClient } from "../client";
 import {
   AttemptError,
+  createWorkflowClient as createWorkflowClientFromIndex,
   defineQueue,
   defineRequest,
   defineStep,
@@ -25,8 +27,7 @@ import type {
   ExplicitError,
   Failure,
   FailureInfo,
-  IWorkflowConnection,
-  IWorkflowTransaction,
+  OperatorSession,
   RequestCompensationInfo,
   RequestCompensationInstanceId,
   RequestCompensationStatus,
@@ -38,6 +39,12 @@ import type {
   TopicRecord,
   Unsubscribe,
 } from "../index";
+import {
+  createMockSessionRaw,
+  MockStorageDriver,
+} from "../src/types-regression-tests/mock-storage-driver";
+import type { MockSessionRaw } from "../src/types-regression-tests/mock-storage-driver";
+import { createTestWorkflowClient } from "../src/types-regression-tests/test-client";
 
 type Assert<T extends true> = T;
 type IsEqual<A, B> =
@@ -91,21 +98,41 @@ type _RequestHandlerDeclaredError = Assert<
   typeof RequestHandlerDeclaredError extends typeof Error ? true : false
 >;
 type _Unrecoverable = Assert<typeof UnrecoverableError extends typeof Error ? true : false>;
-type _ConnectionOpaque = Assert<string extends IWorkflowConnection ? false : true>;
-type _TransactionOpaque = Assert<string extends IWorkflowTransaction ? false : true>;
 
-declare const tx: IWorkflowTransaction;
-declare const conn: IWorkflowConnection;
-declare const client: import("../index").WorkflowClient<any>;
+const driver = new MockStorageDriver();
+declare const client: import("../index").WorkflowClient<any, MockStorageDriver>;
 
-async function txOrConnUsage(): Promise<void> {
-  await client.workflows.someWorkflow.get("workflow-id", tx);
-  await client.workflows.someWorkflow.get("workflow-id", conn);
-  await client.workflows.someWorkflow.search({ limit: 1 }, tx);
-  await client.workflows.someWorkflow.start(
-    { idempotencyKey: "with-tx", args: undefined },
-    conn,
-  );
+async function sessionFirstIo(): Promise<void> {
+  await client.session(async (session) => {
+    const handle = client.workflows.someWorkflow.get("workflow-id");
+    void handle;
+
+    await client.workflows.someWorkflow.find(session, { limit: 1 });
+
+    const started = await client.workflows.someWorkflow.start(session, {
+      idempotencyKey: "with-session",
+      args: undefined,
+    });
+    void started;
+  });
+
+  const raw = createMockSessionRaw();
+  const adopted: OperatorSession<MockSessionRaw, "adopted"> =
+    client.adoptSession(raw);
+  void adopted;
+
+  type _DriverSession = Assert<
+    typeof driver.session extends <
+      R,
+    >(
+      fn: (
+        session: OperatorSession<MockSessionRaw, "engine">,
+      ) => Promise<R>,
+    ) => Promise<R>
+      ? true
+      : false
+  >;
+  void (0 as unknown as _DriverSession);
 }
 
 // Removed public exports.
@@ -137,6 +164,22 @@ type _NoAttemptAccessor = import("../index").AttemptAccessor;
 type _NoFindUniqueResult = import("../index").FindUniqueResult<any>;
 // @ts-expect-error FindManyResult was renamed to FindResult
 type _NoFindManyResult = import("../index").FindManyResult<any>;
+// @ts-expect-error IWorkflowConnection is no longer public
+type _NoIWorkflowConnection = import("../index").IWorkflowConnection;
+// @ts-expect-error IWorkflowTransaction is no longer public
+type _NoIWorkflowTransaction = import("../index").IWorkflowTransaction;
 
-void txOrConnUsage;
+// @ts-expect-error MockStorageDriver is not a public export
+type _NoMockStorageDriver = import("../index").MockStorageDriver;
+// @ts-expect-error createMockSessionRaw is not a public export
+type _NoCreateMockSessionRaw = typeof import("../index").createMockSessionRaw;
+// @ts-expect-error MockSessionRaw is not a public export
+type _NoMockSessionRaw = import("../index").MockSessionRaw;
+
+// @ts-expect-error driver is required
+createWorkflowClient({} as Record<string, never>);
+
+void sessionFirstIo;
 void AttemptError;
+void createWorkflowClientFromIndex;
+void createTestWorkflowClient;

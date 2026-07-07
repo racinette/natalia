@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createWorkflowClient } from "../client";
+import { createTestWorkflowClient } from "../src/types-regression-tests/test-client";
 import { defineWorkflow, defineWorkflowHeader } from "../workflow";
 import type { StartWorkflowOptions } from "../types";
 
@@ -93,7 +93,7 @@ const parentWorkflow = defineWorkflow({
   },
 });
 
-const client = createWorkflowClient({
+const client = createTestWorkflowClient({
   withFactory: withFactoryWorkflow,
   withoutFactory: withoutFactoryWorkflow,
   parent: parentWorkflow,

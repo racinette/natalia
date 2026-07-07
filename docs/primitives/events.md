@@ -2,7 +2,7 @@
 
 ## What it is
 
-An **event** is a per-instance, named, **write-once flag** declared on a workflow. It carries **no payload**—the only information it ever holds is *fired* or *not fired (yet)*. Inside the body, code raises it exactly once with `ctx.events.<name>.set()`. From **outside** the actor, anyone holding a **handle** to that instance **observes** it: block until it fires with `events.<name>.wait()`, or take a snapshot with `events.<name>.isSet()`.
+An **event** is a per-instance, named, **write-once flag** declared on a workflow. It carries **no payload**—the only information it ever holds is *fired* or *not fired (yet)*. Inside the body, code raises it exactly once with `ctx.events.<name>.set()`. From **outside** the actor, anyone holding a **handle** to that instance **observes** it: block until it fires with `events.<name>.wait({ signal? })`, or take a snapshot with `events.<name>.isSet(session)` inside `client.session`.
 
 Among the per-instance primitives, events are the **outbound, write-once** signal. Channels are inbound mailboxes; streams are append-only logs; attributes are a mutable current value. An event is the simplest of the family: a one-way latch the instance flips to announce that a single milestone has been reached. You declare them as a set of names with no schema:
 
@@ -53,11 +53,13 @@ if (result.ok) {
 }
 ```
 
-**Polling without blocking**
+**Polling without blocking** (inside `client.session`)
 
 ```typescript
-const check = await handle.events.orderReady.isSet();
-// check.status: "set" | "not_set" | "never" | "not_found"
+await client.session(async (session) => {
+  const check = await handle.events.orderReady.isSet(session);
+  // check.status: "set" | "not_set" | "never" | "not_found"
+});
 ```
 
 **Bounding a wait with an abort signal**

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createWorkflowClient } from "../client";
+import { createTestWorkflowClient } from "./test-client";
 import { and, eq } from "../search";
 import {
   defineRequest,
@@ -40,6 +40,7 @@ import type {
   InferRequestErrors,
 } from "../types/helpers";
 import type { Assert, IsEqual } from "./type-assertions";
+import { session } from "./test-session";
 
 const approvalRequest = defineRequest({
   name: "approvalRequestAcceptance",
@@ -135,7 +136,7 @@ export const requestsAcceptanceWorkflow = defineWorkflow({
   },
 });
 
-const client = createWorkflowClient({ requestsAcceptance: requestsAcceptanceWorkflow });
+const client = createTestWorkflowClient({ requestsAcceptance: requestsAcceptanceWorkflow });
 
 type _RequestNamespace = Assert<
   IsEqual<
@@ -330,7 +331,7 @@ const noErrorsWorkflow = defineWorkflow({
   async execute() {},
 });
 
-const noErrorsClient = createWorkflowClient({
+const noErrorsClient = createTestWorkflowClient({
   noErrorsRequestWorkflow: noErrorsWorkflow,
 });
 
@@ -578,6 +579,7 @@ void (0 as unknown as _HandlerAttemptsNamespaceShape);
 
 async function manualResolution(): Promise<void> {
   const requestMany = client.requests.approvalRequestAcceptance.find(
+    session,
     ({ status, payload }) =>
       and(eq(status, "manual"), eq(payload.documentId, "doc-1")),
     {
@@ -623,11 +625,11 @@ async function manualResolution(): Promise<void> {
     return;
   }
 
-  await request.resolve({
+  await request.resolve(session, {
     approved: true,
     reviewerId: "manual-reviewer",
   });
-  await request.escalateToManual({
+  await request.escalateToManual(session, {
     code: "NeedsHumanReview",
     message: "Escalated while reviewing queue",
   });
@@ -635,12 +637,12 @@ async function manualResolution(): Promise<void> {
   const requestId = "request-id" as RequestId<"approvalRequestAcceptance">;
   const requestHandle = client.requests.approvalRequestAcceptance.get(requestId);
 
-  await requestHandle.escalateToManual({
+  await requestHandle.escalateToManual(session, {
     message: "Stop automation",
     type: "AdminConsole",
   });
 
-  const fetched = await requestHandle.fetchRow({
+  const fetched = await requestHandle.fetchRow(session, {
     fields: { payload: true, status: true },
   });
   void fetched;
@@ -658,18 +660,19 @@ async function manualResolution(): Promise<void> {
   >;
   void (0 as unknown as _HasCompensation);
 
-  await requestHandle.compensation.fetchRow({ fields: { status: true } });
-  const _forwardAttempts = await requestHandle.attempts.find({
+  await requestHandle.compensation.fetchRow(session, { fields: { status: true } });
+  const _forwardAttempts = await requestHandle.attempts.find(session, {
     fields: { manual: true },
   });
   void _forwardAttempts[0]?.row.manual;
 
-  const count = await client.requests.approvalRequestAcceptance.count((scope) =>
+  const count = await client.requests.approvalRequestAcceptance.count(session, (scope) =>
     eq(scope.status, "manual"),
   );
   void count;
 
   const found = await client.requests.approvalRequestAcceptance.find(
+    session,
     ({ payload }) => eq(payload.documentId, "doc-1"),
   );
   void found;
@@ -694,8 +697,9 @@ async function manualResolution(): Promise<void> {
   // @ts-expect-error request ids are branded by request definition name
   client.requests.approvalRequestAcceptance.get("plain-id");
   // @ts-expect-error resolve payload must match the request response schema
-  await requestHandle.resolve({ approved: true });
+  await requestHandle.resolve(session, { approved: true });
   client.requests.approvalRequestAcceptance.find(
+    session,
     // @ts-expect-error predicates are typed to the request payload shape
     ({ payload }) => eq(payload.unknownField, "x"),
   );

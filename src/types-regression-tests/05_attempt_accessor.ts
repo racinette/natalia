@@ -10,6 +10,7 @@ import type {
   OperatorAttemptsNamespaceExternal,
 } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
+import { session } from "./test-session";
 
 // =============================================================================
 // `Failure` BASE RECORD
@@ -87,7 +88,7 @@ void inspectHandlerAttempts;
 declare const operatorAttempts: OperatorAttemptsNamespaceExternal<Attempt>;
 
 async function inspectOperatorAttempts(): Promise<void> {
-  const _handles = await operatorAttempts.find({
+  const _handles = await operatorAttempts.find(session, {
     fields: { type: true },
   });
   type _HandleRow = Assert<

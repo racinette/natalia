@@ -1,7 +1,4 @@
-import type {
-  IWorkflowConnection,
-  IWorkflowTransaction,
-} from "./results";
+import type { OperatorSession } from "./session";
 import type {
   SearchSort,
   WhereFn,
@@ -16,10 +13,10 @@ import type {
 //
 //   - `.get(id)`              synchronous identity grounding; returns a handle
 //                             without I/O.
-//   - `find(query?, opts?)`   predicate-based query; resolves to
+//   - `find(session, query?, opts?)`   predicate-based query; resolves to
 //                             `Promise<readonly Handle[]>`. Omit the predicate
 //                             to query the full scoped set.
-//   - `count(query?, opts?)`  aggregate count over the same predicate.
+//   - `count(session, query?, opts?)`  aggregate count over the same predicate.
 //
 // Row materialization on a grounded handle uses {@link FetchableHandle.fetchRow},
 // which returns `TRow | undefined`. Query prefetch attaches `.row` on handles
@@ -70,40 +67,25 @@ export type ProjectedKeys<TRow, F extends FieldsMask<TRow>> = Extract<
 export type HandleWithRow<H, TRow> = H & { readonly row: TRow };
 
 /**
- * Common option bag for count and other one-shot IO methods on a fetchable
- * handle. Per `REFACTOR.MD` Part 19 every IO method accepts an optional
- * `txOrConn?`.
- */
-export interface FetchOptions {
-  readonly txOrConn?: IWorkflowConnection | IWorkflowTransaction;
-}
-
-/**
  * Option bag for {@link FetchableHandle.fetchRow}. Omit `fields` to fetch the
- * entire row; set `fields` to project columns. Shares `txOrConn?` with other
- * IO methods.
+ * entire row; set `fields` to project columns.
  */
-export interface FetchRowOptions<TRow> extends FetchOptions {
+export interface FetchRowOptions<TRow> {
   readonly fields?: FieldsMask<TRow>;
 }
 
 /**
- * Option bag for {@link QueryableNamespace.find}. Adds sort and limit to the
- * IO options.
+ * Option bag for {@link QueryableNamespace.find}. Adds sort and limit.
  */
 export interface FindOptions<
   TWhereTemplate extends WhereTemplateRecord,
 > {
   readonly sort?: readonly SearchSort<TWhereTemplate>[];
   readonly limit?: number;
-  readonly txOrConn?: IWorkflowConnection | IWorkflowTransaction;
 }
 
-/**
- * `count` accepts the same `txOrConn?` IO option as the other one-shot
- * methods.
- */
-export type CountOptions = FetchOptions;
+/** Option bag for {@link QueryableNamespace.count}. */
+export type CountOptions = Record<string, never>;
 
 /**
  * A handle that can re-fetch its row on demand.
@@ -116,10 +98,14 @@ export type CountOptions = FetchOptions;
  * Returns `undefined` when no row exists for this handle's grounded identity.
  */
 export interface FetchableHandle<TRow> {
-  fetchRow<F extends FieldsMask<TRow>>(
+  fetchRow<TRaw, F extends FieldsMask<TRow>>(
+    session: OperatorSession<TRaw>,
     opts: FetchRowOptions<TRow> & { readonly fields: F },
   ): Promise<Pick<TRow, ProjectedKeys<TRow, F>> | undefined>;
-  fetchRow(opts?: FetchRowOptions<TRow>): Promise<TRow | undefined>;
+  fetchRow<TRaw>(
+    session: OperatorSession<TRaw>,
+    opts?: FetchRowOptions<TRow>,
+  ): Promise<TRow | undefined>;
 }
 
 // =============================================================================
@@ -167,27 +153,34 @@ export interface QueryableNamespace<
    * Predicate-based lookup. Returns zero or more handles matching the query
    * within the namespace scope. Omit the predicate to query the full scoped set.
    */
-  find(
+  find<TRaw>(
+    session: OperatorSession<TRaw>,
     query: QueryPredicate<TWhereTemplate>,
     opts?: FindOptions<TWhereTemplate>,
   ): FindResult<THandle>;
-  find<F extends FieldsMask<TRow>>(
+  find<TRaw, F extends FieldsMask<TRow>>(
+    session: OperatorSession<TRaw>,
     query: QueryPredicate<TWhereTemplate>,
     opts: FindOptions<TWhereTemplate> & { readonly fields: F },
   ): FindResult<HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>>;
-  find(
+  find<TRaw>(
+    session: OperatorSession<TRaw>,
     opts?: FindOptions<TWhereTemplate>,
   ): FindResult<THandle>;
-  find<F extends FieldsMask<TRow>>(
+  find<TRaw, F extends FieldsMask<TRow>>(
+    session: OperatorSession<TRaw>,
     opts: FindOptions<TWhereTemplate> & { readonly fields: F },
   ): FindResult<HandleWithRow<THandle, Pick<TRow, ProjectedKeys<TRow, F>>>>;
 
   /** Aggregate count over the same predicate (or the full scoped set). */
-  count(
+  count<TRaw>(
+    session: OperatorSession<TRaw>,
     query: QueryPredicate<TWhereTemplate>,
+  ): Promise<number>;
+  count<TRaw>(
+    session: OperatorSession<TRaw>,
     opts?: CountOptions,
   ): Promise<number>;
-  count(opts?: CountOptions): Promise<number>;
 }
 
 // =============================================================================
@@ -228,7 +221,7 @@ export type OperatorAttemptsNamespaceExternal<
 // and observations are immutable for the duration of the callback.
 // =============================================================================
 
-/** Option bag for handler-runtime attempt queries (no `txOrConn`). */
+/** Option bag for handler-runtime attempt queries (no session). */
 export interface HandlerAttemptFindOptions<
   TWhereTemplate extends WhereTemplateRecord = WhereTemplateRecord,
 > {
@@ -264,9 +257,6 @@ export interface HandlerAttemptsReadNamespace<
     opts: HandlerAttemptFindOptions<TRow> & { readonly fields: F },
   ): FindResult<Pick<TRow, ProjectedKeys<TRow, F>>>;
 
-  count(
-    query: QueryPredicate<TRow>,
-    opts?: HandlerAttemptFindOptions<TRow>,
-  ): Promise<number>;
+  count(query: QueryPredicate<TRow>): Promise<number>;
   count(opts?: HandlerAttemptFindOptions<TRow>): Promise<number>;
 }

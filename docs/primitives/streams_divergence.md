@@ -8,8 +8,10 @@
 |---------|--------|
 | `defineWorkflow.streams` / `ctx.streams.<n>.write` → `number` | aligned |
 | External `read(offset)` → `read \| never` | aligned |
-| External `readNowait(offset)` → `read \| not_found \| never` | aligned |
-| Sequential consumption via explicit `read(n)` loops | aligned |
+| External `readNowait(session, offset)` → `read \| not_found \| never` | aligned |
+| External watch `read(offset, { signal? })` — no session | aligned |
+| Required `session` first on snapshot/command operator IO | aligned |
+| `client.session` / `client.adoptSession` via `StorageDriver<TRaw>` | aligned (types + stubs) |
 | `iterator` / reader async-iter sugar | **removed** — opts bag per read |
 | `isOpen` / stream `closed` status | **removed** — terminal exhaustion is `{ status: "never" }` |
 | Compensation block `streams` on operator handle | aligned (typed via `InferStepCompensationStreams`) |

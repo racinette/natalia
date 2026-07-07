@@ -4,7 +4,7 @@ import {
   defineWorkflow,
   UnrecoverableError,
 } from "../workflow";
-import { createWorkflowClient } from "../client";
+import { createTestWorkflowClient } from "../src/types-regression-tests/test-client";
 import type {
   NonEmptyReadonlyArray,
   TopicConsumeErrorEvent,
@@ -59,7 +59,7 @@ export const topicsAcceptanceWorkflow = defineWorkflow({
   },
 });
 
-const client = createWorkflowClient({ topicsAcceptance: topicsAcceptanceWorkflow });
+const client = createTestWorkflowClient({ topicsAcceptance: topicsAcceptanceWorkflow });
 
 const filter: TopicRecordFilter<
   z.output<typeof auditTopic.record>,

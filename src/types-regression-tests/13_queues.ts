@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createWorkflowClient } from "../client";
+import { createTestWorkflowClient } from "./test-client";
 import { eq, and } from "../search";
 import {
   defineQueue,
@@ -32,6 +32,7 @@ import type {
 import type { DeadLetterId, DeadLetterReason, DeadLetterRow } from "../types/schema";
 import type { HasDefaultTtl, HasQueueErrors, InferQueueErrors } from "../types/helpers";
 import type { Assert, IsEqual } from "./type-assertions";
+import { session } from "./test-session";
 
 const ProviderRejectedDetails = z.object({
   code: z.string(),
@@ -127,8 +128,8 @@ export const queuesAcceptanceWorkflow = defineWorkflow({
         template: "welcome",
         metadata: { tenantId: "t-1" },
       },
-      // @ts-expect-error workflow enqueue does not accept txOrConn
-      { txOrConn: undefined },
+      // @ts-expect-error workflow enqueue does not accept session
+      { session },
     );
 
     return { ok: true };
@@ -160,7 +161,7 @@ export const queuesRequireTtlWorkflow = defineWorkflow({
   },
 });
 
-const client = createWorkflowClient({ queuesAcceptance: queuesAcceptanceWorkflow });
+const client = createTestWorkflowClient({ queuesAcceptance: queuesAcceptanceWorkflow });
 
 type _QueueNamespace = Assert<
   IsEqual<
@@ -380,7 +381,7 @@ const noErrorsWorkflow = defineWorkflow({
   async execute() {},
 });
 
-const noErrorsClient = createWorkflowClient({
+const noErrorsClient = createTestWorkflowClient({
   noErrorsQueueWorkflow: noErrorsWorkflow,
 });
 
@@ -519,8 +520,8 @@ client.queues.emailQueue.registerHandler(async () => ({ manual: true }), {
 
 client.queues.emailQueue.registerHandler(
   async () => undefined,
-  // @ts-expect-error handler registration does not accept txOrConn
-  { retryPolicy: { maxAttempts: 1 }, txOrConn: undefined },
+  // @ts-expect-error handler registration does not accept session
+  { retryPolicy: { maxAttempts: 1 }, session },
 );
 
 type _DeadLetterReasons = Assert<
@@ -541,11 +542,11 @@ type _QueueHandlerAttemptUnion = Assert<
 
 async function inspectDeadLetters(): Promise<void> {
   const deadLetterMany = client.queues.emailQueue.deadLetters.find(
+    session,
     ({ reason }) => eq(reason, "handler_reject"),
     {
       fields: { id: true, payload: true },
       limit: 1,
-      txOrConn: undefined,
     },
   );
 
@@ -585,7 +586,7 @@ async function inspectDeadLetters(): Promise<void> {
     return;
   }
 
-  const attemptRows = await deadLetter.attempts.find({
+  const attemptRows = await deadLetter.attempts.find(session, {
     sort: [{ path: "attemptNumber", direction: "desc" }],
     limit: 1,
     fields: { code: true, message: true, details: true },
@@ -616,8 +617,8 @@ async function inspectDeadLetters(): Promise<void> {
     void _nullableMessage;
   }
 
-  await deadLetter.retry({ txOrConn: undefined });
-  await deadLetter.purge({ txOrConn: undefined });
+  await deadLetter.retry(session);
+  await deadLetter.purge(session);
 
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- regression-only cast to branded `DeadLetterId`
   const deadLetterId = "dead-letter-id" as DeadLetterId<"emailQueue">;
@@ -637,7 +638,7 @@ async function inspectDeadLetters(): Promise<void> {
     >
   >;
 
-  const fetched = await deadLetterHandle.fetchRow({
+  const fetched = await deadLetterHandle.fetchRow(session, {
     fields: { payload: true, reason: true },
   });
   type _Fetched = Assert<
@@ -660,15 +661,15 @@ async function inspectDeadLetters(): Promise<void> {
   void fetched;
 
   const count = await client.queues.emailQueue.deadLetters.count(
+    session,
     ({ reason }) => eq(reason, "max_attempts"),
-    { txOrConn: undefined },
   );
   type _Count = Assert<IsEqual<typeof count, number>>;
   void count;
 
   const found = await client.queues.emailQueue.deadLetters.find(
+    session,
     ({ payload }) => eq(payload.userId, "u-1"),
-    { txOrConn: undefined },
   );
   type _Found = Assert<
     IsEqual<
@@ -688,9 +689,10 @@ async function inspectDeadLetters(): Promise<void> {
 
   // @ts-expect-error dead-letter ids are branded by queue definition name
   client.queues.emailQueue.deadLetters.get("plain-id");
-  // @ts-expect-error get is synchronous and does not accept txOrConn
-  client.queues.emailQueue.deadLetters.get(deadLetterId, { txOrConn: undefined });
+  // @ts-expect-error get is synchronous and does not accept session
+  client.queues.emailQueue.deadLetters.get(deadLetterId, { session });
   client.queues.emailQueue.deadLetters.find(
+    session,
     // @ts-expect-error predicates are typed to the dead-letter payload shape
     ({ payload }) => eq(payload.unknownField, "x"),
   );

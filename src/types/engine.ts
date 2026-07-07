@@ -36,8 +36,6 @@ import type {
   EventWaitResultNoTimeout,
   ExternalWaitOptions,
   HaltRecord,
-  IWorkflowConnection,
-  IWorkflowTransaction,
   StreamReadNowaitResult,
   StreamReadResult,
   WorkflowOperatorActions,
@@ -45,10 +43,15 @@ import type {
   QueueHandlerAttempt,
   RequestHandlerAttempt,
   SkipOutcome,
-  OperatorActionOptions,
+  SkipOptions,
   RequestManualEscalationInput,
 } from "./results";
 import type { HaltWhereTemplate } from "./results";
+import type {
+  InferSessionRaw,
+  OperatorSession,
+  StorageDriver,
+} from "./session";
 import type { RequestCompensationInstanceId } from "./schema";
 import type {
   QueueDefinition,
@@ -63,7 +66,7 @@ import type {
 } from "./definitions/handlers";
 import type {
   FetchableHandle,
-  FetchOptions,
+  FindOptions,
   HaltHandle,
   OperatorAttemptsNamespaceExternal,
   QueryableNamespace,
@@ -111,9 +114,9 @@ import type { IsHeaderAuthoringKind } from "./definitions/authoring-kind";
  * T is z.input<Schema> for sending (encoded).
  */
 export interface ChannelAccessorExternal<T> {
-  send(
+  send<TRaw>(
+    session: OperatorSession<TRaw>,
     data: T,
-    opts?: { txOrConn?: IWorkflowConnection | IWorkflowTransaction },
   ): Promise<ChannelSendResult>;
 }
 
@@ -121,54 +124,42 @@ export interface ChannelAccessorExternal<T> {
  * Event accessor at engine level (with "never" support).
  */
 export interface EventAccessorExternal {
-  wait(
-    options?: ExternalWaitOptions & {
-      txOrConn?: IWorkflowConnection | IWorkflowTransaction;
-    },
-  ): Promise<EventWaitResultNoTimeout>;
-  isSet(opts?: {
-    txOrConn?: IWorkflowConnection | IWorkflowTransaction;
-  }): Promise<EventCheckResult>;
+  wait(options?: ExternalWaitOptions): Promise<EventWaitResultNoTimeout>;
+  isSet<TRaw>(session: OperatorSession<TRaw>): Promise<EventCheckResult>;
 }
-
-/**
- * Option bag for external stream reads. Shares {@link ExternalWaitOptions}
- * with other engine-level waits; adds `txOrConn?` per Part 19.
- */
-export type StreamExternalReadOptions = ExternalWaitOptions & {
-  readonly txOrConn?: IWorkflowConnection | IWorkflowTransaction;
-};
 
 /**
  * External stream reader on a workflow or compensation block handle.
  *
  * Sequential consumption is caller-owned: loop over offsets with
- * {@link StreamReaderAccessorExternal.read} so each step carries
- * {@link StreamExternalReadOptions} (`signal`, `txOrConn`).
+ * {@link StreamReaderAccessorExternal.read} (watch) or
+ * {@link StreamReaderAccessorExternal.readNowait} (snapshot).
  */
 export interface StreamReaderAccessorExternal<T> {
   /**
    * Read the record at `offset`, waiting until it is committed.
    * Resolves `{ status: "never" }` when the instance is terminal and the
    * offset will not appear. Signal abort rejects with `AbortError`.
+   *
+   * Watch IO — no session (does not hold a transactional scope while waiting).
    */
   read(
     offset: number,
-    options?: StreamExternalReadOptions,
+    options?: ExternalWaitOptions,
   ): Promise<StreamReadResult<T>>;
 
   /**
    * Non-blocking read at `offset`. When `defaultValue` is supplied, that
    * value is returned instead of `{ status: "not_found" }`.
    */
-  readNowait(
+  readNowait<TRaw>(
+    session: OperatorSession<TRaw>,
     offset: number,
-    options?: StreamExternalReadOptions,
   ): Promise<StreamReadNowaitResult<T>>;
-  readNowait<D>(
+  readNowait<TRaw, D>(
+    session: OperatorSession<TRaw>,
     offset: number,
     defaultValue: D,
-    options?: StreamExternalReadOptions,
   ): Promise<
     | { ok: true; status: "read"; data: T; offset: number }
     | { ok: false; status: "never" }
@@ -277,15 +268,16 @@ export interface RequestCompensationUniqueHandleExternal<
     RequestHandlerAttempt<TCompensationErrors>
   >;
 
-  skip(
+  skip<TRaw>(
+    session: OperatorSession<TRaw>,
     ...args: [TCompResult] extends [void]
-      ? [opts?: OperatorActionOptions]
-      : [result: TCompResult, opts?: OperatorActionOptions]
+      ? []
+      : [result: TCompResult]
   ): Promise<SkipOutcome>;
 
-  escalateToManual(
+  escalateToManual<TRaw>(
+    session: OperatorSession<TRaw>,
     escalation: RequestManualEscalationInput<TCompensationErrors>,
-    opts?: OperatorActionOptions,
   ): Promise<RequestCompensationEscalateToManualOutcome>;
 }
 
@@ -360,14 +352,14 @@ interface RequestHandleExternalBase<
     RequestHandlerAttempt<TErrors>
   >;
 
-  resolve(
+  resolve<TRaw>(
+    session: OperatorSession<TRaw>,
     response: TResponseInput,
-    opts?: OperatorActionOptions,
   ): Promise<RequestResolveOutcome>;
 
-  escalateToManual(
+  escalateToManual<TRaw>(
+    session: OperatorSession<TRaw>,
     escalation: RequestManualEscalationInput<TErrors>,
-    opts?: OperatorActionOptions,
   ): Promise<RequestEscalateToManualOutcome>;
 }
 
@@ -477,9 +469,9 @@ export interface DeadLetterHandleExternal<
     QueueHandlerAttempt<TErrors>
   >;
 
-  retry(opts?: OperatorActionOptions): Promise<DeadLetterRetryOutcome>;
+  retry<TRaw>(session: OperatorSession<TRaw>): Promise<DeadLetterRetryOutcome>;
 
-  purge(opts?: OperatorActionOptions): Promise<DeadLetterPurgeOutcome>;
+  purge<TRaw>(session: OperatorSession<TRaw>): Promise<DeadLetterPurgeOutcome>;
 }
 
 export type DeadLetterNamespaceExternal<
@@ -1050,17 +1042,15 @@ interface WorkflowHandleExternalBase<W extends AnyPublicWorkflowHeader>
    * is the equivalent start+wait one-shot.
    */
   wait(
-    options?: ExternalWaitOptions & {
-      txOrConn?: IWorkflowConnection | IWorkflowTransaction;
-    },
+    options?: ExternalWaitOptions,
   ): Promise<WorkflowResult<InferWorkflowResult<W>, ErrorValue<InferWorkflowErrors<W>>>>;
 
   /**
    * Update the retention policy for this workflow instance.
    */
-  setRetention(
+  setRetention<TRaw>(
+    session: OperatorSession<TRaw>,
     retention: number | RetentionSetter<"complete" | "failed" | "terminated">,
-    opts?: { txOrConn?: IWorkflowConnection | IWorkflowTransaction },
   ): Promise<void>;
 }
 
@@ -1214,7 +1204,6 @@ export type StartWorkflowOptions<
   TMetadataInput = void,
 > = WorkflowInvocationBaseOptions<TArgsInput, TMetadataInput> & {
   retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
-  txOrConn?: IWorkflowConnection | IWorkflowTransaction;
 } & DeadlineOptions;
 
 /**
@@ -1280,13 +1269,17 @@ export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader>
   /**
    * Start a new instance of this workflow and return a typed externalWorkflows handle.
    */
-  start(options: WorkflowStartOptions<W>): Promise<WorkflowHandleExternal<W>>;
+  start<TRaw>(
+    session: OperatorSession<TRaw>,
+    options: WorkflowStartOptions<W>,
+  ): Promise<WorkflowHandleExternal<W>>;
 
   /**
    * Start and wait for the workflow's terminal outcome (start + handle.wait()
    * one-shot convenience).
    */
-  execute(
+  execute<TRaw>(
+    session: OperatorSession<TRaw>,
     options: WorkflowStartOptions<W>,
   ): Promise<
     WorkflowResult<InferWorkflowResult<W>, ErrorValue<InferWorkflowErrors<W>>>
@@ -1306,7 +1299,18 @@ export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader>
  */
 export interface WorkflowClient<
   TWfs extends Record<string, AnyPublicWorkflowHeader> = Record<string, never>,
+  TDriver extends StorageDriver<any> = StorageDriver<any>,
 > {
+  readonly driver: TDriver;
+
+  session<R>(
+    fn: (session: OperatorSession<InferSessionRaw<TDriver>, "engine">) => Promise<R>,
+  ): Promise<R>;
+
+  adoptSession(
+    raw: InferSessionRaw<TDriver>,
+  ): OperatorSession<InferSessionRaw<TDriver>, "adopted">;
+
   readonly workflows: {
     [K in keyof TWfs]: WorkflowClientAccessor<TWfs[K]>;
   };

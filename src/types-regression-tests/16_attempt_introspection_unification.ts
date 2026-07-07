@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createWorkflowClient } from "../client";
+import { createTestWorkflowClient } from "./test-client";
 import { and, eq, gt, whereTrue } from "../search";
 import {
   defineQueue,
@@ -22,7 +22,6 @@ import type {
   HaltWhereTemplate,
   HandleWithRow,
   HandlerAttemptsReadNamespace,
-  IWorkflowConnection,
   OperatorAttemptsNamespaceExternal,
   QueueHandlerAttempt,
   QueueHandlerAttemptWhereTemplate,
@@ -51,6 +50,7 @@ import type {
   InferRequestErrors,
 } from "../types/helpers";
 import type { Assert, IsEqual } from "./type-assertions";
+import { session } from "./test-session";
 
 // =============================================================================
 // FIXTURES — compensable / void-comp / plain requests, queue, step undo.
@@ -158,10 +158,9 @@ const aiuWorkflow = defineWorkflow({
   },
 });
 
-const client = createWorkflowClient({ aiu: aiuWorkflow });
+const client = createTestWorkflowClient({ aiu: aiuWorkflow });
 
 declare const workflowHandle: WorkflowHandleExternal<typeof aiuWorkflow>;
-declare const tx: IWorkflowConnection;
 
 // =============================================================================
 // ROW TYPES + WHERE TEMPLATES
@@ -295,11 +294,11 @@ async function _exerciseHandlerAttemptsNamespace(): Promise<void> {
   const unscopedCount = await handlerAttempts.count();
   type _UnscopedCount = Assert<IsEqual<typeof unscopedCount, number>>;
 
-  // Handler-runtime namespaces omit `txOrConn`.
-  await handlerAttempts.find({
-    // @ts-expect-error handler attempt queries do not accept txOrConn
-    txOrConn: tx,
-  });
+  // Handler-runtime namespaces omit operator session.
+  await handlerAttempts.find(
+    // @ts-expect-error handler attempt queries do not accept session
+    session,
+  );
 }
 void _exerciseHandlerAttemptsNamespace;
 
@@ -335,14 +334,14 @@ async function _exerciseOperatorAttemptsNamespace(): Promise<void> {
   // @ts-expect-error get is identity-only; prefetch via find fields
   void operatorAttempts.get(3, { type: true, message: true });
 
-  const handlesByQuery = await operatorAttempts.find(({ attemptNumber }) =>
+  const handlesByQuery = await operatorAttempts.find(session, ({ attemptNumber }) =>
     eq(attemptNumber, 2),
   );
   type _FindHandles = Assert<
     IsEqual<typeof handlesByQuery, readonly AttemptHandle<Attempt>[]>
   >;
 
-  const handlesWithRow = await operatorAttempts.find({
+  const handlesWithRow = await operatorAttempts.find(session, {
     fields: { failedAt: true },
   });
   type _FindWithRow = Assert<
@@ -352,17 +351,15 @@ async function _exerciseOperatorAttemptsNamespace(): Promise<void> {
     >
   >;
 
-  const handles = await operatorAttempts.find({
-    txOrConn: tx,
+  const handles = await operatorAttempts.find(session, {
     limit: 5,
   });
   type _FindHandlesLimited = Assert<
     IsEqual<typeof handles, readonly AttemptHandle<Attempt>[]>
   >;
 
-  const handlesWithRow2 = await operatorAttempts.find({
+  const handlesWithRow2 = await operatorAttempts.find(session, {
     fields: { type: true },
-    txOrConn: tx,
   });
   type _FindManyWithRow = Assert<
     IsEqual<
@@ -371,16 +368,16 @@ async function _exerciseOperatorAttemptsNamespace(): Promise<void> {
     >
   >;
 
-  for (const handle of await operatorAttempts.find()) {
+  for (const handle of await operatorAttempts.find(session)) {
     type _IterHandle = Assert<IsEqual<typeof handle, AttemptHandle<Attempt>>>;
-    const row = await handle.fetchRow({ fields: { startedAt: true } });
+    const row = await handle.fetchRow(session, { fields: { startedAt: true } });
     type _Fetch = Assert<
       IsEqual<typeof row, Pick<Attempt, "startedAt"> | undefined>
     >;
     void (0 as unknown as _Fetch);
   }
 
-  const total = await operatorAttempts.count({ txOrConn: tx });
+  const total = await operatorAttempts.count(session);
   type _Count = Assert<IsEqual<typeof total, number>>;
 
   type _EntityHandleAlias = Assert<
@@ -391,9 +388,8 @@ async function _exerciseOperatorAttemptsNamespace(): Promise<void> {
   type _SyncHandleId = Assert<IsEqual<(typeof syncHandle)["id"], number>>;
   void (0 as unknown as _SyncHandleId);
 
-  const freshRow = await syncHandle.fetchRow({
+  const freshRow = await syncHandle.fetchRow(session, {
     fields: { attemptNumber: true },
-    txOrConn: tx,
   });
   type _FetchRowMasked = Assert<
     IsEqual<typeof freshRow, Pick<Attempt, "attemptNumber"> | undefined>
@@ -417,15 +413,14 @@ async function _exerciseHaltsNamespace(): Promise<void> {
   });
 
   const found = await workflowHandle.halts.find(
+    session,
     ({ status, afterStepId }) =>
       and(eq(status, "pending"), eq(afterStepId, 10)),
-    { txOrConn: tx },
   );
   type _FoundHalts = Assert<IsEqual<typeof found, readonly HaltHandle[]>>;
 
-  const foundWithRow = await workflowHandle.halts.find({
+  const foundWithRow = await workflowHandle.halts.find(session, {
     fields: { errorType: true, workflowId: true },
-    txOrConn: tx,
   });
   type _FoundHaltRow = Assert<
     IsEqual<
@@ -434,20 +429,19 @@ async function _exerciseHaltsNamespace(): Promise<void> {
     >
   >;
 
-  const many = await workflowHandle.halts.find({ txOrConn: tx });
+  const many = await workflowHandle.halts.find(session);
   type _ManyHalts = Assert<IsEqual<typeof many, readonly HaltHandle[]>>;
 
   for (const haltHandle of many) {
     type _HaltId = Assert<IsEqual<(typeof haltHandle)["id"], number>>;
     void (0 as unknown as _HaltId);
 
-    const row = await haltHandle.fetchRow();
+    const row = await haltHandle.fetchRow(session);
     type _FullRow = Assert<IsEqual<typeof row, HaltRecord | undefined>>;
     void (0 as unknown as _FullRow);
 
-    const masked = await haltHandle.fetchRow({
+    const masked = await haltHandle.fetchRow(session, {
       fields: { status: true, errorMessage: true },
-      txOrConn: tx,
     });
     type _MaskedRow = Assert<
       IsEqual<
@@ -459,8 +453,8 @@ async function _exerciseHaltsNamespace(): Promise<void> {
   }
 
   const total = await workflowHandle.halts.count(
+    session,
     ({ status }) => eq(status, "resolved"),
-    { txOrConn: tx },
   );
   type _HaltCount = Assert<IsEqual<typeof total, number>>;
 
@@ -520,20 +514,21 @@ async function _exerciseForwardRequestHandles(): Promise<void> {
   void (0 as unknown as _ForwardAttemptsNs);
 
   await compHandle.attempts.find(
+    session,
     ({ code }) => eq(code, "ForwardFail"),
-    { fields: { manual: true, message: true }, txOrConn: tx },
+    { fields: { manual: true, message: true } },
   );
 
-  await compHandle.compensation.fetchRow({
+  await compHandle.compensation.fetchRow(session, {
     fields: { status: true, payload: true },
   });
-  const compSkip: SkipOutcome = await compHandle.compensation.skip({
+  const compSkip: SkipOutcome = await compHandle.compensation.skip(session, {
     undone: true,
   });
   void compSkip;
 
   const compEscalation: RequestCompensationEscalateToManualOutcome =
-    await compHandle.compensation.escalateToManual({
+    await compHandle.compensation.escalateToManual(session, {
       code: "CompFail",
       message: "Needs operator",
     });
@@ -552,8 +547,8 @@ async function _exerciseForwardRequestHandles(): Promise<void> {
   void (0 as unknown as _CompAttemptsUseCompErrors);
 
   await compHandle.compensation.attempts.find(
+    session,
     ({ code }) => eq(code, "CompFail"),
-    { txOrConn: tx },
   );
 
   const plainId = "req-2" as RequestId<"aiuPlainRequest">;
@@ -561,13 +556,13 @@ async function _exerciseForwardRequestHandles(): Promise<void> {
   type _PlainHandle = Assert<IsEqual<typeof plainHandle, _PlainRequestHandle>>;
   // @ts-expect-error non-compensable requests omit `.compensation`
   void plainHandle.compensation;
-  await plainHandle.attempts.count();
+  await plainHandle.attempts.count(session);
 
   const voidId = "req-3" as RequestId<"aiuVoidCompRequest">;
   const voidHandle = client.requests.aiuVoidCompRequest.get(voidId);
-  await voidHandle.compensation.skip();
+  await voidHandle.compensation.skip(session);
   // @ts-expect-error void compensation skip does not accept a result argument
-  await voidHandle.compensation.skip({ undone: true });
+  await voidHandle.compensation.skip(session, { undone: true });
 }
 void _exerciseForwardRequestHandles;
 
@@ -765,8 +760,8 @@ async function _exerciseDeadLetterAttempts(): Promise<void> {
   void handle.attempts.get(1, { code: true, deadLetter: true });
 
   await handle.attempts.find(
+    session,
     ({ deadLetter }) => eq(deadLetter, true),
-    { txOrConn: tx },
   );
 }
 void _exerciseDeadLetterAttempts;
@@ -808,7 +803,7 @@ void (0 as unknown as _CompBlockHandleId);
 void (0 as unknown as _CompBlockHandleHasId);
 
 async function _exerciseCompBlockHandleFetchRow(): Promise<void> {
-  const row = await _compBlockHandle.fetchRow({
+  const row = await _compBlockHandle.fetchRow(session, {
     fields: { status: true, payload: true },
   });
   type _Row = Assert<
@@ -911,20 +906,19 @@ type _VoidCompNs = Assert<
 
 async function _exerciseClientCompensationNamespaces(): Promise<void> {
   const handles =
-    await client.compensations.requests.aiuCompensableRequest.find();
+    await client.compensations.requests.aiuCompensableRequest.find(session);
   const found = handles[0];
   if (found) {
     void found.id;
-    await found.fetchRow({ fields: { status: true } });
+    await found.fetchRow(session, { fields: { status: true } });
     await found.attempts.find(
+      session,
       ({ code }) => eq(code, "CompFail"),
-      { txOrConn: tx },
     );
   }
 
-  const blocks = await client.compensations.steps.aiuChargeStep.find({
+  const blocks = await client.compensations.steps.aiuChargeStep.find(session, {
     limit: 10,
-    txOrConn: tx,
   });
   type _Blocks = Assert<
     IsEqual<

@@ -30,6 +30,8 @@
  * - Engine / static client: `WorkflowEngine` and `createWorkflowClient` expose
  *   the same per-workflow accessors (`start`, `execute`, `get`, introspection
  *   queries) on `engine.workflows.<name>` / `client.workflows.<name>`.
+ *   Operator snapshot/command IO runs inside `client.session` or
+ *   `client.adoptSession` — see docs/operator-sessions.md.
  * - Channels / streams / events / attributes: per-instance primitives,
  *   inbound, outbound, write-once, observable single value respectively.
  * - Compensation: declared on the step or request that owns the action; each

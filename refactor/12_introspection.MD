@@ -9,11 +9,10 @@ and the concrete handles for workflows, attached child workflows,
 detached child workflows, compensation block instances, and request
 compensation invocations.
 
-This step also lands the cross-cutting `txOrConn?` rule (REFACTOR.MD
-Part 19) on the new operator-facing IO methods, plugs the
-operator-action verb signatures from step 09 onto the concrete
-handles, and consumes the schema-derived row / namespace types from
-steps 10–11.
+This step also lands the cross-cutting operator session rule (REFACTOR.MD
+Part 19) on snapshot/command IO methods, plugs the operator-action verb
+signatures from step 09 onto the concrete handles, and consumes the
+schema-derived row / namespace types from steps 10–11.
 
 ## Source Coverage
 
@@ -30,7 +29,8 @@ steps 10–11.
   compensation block instance unique handle.
 - `REFACTOR.MD` Part 11 §"Request compensation query surface" —
   request compensation unique handle.
-- `REFACTOR.MD` Part 19 — `txOrConn?` rule applied uniformly.
+- `REFACTOR.MD` Part 19 — operator session model; snapshot/command IO
+  takes `session` first.
 
 ## Public API Target
 
@@ -44,8 +44,9 @@ type ProjectedKeys<TRow, F extends FieldsMask<TRow>> = ...;
 type HandleWithRow<H, TRow> = H & { readonly row: TRow };
 
 interface FetchableHandle<TRow> {
-  fetchRow(opts?: FetchRowOptions<TRow>): Promise<TRow | undefined>;
-  fetchRow<F extends FieldsMask<TRow>>(
+  fetchRow<TRaw>(session: OperatorSession<TRaw>, opts?: FetchRowOptions<TRow>): Promise<TRow | undefined>;
+  fetchRow<TRaw, F extends FieldsMask<TRow>>(
+    session: OperatorSession<TRaw>,
     opts: FetchRowOptions<TRow> & { readonly fields: F },
   ): Promise<Pick<TRow, ProjectedKeys<TRow, F>> | undefined>;
 }
@@ -53,25 +54,26 @@ interface FetchableHandle<TRow> {
 interface QueryableNamespace<THandle, TNamespaces, TRow, TId> {
   get(id: TId): THandle;
 
-  find(query?, opts?): FindResult<THandle>;
-  find<F>(query, opts: { fields: F; ... }): FindResult<HandleWithRow<...>>;
+  find<TRaw>(session: OperatorSession<TRaw>, query?, opts?): FindResult<THandle>;
+  find<TRaw, F>(session: OperatorSession<TRaw>, query, opts: { fields: F; ... }): FindResult<HandleWithRow<...>>;
 
-  count(query?, opts?): Promise<number>;
+  count<TRaw>(session: OperatorSession<TRaw>, query?, opts?): Promise<number>;
 }
 ```
 
-Per Part 19 every option bag carries `txOrConn?:
-IWorkflowConnection | IWorkflowTransaction`. `FetchOptions`,
-`FindOptions`, `CountOptions` are the option shapes.
+Per Part 19 snapshot/command IO takes `session` as the first argument.
+Watch IO (`wait`, blocking stream `read`, workflow `wait`) does not.
+`FetchRowOptions`, `FindOptions`, and `CountOptions` carry entity-specific
+options only (`fields`, `sort`, `limit`).
 
 ### Workflow handle (`WorkflowHandleExternal<W>`)
 
 Single-generic shape parameterised over the workflow header. Wires:
 
 - **`FetchableHandle<WorkflowRow<TArgs, TResult, TMetadata>>`** —
-  `fetchRow(...)` reads a fresh row snapshot.
+  `fetchRow(session, …)` reads a fresh row snapshot.
 - **`WorkflowOperatorActions<TResult>`** (step 09) —
-  `sigkill / sigterm / skip(result, opts?)`.
+  `sigkill(session)` / `sigterm(session)` / `skip(session, result?, opts?)`.
 - **Primitive plane** — `channels` / `streams` / `events` accessors
   (existing shapes; step 16 adds `attributes`).
 - **`halts: HaltsNamespaceExternal`** — full `QueryableNamespace` over
@@ -123,7 +125,7 @@ Single-generic shape parameterised over the workflow header. Wires:
 - `FetchableHandle<RequestCompensationRow<TPayload, TCompResult>>`
 - `attempts` — {@link HandlerAttemptsReadNamespace} for row reads (Part 15).
   Not a row column; handler-side materialization only.
-- `skip(result, opts?)` for non-void result; `skip(opts?)` for void.
+- `skip(session, result, opts?)` for non-void result; `skip(session)` for void.
 - `id: RequestCompensationInstanceId`.
 - No per-instance primitives; no halts (Part 11).
 
@@ -170,8 +172,8 @@ workflows keep the loose `Record<string, ...>` fallback. Step 18
 ### Client workflow accessor (`WorkflowClientAccessor<W>`)
 
 `extends Omit<QueryableNamespace<...>, "get">` — gains
-`find` / `count` over the workflow query
-namespaces, alongside `start` / `execute` / `get(idempotencyKey)`.
+`find(session, …)` / `count(session, …)` over the workflow query
+namespaces, alongside `start(session, …)` / `execute(...)` / `get(idempotencyKey)`.
 
 The omitted `get` is replaced with the identity-based
 `get(idempotencyKey: string): WorkflowHandleExternal<W>` overload.
@@ -221,19 +223,19 @@ The paired file
 `src/types-regression-tests/12_introspection.ts` verifies:
 
 1. `FindResult<T>` is `Promise<readonly T[]>`.
-2. `FetchableHandle.fetchRow()` returns `TRow | undefined`;
-   `fetchRow({ fields })` returns `Pick<TRow, ProjectedKeys<TRow, F>> | undefined`.
+2. `FetchableHandle.fetchRow(session)` returns `TRow | undefined`;
+   `fetchRow(session, { fields })` returns `Pick<TRow, ProjectedKeys<TRow, F>> | undefined`.
 3. `QueryableNamespace.get(id)` returns a synchronous handle (identity
    grounding only — no I/O, no `.row`). Prefetch attaches `.row` on
-   `find` results when `{ fields }` is supplied.
-4. `find(query?)` returns `FindResult<Handle>`.
-5. `count(query?)` returns `Promise<number>`.
+   `find(session, …)` results when `{ fields }` is supplied.
+4. `find(session, query?)` returns `FindResult<Handle>`.
+5. `count(session, query?)` returns `Promise<number>`.
 6. `WorkflowHandleExternal<W>` exposes
-   `sigkill / sigterm / skip(result, opts?)` from step 09.
+   `sigkill(session)` / `sigterm(session)` / `skip(session, result?, opts?)` from step 09.
 7. `WorkflowHandleExternal<W>` exposes `fetchRow`, `wait`,
    `setRetention`, `halts`, plus the four parent-scoped namespaces.
 8. The `halts` namespace is a full `QueryableNamespace` — no `skip`.
-9. `CompensationBlockUniqueHandleExternal` exposes `skip(result)`
+9. `CompensationBlockUniqueHandleExternal` exposes `skip(session, result)`
    only — no `sigkill` / `sigterm`; the `strategy` option is
    rejected.
 10. `RequestCompensationUniqueHandleExternal` exposes `attempts`
@@ -250,7 +252,7 @@ The paired file
 
 - Per-instance primitive accessors on compensation block handles —
   the namespace placeholders exist but the full
-  `attributes.X.get / getNowait` and similar accessors land in
+  `attributes.X.get(session)` / `getNowait(session)` and similar accessors land in
   steps 13/15/16.
 - `client.workflows.<def>.get(args)` overload (when
   `idempotencyKeyFactory` is declared) — step 18.
@@ -260,5 +262,5 @@ The paired file
   start options — step 17.
 - The full `attributes.X` accessor surface on workflow handles —
   step 16.
-- `ChannelSendResult` updates with `txOrConn?` to other primitive
-  handles — covered piecemeal as steps 13/15/16 land.
+- `ChannelSendResult` and other primitive operator surfaces take
+  `session` first — covered piecemeal as steps 13/15/16 land.

@@ -11,6 +11,7 @@
 //   - Section 5: scope semantics — a timed-out child counts as a keyed failure.
 
 import type { Assert, IsEqual } from "./type-assertions";
+import { session } from "./test-session";
 import { defineWorkflow, defineWorkflowHeader } from "../workflow";
 import type { HasIdempotencyFactory } from "../types/helpers";
 import type {
@@ -144,14 +145,14 @@ declare const clientF: WorkflowClientAccessor<typeof wfWithFactory>;
 
 async function clientIdentityAssertions() {
   // no factory => idempotencyKey is REQUIRED on start
-  await clientNoF.start({ idempotencyKey: "k", args: { orderId: "o" } });
+  await clientNoF.start(session, { idempotencyKey: "k", args: { orderId: "o" } });
   // @ts-expect-error no factory => idempotencyKey is required
-  await clientNoF.start({ args: { orderId: "o" } });
+  await clientNoF.start(session, { args: { orderId: "o" } });
 
   // factory => idempotencyKey is NOT passable (derived from args)
-  await clientF.start({ args: { orderId: "o" } });
+  await clientF.start(session, { args: { orderId: "o" } });
   // @ts-expect-error factory => idempotencyKey is not passable
-  await clientF.start({ args: { orderId: "o" }, idempotencyKey: "k" });
+  await clientF.start(session, { args: { orderId: "o" }, idempotencyKey: "k" });
 
   // get: no factory => by key; factory => by args
   clientNoF.get("k");
