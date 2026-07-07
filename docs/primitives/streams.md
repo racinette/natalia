@@ -50,7 +50,7 @@ Waits until the record is committed. When the instance has reached a **terminal 
 
 ```typescript
 const got = await runHandle.streams.metrics.read(0);
-if (got.ok && got.status === "received") {
+if (got.ok && got.status === "read") {
   const { step, loss } = got.data;
   const { offset } = got;
 }
@@ -70,7 +70,7 @@ const got = await runHandle.streams.metrics.read(nextOffset, {
 
 ```typescript
 const snap = await runHandle.streams.metrics.readNowait(0);
-// received | not_found (not yet committed) | never (terminal, offset won't exist)
+// read | not_found (not yet committed) | never (terminal, offset won't exist)
 
 const withDefault = await runHandle.streams.metrics.readNowait(99, {
   step: -1,

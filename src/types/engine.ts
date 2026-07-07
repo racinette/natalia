@@ -170,7 +170,7 @@ export interface StreamReaderAccessorExternal<T> {
     defaultValue: D,
     options?: StreamExternalReadOptions,
   ): Promise<
-    | { ok: true; status: "received"; data: T; offset: number }
+    | { ok: true; status: "read"; data: T; offset: number }
     | { ok: false; status: "never" }
     | D
   >;

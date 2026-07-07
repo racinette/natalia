@@ -7,8 +7,8 @@
 | Surface | State |
 |---------|--------|
 | `defineWorkflow.streams` / `ctx.streams.<n>.write` → `number` | aligned |
-| External `read(offset)` → `received \| never` | aligned |
-| External `readNowait(offset)` → `received \| not_found \| never` | aligned |
+| External `read(offset)` → `read \| never` | aligned |
+| External `readNowait(offset)` → `read \| not_found \| never` | aligned |
 | Sequential consumption via explicit `read(n)` loops | aligned |
 | `iterator` / reader async-iter sugar | **removed** — opts bag per read |
 | `isOpen` / stream `closed` status | **removed** — terminal exhaustion is `{ status: "never" }` |

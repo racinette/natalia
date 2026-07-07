@@ -72,13 +72,13 @@ async function externalStreamReads(): Promise<void> {
     await handle.streams.log.read(0, { signal: AbortSignal.timeout(5_000) });
   type _BlockingShape = Assert<
     typeof blocking extends
-      | { ok: true; status: "received"; data: { line: string }; offset: number }
+      | { ok: true; status: "read"; data: { line: string }; offset: number }
       | { ok: false; status: "never" }
       ? true
       : false
   >;
 
-  if (blocking.ok && blocking.status === "received") {
+  if (blocking.ok && blocking.status === "read") {
     type _ReceivedData = Assert<
       IsEqual<typeof blocking.data, { line: string }>
     >;
@@ -89,7 +89,7 @@ async function externalStreamReads(): Promise<void> {
     await handle.streams.log.readNowait(0);
   type _NowaitShape = Assert<
     typeof nowait extends
-      | { ok: true; status: "received"; data: { line: string }; offset: number }
+      | { ok: true; status: "read"; data: { line: string }; offset: number }
       | { ok: false; status: "not_found" }
       | { ok: false; status: "never" }
       ? true
@@ -101,7 +101,7 @@ async function externalStreamReads(): Promise<void> {
   });
   type _DefaultShape = Assert<
     typeof withDefault extends
-      | { ok: true; status: "received"; data: { line: string }; offset: number }
+      | { ok: true; status: "read"; data: { line: string }; offset: number }
       | { ok: false; status: "never" }
       | { line: string }
       ? true
@@ -111,7 +111,7 @@ async function externalStreamReads(): Promise<void> {
   for (let n = 0; n < 100; n++) {
     const step = await handle.streams.metrics.read(n);
     if (!step.ok) break;
-    if (step.ok && step.status === "received") {
+    if (step.ok && step.status === "read") {
       type _LoopRow = Assert<
         IsEqual<typeof step.data, { step: number; loss: number }>
       >;

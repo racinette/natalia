@@ -682,7 +682,7 @@ export type ChannelSendResult =
  * rejects with `AbortError` (native behaviour — no typed timeout outcome).
  */
 export type StreamReadResult<T> =
-  | { ok: true; status: "received"; data: T; offset: number }
+  | { ok: true; status: "read"; data: T; offset: number }
   | { ok: false; status: "never" };
 
 /**
@@ -693,7 +693,7 @@ export type StreamReadResult<T> =
  * terminal and the offset will never exist.
  */
 export type StreamReadNowaitResult<T> =
-  | { ok: true; status: "received"; data: T; offset: number }
+  | { ok: true; status: "read"; data: T; offset: number }
   | { ok: false; status: "not_found" }
   | { ok: false; status: "never" };
 
