@@ -5,7 +5,6 @@ import type { QueueDefinition, QueueDefinitions } from "./definitions/messaging"
 import type { JsonSchemaConstraint } from "./json-input";
 import type {
   RequestCompensationConfig,
-  RequestCompensationDefinition,
   RequestDefinitions,
 } from "./definitions/requests";
 import type { StepDefinitions } from "./definitions/steps";

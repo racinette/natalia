@@ -1,6 +1,6 @@
 import type { StandardSchemaV1 } from "../standard-schema";
 import type { ErrorDefinitions } from "./errors";
-import type { RequestCompensationConfig, RequestCompensationDefinition } from "./requests";
+import type { RequestCompensationConfig } from "./requests";
 import type { RequestCompensationInfo } from "./steps";
 import type {
   QueueErrorFactories,

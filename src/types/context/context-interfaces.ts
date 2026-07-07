@@ -143,7 +143,7 @@ export interface CompensationContext<
   /**
    * Steps for durable operations.
    */
-  /* eslint-disable @typescript-eslint/no-explicit-any -- infer args/result; name/compensation slots are intentionally unconstrained */
+   
   readonly steps: {
     [K in keyof TSteps]: TSteps[K] extends StepDefinition<
       any,
@@ -175,17 +175,17 @@ export interface CompensationContext<
    */
   readonly queues: {
     [K in keyof TQueues]: TQueues[K] extends QueueDefinition<
-      infer _N,
+      any,
       infer TMessageSchema,
-      infer _E,
-      infer _TDefaultTtl
+      any,
+      any
     >
       ? HasDefaultTtl<TQueues[K]> extends true
         ? QueueAccessor<TMessageSchema, true>
         : QueueAccessor<TMessageSchema, false>
       : never;
   };
-  /* eslint-enable @typescript-eslint/no-explicit-any */
+   
 
   /**
    * Child workflows. One accessor per declared child — the call runs it
@@ -209,9 +209,9 @@ export interface CompensationContext<
   // join — observe a single dispatched entry
   // ---------------------------------------------------------------------------
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- join accepts any awaitable entry shape
+   
   join<H extends AwaitableEntry<any>>(handle: H): Promise<JoinResult<H>>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   join<H extends AwaitableEntry<any>>(
     handle: H,
     opts: JoinOptions,
@@ -329,7 +329,7 @@ export interface WorkflowContext<
   /**
    * Steps for durable operations.
    */
-  /* eslint-disable @typescript-eslint/no-explicit-any -- infer args/result; name/compensation slots are intentionally unconstrained */
+   
   readonly steps: {
     [K in keyof TSteps]: TSteps[K] extends StepDefinition<
       any,
@@ -361,17 +361,17 @@ export interface WorkflowContext<
    */
   readonly queues: {
     [K in keyof TQueues]: TQueues[K] extends QueueDefinition<
-      infer _N,
+      any,
       infer TMessageSchema,
-      infer _E,
-      infer _TDefaultTtl
+      any,
+      any
     >
       ? HasDefaultTtl<TQueues[K]> extends true
         ? QueueAccessor<TMessageSchema, true>
         : QueueAccessor<TMessageSchema, false>
       : never;
   };
-  /* eslint-enable @typescript-eslint/no-explicit-any */
+   
 
   /**
    * Child workflow accessors. One accessor per declared child — the call
@@ -398,9 +398,9 @@ export interface WorkflowContext<
   // join — observe a single dispatched entry
   // ---------------------------------------------------------------------------
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- join accepts any awaitable entry shape
+   
   join<H extends AwaitableEntry<any>>(handle: H): Promise<JoinResult<H>>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   join<H extends AwaitableEntry<any>>(
     handle: H,
     opts: JoinOptions,

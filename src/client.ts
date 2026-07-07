@@ -7,7 +7,6 @@ import type {
   OperatorSession,
   QueueNamespaceExternal,
   RequestCompensationNamespaceExternal,
-  RequestHandleExternal,
   RequestNamespaceExternal,
   StorageDriver,
   WorkflowClient,
@@ -24,7 +23,7 @@ import type {
  */
 export abstract class AbstractWorkflowClient<
   TWfs extends Record<string, AnyPublicWorkflowHeader>,
-  TDriver extends StorageDriver<any>,
+  TDriver extends StorageDriver<unknown>,
 > implements WorkflowClient<TWfs, TDriver>
 {
   public readonly driver: TDriver;
@@ -267,7 +266,7 @@ export abstract class AbstractWorkflowClient<
 
 class StaticWorkflowClient<
   TWfs extends Record<string, AnyPublicWorkflowHeader>,
-  TDriver extends StorageDriver<any>,
+  TDriver extends StorageDriver<unknown>,
 > extends AbstractWorkflowClient<TWfs, TDriver>
 {
   protected assertClientAvailable(): void {
@@ -286,7 +285,7 @@ class StaticWorkflowClient<
  */
 export function createWorkflowClient<
   TWfs extends Record<string, AnyPublicWorkflowHeader>,
-  TDriver extends StorageDriver<any>,
+  TDriver extends StorageDriver<unknown>,
 >(
   workflows: TWfs,
   driver: TDriver,

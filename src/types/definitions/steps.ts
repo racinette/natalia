@@ -42,7 +42,7 @@ export type StepDefinition<
     | StepCompensationDefinition<
         TArgsSchema,
         TResultSchema,
-        /* eslint-disable @typescript-eslint/no-explicit-any -- see block comment above */
+         
         any,
         any,
         any,
@@ -54,7 +54,7 @@ export type StepDefinition<
         any,
         any,
         any
-        /* eslint-enable @typescript-eslint/no-explicit-any */
+         
       >
     | undefined = undefined,
 > = {
@@ -84,11 +84,11 @@ export type StepDefinition<
       readonly compensation: TCompensation;
     });
 
-/* eslint-disable @typescript-eslint/no-explicit-any -- heterogeneous non-compensable steps; schema slots must stay top-like for nested definitions */
+ 
 export type NonCompensableStepDefinition = StepDefinition<string, any, any, undefined> & {
   readonly compensation?: never;
 };
-/* eslint-enable @typescript-eslint/no-explicit-any */
+ 
 
 export type NonCompensableStepDefinitions = Record<
   string,
@@ -257,14 +257,14 @@ export type MaximalStepCompensationDefinition = StepCompensationDefinition<
 >;
 
 /** Upper-bound step shape used by compensation block typing. */
-/* eslint-disable @typescript-eslint/no-explicit-any -- supertype of all concrete steps; `JsonSchemaConstraint` narrows `execute` args to `unknown` and breaks heterogeneous maps */
+ 
 export type WidestStepDefinition = StepDefinition<string, any, any, any>;
 
 /**
  * Map of step definitions.
  */
 export type StepDefinitions = Record<string, StepDefinition<string, any, any, any>>;
-/* eslint-enable @typescript-eslint/no-explicit-any */
+ 
 
 export type CompensationBlockStatus =
   | "pending"

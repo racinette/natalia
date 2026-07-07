@@ -6,7 +6,6 @@ import {
   defineWorkflow,
   defineWorkflowHeader,
 } from "../workflow";
-import { and } from "../search";
 import type {
   AttachedChildWorkflowExternalHandle,
   AttachedChildWorkflowId,
@@ -288,10 +287,10 @@ void _findWithPrefetch;
 
 // `find` returns `Promise<readonly Handle[]>`.
 async function _findShape(): Promise<void> {
-  const handles = await ns.find(session);
+  const _handles = await ns.find(session);
   type _FindType = Assert<
     IsEqual<
-      typeof handles,
+      typeof _handles,
       readonly AttachedChildWorkflowExternalHandle<typeof followUpHeader>[]
     >
   >;
@@ -947,10 +946,10 @@ async function _exerciseClient(): Promise<void> {
   >;
 
   // find / count from the unified queryable surface.
-  const handles = await clientAcc.find(session);
+  const _handles = await clientAcc.find(session);
   type _FindValue = Assert<
     IsEqual<
-      typeof handles,
+      typeof _handles,
       readonly WorkflowHandleExternal<typeof _orderWorkflow>[]
     >
   >;

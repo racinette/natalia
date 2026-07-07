@@ -1,5 +1,5 @@
+import type { NoDefinitionExtension } from "./definitions/type-augmentation";
 import type { ErrorDefinitions } from "./definitions/errors";
-import type { RequestCompensationDefinition } from "./definitions/requests";
 import type { JsonSchemaConstraint } from "./json-input";
 import type { StandardSchemaV1 } from "./standard-schema";
 import type {
@@ -43,7 +43,6 @@ import type {
   QueueHandlerAttempt,
   RequestHandlerAttempt,
   SkipOutcome,
-  SkipOptions,
   RequestManualEscalationInput,
 } from "./results";
 import type { HaltWhereTemplate } from "./results";
@@ -66,7 +65,6 @@ import type {
 } from "./definitions/handlers";
 import type {
   FetchableHandle,
-  FindOptions,
   HaltHandle,
   OperatorAttemptsNamespaceExternal,
   QueryableNamespace,
@@ -319,17 +317,15 @@ type WithRequestCompensationHandle<
   TPayload,
   TCompResult,
   TCompensationErrors extends ErrorDefinitions,
-> = undefined extends TCompensation
-  ? {}
-  : TCompensation extends undefined
-    ? {}
-    : {
-        readonly compensation: RequestCompensationUniqueHandleExternal<
-          TPayload,
-          TCompResult,
-          TCompensationErrors
-        >;
-      };
+> = [TCompensation] extends [undefined]
+  ? NoDefinitionExtension
+  : {
+      readonly compensation: RequestCompensationUniqueHandleExternal<
+        TPayload,
+        TCompResult,
+        TCompensationErrors
+      >;
+    };
 
 export interface RequestResolveOutcome {
   readonly status: "resolved";
@@ -594,7 +590,7 @@ type WorkflowClientLooseRequests = Record<string, RequestNamespaceExternal>;
 
 type WorkflowClientLooseQueues = Record<string, QueueNamespaceExternal>;
 
-/* eslint-disable @typescript-eslint/no-explicit-any -- heterogeneous request definitions; schema slots stay top-like */
+ 
 type RequestPayloadForNamespace<TRequest> =
   TRequest extends RequestDefinition<string, infer TPayloadSchema, any, any, any>
     ? StandardSchemaV1.InferOutput<TPayloadSchema>
@@ -656,7 +652,7 @@ type WorkflowClientRequestNamespacesFromUnion<TRequestUnion> = {
       >
     : never;
 };
-/* eslint-enable @typescript-eslint/no-explicit-any */
+ 
 
 type WorkflowClientRequestNamespaces<
   TWfs extends Record<string, AnyPublicWorkflowHeader>,
@@ -670,7 +666,7 @@ type WorkflowClientRequestNamespaces<
       : Record<string, never>;
 
 type QueueMessageForNamespace<TQueue> =
-  TQueue extends QueueDefinition<string, infer TMessageSchema, infer _E, infer _D>
+  TQueue extends QueueDefinition<string, infer TMessageSchema, any, any>
     ? StandardSchemaV1.InferOutput<TMessageSchema>
     : unknown;
 
@@ -696,12 +692,12 @@ type QueueDefinitionUnionFromWorkflows<
 type WorkflowClientQueueNamespacesFromUnion<TQueueUnion> = {
   [TQueue in TQueueUnion as TQueue extends QueueDefinition<
     infer TName,
-    infer _M,
-    infer _E,
-    infer _D
+    any,
+    any,
+    any
   >
     ? TName
-    : never]: TQueue extends QueueDefinition<infer TName, infer _M, infer _E, infer _D>
+    : never]: TQueue extends QueueDefinition<infer TName, any, any, any>
     ? QueueNamespaceExternal<
         TName,
         QueueMessageForNamespace<TQueue>,
@@ -731,7 +727,7 @@ type WorkflowClientLooseCompensationRequests = Record<
   RequestCompensationNamespaceExternal
 >;
 
-/* eslint-disable @typescript-eslint/no-explicit-any -- heterogeneous step definitions */
+ 
 type StepDefinitionUnionFromWorkflow<W> =
   InferWorkflowSteps<W> extends infer TSteps
     ? [TSteps] extends [never]
@@ -759,7 +755,7 @@ type WorkflowClientCompensationStepNamespacesFromUnion<TStepUnion> = {
     ? TStep extends { compensation: unknown }
       ? TName
       : never
-    : never]: TStep extends StepDefinition<infer _TName, any, any, any>
+    : never]: TStep extends StepDefinition<any, any, any, any>
     ? CompensationBlockNamespaceExternal<
         TStep,
         StepArgsForCompensationNamespace<TStep>,
@@ -779,7 +775,7 @@ type WorkflowClientCompensationRequestNamespacesFromUnion<TRequestUnion> = {
     ? InferRequestCompensationDef<TRequest> extends undefined
       ? never
       : TName
-    : never]: TRequest extends RequestDefinition<infer TName, any, any, any, any>
+    : never]: TRequest extends RequestDefinition<any, any, any, any, any>
     ? RequestCompensationNamespaceExternal<
         RequestPayloadForCompensationNamespace<TRequest>,
         RequestCompensationResultForNamespace<TRequest>,
@@ -787,7 +783,7 @@ type WorkflowClientCompensationRequestNamespacesFromUnion<TRequestUnion> = {
       >
     : never;
 };
-/* eslint-enable @typescript-eslint/no-explicit-any */
+ 
 
 type WorkflowClientCompensationStepNamespaces<
   TWfs extends Record<string, AnyPublicWorkflowHeader>,
@@ -845,27 +841,27 @@ type CompensableStepKeys<TSteps extends Record<string, unknown>> = {
   [K in keyof TSteps & string]: TSteps[K] extends { compensation: unknown } ? K : never;
 }[keyof TSteps & string];
 
-/* eslint-disable @typescript-eslint/no-explicit-any -- schema slots unconstrained so compensation namespaces match concrete steps */
+ 
 type StepArgsForCompensationNamespace<TStep> =
-  TStep extends StepDefinition<string, infer TArgsSchema, any, infer _Comp>
+  TStep extends StepDefinition<string, infer TArgsSchema, any, any>
     ? StandardSchemaV1.InferOutput<TArgsSchema>
     : unknown;
 
 type StepCompensationResultForNamespace<TStep> =
   TStep extends StepDefinition<string, any, any, infer TCompensation>
     ? TCompensation extends StepCompensationDefinition<
-        infer _A,
-        infer _FR,
-        infer _Ch,
-        infer _St,
-        infer _Ev,
-        infer _At,
-        infer _Stp,
-        infer _Req,
-        infer _Qu,
-        infer _To,
-        infer _Children,
-        infer _Ext,
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
+        any,
         infer TResultSchema
       >
       ? TResultSchema extends StandardSchemaV1<unknown, unknown>
@@ -891,7 +887,7 @@ type CompensableRequestKeys<TRequests extends Record<string, unknown>> = {
 }[keyof TRequests & string];
 
 type RequestPayloadForCompensationNamespace<TRequest> =
-  TRequest extends RequestDefinition<string, infer TPayloadSchema, any, any, infer _Comp>
+  TRequest extends RequestDefinition<string, infer TPayloadSchema, any, any, any>
     ? StandardSchemaV1.InferOutput<TPayloadSchema>
     : unknown;
 
@@ -905,7 +901,7 @@ type RequestCompensationResultForNamespace<TRequest> =
         ? void
         : never
     : unknown;
-/* eslint-enable @typescript-eslint/no-explicit-any */
+ 
 
 type WorkflowHandleRequestCompensationNamespaces<
   TRequests extends Record<string, unknown>,

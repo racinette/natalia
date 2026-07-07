@@ -1,4 +1,5 @@
 import type { OperatorSession } from "./session";
+import type { HaltRecord } from "./results";
 import type {
   SearchSort,
   WhereFn,
@@ -199,10 +200,7 @@ export interface EntityHandle<TRow, TId = number> extends FetchableHandle<TRow> 
 export type AttemptHandle<TRow> = EntityHandle<TRow, number>;
 
 /** Operator-facing handle for a single halt row (workflow-scoped). */
-export type HaltHandle = EntityHandle<
-  import("./results").HaltRecord,
-  number
->;
+export type HaltHandle = EntityHandle<HaltRecord, number>;
 
 /**
  * Parent-scoped attempt namespace on operator handles. Queries return

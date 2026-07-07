@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { createTestWorkflowClient } from "./test-client";
-import { and } from "../search";
 import {
   defineRequest,
   defineStep,

@@ -12,6 +12,7 @@ export type RequestCompensationConfig<
   TResultSchema extends JsonSchemaConstraint | undefined = undefined,
   TCompensationErrors extends ErrorDefinitions = Record<string, never>,
 > = (TResultSchema extends undefined
+  // eslint-disable-next-line @typescript-eslint/no-empty-object-type -- optional result slot; see type-augmentation.ts
   ? {}
   : { readonly result: TResultSchema }) & {
   readonly errors?: TCompensationErrors;
@@ -52,7 +53,7 @@ export type RequestDefinition<
       readonly compensation: TCompensation;
     });
 
-/* eslint-disable @typescript-eslint/no-explicit-any -- heterogeneous non-compensable requests; schema slots stay top-like */
+ 
 export type NonCompensableRequestDefinition = RequestDefinition<
   string,
   any,
@@ -62,7 +63,7 @@ export type NonCompensableRequestDefinition = RequestDefinition<
 > & {
   readonly compensation?: never;
 };
-/* eslint-enable @typescript-eslint/no-explicit-any */
+ 
 
 export type NonCompensableRequestDefinitions = Record<
   string,
@@ -72,9 +73,9 @@ export type NonCompensableRequestDefinitions = Record<
 /**
  * Map of request definitions.
  */
-/* eslint-disable @typescript-eslint/no-explicit-any -- heterogeneous request map */
+ 
 export type RequestDefinitions = Record<
   string,
   RequestDefinition<string, any, any, any, any>
 >;
-/* eslint-enable @typescript-eslint/no-explicit-any */
+ 

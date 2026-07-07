@@ -50,9 +50,16 @@ export default defineConfig(
     ],
   },
   {
+    // Type-only modules: generic bounds often use `any`; implementation files stay strict.
+    files: ["src/types/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+    },
+  },
+  {
     files: ["src/types-regression-tests/**/*.ts"],
     rules: {
-      "@typescript-eslint/no-unsafe-type-assertion": "error",
+      "@typescript-eslint/no-unsafe-type-assertion": "off",
       // `IsEqual` helpers intentionally use a dummy type parameter (see `13_workflow_interface.ts`).
       "@typescript-eslint/no-unnecessary-type-parameters": "off",
     },

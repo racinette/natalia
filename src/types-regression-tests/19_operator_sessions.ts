@@ -18,6 +18,7 @@ import {
   createMockSessionRaw,
   MockStorageDriver,
 } from "./mock-storage-driver";
+import type { MockSessionRaw } from "./mock-storage-driver";
 import { createTestWorkflowClient } from "./test-client";
 import type { Assert, IsEqual } from "./type-assertions";
 import { session } from "./test-session";
@@ -35,20 +36,20 @@ type _SessionCapabilities = Assert<
 
 type _SessionOrigin = Assert<IsEqual<SessionOrigin, "engine" | "adopted">>;
 
-declare const engineSession: OperatorSession<unknown, "engine">;
-declare const adoptedSession: OperatorSession<unknown, "adopted">;
+declare const _engineSession: OperatorSession<unknown, "engine">;
+declare const _adoptedSession: OperatorSession<unknown, "adopted">;
 
-type _EngineOrigin = Assert<IsEqual<typeof engineSession.origin, "engine">>;
-type _AdoptedOrigin = Assert<IsEqual<typeof adoptedSession.origin, "adopted">>;
+type _EngineOrigin = Assert<IsEqual<typeof _engineSession.origin, "engine">>;
+type _AdoptedOrigin = Assert<IsEqual<typeof _adoptedSession.origin, "adopted">>;
 
 type _SessionHasCapabilities = Assert<
   IsEqual<
-    typeof engineSession.capabilities,
+    typeof _engineSession.capabilities,
     SessionCapabilities
   >
 >;
 
-type _SessionRawIsSync = Assert<IsEqual<typeof engineSession.raw, unknown>>;
+type _SessionRawIsSync = Assert<IsEqual<typeof _engineSession.raw, unknown>>;
 
 // =============================================================================
 // STORAGE DRIVER + INFER SESSION RAW
@@ -56,42 +57,36 @@ type _SessionRawIsSync = Assert<IsEqual<typeof engineSession.raw, unknown>>;
 
 type _MockDriverImplementsStorageDriver = Assert<
   MockStorageDriver extends StorageDriver<infer R>
-    ? IsEqual<R, import("./mock-storage-driver").MockSessionRaw>
+    ? IsEqual<R, MockSessionRaw>
     : false
 >;
 
 type _InferSessionRawFromMock = Assert<
-  IsEqual<InferSessionRaw<MockStorageDriver>, import("./mock-storage-driver").MockSessionRaw>
+  IsEqual<InferSessionRaw<MockStorageDriver>, MockSessionRaw>
 >;
 
 const driver = new MockStorageDriver();
 
 async function driverSessionLifecycle(): Promise<void> {
-  const fromSession = await driver.session(async (session) => {
+  const _fromSession = await driver.session(async (session) => {
     type _CallbackOrigin = Assert<
       IsEqual<typeof session.origin, "engine">
     >;
     type _CallbackRaw = Assert<
-      IsEqual<
-        typeof session.raw,
-        import("./mock-storage-driver").MockSessionRaw
-      >
+      IsEqual<typeof session.raw, MockSessionRaw>
     >;
     return session.raw;
   });
 
   type _SessionReturnsFnResult = Assert<
-    IsEqual<
-      typeof fromSession,
-      import("./mock-storage-driver").MockSessionRaw
-    >
+    IsEqual<typeof _fromSession, MockSessionRaw>
   >;
 
   const raw = createMockSessionRaw();
-  const adopted = driver.adoptSession(raw);
+  const _adopted = driver.adoptSession(raw);
 
-  type _AdoptedOrigin = Assert<IsEqual<typeof adopted.origin, "adopted">>;
-  type _AdoptedPreservesRaw = Assert<IsEqual<typeof adopted.raw, typeof raw>>;
+  type _AdoptedOrigin = Assert<IsEqual<typeof _adopted.origin, "adopted">>;
+  type _AdoptedPreservesRaw = Assert<IsEqual<typeof _adopted.raw, typeof raw>>;
 }
 
 // =============================================================================
@@ -118,13 +113,13 @@ type _ClientDriverField = Assert<
   IsEqual<typeof client.driver, MockStorageDriver>
 >;
 
-declare const typedClient: WorkflowClient<
+declare const _typedClient: WorkflowClient<
   { operatorSessionsRegressionWorkflow: typeof sessionWorkflow },
   MockStorageDriver
 >;
 
 type _TypedClientDriver = Assert<
-  IsEqual<typeof typedClient.driver, MockStorageDriver>
+  IsEqual<typeof _typedClient.driver, MockStorageDriver>
 >;
 
 async function clientSessionEntry(): Promise<void> {
@@ -157,14 +152,14 @@ async function clientSessionEntry(): Promise<void> {
   });
 
   const raw = createMockSessionRaw();
-  const adopted = client.adoptSession(raw);
+  const _adopted = client.adoptSession(raw);
 
   type _AdoptedClientSession = Assert<
-    IsEqual<typeof adopted.origin, "adopted">
+    IsEqual<typeof _adopted.origin, "adopted">
   >;
-  type _AdoptedClientRaw = Assert<IsEqual<typeof adopted.raw, typeof raw>>;
+  type _AdoptedClientRaw = Assert<IsEqual<typeof _adopted.raw, typeof raw>>;
 
-  void adopted;
+  void _adopted;
 }
 
 async function watchIoWithoutSession(): Promise<void> {

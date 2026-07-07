@@ -336,9 +336,9 @@ const noErrorsClient = createTestWorkflowClient({
 });
 
 noErrorsClient.requests.noErrorsRequestAcceptance.registerHandler(
-  async (_payload, ctx) => {
+  async (_payload, _ctx) => {
     type _NoErrorsCtx = Assert<
-      typeof ctx extends RequestHandlerContext<Record<string, never>> ? true : false
+      typeof _ctx extends RequestHandlerContext<Record<string, never>> ? true : false
     >;
     type _AssertNoErrorsCtx = Assert<_NoErrorsCtx>;
     return { ok: true };

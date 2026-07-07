@@ -1,7 +1,6 @@
 import type { JsonSchemaConstraint } from "../json-input";
 import type { ErrorDefinitions } from "./errors";
 import type {
-  QueueHandlerContext,
   QueueHandlerRetryPolicy,
   QueueRetentionPolicy,
 } from "./handlers";

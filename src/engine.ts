@@ -149,7 +149,7 @@ export interface WorkflowEngineConfig<
  */
 export class WorkflowEngine<
   TWfs extends Record<string, AnyWorkflowDefinition> = Record<string, never>,
-  TDriver extends StorageDriver<any> = StorageDriver<any>,
+  TDriver extends StorageDriver<unknown> = StorageDriver<unknown>,
 > extends AbstractWorkflowClient<TWfs, TDriver> {
   private readonly config: WorkflowEngineConfig<TWfs>;
   private gcInterval: NodeJS.Timeout | null = null;

@@ -21,8 +21,8 @@ const compStep = defineStep({
   compensation: {
     streams: { undoAudit: auditStream },
     async undo(ctx) {
-      const offset = ctx.streams.undoAudit.write({ line: "undo" });
-      type _WriteOffset = Assert<IsEqual<typeof offset, number>>;
+      const _offset = ctx.streams.undoAudit.write({ line: "undo" });
+      type _WriteOffset = Assert<IsEqual<typeof _offset, number>>;
       return;
     },
   },
@@ -40,10 +40,10 @@ const streamsWorkflow = defineWorkflow({
   steps: { compStep },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx) {
-    const first = ctx.streams.log.write({ line: "start" });
-    const second = ctx.streams.metrics.write({ step: 1, loss: 0.5 });
-    type _FirstOffset = Assert<IsEqual<typeof first, number>>;
-    type _SecondOffset = Assert<IsEqual<typeof second, number>>;
+    const _first = ctx.streams.log.write({ line: "start" });
+    const _second = ctx.streams.metrics.write({ step: 1, loss: 0.5 });
+    type _FirstOffset = Assert<IsEqual<typeof _first, number>>;
+    type _SecondOffset = Assert<IsEqual<typeof _second, number>>;
 
     // @ts-expect-error body is write-only — no read on ctx.streams
     await ctx.streams.log.read(0);
@@ -85,10 +85,10 @@ async function externalStreamReads(): Promise<void> {
     type _ReceivedOffset = Assert<IsEqual<typeof blocking.offset, number>>;
   }
 
-  const nowait: StreamReadNowaitResult<{ line: string }> =
+  const _nowait: StreamReadNowaitResult<{ line: string }> =
     await handle.streams.log.readNowait(session, 0);
   type _NowaitShape = Assert<
-    typeof nowait extends
+    typeof _nowait extends
       | { ok: true; status: "read"; data: { line: string }; offset: number }
       | { ok: false; status: "not_found" }
       | { ok: false; status: "never" }
@@ -96,11 +96,11 @@ async function externalStreamReads(): Promise<void> {
       : false
   >;
 
-  const withDefault = await handle.streams.log.readNowait(session, 99, {
+  const _withDefault = await handle.streams.log.readNowait(session, 99, {
     line: "placeholder",
   });
   type _DefaultShape = Assert<
-    typeof withDefault extends
+    typeof _withDefault extends
       | { ok: true; status: "read"; data: { line: string }; offset: number }
       | { ok: false; status: "never" }
       | { line: string }

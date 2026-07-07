@@ -80,9 +80,9 @@ export interface AtomicResult<T> {
   /**
    * Await-compatibility signature used by TypeScript's `Awaited<T>` extraction.
    */
-  /* eslint-disable @typescript-eslint/no-explicit-any -- mirrors `PromiseLike.then` / `Awaited<>` (rest args + return) */
+   
   then(onfulfilled: (value: T, ...args: any[]) => any): any;
-  /* eslint-enable @typescript-eslint/no-explicit-any */
+   
 }
 
 /**

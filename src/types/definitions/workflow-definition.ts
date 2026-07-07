@@ -36,7 +36,7 @@ export type AnyWorkflowDefinition = WorkflowDefinition<
   WorkflowErrorDefinitions,
   PatchDefinitions,
   RngDefinitions,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- upper bound must accept any concrete factory's arg type
+   
   ((args: any) => string) | undefined
 >;
 

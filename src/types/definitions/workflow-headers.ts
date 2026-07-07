@@ -73,7 +73,7 @@ export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
   JsonObjectSchemaConstraint,
   JsonSchemaConstraint,
   WorkflowErrorDefinitions,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- upper bound must accept any concrete factory's arg type
+   
   ((args: any) => string) | undefined
 >;
 
@@ -172,6 +172,6 @@ export type AnyWorkflowHeader = WorkflowHeader<
   JsonObjectSchemaConstraint,
   JsonSchemaConstraint,
   WorkflowErrorDefinitions,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- upper bound must accept any concrete factory's arg type
+   
   ((args: any) => string) | undefined
 >;

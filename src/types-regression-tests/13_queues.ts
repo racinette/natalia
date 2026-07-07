@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { createTestWorkflowClient } from "./test-client";
-import { eq, and } from "../search";
+import { eq } from "../search";
 import {
   defineQueue,
   defineWorkflow,
@@ -14,7 +14,6 @@ import type {
   FindResult,
   HandleWithRow,
   HandlerAttemptsReadNamespace,
-  OperatorAttemptsNamespaceExternal,
   QueueEnqueueOptions,
   AttemptHandle,
   QueueHandlerAttempt,
@@ -391,9 +390,9 @@ type _NoErrorsQueueErrorsInferred = Assert<
 >;
 
 noErrorsClient.queues.noErrorsQueue.registerHandler(
-  async (_message, ctx) => {
+  async (_message, _ctx) => {
     type _NoErrorsCtx = Assert<
-      typeof ctx extends QueueHandlerContext<Record<string, never>> ? true : false
+      typeof _ctx extends QueueHandlerContext<Record<string, never>> ? true : false
     >;
     type _AssertNoErrorsCtx = Assert<_NoErrorsCtx>;
   },
@@ -620,7 +619,7 @@ async function inspectDeadLetters(): Promise<void> {
   await deadLetter.retry(session);
   await deadLetter.purge(session);
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- regression-only cast to branded `DeadLetterId`
+   
   const deadLetterId = "dead-letter-id" as DeadLetterId<"emailQueue">;
   const deadLetterHandle = client.queues.emailQueue.deadLetters.get(deadLetterId);
   type _DeadLetterHandle = Assert<

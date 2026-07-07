@@ -7,7 +7,6 @@ import type {
   RequestDefinition,
   RequestCompensationConfig,
   RequestCompensationDefinition,
-  RequestCompensationInfo,
   NonCompensableRequestDefinitions,
   QueueDefinition,
   QueueDefinitions,
@@ -29,7 +28,6 @@ import type {
   RngDefinitions,
   WorkflowErrorDefinitions,
   ErrorDefinitions,
-  Unsubscribe,
   WorkflowInterface,
   WorkflowImplementInput,
   StepInterfaces,
@@ -43,10 +41,6 @@ import type {
   RequestsFromInterfaces,
   QueuesFromInterfaces,
 } from "./types/definitions/workflow-contract";
-
-import type {
-  RequestHandlerRegistrationOptions,
-} from "./types/definitions/handlers";
 
 export {
   AttemptError,

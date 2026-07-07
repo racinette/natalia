@@ -279,7 +279,7 @@ async function _client14ExtendSurface(
     IsEqual<typeof orch2, WorkflowHandleExternal<typeof orchestratorWorkflow>>
   >;
   // Synthetic branded id for typing `.get` / `.extend` (real ids come from the engine).
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- regression-only cast to `AttachedChildWorkflowId`
+   
   const childId = "ch-1" as AttachedChildWorkflowId<typeof workerHeader>;
   const rawChild = orch2.childWorkflows.worker.get(childId);
   type _RawChild = Assert<

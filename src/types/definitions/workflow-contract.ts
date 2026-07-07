@@ -136,7 +136,7 @@ export type StepsFromInterfaces<T extends StepInterfaces> = {
         N,
         A,
         R,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- compensation slot is heterogeneous across the map; nominal `StepDefinition` still constrains each key at `implement` time
+         
         C extends StepCompensationInterface ? any : undefined
       >
     : never;
