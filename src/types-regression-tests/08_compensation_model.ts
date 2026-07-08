@@ -225,7 +225,7 @@ const compRequestsClient = createTestWorkflowClient({
 
 const unregisterApprovalCompensation =
   compRequestsClient.requests.compApprovalRequest.registerHandler(
-    async () => ({ approved: true }),
+    async (_ctx) => ({ approved: true }),
     {
       compensation: {
         handler: async (ctx) => {
@@ -251,7 +251,7 @@ void unregisterApprovalCompensation;
 
 const unregisterManualReviewCompensation =
   compRequestsClient.requests.compManualReviewRequest.registerHandler(
-    async () => ({ accepted: true }),
+    async (_ctx) => ({ accepted: true }),
     {
       compensation: {
         handler: async (ctx) => {
@@ -321,7 +321,7 @@ const nonCompensableWorkflow = defineWorkflow({
 const nonCompensableClient = createTestWorkflowClient({ nonCompensableWorkflow });
 
 nonCompensableClient.requests.compNonCompensableRequest.registerHandler(
-  async () => ({ ok: true }),
+  async (_ctx) => ({ ok: true }),
   {
     // @ts-expect-error non-compensable requests cannot register compensation handlers
     compensation: {

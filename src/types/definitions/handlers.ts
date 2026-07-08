@@ -134,11 +134,14 @@ export type RequestRetentionPolicy<
 /**
  * Request handler context for the forward handler body (retried attempts).
  *
+ * The handler receives decoded `ctx.payload`, `ctx.signal`, and `ctx.errors`.
  * `ctx.errors` factories require `{ manual }` on every call.
  */
 export interface RequestHandlerContext<
   TErrors extends ErrorDefinitions = Record<string, never>,
+  TPayload = unknown,
 > extends HandlerContext {
+  readonly payload: TPayload;
   readonly errors: RequestErrorFactories<TErrors>;
 }
 

@@ -91,8 +91,8 @@ together:
 
 ```typescript
 client.requests.reserveFlightTicket.registerHandler(
-  async (payload, ctx) => {
-    return await reserveTicket(payload, { signal: ctx.signal });
+  async (ctx) => {
+    return await reserveTicket(ctx.payload, { signal: ctx.signal });
   },
   {
     retryPolicy: { maxAttempts: 3, timeoutSeconds: 30 },

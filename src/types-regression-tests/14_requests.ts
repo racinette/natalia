@@ -218,19 +218,23 @@ const _constructedTrueError = new RequestHandlerDeclaredError(
 void _constructedTrueError;
 
 const unregister = client.requests.approvalRequestAcceptance.registerHandler(
-  async (payload, ctx) => {
+  async (ctx) => {
     type _Payload = Assert<
-      IsEqual<typeof payload, { documentId: string; tenantId: string }>
+      IsEqual<
+        typeof ctx.payload,
+        { documentId: string; tenantId: string }
+      >
     >;
     type _Ctx = Assert<
       typeof ctx extends RequestHandlerContext<
-        InferRequestErrors<typeof approvalRequest>
+        InferRequestErrors<typeof approvalRequest>,
+        { documentId: string; tenantId: string }
       >
         ? true
         : false
     >;
 
-    if (payload.documentId === "manual") {
+    if (ctx.payload.documentId === "manual") {
       throw ctx.errors.NeedsHumanReview("Needs senior reviewer", { manual: true });
     }
 
@@ -294,7 +298,7 @@ const unregister = client.requests.approvalRequestAcceptance.registerHandler(
 );
 
 client.requests.approvalRequestAcceptance.registerHandler(
-  async (_payload, ctx) => {
+  async (ctx) => {
     const manualErr = ctx.errors.NeedsHumanReview("Needs senior reviewer", {
       manual: true,
     });
@@ -336,9 +340,14 @@ const noErrorsClient = createTestWorkflowClient({
 });
 
 noErrorsClient.requests.noErrorsRequestAcceptance.registerHandler(
-  async (_payload, _ctx) => {
+  async (_ctx) => {
     type _NoErrorsCtx = Assert<
-      typeof _ctx extends RequestHandlerContext<Record<string, never>> ? true : false
+      typeof _ctx extends RequestHandlerContext<
+        Record<string, never>,
+        { id: string }
+      >
+        ? true
+        : false
     >;
     type _AssertNoErrorsCtx = Assert<_NoErrorsCtx>;
     return { ok: true };
@@ -427,7 +436,7 @@ const _registrationWithRetention: RequestHandlerRegistrationOptions<
 void _registrationWithRetention;
 
 client.requests.approvalRequestAcceptance.registerHandler(
-  async () => ({ approved: true, reviewerId: "retention-test" }),
+  async (_ctx) => ({ approved: true, reviewerId: "retention-test" }),
   {
     retryPolicy: { maxAttempts: 1 },
     retentionPolicy: async (ctx) => {
@@ -450,7 +459,7 @@ client.requests.approvalRequestAcceptance.registerHandler(
 );
 
 client.requests.approvalRequestAcceptance.registerHandler(
-  async () => ({ approved: true, reviewerId: "retention-test" }),
+  async (_ctx) => ({ approved: true, reviewerId: "retention-test" }),
   {
     retryPolicy: { maxAttempts: 1 },
     // @ts-expect-error retentionPolicy must return number | null
@@ -459,7 +468,7 @@ client.requests.approvalRequestAcceptance.registerHandler(
 );
 
 client.requests.pingRequestAcceptance.registerHandler(
-  async () => ({ ok: true }),
+  async (_ctx) => ({ ok: true }),
   {
     retryPolicy: { maxAttempts: 1 },
     // @ts-expect-error non-compensable requests cannot register compensation handlers

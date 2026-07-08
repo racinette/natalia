@@ -45,8 +45,8 @@ Register a handler on the client (keyed by the definition's `name`, not the work
 
 ```typescript
 const unregister = client.requests.humanReview.registerHandler(
-  async (payload, ctx) => {
-    const auto = await tryRulesEngine(payload, { signal: ctx.signal });
+  async (ctx) => {
+    const auto = await tryRulesEngine(ctx.payload, { signal: ctx.signal });
     if (auto) {
       return auto;
     }
@@ -103,7 +103,7 @@ The workflow slot (`humanReview` above) is only for `ctx.requests`. The client n
 
 ## Handling requests
 
-Handlers register with `client.requests.<definitionName>.registerHandler(handler, options)`. The handler receives the decoded payload and a context with `signal` and `errors`. Payloads that fail schema decode never reach the handler.
+Handlers register with `client.requests.<definitionName>.registerHandler(handler, options)`. The handler receives a single `ctx` with `payload`, `signal`, and `errors`. Payloads that fail schema decode never reach the handler.
 
 Declare an optional `errors` map on `defineRequest` for typed throw helpers:
 
@@ -227,8 +227,8 @@ Forward and compensation handlers register together on `client.requests.<definit
 
 ```typescript
 client.requests.reserveFlightTicket.registerHandler(
-  async (payload, ctx) => {
-    const reservation = await reserveTicket(payload, { signal: ctx.signal });
+  async (ctx) => {
+    const reservation = await reserveTicket(ctx.payload, { signal: ctx.signal });
     return reservation;
   },
   {
@@ -373,8 +373,8 @@ const reserveFlightTicket = defineRequest({
 });
 
 client.requests.reserveFlightTicket.registerHandler(
-  async (payload, ctx) => {
-    const reservation = await tryReserveTicket(payload, { signal: ctx.signal });
+  async (ctx) => {
+    const reservation = await tryReserveTicket(ctx.payload, { signal: ctx.signal });
     if (reservation) {
       return reservation;
     }

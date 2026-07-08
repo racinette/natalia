@@ -19,7 +19,7 @@ Add durable requests for workflow code that needs an external handler or manual 
 - Timeout returns `{ ok: true; result } | { ok: false; status: "timeout" }`.
 - Request handler retry policy belongs to registration.
 - Optional `errors` on `defineRequest`; optional `errors` on `compensation` block (separate map).
-- Forward handlers return `TResponse` only; `throw ctx.errors.X(..., { manual: true | false })` for escalation/retry.
+- Forward handlers take a single `(ctx)` with `ctx.payload`, `ctx.signal`, and `ctx.errors`; `return` supplies the response; `throw ctx.errors.X(..., { manual: true | false })` for escalation/retry.
 - Retry exhaustion moves forward invocations to `manual` with persisted attempt history.
 - Compensation handlers: `return` reports outcome; `throw ctx.errors.X(..., { manual })` chooses retry vs manual. Compensation retry exhaustion also moves to `manual`.
 - `client.requests.<definitionName>.registerHandler` mirrors queue registration; optional async `retentionPolicy` at terminal finalize.

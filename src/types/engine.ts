@@ -470,8 +470,7 @@ export type RequestNamespaceExternal<
 > & {
   registerHandler(
     handler: (
-      payload: TPayload,
-      opts: RequestHandlerContext<TErrors>,
+      ctx: RequestHandlerContext<TErrors, TPayload>,
     ) => Promise<TResponseInput>,
     options?: RequestHandlerRegistrationOptions<
       TErrors,

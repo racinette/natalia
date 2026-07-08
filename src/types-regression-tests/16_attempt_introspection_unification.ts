@@ -628,7 +628,7 @@ type _ForwardInfoTerminatedAttempts = Assert<
 >;
 
 client.requests.aiuCompensableRequest.registerHandler(
-  async () => ({ ok: true }),
+  async (_ctx) => ({ ok: true }),
   {
     compensation: {
       handler: async (ctx) => {
@@ -721,7 +721,7 @@ client.queues.aiuEmailQueue.registerHandler(async () => undefined, {
   },
 });
 
-client.requests.aiuCompensableRequest.registerHandler(async () => ({ ok: true }), {
+client.requests.aiuCompensableRequest.registerHandler(async (_ctx) => ({ ok: true }), {
   retryPolicy: { maxAttempts: 1 },
   retentionPolicy: async (ctx) => {
     if (ctx.status === "resolved") {
