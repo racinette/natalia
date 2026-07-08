@@ -4,6 +4,7 @@ import type { WorkflowContext } from "../context/context-interfaces";
 import type { WorkflowErrorDefinitions } from "./errors";
 import type {
   PatchDefinitions,
+  AttributeDefinitions,
   ChannelDefinitions,
   EventDefinitions,
   StreamDefinitions,
@@ -25,6 +26,7 @@ export type AnyWorkflowDefinition = WorkflowDefinition<
   ChannelDefinitions,
   StreamDefinitions,
   EventDefinitions,
+  AttributeDefinitions,
   StepDefinitions,
   RequestDefinitions,
   QueueDefinitions,
@@ -56,6 +58,7 @@ export interface WorkflowDefinition<
   TChannels extends ChannelDefinitions = Record<string, never>,
   TStreams extends StreamDefinitions = Record<string, never>,
   TEvents extends EventDefinitions = Record<string, never>,
+  TAttributes extends AttributeDefinitions = Record<string, never>,
   TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
@@ -84,6 +87,7 @@ export interface WorkflowDefinition<
     TChannels,
     TStreams,
     TEvents,
+    TAttributes,
     TArgs,
     TMetadata,
     TResultSchema,
@@ -101,6 +105,9 @@ export interface WorkflowDefinition<
 
   /** Event definitions */
   readonly events?: TEvents;
+
+  /** Attribute definitions */
+  readonly attributes?: TAttributes;
 
   /** Step definitions */
   readonly steps?: TSteps;
@@ -170,6 +177,7 @@ export interface WorkflowDefinition<
       TChannels,
       TStreams,
       TEvents,
+      TAttributes,
       TSteps,
       TRequests,
       TQueues,

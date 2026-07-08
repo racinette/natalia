@@ -1,6 +1,6 @@
 import type { StandardSchemaV1 } from "../standard-schema";
 import type { JsonObjectSchemaConstraint, JsonSchemaConstraint } from "../json-input";
-import type { ChannelDefinitions, EventDefinitions, StreamDefinitions } from "./primitives";
+import type { AttributeDefinitions, ChannelDefinitions, EventDefinitions, StreamDefinitions } from "./primitives";
 import type { WorkflowErrorDefinitions } from "./errors";
 
 /**
@@ -29,6 +29,7 @@ export interface PublicWorkflowHeader<
   TChannels extends ChannelDefinitions = Record<string, never>,
   TStreams extends StreamDefinitions = Record<string, never>,
   TEvents extends EventDefinitions = Record<string, never>,
+  TAttributes extends AttributeDefinitions = Record<string, never>,
   TArgs extends JsonSchemaConstraint = StandardSchemaV1<
     void,
     void
@@ -50,6 +51,7 @@ export interface PublicWorkflowHeader<
   readonly channels?: TChannels;
   readonly streams?: TStreams;
   readonly events?: TEvents;
+  readonly attributes?: TAttributes;
   readonly args?: TArgs;
   readonly metadata?: TMetadata;
   readonly result?: TResult;
@@ -69,6 +71,7 @@ export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
   ChannelDefinitions,
   StreamDefinitions,
   EventDefinitions,
+  AttributeDefinitions,
   JsonSchemaConstraint,
   JsonObjectSchemaConstraint,
   JsonSchemaConstraint,

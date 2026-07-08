@@ -687,6 +687,21 @@ export type EventCheckResult =
   | { ok: false; status: "never" }
   | { ok: false; status: "not_found" };
 
+/**
+ * Result of blocking attribute read (long-poll) on an external handle.
+ */
+export type AttributeGetResult<T> =
+  | { ok: true; status: "ok"; value: T; version: number }
+  | { ok: false; status: "never" };
+
+/**
+ * Result of non-blocking attribute read on an external handle.
+ */
+export type AttributeGetNowaitResult<T> =
+  | { ok: true; status: "ok"; value: T; version: number }
+  | { ok: false; status: "not_set" }
+  | { ok: false; status: "never" };
+
 // =============================================================================
 // EXTERNAL WAIT OPTIONS
 // =============================================================================

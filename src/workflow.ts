@@ -738,6 +738,12 @@ type ExtEventsSel<Ext> = Ext extends { events?: infer Ev }
     : Record<string, never>
   : Record<string, never>;
 
+type ExtAttributesSel<Ext> = Ext extends { attributes?: infer At }
+  ? At extends AttributeDefinitions
+    ? At
+    : Record<string, never>
+  : Record<string, never>;
+
 type ExtStepsSel<Ext> = Ext extends { steps?: infer S }
   ? S extends StepInterfaces
     ? S
@@ -923,6 +929,7 @@ export function defineWorkflowHeader<
         TChannels,
         ExtStreamsSel<Ext>,
         ExtEventsSel<Ext>,
+        ExtAttributesSel<Ext>,
         ExtStepsSel<Ext>,
         ExtRequestsSel<Ext>,
         ExtQueuesSel<Ext>,
@@ -941,6 +948,7 @@ export function defineWorkflowHeader<
         TChannels,
         ExtStreamsSel<Ext>,
         ExtEventsSel<Ext>,
+        ExtAttributesSel<Ext>,
         ExtStepsSel<Ext>,
         ExtRequestsSel<Ext>,
         ExtQueuesSel<Ext>,
@@ -979,6 +987,7 @@ export function defineWorkflowInterface<
   TChannels extends ChannelDefinitions = Record<string, never>,
   TStreams extends StreamDefinitions = Record<string, never>,
   TEvents extends EventDefinitions = Record<string, never>,
+  TAttributes extends AttributeDefinitions = Record<string, never>,
   TSteps extends StepInterfaces = Record<string, never>,
   TRequests extends RequestInterfaces = Record<string, never>,
   TQueues extends QueueInterfaces = Record<string, never>,
@@ -995,6 +1004,7 @@ export function defineWorkflowInterface<
     TChannels,
     TStreams,
     TEvents,
+    TAttributes,
     TSteps,
     TRequests,
     TQueues,
@@ -1011,6 +1021,7 @@ export function defineWorkflowInterface<
   TChannels,
   TStreams,
   TEvents,
+  TAttributes,
   TSteps,
   TRequests,
   TQueues,
@@ -1029,6 +1040,7 @@ export function defineWorkflowInterface<
       TChannels,
       TStreams,
       TEvents,
+      TAttributes,
       TSteps,
       TRequests,
       TQueues,
@@ -1046,6 +1058,7 @@ export function defineWorkflowInterface<
     TChannels,
     TStreams,
     TEvents,
+    TAttributes,
     StepsFromInterfaces<TSteps>,
     RequestsFromInterfaces<TRequests>,
     QueuesFromInterfaces<TQueues>,
@@ -1094,6 +1107,16 @@ export function defineWorkflowInterface<
     for (const [name, value] of Object.entries(config.events)) {
       if (value !== true) {
         throw new Error(`Event '${name}' must be true`);
+      }
+    }
+  }
+  if (config.attributes !== undefined) {
+    if (typeof config.attributes !== "object" || Array.isArray(config.attributes)) {
+      throw new Error("attributes must be an object");
+    }
+    for (const [name, schema] of Object.entries(config.attributes)) {
+      if (!schema || typeof schema !== "object" || !("~standard" in schema)) {
+        throw new Error(`Attribute '${name}' must have a standard schema`);
       }
     }
   }
@@ -1283,6 +1306,7 @@ export function defineWorkflowInterface<
         TChannels,
         TStreams,
         TEvents,
+        TAttributes,
         TSteps,
         TRequests,
         TQueues,
@@ -1327,6 +1351,7 @@ export function defineWorkflowInterface<
         TChannels,
         TStreams,
         TEvents,
+        TAttributes,
         StepsFromInterfaces<TSteps>,
         RequestsFromInterfaces<TRequests>,
         QueuesFromInterfaces<TQueues>,
@@ -1345,6 +1370,7 @@ export function defineWorkflowInterface<
     TChannels,
     TStreams,
     TEvents,
+    TAttributes,
     TSteps,
     TRequests,
     TQueues,
@@ -1363,6 +1389,7 @@ export function defineWorkflowInterface<
         TChannels,
         TStreams,
         TEvents,
+        TAttributes,
         TSteps,
         TRequests,
         TQueues,
@@ -1380,6 +1407,7 @@ export function defineWorkflowInterface<
       TChannels,
       TStreams,
       TEvents,
+      TAttributes,
       StepsFromInterfaces<TSteps>,
       RequestsFromInterfaces<TRequests>,
       QueuesFromInterfaces<TQueues>,
@@ -1420,6 +1448,7 @@ export function defineWorkflow<
   TChannels extends ChannelDefinitions = Record<string, never>,
   TStreams extends StreamDefinitions = Record<string, never>,
   TEvents extends EventDefinitions = Record<string, never>,
+  TAttributes extends AttributeDefinitions = Record<string, never>,
   TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
@@ -1438,6 +1467,7 @@ export function defineWorkflow<
   channels?: TChannels;
   streams?: TStreams;
   events?: TEvents;
+  attributes?: TAttributes;
   steps?: TSteps;
   requests?: TRequests;
   queues?: TQueues;
@@ -1463,6 +1493,7 @@ export function defineWorkflow<
       TChannels,
       TStreams,
       TEvents,
+      TAttributes,
       TSteps,
       TRequests,
       TQueues,
@@ -1480,6 +1511,7 @@ export function defineWorkflow<
   TChannels,
   TStreams,
   TEvents,
+  TAttributes,
   TSteps,
   TRequests,
   TQueues,
@@ -1540,6 +1572,19 @@ export function defineWorkflow<
     for (const [name, value] of Object.entries(config.events)) {
       if (value !== true) {
         throw new Error(`Event '${name}' must be true`);
+      }
+    }
+  }
+
+  // Validate attributes
+  const attributes = config.attributes ?? ({} as TAttributes);
+  if (config.attributes !== undefined) {
+    if (typeof config.attributes !== "object" || Array.isArray(config.attributes)) {
+      throw new Error("attributes must be an object");
+    }
+    for (const [name, schema] of Object.entries(config.attributes)) {
+      if (!schema || typeof schema !== "object" || !("~standard" in schema)) {
+        throw new Error(`Attribute '${name}' must have a standard schema`);
       }
     }
   }
@@ -1740,6 +1785,7 @@ export function defineWorkflow<
     channels,
     streams,
     events,
+    attributes,
     steps,
     requests,
     queues,
@@ -1754,6 +1800,7 @@ export function defineWorkflow<
     TChannels,
     TStreams,
     TEvents,
+    TAttributes,
     TSteps,
     TRequests,
     TQueues,

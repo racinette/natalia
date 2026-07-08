@@ -12,6 +12,7 @@ import type {
   AttachedChildWorkflowNamespaceExternal,
   AnyPublicWorkflowHeader,
   AttemptHandle,
+  AttributeReaderAccessorExternal,
   ChannelAccessorExternal,
   CompensationBlockNamespaceExternal,
   CompensationBlockRow,
@@ -157,6 +158,9 @@ const _orderWorkflow = defineWorkflow({
   },
   events: {
     orderReady: true,
+  },
+  attributes: {
+    orderProgress: z.object({ percent: z.number() }),
   },
   errors: {
     OrderInvalid: z.object({ orderId: z.string() }),
@@ -328,9 +332,14 @@ type _WorkflowStreamsTyped = Assert<
 type _WorkflowEventsTyped = Assert<
   IsEqual<typeof workflowHandle.events.orderReady, EventAccessorExternal>
 >;
-type _WorkflowAttributesPlaceholder = Assert<
-  IsEqual<typeof workflowHandle.attributes, Record<string, unknown>>
+type _WorkflowAttributesTyped = Assert<
+  IsEqual<
+    typeof workflowHandle.attributes.orderProgress,
+    AttributeReaderAccessorExternal<{ percent: number }>
+  >
 >;
+// @ts-expect-error undeclared workflow attribute should be absent
+void workflowHandle.attributes.typo;
 // @ts-expect-error undeclared workflow channel should be absent
 void workflowHandle.channels.typo;
 // @ts-expect-error undeclared workflow stream should be absent
@@ -829,9 +838,6 @@ declare const compHandle: CompensationBlockUniqueHandleExternal<
 type _CompHandleId = Assert<
   IsEqual<typeof compHandle.id, CompensationId<typeof chargeStep>>
 >;
-type _CompensationPrimitiveAttributes = Assert<
-  IsEqual<typeof compHandle.attributes, Record<string, unknown>>
->;
 type _CompensationPrimitiveStreams = Assert<
   IsEqual<
     typeof compHandle.streams.undoAudit,
@@ -840,12 +846,12 @@ type _CompensationPrimitiveStreams = Assert<
 >;
 // @ts-expect-error undeclared compensation stream should be absent
 void compHandle.streams.typo;
-type _CompensationPrimitiveEvents = Assert<
-  IsEqual<typeof compHandle.events, Record<string, unknown>>
->;
-type _CompensationPrimitiveChannels = Assert<
-  IsEqual<typeof compHandle.channels, Record<string, unknown>>
->;
+// @ts-expect-error chargeStep compensation does not declare attributes
+void compHandle.attributes.typo;
+// @ts-expect-error chargeStep compensation does not declare events
+void compHandle.events.typo;
+// @ts-expect-error chargeStep compensation does not declare channels
+void compHandle.channels.typo;
 
 async function _exerciseCompSkip(): Promise<void> {
   const _r = await compHandle.skip(session, { status: "refunded" });

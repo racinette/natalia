@@ -1,5 +1,5 @@
 import type { StandardSchemaV1 } from "./standard-schema";
-import type { ChannelDefinitions, EventDefinitions, StreamDefinitions } from "./definitions/primitives";
+import type { AttributeDefinitions, ChannelDefinitions, EventDefinitions, StreamDefinitions } from "./definitions/primitives";
 import type { ErrorDefinitions } from "./definitions/errors";
 import type { QueueDefinition, QueueDefinitions } from "./definitions/messaging";
 import type { JsonSchemaConstraint } from "./json-input";
@@ -46,6 +46,19 @@ export type InferWorkflowStreams<W> = W extends { streams?: infer TStreams }
   : Record<string, never>;
 
 /**
+ * Extract attributes from a workflow definition or public header.
+ */
+export type InferWorkflowAttributes<W> = W extends { attributes?: infer TAttributes }
+  ? TAttributes extends AttributeDefinitions
+    ? TAttributes
+    : Record<string, never>
+  : Record<string, never>;
+
+/** True when the workflow declares a non-empty `attributes` map. */
+export type HasWorkflowAttributes<W> =
+  IsEmptyDefinitionMap<InferWorkflowAttributes<W>> extends true ? false : true;
+
+/**
  * Extract per-instance stream definitions from a compensable step's
  * `compensation` block.
  */
@@ -58,6 +71,71 @@ export type InferStepCompensationStreams<S> = S extends {
       : Record<string, never>
     : Record<string, never>
   : Record<string, never>;
+
+/**
+ * Extract per-instance channel definitions from a compensable step's
+ * `compensation` block.
+ */
+export type InferStepCompensationChannels<S> = S extends {
+  compensation?: infer C;
+}
+  ? C extends { channels?: infer TChannels }
+    ? TChannels extends ChannelDefinitions
+      ? TChannels
+      : Record<string, never>
+    : Record<string, never>
+  : Record<string, never>;
+
+/**
+ * Extract per-instance event definitions from a compensable step's
+ * `compensation` block.
+ */
+export type InferStepCompensationEvents<S> = S extends {
+  compensation?: infer C;
+}
+  ? C extends { events?: infer TEvents }
+    ? TEvents extends EventDefinitions
+      ? TEvents
+      : Record<string, never>
+    : Record<string, never>
+  : Record<string, never>;
+
+/**
+ * Extract per-instance attribute definitions from a compensable step's
+ * `compensation` block.
+ */
+export type InferStepCompensationAttributes<S> = S extends {
+  compensation?: infer C;
+}
+  ? C extends { attributes?: infer TAttributes }
+    ? TAttributes extends AttributeDefinitions
+      ? TAttributes
+      : Record<string, never>
+    : Record<string, never>
+  : Record<string, never>;
+
+/** True when inferred compensation primitive maps are non-empty. */
+type IsEmptyDefinitionMap<T> = [T] extends [Record<string, never>] ? true : false;
+
+/** True when the step's compensation block declares an `attributes` map. */
+export type HasStepCompensationAttributes<S> =
+  IsEmptyDefinitionMap<InferStepCompensationAttributes<S>> extends true
+    ? false
+    : true;
+
+/** True when the step's compensation block declares a `channels` map. */
+export type HasStepCompensationChannels<S> =
+  IsEmptyDefinitionMap<InferStepCompensationChannels<S>> extends true
+    ? false
+    : true;
+
+/** True when the step's compensation block declares an `events` map. */
+export type HasStepCompensationEvents<S> =
+  IsEmptyDefinitionMap<InferStepCompensationEvents<S>> extends true ? false : true;
+
+/** True when the step's compensation block declares a `streams` map. */
+export type HasStepCompensationStreams<S> =
+  IsEmptyDefinitionMap<InferStepCompensationStreams<S>> extends true ? false : true;
 
 /**
  * Extract events from a workflow definition or public header.

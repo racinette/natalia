@@ -118,3 +118,20 @@ export interface EventAccessor {
    */
   set(): void;
 }
+
+/**
+ * Attribute accessor on ctx.attributes (for setting from within the workflow
+ * or a compensation block body).
+ *
+ * `set` is a buffered operation — synchronous return. Attributes are set-only
+ * internally; external observers read via handle accessors.
+ *
+ * @typeParam T - The encoded value type (z.input<Schema>).
+ */
+export interface AttributeAccessor<T> {
+  /**
+   * Replace the current value and bump the monotonic version.
+   * @param value - Attribute value (z.input type — encoded).
+   */
+  set(value: T): void;
+}

@@ -67,6 +67,7 @@ export type {
   RootScope,
 } from "./types/context/deterministic-handles";
 export type {
+  AttributeAccessor,
   ChannelHandle,
   ChannelReceiveCall,
   EventAccessor,

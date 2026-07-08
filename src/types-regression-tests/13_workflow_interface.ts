@@ -549,6 +549,7 @@ type TripleContract = WorkflowInterface<
   { ctl: z.ZodBoolean },
   { log: z.ZodObject<{ line: z.ZodString }> },
   { done: true },
+  Record<string, never>,
   { work: TripleWorkIface },
   Record<string, never>,
   Record<string, never>,
@@ -670,6 +671,7 @@ type _StdResultIn = Assert<
 
 type TransformWorkflowContract = WorkflowInterface<
   "tfWf",
+  Record<string, never>,
   Record<string, never>,
   Record<string, never>,
   Record<string, never>,

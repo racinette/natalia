@@ -32,6 +32,8 @@ import type {
   CompensationBlockOperatorActions,
   CompensationId,
   ErrorValue,
+  AttributeGetNowaitResult,
+  AttributeGetResult,
   EventCheckResult,
   EventWaitResultNoTimeout,
   ExternalWaitOptions,
@@ -73,6 +75,7 @@ import type {
   HasIdempotencyFactory,
   InferWorkflowArgs,
   InferWorkflowArgsInput,
+  InferWorkflowAttributes,
   InferWorkflowChildren,
   InferWorkflowChannels,
   InferWorkflowErrors,
@@ -89,7 +92,15 @@ import type {
   InferRequestErrors,
   InferWorkflowSteps,
   InferWorkflowStreams,
+  HasWorkflowAttributes,
+  InferStepCompensationAttributes,
+  InferStepCompensationChannels,
+  InferStepCompensationEvents,
   InferStepCompensationStreams,
+  HasStepCompensationAttributes,
+  HasStepCompensationChannels,
+  HasStepCompensationEvents,
+  HasStepCompensationStreams,
 } from "./helpers";
 import type { StepCompensationDefinition, StepDefinition } from "./definitions/steps";
 import type {
@@ -186,18 +197,64 @@ export type HaltsNamespaceExternal = QueryableNamespace<
 // =============================================================================
 
 /**
- * Per-instance primitive plane on a compensation block handle.
+ * External attribute reader on a workflow or compensation block handle.
  *
- * Step 12 publishes typed {@link StreamReaderAccessorExternal} on
- * `streams`; `attributes`, `events`, and `channels` placeholders land in
- * step 16 alongside their per-instance primitive declarations on
- * `StepCompensationDefinition` (step 08).
+ * Watch IO for `get` (long-poll) — no session. Snapshot `getNowait` takes
+ * `session` first (Part 19).
  */
-export interface CompensationBlockPrimitivePlane {
-  readonly attributes: Record<string, unknown>;
-  readonly events: Record<string, unknown>;
-  readonly channels: Record<string, unknown>;
+export interface AttributeReaderAccessorExternal<T> {
+  /**
+   * Long-poll for a value newer than `afterVersion`, or the current value when
+   * omitted. Resolves `{ status: "never" }` when the instance is terminal.
+   */
+  get(
+    options?: ExternalWaitOptions & { afterVersion?: number },
+  ): Promise<AttributeGetResult<T>>;
+
+  /** Non-blocking read of the current value. */
+  getNowait<TRaw>(
+    session: OperatorSession<TRaw>,
+  ): Promise<AttributeGetNowaitResult<T>>;
 }
+
+/**
+ * Per-instance primitive plane on a compensation block handle — keyed by the
+ * compensable step's `compensation` declaration.
+ */
+export type CompensationBlockPrimitivePlane<TStep> = {
+  readonly attributes: HasStepCompensationAttributes<TStep> extends true
+    ? {
+        [K in keyof InferStepCompensationAttributes<TStep>]: AttributeReaderAccessorExternal<
+          StandardSchemaV1.InferOutput<
+            InferStepCompensationAttributes<TStep>[K]
+          >
+        >;
+      }
+    : Record<never, never>;
+  readonly events: HasStepCompensationEvents<TStep> extends true
+    ? {
+        [K in keyof InferStepCompensationEvents<TStep>]: EventAccessorExternal;
+      }
+    : Record<never, never>;
+  readonly channels: HasStepCompensationChannels<TStep> extends true
+    ? {
+        [K in keyof InferStepCompensationChannels<TStep>]: ChannelAccessorExternal<
+          StandardSchemaV1.InferInput<
+            InferStepCompensationChannels<TStep>[K]
+          >
+        >;
+      }
+    : Record<never, never>;
+  readonly streams: HasStepCompensationStreams<TStep> extends true
+    ? {
+        [K in keyof InferStepCompensationStreams<TStep>]: StreamReaderAccessorExternal<
+          StandardSchemaV1.InferOutput<
+            InferStepCompensationStreams<TStep>[K]
+          >
+        >;
+      }
+    : Record<never, never>;
+};
 
 /**
  * Operator-facing handle for a compensation block instance row.
@@ -208,16 +265,8 @@ export interface CompensationBlockUniqueHandleExternal<
   TResult = unknown,
 > extends FetchableHandle<CompensationBlockRow<TStep, TArgs, TResult>>,
     CompensationBlockOperatorActions<TResult>,
-    CompensationBlockPrimitivePlane {
+    CompensationBlockPrimitivePlane<TStep> {
   readonly id: CompensationId<TStep>;
-
-  readonly streams: {
-    [K in keyof InferStepCompensationStreams<TStep>]: StreamReaderAccessorExternal<
-      StandardSchemaV1.InferOutput<
-        InferStepCompensationStreams<TStep>[K]
-      >
-    >;
-  };
 }
 
 /**
@@ -529,7 +578,13 @@ interface AttachedChildWorkflowExternalHandleBase<W extends AnyPublicWorkflowHea
   > {
   readonly id: AttachedChildWorkflowId<W>;
 
-  readonly attributes: Record<string, unknown>;
+  readonly attributes: HasWorkflowAttributes<W> extends true
+    ? {
+        [K in keyof InferWorkflowAttributes<W>]: AttributeReaderAccessorExternal<
+          StandardSchemaV1.InferOutput<InferWorkflowAttributes<W>[K]>
+        >;
+      }
+    : Record<never, never>;
   readonly streams: {
     [K in keyof InferWorkflowStreams<W>]: StreamReaderAccessorExternal<
       StandardSchemaV1.InferOutput<InferWorkflowStreams<W>[K]>
@@ -1005,7 +1060,13 @@ interface WorkflowHandleExternalBase<W extends AnyPublicWorkflowHeader>
   readonly idempotencyKey: string;
 
   // Primitive plane.
-  readonly attributes: Record<string, unknown>;
+  readonly attributes: HasWorkflowAttributes<W> extends true
+    ? {
+        [K in keyof InferWorkflowAttributes<W>]: AttributeReaderAccessorExternal<
+          StandardSchemaV1.InferOutput<InferWorkflowAttributes<W>[K]>
+        >;
+      }
+    : Record<never, never>;
   readonly streams: {
     [K in keyof InferWorkflowStreams<W>]: StreamReaderAccessorExternal<
       StandardSchemaV1.InferOutput<InferWorkflowStreams<W>[K]>
@@ -1124,6 +1185,19 @@ type StreamsCompatibleForExtend<
       : false
     : false;
 
+type AttributesCompatibleForExtend<
+  W extends AnyPublicWorkflowHeader,
+  TW extends AnyPublicWorkflowHeader,
+> =
+  KeysAreSubsetOf<InferWorkflowAttributes<W>, InferWorkflowAttributes<TW>> extends true
+    ? SchemaSlotsMutuallyCompatible<
+        InferWorkflowAttributes<W>,
+        InferWorkflowAttributes<TW>
+      > extends true
+      ? true
+      : false
+    : false;
+
 type EventsKeysSubsetForExtend<
   W extends AnyPublicWorkflowHeader,
   TW extends AnyPublicWorkflowHeader,
@@ -1154,8 +1228,10 @@ type VerifyExtendPublicContract<
       ? MetadataCompatibleForExtend<W, TW> extends true
         ? ChannelsCompatibleForExtend<W, TW> extends true
           ? StreamsCompatibleForExtend<W, TW> extends true
-            ? EventsKeysSubsetForExtend<W, TW> extends true
-              ? true
+            ? AttributesCompatibleForExtend<W, TW> extends true
+              ? EventsKeysSubsetForExtend<W, TW> extends true
+                ? true
+                : false
               : false
             : false
           : false

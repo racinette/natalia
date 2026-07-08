@@ -1,7 +1,7 @@
 import type { HasDefaultTtl } from "../helpers";
 import type { StandardSchemaV1 } from "../standard-schema";
 import type { ErrorDefinitions } from "../definitions/errors";
-import type { PatchAccessor, ChannelDefinitions, EventDefinitions, PatchDefinitions, StreamDefinitions } from "../definitions/primitives";
+import type { PatchAccessor, AttributeDefinitions, ChannelDefinitions, EventDefinitions, PatchDefinitions, StreamDefinitions } from "../definitions/primitives";
 import type { QueueDefinition, QueueDefinitions } from "../definitions/messaging";
 import type { RequestDefinition, RequestDefinitions } from "../definitions/requests";
 import type { RngAccessors, RngDefinitions } from "../definitions/rng";
@@ -17,7 +17,7 @@ import type {
 } from "./call-builders";
 import type { BlockingResult, CompensationResolver, ExecutionResolver } from "./deterministic-handles";
 import type { AwaitableEntry, JoinOptions, JoinResult, JoinTimeoutResult, SchemaInvocationInput, StepAccessor } from "./entries";
-import type { ChannelHandle, EventAccessor, StreamAccessor } from "./io-accessors";
+import type { ChannelHandle, EventAccessor, StreamAccessor, AttributeAccessor } from "./io-accessors";
 import type { Listener, ListenableHandle } from "./selection";
 import type { ScheduleHandle, ScheduleOptions, WorkflowLogger } from "./schedule-logger";
 import type { AppendScopeName, ScopeNameArg, ScopePath } from "./scope-path";
@@ -48,6 +48,7 @@ export interface BaseContext<
   TEvents extends EventDefinitions,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
+  TAttributes extends AttributeDefinitions = Record<string, never>,
 > {
   /** Unique internal workflow instance identifier (not the idempotency key). */
   readonly workflowId: string;
@@ -80,6 +81,15 @@ export interface BaseContext<
    */
   readonly events: {
     [K in keyof TEvents]: EventAccessor;
+  };
+
+  /**
+   * Observable single current values (set-only from inside the body).
+   */
+  readonly attributes: {
+    [K in keyof TAttributes]: AttributeAccessor<
+      StandardSchemaV1.InferInput<TAttributes[K]>
+    >;
   };
 
   /**
@@ -128,7 +138,8 @@ export interface CompensationContext<
   TChannels extends ChannelDefinitions,
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
-  TSteps extends StepDefinitions,
+  TAttributes extends AttributeDefinitions = Record<string, never>,
+  TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
@@ -138,7 +149,7 @@ export interface CompensationContext<
   TScopePath extends ScopePath = [],
 >
   extends
-    BaseContext<TChannels, TStreams, TEvents, TPatches, TRng>,
+    BaseContext<TChannels, TStreams, TEvents, TPatches, TRng, TAttributes>,
     CompensationResolver {
   /**
    * Steps for durable operations.
@@ -229,6 +240,7 @@ export interface CompensationContext<
         TChannels,
         TStreams,
         TEvents,
+        TAttributes,
         TSteps,
         TRequests,
         TQueues,
@@ -313,7 +325,8 @@ export interface WorkflowContext<
   TChannels extends ChannelDefinitions,
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
-  TSteps extends StepDefinitions,
+  TAttributes extends AttributeDefinitions = Record<string, never>,
+  TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
@@ -324,7 +337,7 @@ export interface WorkflowContext<
   TErrors extends ErrorDefinitions = Record<string, never>,
 >
   extends
-    BaseContext<TChannels, TStreams, TEvents, TPatches, TRng>,
+    BaseContext<TChannels, TStreams, TEvents, TPatches, TRng, TAttributes>,
     ExecutionResolver {
   /**
    * Steps for durable operations.
@@ -423,6 +436,7 @@ export interface WorkflowContext<
         TChannels,
         TStreams,
         TEvents,
+        TAttributes,
         TSteps,
         TRequests,
         TQueues,
@@ -510,7 +524,8 @@ export type WorkflowConcurrencyContext<
   TChannels extends ChannelDefinitions,
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
-  TSteps extends StepDefinitions,
+  TAttributes extends AttributeDefinitions = Record<string, never>,
+  TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
@@ -524,6 +539,7 @@ export type WorkflowConcurrencyContext<
     TChannels,
     TStreams,
     TEvents,
+    TAttributes,
     TSteps,
     TRequests,
     TQueues,
@@ -551,7 +567,8 @@ export interface CompensationConcurrencyContext<
   TChannels extends ChannelDefinitions,
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
-  TSteps extends StepDefinitions,
+  TAttributes extends AttributeDefinitions = Record<string, never>,
+  TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
@@ -565,6 +582,7 @@ export interface CompensationConcurrencyContext<
       TChannels,
       TStreams,
       TEvents,
+      TAttributes,
       TSteps,
       TRequests,
       TQueues,

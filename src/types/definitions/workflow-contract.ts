@@ -175,6 +175,7 @@ export type WorkflowImplementInput<
   TChannels extends ChannelDefinitions,
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
+  TAttributes extends AttributeDefinitions,
   TSteps extends StepInterfaces,
   TRequests extends RequestInterfaces,
   TQueues extends QueueInterfaces,
@@ -194,6 +195,7 @@ export type WorkflowImplementInput<
       TChannels,
       TStreams,
       TEvents,
+      TAttributes,
       StepsFromInterfaces<TSteps>,
       RequestsFromInterfaces<TRequests>,
       QueuesFromInterfaces<TQueues>,
@@ -228,6 +230,7 @@ export interface WorkflowInterface<
   TChannels extends ChannelDefinitions = Record<string, never>,
   TStreams extends StreamDefinitions = Record<string, never>,
   TEvents extends EventDefinitions = Record<string, never>,
+  TAttributes extends AttributeDefinitions = Record<string, never>,
   TSteps extends StepInterfaces = Record<string, never>,
   TRequests extends RequestInterfaces = Record<string, never>,
   TQueues extends QueueInterfaces = Record<string, never>,
@@ -243,6 +246,7 @@ export interface WorkflowInterface<
     TChannels,
     TStreams,
     TEvents,
+    TAttributes,
     TArgs,
     TMetadata,
     TResultSchema,
@@ -293,6 +297,7 @@ export type WorkflowInterfaceExtendFromHeader<
     TChannels,
     StreamDefinitions,
     EventDefinitions,
+    AttributeDefinitions,
     StepInterfaces,
     RequestInterfaces,
     QueueInterfaces,
@@ -306,6 +311,7 @@ export type WorkflowInterfaceExtendFromHeader<
   >,
   | "streams"
   | "events"
+  | "attributes"
   | "steps"
   | "requests"
   | "queues"
@@ -321,6 +327,7 @@ export type AnyWorkflowInterface = WorkflowInterface<
   ChannelDefinitions,
   StreamDefinitions,
   EventDefinitions,
+  AttributeDefinitions,
   StepInterfaces,
   RequestInterfaces,
   QueueInterfaces,
@@ -340,6 +347,7 @@ export type WorkflowContextForInterface<
   TChannels extends ChannelDefinitions,
   TStreams extends StreamDefinitions,
   TEvents extends EventDefinitions,
+  TAttributes extends AttributeDefinitions,
   TSteps extends StepDefinitions,
   TRequests extends RequestDefinitions,
   TQueues extends QueueDefinitions,
@@ -352,6 +360,7 @@ export type WorkflowContextForInterface<
   TChannels,
   TStreams,
   TEvents,
+  TAttributes,
   TSteps,
   TRequests,
   TQueues,
