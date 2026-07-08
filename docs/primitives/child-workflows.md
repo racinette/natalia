@@ -68,15 +68,50 @@ An `idempotencyKey` places a workflow in the engine’s **global identity namesp
 
 Keeping child workflows **keyless namespaces them under their parent**: a child’s identity is its parent’s identity plus its deterministic position in the body. That is replay-stable and collision-free by construction. (An independent root you genuinely want to address by key is an `externalWorkflows` start, not a child.)
 
-They are not hidden, though. Child workflows remain **fully observable from the outside—through the client’s search API**, not by key lookup. That is exactly where parent-scoped work belongs: discoverable by querying (by parent, by metadata, by status), rather than addressable by a global handle it was never meant to have.
+They are not hidden, though. Child workflows remain **fully observable from the outside** — through parent-scoped search on the client, not by key lookup. See [Operator introspection](#operator-introspection).
 
 ## What it is NOT
 
-- **Not** globally addressable. No `idempotencyKey`; reach them through the search API, not `client.workflows.<name>.get(key)`.
+- **Not** globally addressable. No `idempotencyKey`; reach them through `parentHandle.childWorkflows.<name>`, not `client.workflows.<name>.get(key)`.
 - **Not** sendable from the *bare* entry. The awaitable entry returned by `ctx.childWorkflows.<name>(...)` does not carry `channels.send` on its own. Messaging is available on the **scope handle**: place the entry in a `ctx.scope`, and the handle the scope gives you exposes `channels.<name>.send(...)` for as long as the child runs.
 - **Not** startable as an independent root. There is no `.start` on the child accessor; that is an [`externalWorkflows`](./external-workflows.md) operation.
-- **Not** retried by the parent, and **not** independently terminable by operators.
+- **Not** retried by the parent, and **not** independently terminable by operators (see [Operator introspection](#operator-introspection)).
 - **Not** a thrown failure. A failed child yields `{ ok: false; status: "failed"; error }`. Turning that into a workflow-level failure is the body’s choice via `throw ctx.errors.X(...)`.
+
+## Operator introspection
+
+Child workflows are observable from outside the parent body through the client, scoped to a **parent workflow instance**. Start from the parent handle, then search or get by the child's branded id:
+
+```typescript
+await client.session(async (session) => {
+  const parent = client.workflows.order.get("order-42");
+
+  const children = await parent.childWorkflows.processOrder.find(
+    session,
+    ({ status }) => eq(status, "running"),
+    { fields: { id: true, args: true, status: true } },
+  );
+
+  for (const child of children) {
+    await child.fetchRow(session, { fields: { status: true } });
+    await child.channels.cancel.send(session, { reason: "operator-review" });
+  }
+});
+```
+
+`parentHandle.childWorkflows.<name>.find(session, …)` and `.count(session, …)` query instances of one declared child workflow under that parent. `.get(childId)` grounds a handle from a known id without I/O.
+
+Global workflow search (`client.workflows.<def>.find`) does not return attached children. They appear only under `parentHandle.childWorkflows.<name>`.
+
+The returned handle supports introspection and messaging declared on the child workflow definition: `fetchRow`, `channels.<name>.send`, and per-instance reads for declared streams, events, and attributes. It does not expose `idempotencyKey`.
+
+### Lifecycle
+
+Operators cannot call `sigkill()`, `sigterm()`, or `skip()` on an attached child handle. The child's lifetime is owned by the parent body and its structured-concurrency scope. When an operator terminates the parent workflow, attached children are torn down with it.
+
+To inspect or control an independent root with full lifecycle verbs (`sigkill`, `sigterm`, `skip`, `idempotencyKey`), use [`externalWorkflows`](./external-workflows.md) or global `client.workflows.<def>.get(...)`.
+
+See [Operator sessions](../operator-sessions.md) for how snapshot and command calls take `session` as the first argument.
 
 ## Observing the outcome
 
