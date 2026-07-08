@@ -708,7 +708,7 @@ type _RequestRetention = Assert<
     : false
 >;
 
-client.queues.aiuEmailQueue.registerHandler(async () => undefined, {
+client.queues.aiuEmailQueue.registerHandler(async (_ctx) => undefined, {
   retryPolicy: { maxAttempts: 2 },
   retentionPolicy: async (ctx) => {
     type _Ctx = Assert<typeof ctx extends QueueRetentionContext<

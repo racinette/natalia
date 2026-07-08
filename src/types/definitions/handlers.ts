@@ -25,15 +25,18 @@ export interface HandlerContext {
 }
 
 /**
- * Queue handler context.
+ * Queue handler context for the handler body (retried attempts).
  *
+ * The handler receives decoded `ctx.message`, `ctx.signal`, and `ctx.errors`.
  * When the queue declares an `errors` map, `ctx.errors` exposes a factory per
  * code. Queues with no declared errors omit usable factories — only unhandled
  * throws remain.
  */
 export interface QueueHandlerContext<
   TErrors extends ErrorDefinitions = Record<string, never>,
+  TMessage = unknown,
 > extends HandlerContext {
+  readonly message: TMessage;
   readonly errors: QueueErrorFactories<TErrors>;
 }
 

@@ -174,13 +174,17 @@ type _QueueNamespace = Assert<
 void client.queues.email;
 
 const unregister = client.queues.emailQueue.registerHandler(
-  async (message, handlerOpts) => {
-    type _HandlerOpts = Assert<
-      typeof handlerOpts extends QueueHandlerContext<_EmailQueueErrors> ? true : false
+  async (ctx) => {
+    type _Ctx = Assert<
+      typeof ctx extends QueueHandlerContext<_EmailQueueErrors, {
+        userId: string;
+        template: "welcome" | "receipt";
+        metadata: { tenantId: string };
+      }> ? true : false
     >;
     type _MessageDecoded = Assert<
       IsEqual<
-        typeof message,
+        typeof ctx.message,
         {
           userId: string;
           template: "welcome" | "receipt";
@@ -189,13 +193,13 @@ const unregister = client.queues.emailQueue.registerHandler(
       >
     >;
 
-    if (message.template === "receipt") {
-      throw handlerOpts.errors.InvalidTemplate("Receipts are not supported", {
+    if (ctx.message.template === "receipt") {
+      throw ctx.errors.InvalidTemplate("Receipts are not supported", {
         deadLetter: true,
       });
     }
 
-    throw handlerOpts.errors.ProviderRejected(
+    throw ctx.errors.ProviderRejected(
       "SMTP timed out",
       { code: "SMTP_TIMEOUT", orderId: "o-1" },
       { deadLetter: false },
@@ -313,9 +317,13 @@ type _SchemaErrorShape = Assert<
 void _constructedSchemaError;
 
 client.queues.emailQueue.registerHandler(
-  async (_message, ctx) => {
+  async (ctx) => {
     type _Ctx = Assert<
-      typeof ctx extends QueueHandlerContext<_EmailQueueErrors> ? true : false
+      typeof ctx extends QueueHandlerContext<_EmailQueueErrors, {
+        userId: string;
+        template: "welcome" | "receipt";
+        metadata: { tenantId: string };
+      }> ? true : false
     >;
 
     const deadLetterErr = ctx.errors.InvalidTemplate("Receipts are not supported", {
@@ -390,9 +398,13 @@ type _NoErrorsQueueErrorsInferred = Assert<
 >;
 
 noErrorsClient.queues.noErrorsQueue.registerHandler(
-  async (_message, _ctx) => {
+  async (_ctx) => {
     type _NoErrorsCtx = Assert<
-      typeof _ctx extends QueueHandlerContext<Record<string, never>> ? true : false
+      typeof _ctx extends QueueHandlerContext<Record<string, never>, {
+        userId: string;
+        template: "welcome" | "receipt";
+        metadata: { tenantId: string };
+      }> ? true : false
     >;
     type _AssertNoErrorsCtx = Assert<_NoErrorsCtx>;
   },
@@ -465,7 +477,7 @@ const _registrationWithRetention: QueueHandlerRegistrationOptions<
 };
 void _registrationWithRetention;
 
-client.queues.emailQueue.registerHandler(async () => undefined, {
+client.queues.emailQueue.registerHandler(async (_ctx) => undefined, {
   retryPolicy: { maxAttempts: 1 },
   retentionPolicy: async (ctx) => {
     type _CtxShape = Assert<
@@ -485,7 +497,7 @@ client.queues.emailQueue.registerHandler(async () => undefined, {
   },
 });
 
-client.queues.emailQueue.registerHandler(async () => undefined, {
+client.queues.emailQueue.registerHandler(async (_ctx) => undefined, {
   retryPolicy: { maxAttempts: 1 },
   // @ts-expect-error retentionPolicy must return number | null
   retentionPolicy: async () => "forever",
@@ -500,25 +512,25 @@ type _QueueHandlerDeclaredError = Assert<
 >;
 
 // @ts-expect-error retryPolicy is required on queue handler registration
-client.queues.emailQueue.registerHandler(async () => undefined);
+client.queues.emailQueue.registerHandler(async (_ctx) => undefined);
 
 client.queues.emailQueue.registerHandler(
-  async () => undefined,
+  async (_ctx) => undefined,
   // @ts-expect-error maxAttempts is required inside retryPolicy
   { retryPolicy: { timeoutSeconds: 10 } },
 );
 
-client.queues.emailQueue.registerHandler(async () => undefined, {
+client.queues.emailQueue.registerHandler(async (_ctx) => undefined, {
   retryPolicy: retryForever,
 });
 
 // @ts-expect-error queue handlers return void
-client.queues.emailQueue.registerHandler(async () => ({ manual: true }), {
+client.queues.emailQueue.registerHandler(async (_ctx) => ({ manual: true }), {
   retryPolicy: { maxAttempts: 1 },
 });
 
 client.queues.emailQueue.registerHandler(
-  async () => undefined,
+  async (_ctx) => undefined,
   // @ts-expect-error handler registration does not accept session
   { retryPolicy: { maxAttempts: 1 }, session },
 );

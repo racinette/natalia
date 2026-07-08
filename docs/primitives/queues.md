@@ -45,13 +45,13 @@ Register a handler on the client (keyed by the queue definition's `name`, not th
 
 ```typescript
 const unregister = client.queues.notifications.registerHandler(
-  async (message, ctx) => {
-    if (message.template === "receipt") {
+  async (ctx) => {
+    if (ctx.message.template === "receipt") {
       throw ctx.errors.UnsupportedTemplate("Receipt emails are not supported", {
         deadLetter: true,
       });
     }
-    await sendEmail(message.userId, message.body, { signal: ctx.signal });
+    await sendEmail(ctx.message.userId, ctx.message.body, { signal: ctx.signal });
   },
   {
     maxConcurrent: 10,
@@ -122,7 +122,7 @@ Lower `priority` values are more urgent. Priority is preserved when a dead-lette
 
 ## Handling messages
 
-Handlers register with `client.queues.<definitionName>.registerHandler(handler, options)`. The handler receives the decoded message and a context with `signal` and `errors`. Payloads that fail schema decode are dead-lettered as `invalid_payload` before the handler runs. A normal return marks the message processed.
+Handlers register with `client.queues.<definitionName>.registerHandler(handler, options)`. The handler receives a single `ctx` with `message`, `signal`, and `errors`. Payloads that fail schema decode are dead-lettered as `invalid_payload` before the handler runs. A normal return marks the message processed.
 
 Declare an optional `errors` map on `defineQueue` to get typed throw helpers on `ctx.errors`:
 

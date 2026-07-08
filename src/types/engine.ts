@@ -539,8 +539,7 @@ export interface QueueNamespaceExternal<
 > {
   registerHandler(
     handler: (
-      message: TMessage,
-      opts: QueueHandlerContext<TErrors>,
+      ctx: QueueHandlerContext<TErrors, TMessage>,
     ) => Promise<void>,
     options: QueueHandlerRegistrationOptions<TErrors, TMessage>,
   ): Unsubscribe;

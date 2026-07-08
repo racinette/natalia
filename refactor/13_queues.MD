@@ -18,7 +18,7 @@ Highlights:
 
 - `defineQueue` (data-only: `message`, optional `errors`, `defaultDelay`, `defaultTtl`).
 - `ctx.queues.<slot>.enqueue` — buffered, `void`, `delay`/`ttl`/`priority`.
-- `client.queues.<definitionName>.registerHandler` — required `retryPolicy` with `maxAttempts: number | null`; optional async `retentionPolicy`.
+- `client.queues.<definitionName>.registerHandler` — handler takes single `(ctx)` with `ctx.message`, `ctx.signal`, and `ctx.errors`; required `retryPolicy` with `maxAttempts: number | null`; optional async `retentionPolicy`.
 - `throw ctx.errors.<Code>(..., { deadLetter })` — workflow-style error map on the queue definition.
 - Dead-letter namespace/handle APIs with `attempts()`.
 
