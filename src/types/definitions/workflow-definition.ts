@@ -64,18 +64,12 @@ export interface WorkflowDefinition<
   TQueues extends QueueDefinitions = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
-  TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<
-    void,
-    void
-  >,
+  TResultSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TArgs extends JsonSchemaConstraint = StandardSchemaV1<
     void,
     void
   >,
-  TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<
-    void,
-    void
-  >,
+  TMetadata extends JsonObjectSchemaConstraint = JsonObjectSchemaConstraint,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,

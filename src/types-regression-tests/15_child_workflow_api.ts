@@ -33,17 +33,22 @@ import { z } from "zod";
 const headerNoFactory = defineWorkflowHeader({
   name: "no-factory",
   args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
+  result: z.void(),
 });
 
 const headerWithFactory = defineWorkflowHeader({
   name: "with-factory",
   args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
+  result: z.void(),
   idempotencyKeyFactory: (args) => `wf:${args.orderId}`,
 });
 
 const wfNoFactory = defineWorkflow({
   name: "wf-no-factory",
   args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
   async execute() {
     return { ok: true };
@@ -53,6 +58,7 @@ const wfNoFactory = defineWorkflow({
 const wfWithFactory = defineWorkflow({
   name: "wf-with-factory",
   args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
   idempotencyKeyFactory: (args) => `wf:${args.orderId}`,
   result: z.object({ ok: z.boolean() }),
   async execute() {
@@ -77,6 +83,7 @@ type _A4 = Assert<IsEqual<HasIdempotencyFactory<typeof wfWithFactory>, true>>;
 const childWf = defineWorkflow({
   name: "child-wf",
   args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
   result: z.object({ shipped: z.boolean() }),
   channels: { cancel: z.object({ reason: z.string() }) },
   async execute() {
@@ -87,6 +94,7 @@ const childWf = defineWorkflow({
 const childWfFactory = defineWorkflow({
   name: "child-wf-factory",
   args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
   idempotencyKeyFactory: (args) => `c:${args.orderId}`,
   result: z.object({ shipped: z.boolean() }),
   channels: { cancel: z.object({ reason: z.string() }) },

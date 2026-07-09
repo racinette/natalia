@@ -90,6 +90,7 @@ const noopRequest = defineRequest({
 const childWorkflow = defineWorkflow({
   name: "execModelChild",
   args: z.object({ value: z.number() }),
+  metadata: z.undefined(),
   result: z.object({ doubled: z.number() }),
   channels: { noopCh: z.object({ token: z.string() }) },
   async execute(ctx) {
@@ -109,6 +110,7 @@ const childWorkflow = defineWorkflow({
 export const executionModelAcceptanceWorkflow = defineWorkflow({
   name: "executionModelAcceptance",
   args: z.undefined(),
+  metadata: z.undefined(),
   steps: { noopStep },
   requests: { noopRequest },
   childWorkflows: { childWorkflow },

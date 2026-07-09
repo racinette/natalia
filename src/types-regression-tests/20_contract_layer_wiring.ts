@@ -8,9 +8,12 @@ import { z } from "zod";
 import {
   defineStep,
   defineStepInterface,
+  defineWorkflow,
   defineWorkflowHeader,
 } from "../workflow";
 import type {
+  InferWorkflowMetadata,
+  InferWorkflowResult,
   StepInterface,
 } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
@@ -83,6 +86,7 @@ type _LayerUndoSeesInterfaceChannel = Assert<
 const layerChildHeader = defineWorkflowHeader({
   name: "layerChild",
   args: z.object({ seed: z.number() }),
+  metadata: z.undefined(),
   result: z.string(),
 });
 
@@ -95,6 +99,7 @@ const layerChildWf = layerChildHeader.extend({}).implement({
 const layerMainHeader = defineWorkflowHeader({
   name: "layerMain",
   args: z.object({ wid: z.string() }),
+  metadata: z.undefined(),
   result: z.number(),
 });
 
@@ -130,6 +135,7 @@ import type { QueueInterface as _RemovedQueueInterface } from "../types";
 const layerNoopChildHeader = defineWorkflowHeader({
   name: "layerNoopChild",
   args: z.undefined(),
+  metadata: z.undefined(),
   result: z.void(),
 });
 
@@ -140,6 +146,7 @@ const layerNoopChildWf = layerNoopChildHeader.extend({}).implement({
 const layerNoopParentHeader = defineWorkflowHeader({
   name: "layerNoopParent",
   args: z.undefined(),
+  metadata: z.undefined(),
   result: z.void(),
 });
 
@@ -169,3 +176,43 @@ type _StepDefExtendsIface = Assert<
     ? true
     : false
 >;
+
+// =============================================================================
+// Workflow header: metadata and result schemas are required (explicit z.undefined / z.void)
+// =============================================================================
+
+// @ts-expect-error metadata schema is required on every workflow header
+defineWorkflowHeader({
+  name: "layerMissingMetadata",
+  args: z.undefined(),
+  result: z.void(),
+});
+
+// @ts-expect-error result schema is required on every workflow header
+defineWorkflowHeader({
+  name: "layerMissingResult",
+  args: z.undefined(),
+  metadata: z.undefined(),
+});
+
+const _layerExplicitContractHeader = defineWorkflowHeader({
+  name: "layerExplicitContract",
+  args: z.undefined(),
+  metadata: z.undefined(),
+  result: z.void(),
+});
+
+type _NoMetadataIsUndefined = Assert<
+  IsEqual<InferWorkflowMetadata<typeof _layerExplicitContractHeader>, undefined>
+>;
+type _NoResultIsVoid = Assert<
+  IsEqual<InferWorkflowResult<typeof _layerExplicitContractHeader>, void>
+>;
+
+// @ts-expect-error metadata schema is required on defineWorkflow
+defineWorkflow({
+  name: "layerMissingMetadataWf",
+  args: z.undefined(),
+  result: z.void(),
+  async execute() {},
+});

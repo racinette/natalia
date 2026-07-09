@@ -60,6 +60,7 @@ type AssertAssignable<T, U extends T> = U;
 const ctx13ChildHeader = defineWorkflowHeader({
   name: "ctx13ChildA",
   args: z.object({ seed: z.number() }),
+  metadata: z.undefined(),
   result: z.string(),
   channels: { childPing: z.boolean() },
   errors: { ChildErr: true },
@@ -76,6 +77,7 @@ const ctx13ChildWorkflow = ctx13ChildInterface.implement({
 const ctx13DetachedHeader = defineWorkflowHeader({
   name: "ctx13Detached",
   args: z.object({ flag: z.boolean() }),
+  metadata: z.undefined(),
   result: z.void(),
   channels: { detachCh: z.string() },
 });
@@ -91,6 +93,7 @@ const ctx13DetachedWorkflow = ctx13DetachedInterface.implement({
 const ctx13ExtHeader = defineWorkflowHeader({
   name: "ctx13ExtPartner",
   args: z.object({ token: z.string() }),
+  metadata: z.undefined(),
   result: z.number(),
   channels: { extOut: z.object({ n: z.number() }) },
 });
@@ -209,6 +212,8 @@ const ctx13FullInterface = ctx13MainHeader.extend({
 void defineWorkflowInterface({
   name: "ctx13ExternalWorkflowsReject",
   args: z.undefined(),
+  metadata: z.undefined(),
+  result: z.void(),
   // @ts-expect-error — `externalWorkflows` is not on `WorkflowInterface`; pass it to `.implement({ externalWorkflows })` only
   externalWorkflows: { partner: ctx13ExtWorkflow },
 });
@@ -417,6 +422,7 @@ void ctx13FullWorkflow;
 const ctx13NarrowIface = defineWorkflowInterface({
   name: "ctx13Narrow",
   args: z.object({ only: z.string() }),
+  metadata: z.undefined(),
   result: z.void(),
   channels: { sole: z.number() },
 });
@@ -443,6 +449,7 @@ void ctx13NarrowWf;
 const ctx13IfaceTwoSteps = defineWorkflowInterface({
   name: "ctx13TwoSteps",
   args: z.void(),
+  metadata: z.undefined(),
   result: z.void(),
   steps: {
     a: ctx13PlainStepIface,
@@ -483,6 +490,7 @@ void ctx13FullInterface.implement({
 const orderHeader = defineWorkflowHeader({
   name: "ifaceOrder",
   args: z.object({ sku: z.string() }),
+  metadata: z.undefined(),
   result: z.object({ id: z.string() }),
   channels: { notice: z.string() },
 });
@@ -529,6 +537,7 @@ type _OrderName = Assert<IsEqual<(typeof orderWorkflow)["name"], "ifaceOrder">>;
 const tripleHeader = defineWorkflowHeader({
   name: "tripleWf",
   args: z.object({ q: z.string() }),
+  metadata: z.undefined(),
   result: z.number(),
   channels: { ctl: z.boolean() },
   errors: { TripleErr: true },
@@ -558,7 +567,7 @@ type TripleContract = WorkflowInterface<
   { childSlot: typeof tripleHeader },
   z.ZodNumber,
   z.ZodObject<{ q: z.ZodString }>,
-  StandardSchemaV1<void, void>,
+  z.ZodUndefined,
   { TripleErr: true },
   Record<string, never>,
   Record<string, never>
@@ -581,6 +590,7 @@ const tripleInterfaceOnly: TripleContract = {
   name: "tripleWf",
   channels: { ctl: z.boolean() },
   args: z.object({ q: z.string() }),
+  metadata: z.undefined(),
   result: z.number(),
   errors: { TripleErr: true },
   streams: { log: z.object({ line: z.string() }) },
@@ -683,7 +693,7 @@ type TransformWorkflowContract = WorkflowInterface<
   Record<string, never>,
   typeof transformWorkflowResult,
   typeof transformWorkflowArgs,
-  StandardSchemaV1<void, void>,
+  z.ZodUndefined,
   Record<string, never>,
   Record<string, never>,
   Record<string, never>
@@ -697,6 +707,7 @@ type TransformWorkflowContractSurface = Pick<
 const transformWorkflowHeader = defineWorkflowHeader({
   name: "tfWf",
   args: transformWorkflowArgs,
+  metadata: z.undefined(),
   result: transformWorkflowResult,
 });
 
@@ -757,6 +768,7 @@ void transformStepDef;
 const transformStepWorkflowIface = defineWorkflowInterface({
   name: "tfWfWithStep",
   args: z.void(),
+  metadata: z.undefined(),
   result: z.void(),
   steps: { tf: transformStepIface },
 });
@@ -785,6 +797,7 @@ void transformStepWorkflow;
 const fulfillmentHeader = defineWorkflowHeader({
   name: "ifaceFulfillment",
   args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
   result: z.void(),
 });
 

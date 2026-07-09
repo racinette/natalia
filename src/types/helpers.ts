@@ -18,12 +18,10 @@ import type { WorkflowDefinitions } from "./definitions/workflow-headers";
  * Extract result type from a workflow definition or header (decoded — z.output).
  */
 export type InferWorkflowResult<W> = W extends {
-  result?: infer TResultSchema;
+  readonly result: infer TResultSchema extends StandardSchemaV1<unknown, unknown>;
 }
-  ? TResultSchema extends StandardSchemaV1<unknown, unknown>
-    ? StandardSchemaV1.InferOutput<TResultSchema>
-    : void
-  : void;
+  ? StandardSchemaV1.InferOutput<TResultSchema>
+  : never;
 
 /**
  * Extract channels from a workflow definition or header.
@@ -179,23 +177,19 @@ export type InferWorkflowArgsSchema<W> = W extends { args: infer TArgSchema }
  * Used for StartWorkflowOptions.metadata.
  */
 export type InferWorkflowMetadataInput<W> = W extends {
-  metadata?: infer TMetadataSchema;
+  readonly metadata: infer TMetadataSchema extends StandardSchemaV1<unknown, unknown>;
 }
-  ? TMetadataSchema extends StandardSchemaV1<unknown, unknown>
-    ? StandardSchemaV1.InferInput<TMetadataSchema>
-    : void
-  : void;
+  ? StandardSchemaV1.InferInput<TMetadataSchema>
+  : never;
 
 /**
  * Extract metadata type from a workflow definition or header (decoded — z.output).
  */
 export type InferWorkflowMetadata<W> = W extends {
-  metadata?: infer TMetadataSchema;
+  readonly metadata: infer TMetadataSchema extends StandardSchemaV1<unknown, unknown>;
 }
-  ? TMetadataSchema extends StandardSchemaV1<unknown, unknown>
-    ? StandardSchemaV1.InferOutput<TMetadataSchema>
-    : void
-  : void;
+  ? StandardSchemaV1.InferOutput<TMetadataSchema>
+  : never;
 
 /**
  * Extract declared workflow business errors.

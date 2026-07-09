@@ -60,6 +60,7 @@ const catalogWorkflow = catalogInterface.implement({
 const shadowInterface = defineWorkflowInterface({
   name: "client14Shadow",
   args: z.object({ flag: z.boolean() }),
+  metadata: z.undefined(),
   result: z.void(),
 });
 
@@ -72,6 +73,7 @@ const shadowWorkflow = shadowInterface.implement({
 const workerHeader = defineWorkflowHeader({
   name: "client14Worker",
   args: z.object({ task: z.string() }),
+  metadata: z.undefined(),
   result: z.number(),
 });
 
@@ -83,6 +85,7 @@ const workerInterface = workerHeader.extend({
 const orchestratorHeader = defineWorkflowHeader({
   name: "client14Orchestrator",
   args: z.object({ ref: z.string() }),
+  metadata: z.undefined(),
   result: z.void(),
 });
 
@@ -314,18 +317,21 @@ void _client14ExtendSurface(client14);
 const extendWrongNameHeader = defineWorkflowHeader({
   name: "extContractWN",
   args: z.void(),
+  metadata: z.undefined(),
   result: z.void(),
 });
 
 const extendWrongNameIface = defineWorkflowInterface({
   name: "extContractWN_Other",
   args: z.void(),
+  metadata: z.undefined(),
   result: z.void(),
 });
 
 const extendChHeader = defineWorkflowHeader({
   name: "extContractCh",
   args: z.void(),
+  metadata: z.undefined(),
   result: z.void(),
   channels: { ch1: z.object({ a: z.string() }) },
 });
@@ -333,6 +339,7 @@ const extendChHeader = defineWorkflowHeader({
 const extendChIfaceWrongKey = defineWorkflowInterface({
   name: "extContractCh",
   args: z.void(),
+  metadata: z.undefined(),
   result: z.void(),
   channels: { ch2: z.object({ a: z.string() }) },
 });
@@ -340,6 +347,7 @@ const extendChIfaceWrongKey = defineWorkflowInterface({
 const extendChIfaceOk = defineWorkflowInterface({
   name: "extContractCh",
   args: z.void(),
+  metadata: z.undefined(),
   result: z.void(),
   channels: {
     ch1: z.object({ a: z.string() }),
@@ -350,12 +358,14 @@ const extendChIfaceOk = defineWorkflowInterface({
 const extendArgsHeader = defineWorkflowHeader({
   name: "extContractArgs",
   args: z.object({ a: z.array(z.object({ b: z.string() })) }),
+  metadata: z.undefined(),
   result: z.void(),
 });
 
 const extendArgsIfaceWrong = defineWorkflowInterface({
   name: "extContractArgs",
   args: z.object({ a: z.array(z.object({ b: z.number() })) }),
+  metadata: z.undefined(),
   result: z.void(),
 });
 
@@ -363,6 +373,7 @@ const extendArgsIfaceWrong = defineWorkflowInterface({
 const extendChPayloadHeader = defineWorkflowHeader({
   name: "extContractChPayload",
   args: z.void(),
+  metadata: z.undefined(),
   result: z.void(),
   channels: { ch1: z.object({ n: z.number() }) },
 });
@@ -370,6 +381,7 @@ const extendChPayloadHeader = defineWorkflowHeader({
 const extendChPayloadIfaceWrong = defineWorkflowInterface({
   name: "extContractChPayload",
   args: z.void(),
+  metadata: z.undefined(),
   result: z.void(),
   channels: { ch1: z.object({ n: z.string() }) },
 });

@@ -37,6 +37,7 @@ import type { Assert, IsEqual } from "./type-assertions";
 const _fooHeader = defineWorkflowHeader({
   name: "foo",
   args: z.object({ id: z.string() }),
+  metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
 });
 
@@ -45,6 +46,7 @@ type _FooHeaderName = Assert<IsEqual<typeof _fooHeader.name, "foo">>;
 const _barHeader = defineWorkflowHeader({
   name: "bar",
   args: z.object({ id: z.string() }),
+  metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
 });
 
@@ -71,6 +73,7 @@ type _AttachedBrandSeparation = Assert<
 const _fooWorkflow = defineWorkflow({
   name: "fooWorkflow",
   args: z.undefined(),
+  metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
   async execute() {
     return { ok: true };
@@ -82,6 +85,7 @@ type _FooWorkflowName = Assert<IsEqual<typeof _fooWorkflow.name, "fooWorkflow">>
 const _barWorkflow = defineWorkflow({
   name: "barWorkflow",
   args: z.undefined(),
+  metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
   async execute() {
     return { ok: true };
@@ -196,6 +200,7 @@ declare const dynamicName: string;
 const _dynamicWorkflow = defineWorkflow({
   name: dynamicName,
   args: z.undefined(),
+  metadata: z.undefined(),
   result: z.void(),
   async execute() {},
 });

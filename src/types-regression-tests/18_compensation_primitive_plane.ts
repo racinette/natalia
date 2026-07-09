@@ -55,6 +55,7 @@ const compPlaneStep = defineStep({
 const compPlaneWorkflow = defineWorkflow({
   name: "compPlaneWorkflow",
   args: z.undefined(),
+  metadata: z.undefined(),
   steps: { compPlaneStep },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx) {

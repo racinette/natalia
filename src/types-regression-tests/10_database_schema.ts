@@ -47,6 +47,7 @@ type _PlainStringNotAssignableToRequestCompId = Assert<
 const _childHeader = defineWorkflowHeader({
   name: "schemaChild",
   args: z.object({ id: z.string() }),
+  metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
 });
 
@@ -62,6 +63,7 @@ type _AttachedIdIsString = Assert<
 const _otherHeader = defineWorkflowHeader({
   name: "schemaOther",
   args: z.object({ id: z.string() }),
+  metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
 });
 declare const _otherAttachedId: AttachedChildWorkflowId<typeof _otherHeader>;

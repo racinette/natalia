@@ -64,6 +64,7 @@ const timedStep = defineStep({
 const childHeader = defineWorkflowHeader({
   name: "callTimeOptionsChild",
   args: z.object({ id: z.string() }),
+  metadata: z.undefined(),
   result: z.object({ childValue: z.string() }),
   channels: {
     cancel: z.object({ reason: z.string() }),
@@ -77,6 +78,8 @@ const childHeader = defineWorkflowHeader({
 const externalHeader = defineWorkflowHeader({
   name: "callTimeOptionsExternal",
   args: z.undefined(),
+  metadata: z.undefined(),
+  result: z.void(),
   channels: {
     ping: z.object({ at: z.string() }),
   },
@@ -95,6 +98,7 @@ const humanReviewRequest = defineRequest({
 export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
   name: "callTimeOptionsAcceptance",
   args: z.undefined(),
+  metadata: z.undefined(),
   steps: { timedStep },
   childWorkflows: { child: childHeader },
   externalWorkflows: { ops: externalHeader, child: childHeader },

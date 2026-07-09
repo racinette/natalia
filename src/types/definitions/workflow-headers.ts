@@ -16,9 +16,9 @@ export type WorkflowDefinitions = Record<string, AnyWorkflowHeader>;
  *
  * Captures the contract clients need to interact with workflow instances:
  * - identity (`name`)
- * - start contract (`args`, `metadata`)
+ * - start contract (`args`, `metadata`, `result`)
  * - interaction surface (`channels`, `streams`, `events`)
- * - terminal payload contract (`result`)
+ * - terminal payload contract (`result` schema)
  *
  * This type intentionally excludes implementation details (`execute`, `steps`,
  * `rng`, hooks, etc.). Full `WorkflowDefinition` objects satisfy this
@@ -34,14 +34,8 @@ export interface PublicWorkflowHeader<
     void,
     void
   >,
-  TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<
-    void,
-    void
-  >,
-  TResult extends JsonSchemaConstraint = StandardSchemaV1<
-    void,
-    void
-  >,
+  TMetadata extends JsonObjectSchemaConstraint = JsonObjectSchemaConstraint,
+  TResult extends JsonSchemaConstraint = JsonSchemaConstraint,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
   TIdempotencyKeyFactory extends
     | ((args: StandardSchemaV1.InferOutput<TArgs>) => string)
@@ -53,8 +47,8 @@ export interface PublicWorkflowHeader<
   readonly events?: TEvents;
   readonly attributes?: TAttributes;
   readonly args: TArgs;
-  readonly metadata?: TMetadata;
-  readonly result?: TResult;
+  readonly metadata: TMetadata;
+  readonly result: TResult;
   readonly errors?: TErrors;
   /**
    * Optional factory deriving this workflow's idempotency key from its decoded
@@ -99,6 +93,9 @@ export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
  * ```typescript
  * const managerHeader = defineWorkflowHeader({
  *   name: "scheduler",
+ *   args: z.undefined(),
+ *   metadata: z.undefined(),
+ *   result: z.void(),
  *   channels: { done: DonePayload },
  * });
  *
@@ -118,7 +115,12 @@ export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
  *
  * A workflow can also reference itself (recursive/fractal workflows):
  * ```typescript
- * const treeHeader = defineWorkflowHeader({ name: "tree", args: TreeArgs });
+ * const treeHeader = defineWorkflowHeader({
+ *   name: "tree",
+ *   args: TreeArgs,
+ *   metadata: z.undefined(),
+ *   result: z.void(),
+ * });
  * const treeWorkflow = treeHeader.extend({
  *   childWorkflows: { node: treeHeader },
  * }).implement({
@@ -133,14 +135,8 @@ export interface WorkflowHeader<
     void,
     void
   >,
-  TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<
-    void,
-    void
-  >,
-  TResult extends JsonSchemaConstraint = StandardSchemaV1<
-    void,
-    void
-  >,
+  TMetadata extends JsonObjectSchemaConstraint = JsonObjectSchemaConstraint,
+  TResult extends JsonSchemaConstraint = JsonSchemaConstraint,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
   TIdempotencyKeyFactory extends
     | ((args: StandardSchemaV1.InferOutput<TArgs>) => string)
@@ -149,8 +145,8 @@ export interface WorkflowHeader<
   readonly name: TName;
   readonly channels?: TChannels;
   readonly args: TArgs;
-  readonly metadata?: TMetadata;
-  readonly result?: TResult;
+  readonly metadata: TMetadata;
+  readonly result: TResult;
   readonly errors?: TErrors;
   /**
    * Optional factory deriving this workflow's idempotency key from its decoded

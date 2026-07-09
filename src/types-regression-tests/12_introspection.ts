@@ -54,6 +54,7 @@ import { session } from "./test-session";
 const followUpHeader = defineWorkflowHeader({
   name: "introspectionFollowUp",
   args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
   channels: { nudge: z.object({ at: z.string() }) },
   errors: {
@@ -124,12 +125,14 @@ const pingRequest = defineRequest({
 const auditHeader = defineWorkflowHeader({
   name: "introspectionAudit",
   args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
   result: z.object({ persisted: z.boolean() }),
 });
 
 const opsChildWorkflow = defineWorkflow({
   name: "introspectionOpsChild",
   args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
   result: z.object({ done: z.boolean() }),
   channels: {
     childCommand: z.object({ source: z.string() }),

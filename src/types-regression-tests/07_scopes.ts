@@ -30,6 +30,7 @@ const approvalRequest = defineRequest({
 const followUpHeader = defineWorkflowHeader({
   name: "scopesFollowUp",
   args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
   channels: { notify: z.object({ msg: z.string() }) },
   errors: { FollowUpFailed: z.object({ orderId: z.string() }) },
@@ -42,6 +43,7 @@ const followUpHeader = defineWorkflowHeader({
 export const scopesAcceptanceWorkflow = defineWorkflow({
   name: "scopesAcceptance",
   args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
   steps: { normalize: normalizeStep },
   requests: { approval: approvalRequest },
   childWorkflows: { followUp: followUpHeader },

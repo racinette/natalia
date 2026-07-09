@@ -809,11 +809,15 @@ function assertWorkflowHeaderExtendHasNoLockedKeys(extension: object): void {
  * const workerHeader = defineWorkflowHeader({
  *   name: "worker",
  *   args: z.undefined(),
+ *   metadata: z.undefined(),
+ *   result: z.void(),
  *   channels: { task: TaskPayload },
  * });
  * const managerHeader = defineWorkflowHeader({
  *   name: "schedulerManager",
  *   args: z.undefined(),
+ *   metadata: z.undefined(),
+ *   result: z.void(),
  *   channels: { workerDone: WorkerDonePayload },
  * });
  *
@@ -832,7 +836,12 @@ function assertWorkflowHeaderExtendHasNoLockedKeys(extension: object): void {
  * });
  *
  * // Self-referential workflow (recursive tree)
- * const treeHeader = defineWorkflowHeader({ name: "tree", args: TreeArgs });
+ * const treeHeader = defineWorkflowHeader({
+ *   name: "tree",
+ *   args: TreeArgs,
+ *   metadata: z.undefined(),
+ *   result: z.void(),
+ * });
  * const treeWorkflow = treeHeader.extend({
  *   childWorkflows: { attached: { subtree: treeHeader } },
  * }).implement({
@@ -843,18 +852,18 @@ function assertWorkflowHeaderExtendHasNoLockedKeys(extension: object): void {
 export function defineWorkflowHeader<
   TName extends string,
   TArgs extends JsonSchemaConstraint,
+  TMetadata extends JsonObjectSchemaConstraint,
+  TResult extends JsonSchemaConstraint,
   TChannels extends ChannelDefinitions = Record<string, never>,
-  TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<void, void>,
-  TResult extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
   TIdempotencyKeyFactory extends (args: StandardSchemaV1.InferOutput<TArgs>) => string =
     (args: StandardSchemaV1.InferOutput<TArgs>) => never,
 >(config: {
   name: TName;
   args: TArgs;
+  metadata: TMetadata;
+  result: TResult;
   channels?: TChannels;
-  metadata?: TMetadata;
-  result?: TResult;
   errors?: TErrors;
   idempotencyKeyFactory?: TIdempotencyKeyFactory;
 }) {
@@ -878,23 +887,19 @@ export function defineWorkflowHeader<
   ) {
     throw new Error("args must be a standard schema");
   }
-  if (config.metadata !== undefined) {
-    if (
-      !config.metadata ||
-      typeof config.metadata !== "object" ||
-      !("~standard" in config.metadata)
-    ) {
-      throw new Error("metadata must be a standard schema");
-    }
+  if (
+    !config.metadata ||
+    typeof config.metadata !== "object" ||
+    !("~standard" in config.metadata)
+  ) {
+    throw new Error("metadata must be a standard schema");
   }
-  if (config.result !== undefined) {
-    if (
-      !config.result ||
-      typeof config.result !== "object" ||
-      !("~standard" in config.result)
-    ) {
-      throw new Error("result must be a standard schema");
-    }
+  if (
+    !config.result ||
+    typeof config.result !== "object" ||
+    !("~standard" in config.result)
+  ) {
+    throw new Error("result must be a standard schema");
   }
   if (config.errors !== undefined) {
     validateErrorDefinitions(config.errors, "errors");
@@ -972,9 +977,9 @@ export function defineWorkflowInterface<
   TRequests extends RequestInterfaces = Record<string, never>,
   TQueues extends QueueInterfaces = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
-  TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
+  TResultSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
-  TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<void, void>,
+  TMetadata extends JsonObjectSchemaConstraint = JsonObjectSchemaConstraint,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
@@ -1055,10 +1060,12 @@ export function defineWorkflowInterface<
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Workflow name must be a non-empty string");
   }
-  if (config.result !== undefined) {
-    if (!config.result || !("~standard" in config.result)) {
-      throw new Error("result must be a standard schema");
-    }
+  if (
+    !config.result ||
+    typeof config.result !== "object" ||
+    !("~standard" in config.result)
+  ) {
+    throw new Error("result must be a standard schema");
   }
   if (config.channels !== undefined) {
     if (typeof config.channels !== "object" || Array.isArray(config.channels)) {
@@ -1225,10 +1232,12 @@ export function defineWorkflowInterface<
   ) {
     throw new Error("args must be a standard schema");
   }
-  if (config.metadata !== undefined) {
-    if (!config.metadata || typeof config.metadata !== "object" || !("~standard" in config.metadata)) {
-      throw new Error("metadata must be a standard schema");
-    }
+  if (
+    !config.metadata ||
+    typeof config.metadata !== "object" ||
+    !("~standard" in config.metadata)
+  ) {
+    throw new Error("metadata must be a standard schema");
   }
   if (config.errors !== undefined) {
     validateErrorDefinitions(config.errors, "errors");
@@ -1423,14 +1432,17 @@ export function defineWorkflowInterface<
  * Errors are declared on `defineWorkflow.errors` and thrown via
  * `ctx.errors.X(message, details?)`.
  *
- * `args` is required on every workflow. Use `z.undefined()` when there is no
- * start payload; `ctx.args` is then typed as `undefined`.
+ * `args`, `metadata`, and `result` are required on every workflow. Use
+ * `z.undefined()` when there is no start payload or metadata; use `z.void()`
+ * when the workflow returns no terminal payload.
  *
  * See REFACTOR.MD for the authoritative public API.
  */
 export function defineWorkflow<
   TName extends string,
   TArgs extends JsonSchemaConstraint,
+  TMetadata extends JsonObjectSchemaConstraint,
+  TResultSchema extends JsonSchemaConstraint,
   TChannels extends ChannelDefinitions = Record<string, never>,
   TStreams extends StreamDefinitions = Record<string, never>,
   TEvents extends EventDefinitions = Record<string, never>,
@@ -1440,8 +1452,6 @@ export function defineWorkflow<
   TQueues extends QueueDefinitions = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
-  TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
-  TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<void, void>,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
@@ -1449,6 +1459,9 @@ export function defineWorkflow<
     (args: StandardSchemaV1.InferOutput<TArgs>) => never,
 >(config: {
   name: TName;
+  args: TArgs;
+  metadata: TMetadata;
+  result: TResultSchema;
   channels?: TChannels;
   streams?: TStreams;
   events?: TEvents;
@@ -1460,9 +1473,6 @@ export function defineWorkflow<
   externalWorkflows?: TExternalWorkflows;
   patches?: TPatches;
   rng?: TRng;
-  result?: TResultSchema;
-  args: TArgs;
-  metadata?: TMetadata;
   errors?: TErrors;
   idempotencyKeyFactory?: TIdempotencyKeyFactory;
   retention?:
@@ -1514,11 +1524,13 @@ export function defineWorkflow<
     throw new Error("Workflow name must be a non-empty string");
   }
 
-  // Validate result schema if provided
-  if (config.result !== undefined) {
-    if (!config.result || !("~standard" in config.result)) {
-      throw new Error("result must be a standard schema");
-    }
+  // Validate result schema
+  if (
+    !config.result ||
+    typeof config.result !== "object" ||
+    !("~standard" in config.result)
+  ) {
+    throw new Error("result must be a standard schema");
   }
 
   // Validate channels
@@ -1680,15 +1692,13 @@ export function defineWorkflow<
     throw new Error("args must be a standard schema");
   }
 
-  // Validate metadata schema if provided
-  if (config.metadata !== undefined) {
-    if (
-      !config.metadata ||
-      typeof config.metadata !== "object" ||
-      !("~standard" in config.metadata)
-    ) {
-      throw new Error("metadata must be a standard schema");
-    }
+  // Validate metadata schema
+  if (
+    !config.metadata ||
+    typeof config.metadata !== "object" ||
+    !("~standard" in config.metadata)
+  ) {
+    throw new Error("metadata must be a standard schema");
   }
 
   // Validate errors if provided

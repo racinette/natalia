@@ -101,6 +101,7 @@ const compensableStep = defineStep({
 export const haltModelAcceptanceWorkflow = defineWorkflow({
   name: "haltModelAcceptance",
   args: z.object({ id: z.string() }),
+  metadata: z.undefined(),
   errors: {
     WorkflowError: z.object({ id: z.string() }),
   },

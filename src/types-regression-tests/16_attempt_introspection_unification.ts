@@ -144,6 +144,7 @@ const chargeStep = defineStep({
 const aiuWorkflow = defineWorkflow({
   name: "aiuWorkflow",
   args: z.undefined(),
+  metadata: z.undefined(),
   requests: {
     compensable: compensableRequest,
     voidComp: voidCompRequest,

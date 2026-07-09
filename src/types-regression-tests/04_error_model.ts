@@ -17,6 +17,7 @@ const PaymentDeclinedDetails = z.object({
 const childHeader = defineWorkflowHeader({
   name: "errorModelChild",
   args: z.object({ id: z.string() }),
+  metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
   errors: {
     ChildFailed: z.object({ reason: z.string() }),
@@ -37,6 +38,7 @@ const noopStep = defineStep({
 export const errorModelAcceptanceWorkflow = defineWorkflow({
   name: "errorModelAcceptance",
   args: z.object({ amount: z.number() }),
+  metadata: z.undefined(),
   errors: {
     PaymentDeclined: PaymentDeclinedDetails,
     MissingApproval: true,

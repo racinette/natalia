@@ -135,6 +135,7 @@ const workflowOnlyRequest = defineRequest({
 export const contextIsolationAcceptanceWorkflow = defineWorkflow({
   name: "contextIsolationAcceptance",
   args: z.undefined(),
+  metadata: z.undefined(),
   steps: { compensableStep, workflowOnlyStep },
   requests: { workflowOnlyRequest },
   errors: {

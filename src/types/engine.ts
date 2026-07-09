@@ -1208,9 +1208,7 @@ type EventsKeysSubsetForExtend<
 type MetadataCompatibleForExtend<
   W extends AnyPublicWorkflowHeader,
   TW extends AnyPublicWorkflowHeader,
-> = [InferWorkflowMetadata<W>] extends [void]
-  ? true
-  : MutuallyAssignable<InferWorkflowMetadata<W>, InferWorkflowMetadata<TW>>;
+> = MutuallyAssignable<InferWorkflowMetadata<W>, InferWorkflowMetadata<TW>>;
 
 /**
  * True when `TW` is a safe static widen of the graph-minimal header `W`
@@ -1249,9 +1247,9 @@ type HeaderOnlyExtendForWorkflowHandle<W extends AnyPublicWorkflowHeader> =
          * `WorkflowHeader` from `defineWorkflowHeader`. Pass a `WorkflowInterface` or
          * full `WorkflowDefinition` for the same workflow identity.
          *
-         * `TW` must match `W` on **`name`**, decoded **`args` / `result` / `metadata`**
-         * (when the header carries metadata), and every **`channels` / `streams` /
-         * `events`** key on `W` must exist on `TW` with mutually assignable schemas.
+         * `TW` must match `W` on **`name`**, decoded **`args` / `result` / `metadata`**,
+         * and every **`channels` / `streams` / `events`** key on `W` must exist on
+         * `TW` with mutually assignable schemas.
          */
         extend<const TW extends AnyPublicWorkflowHeader>(
           contract: TW & ExtendPublicContract<W, TW>,

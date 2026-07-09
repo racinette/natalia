@@ -84,6 +84,7 @@ defineStep({
 export const serializableStepArgsAcceptanceWorkflow = defineWorkflow({
   name: "serializableStepArgsAcceptance",
   args: z.undefined(),
+  metadata: z.undefined(),
   steps: { bookSerializableFlight },
   result: z.object({ confirmationId: z.string(), bookedAt: z.coerce.date() }),
   async execute(ctx) {
