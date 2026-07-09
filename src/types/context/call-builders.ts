@@ -2,8 +2,6 @@ import type { StandardSchemaV1 } from "../standard-schema";
 import type { ChannelDefinitions } from "../definitions/primitives";
 import type {
   HasIdempotencyFactory,
-  InferWorkflowArgsInput,
-  InferWorkflowArgsSchema,
   InferWorkflowChannels,
   InferWorkflowErrors,
   InferWorkflowMetadataInput,
@@ -163,7 +161,7 @@ type ChildStartOptionsWithDeadline<W extends AnyWorkflowHeader> = {
   readonly retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
 } & ({ readonly deadlineSeconds: number } | { readonly deadlineUntil: Date | number });
 
-interface ChildWorkflowUnifiedAccessorWithArgs<
+interface ChildWorkflowUnifiedAccessorFn<
   W extends AnyWorkflowHeader,
   TArgsSchema extends StandardSchemaV1<unknown, unknown>,
 > {
@@ -178,18 +176,6 @@ interface ChildWorkflowUnifiedAccessorWithArgs<
 
   (
     args: SchemaInvocationInput<TArgsSchema>,
-    opts: ChildStartOptions<W>,
-  ): AttachedChildWorkflowEntry<W, AttachedChildWorkflowAwaited<W>>;
-}
-
-interface ChildWorkflowUnifiedAccessorNoArgs<W extends AnyWorkflowHeader> {
-  (): AttachedChildWorkflowEntry<W, AttachedChildWorkflowAwaited<W>>;
-
-  (
-    opts: ChildStartOptionsWithDeadline<W>,
-  ): AttachedChildWorkflowEntry<W, AttachedChildWorkflowTimedAwaited<W>>;
-
-  (
     opts: ChildStartOptions<W>,
   ): AttachedChildWorkflowEntry<W, AttachedChildWorkflowAwaited<W>>;
 }
@@ -198,22 +184,14 @@ interface ChildWorkflowUnifiedAccessorNoArgs<W extends AnyWorkflowHeader> {
  * The unified child workflow accessor on `ctx.childWorkflows.<name>`.
  */
 export type ChildWorkflowUnifiedAccessor<W extends AnyWorkflowHeader> =
-  InferWorkflowArgsSchema<W> extends StandardSchemaV1<unknown, unknown>
-    ? ChildWorkflowUnifiedAccessorWithArgs<W, InferWorkflowArgsSchema<W>>
-    : ChildWorkflowUnifiedAccessorNoArgs<W>;
+  ChildWorkflowUnifiedAccessorFn<W, W["args"]>;
 
-interface CompensationChildWorkflowAccessorWithArgs<
+interface CompensationChildWorkflowAccessorFn<
   W extends AnyWorkflowHeader,
   TArgsSchema extends StandardSchemaV1<unknown, unknown>,
 > {
   (
     args: SchemaInvocationInput<TArgsSchema>,
-    opts?: CompensationChildWorkflowStartOptions<W>,
-  ): WorkflowEntry<WorkflowResult<InferWorkflowResult<W>>>;
-}
-
-interface CompensationChildWorkflowAccessorNoArgs<W extends AnyWorkflowHeader> {
-  (
     opts?: CompensationChildWorkflowStartOptions<W>,
   ): WorkflowEntry<WorkflowResult<InferWorkflowResult<W>>>;
 }
@@ -224,9 +202,7 @@ interface CompensationChildWorkflowAccessorNoArgs<W extends AnyWorkflowHeader> {
  * full `WorkflowResult<T>` — compensation must handle all outcomes.
  */
 export type CompensationChildWorkflowAccessor<W extends AnyWorkflowHeader> =
-  InferWorkflowArgsSchema<W> extends StandardSchemaV1<unknown, unknown>
-    ? CompensationChildWorkflowAccessorWithArgs<W, InferWorkflowArgsSchema<W>>
-    : CompensationChildWorkflowAccessorNoArgs<W>;
+  CompensationChildWorkflowAccessorFn<W, W["args"]>;
 
 // =============================================================================
 // REQUEST ACCESSOR
@@ -297,7 +273,7 @@ export type ExternalWorkflowStartOptions<W extends AnyWorkflowHeader> = {
     ? { readonly idempotencyKey?: never }
     : { readonly idempotencyKey: string });
 
-interface ExternalWorkflowAccessorWithArgs<
+interface ExternalWorkflowAccessorFn<
   W extends AnyWorkflowHeader,
   TArgsSchema extends StandardSchemaV1<unknown, unknown>,
 > {
@@ -323,18 +299,6 @@ interface ExternalWorkflowAccessorWithArgs<
   ): ExternalWorkflowHandle<InferWorkflowChannels<W>>;
 }
 
-interface ExternalWorkflowAccessorNoArgs<W extends AnyWorkflowHeader> {
-  get(
-    ...lookup: HasIdempotencyFactory<W> extends true
-      ? [args: InferWorkflowArgsInput<W>]
-      : [idempotencyKey: string]
-  ): ExternalWorkflowHandle<InferWorkflowChannels<W>>;
-
-  start(
-    opts: ExternalWorkflowStartOptions<W>,
-  ): ExternalWorkflowHandle<InferWorkflowChannels<W>>;
-}
-
 /**
  * External workflow accessor on `ctx.externalWorkflows.<name>`.
  *
@@ -344,7 +308,5 @@ interface ExternalWorkflowAccessorNoArgs<W extends AnyWorkflowHeader> {
  * - `start(...)` — create a new one.
  */
 export type ExternalWorkflowAccessor<W extends AnyWorkflowHeader> =
-  InferWorkflowArgsSchema<W> extends StandardSchemaV1<unknown, unknown>
-    ? ExternalWorkflowAccessorWithArgs<W, InferWorkflowArgsSchema<W>>
-    : ExternalWorkflowAccessorNoArgs<W>;
+  ExternalWorkflowAccessorFn<W, W["args"]>;
 

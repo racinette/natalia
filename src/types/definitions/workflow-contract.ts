@@ -14,11 +14,13 @@ import type {
   RequestCompensationDefinition,
   RequestDefinition,
   NonCompensableRequestDefinitions,
-  RequestDefinitions,
 } from "./requests";
 import type { RetryPolicyOptions } from "./policies";
 import type { RngDefinitions } from "./rng";
-import type { NonCompensableStepDefinitions, StepCompensationDefinition, StepDefinition, StepDefinitions } from "./steps";
+import type {
+  NonCompensableStepDefinitions,
+  StepCompensationDefinition,
+} from "./steps";
 import type { PublicWorkflowHeader, WorkflowDefinitions } from "./workflow-headers";
 
 /**
@@ -62,6 +64,71 @@ export type StepCompensationInterface<
 >;
 
 /**
+ * Interface compensation slice completed with implement-time `undo` /
+ * `externalWorkflows`. Preserves dependency generics declared on the interface.
+ */
+export type StepCompensationFromInterface<
+  TArgsSchema extends JsonSchemaConstraint,
+  TForwardResultSchema extends JsonSchemaConstraint,
+  C extends StepCompensationInterface,
+> = C extends StepCompensationInterface<
+  TArgsSchema,
+  TForwardResultSchema,
+  infer TCh,
+  infer TSt,
+  infer TE,
+  infer TA,
+  infer TS,
+  infer TR,
+  infer TQ,
+  infer TT,
+  infer TChild,
+  infer TRes
+>
+  ? C & {
+      readonly undo: StepCompensationDefinition<
+        TArgsSchema,
+        TForwardResultSchema,
+        TCh,
+        TSt,
+        TE,
+        TA,
+        TS,
+        TR,
+        TQ,
+        TT,
+        TChild,
+        WorkflowDefinitions,
+        TRes
+      >["undo"];
+      readonly externalWorkflows?: WorkflowDefinitions;
+    }
+  : never;
+
+/**
+ * Runnable step merged from a {@link StepInterface} plus `.implement()` bodies.
+ */
+export type StepDefinitionFromInterface<
+  TName extends string,
+  TArgsSchema extends JsonSchemaConstraint,
+  TResultSchema extends JsonSchemaConstraint,
+  TCompensation extends StepCompensationInterface | undefined,
+> = StepInterface<TName, TArgsSchema, TResultSchema, TCompensation> & {
+  readonly execute: (
+    args: StandardSchemaV1.InferOutput<TArgsSchema>,
+    opts: { signal: AbortSignal },
+  ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
+} & ([TCompensation] extends [StepCompensationInterface]
+  ? {
+      readonly compensation: StepCompensationFromInterface<
+        TArgsSchema,
+        TResultSchema,
+        TCompensation
+      >;
+    }
+  : Record<string, never>);
+
+/**
  * Step contract without `execute` / `undo` (see `defineStepInterface`).
  */
 export interface StepInterface<
@@ -83,23 +150,9 @@ export type StepInterfaces = Record<
   StepInterface<string, JsonSchemaConstraint, JsonSchemaConstraint, StepCompensationInterface | undefined>
 >;
 
-/** Request contract (declarative slice only). */
-export type RequestInterface<
-  TName extends string = string,
-  TPayloadSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
-  TResponseSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
-  TErrors extends ErrorDefinitions = Record<string, never>,
-  TCompensation extends
-    | RequestCompensationDefinition<
-        JsonSchemaConstraint | undefined,
-        ErrorDefinitions
-      >
-    | undefined = undefined,
-> = RequestDefinition<TName, TPayloadSchema, TResponseSchema, TErrors, TCompensation>;
-
 export type RequestInterfaces = Record<
   string,
-  RequestInterface<
+  RequestDefinition<
     string,
     JsonSchemaConstraint,
     JsonSchemaConstraint,
@@ -108,21 +161,9 @@ export type RequestInterfaces = Record<
   >
 >;
 
-/**
- * Queue contract (declarative slice only).
- *
- * Handler registration lives on `client.queues.<definitionName>`.
- */
-export type QueueInterface<
-  TName extends string = string,
-  TMessageSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
-  TErrors extends ErrorDefinitions = Record<string, never>,
-  TDefaultTtl extends number | Date | null | undefined = undefined,
-> = QueueDefinition<TName, TMessageSchema, TErrors, TDefaultTtl>;
-
 export type QueueInterfaces = Record<
   string,
-  QueueInterface<
+  QueueDefinition<
     string,
     JsonSchemaConstraint,
     ErrorDefinitions,
@@ -132,13 +173,7 @@ export type QueueInterfaces = Record<
 
 export type StepsFromInterfaces<T extends StepInterfaces> = {
   [K in keyof T]: T[K] extends StepInterface<infer N, infer A, infer R, infer C>
-    ? StepDefinition<
-        N,
-        A,
-        R,
-         
-        C extends StepCompensationInterface ? any : undefined
-      >
+    ? StepDefinitionFromInterface<N, A, R, C>
     : never;
 };
 
@@ -149,7 +184,7 @@ type RequestErrorsFromInterfaceSlice<T> = T extends { readonly errors: infer E }
   : Record<string, never>;
 
 export type RequestsFromInterfaces<T extends RequestInterfaces> = {
-  [K in keyof T]: T[K] extends RequestInterface<
+  [K in keyof T]: T[K] extends RequestDefinition<
     infer N,
     infer P,
     infer R,
@@ -191,7 +226,7 @@ export type WorkflowImplementInput<
   /** Other workflows reachable from `execute` via `ctx.externalWorkflows` — implementation-only, not part of `WorkflowInterface`. */
   readonly externalWorkflows?: TExternalWorkflows;
   execute: (
-    ctx: WorkflowContextForInterface<
+    ctx: WorkflowExecuteContext<
       TChannels,
       TStreams,
       TEvents,
@@ -203,8 +238,8 @@ export type WorkflowImplementInput<
       TExternalWorkflows,
       TPatches,
       TRng,
-      TArgs,
-      TErrors
+      TErrors,
+      TArgs
     >,
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
 } & ([TSteps] extends [Record<string, never>]
@@ -272,55 +307,22 @@ export interface WorkflowInterface<
  * Header-locked keys: not allowed on `defineWorkflowHeader(...).extend({ ... })` so
  * callers cannot override the header slice when moving to a `WorkflowInterface`.
  */
-export type WorkflowHeaderLockedForExtend =
-  | "name"
-  | "channels"
-  | "args"
-  | "metadata"
-  | "result"
-  | "errors";
+export const WORKFLOW_HEADER_LOCKED_IN_EXTEND = [
+  "name",
+  "channels",
+  "args",
+  "metadata",
+  "result",
+  "errors",
+] as const;
 
-/**
- * Additive interface fields layered on top of an existing `WorkflowHeader` (streams,
- * events, steps, childWorkflows, …). Header-locked keys are omitted from this shape.
- */
-export type WorkflowInterfaceExtendFromHeader<
-  TName extends string,
-  TChannels extends ChannelDefinitions,
-  TArgs extends JsonSchemaConstraint,
-  TMetadata extends JsonObjectSchemaConstraint,
-  TResult extends JsonSchemaConstraint,
-  TErrors extends WorkflowErrorDefinitions,
-> = Pick<
-  WorkflowInterface<
-    TName,
-    TChannels,
-    StreamDefinitions,
-    EventDefinitions,
-    AttributeDefinitions,
-    StepInterfaces,
-    RequestInterfaces,
-    QueueInterfaces,
-    WorkflowDefinitions,
-    TResult,
-    TArgs,
-    TMetadata,
-    TErrors,
-    PatchDefinitions,
-    RngDefinitions
-  >,
-  | "streams"
-  | "events"
-  | "attributes"
-  | "steps"
-  | "requests"
-  | "queues"
-  | "childWorkflows"
-  | "patches"
-  | "rng"
-  | "retention"
-  | "evictAfterSeconds"
->;
+type WorkflowHeaderLockedForExtend =
+  (typeof WORKFLOW_HEADER_LOCKED_IN_EXTEND)[number];
+
+/** Rejects header-locked keys on `.extend({ ... })` payloads at compile time. */
+export type ForbidWorkflowHeaderLockedFieldsInExtend = {
+  readonly [K in WorkflowHeaderLockedForExtend]?: never;
+};
 
 export type AnyWorkflowInterface = WorkflowInterface<
   string,
@@ -338,37 +340,4 @@ export type AnyWorkflowInterface = WorkflowInterface<
   WorkflowErrorDefinitions,
   PatchDefinitions,
   RngDefinitions
->;
-
-/**
- * Context parameter type for `execute` on a workflow whose shape matches `WorkflowInterface`.
- */
-export type WorkflowContextForInterface<
-  TChannels extends ChannelDefinitions,
-  TStreams extends StreamDefinitions,
-  TEvents extends EventDefinitions,
-  TAttributes extends AttributeDefinitions,
-  TSteps extends StepDefinitions,
-  TRequests extends RequestDefinitions,
-  TQueues extends QueueDefinitions,
-  TChildren extends WorkflowDefinitions,
-  TExternalWorkflows extends WorkflowDefinitions,
-  TPatches extends PatchDefinitions,
-  TRng extends RngDefinitions,
-  TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
-  TErrors extends WorkflowErrorDefinitions = Record<string, never>,
-> = WorkflowExecuteContext<
-  TChannels,
-  TStreams,
-  TEvents,
-  TAttributes,
-  TSteps,
-  TRequests,
-  TQueues,
-  TChildren,
-  TExternalWorkflows,
-  TPatches,
-  TRng,
-  TErrors,
-  TArgs
 >;

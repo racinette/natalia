@@ -40,7 +40,10 @@ import type {
   StepsFromInterfaces,
   RequestsFromInterfaces,
   QueuesFromInterfaces,
+  ForbidWorkflowHeaderLockedFieldsInExtend,
+  StepDefinitionFromInterface,
 } from "./types/definitions/workflow-contract";
+import { WORKFLOW_HEADER_LOCKED_IN_EXTEND } from "./types/definitions/workflow-contract";
 
 export {
   AttemptError,
@@ -313,9 +316,7 @@ export function defineStepInterface<
             JsonSchemaConstraint | undefined
           >;
         },
-  ) =>
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors widened `defineStep` compensation slot for heterogeneous `implement` payloads
-    StepDefinition<TName, TArgsSchema, TResultSchema, TCompensation extends undefined ? undefined : any>;
+  ) => StepDefinitionFromInterface<TName, TArgsSchema, TResultSchema, TCompensation>;
 } {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Step name must be a non-empty string");
@@ -370,7 +371,12 @@ export function defineStepInterface<
           ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
         }).execute,
         compensation: mergedComp,
-      } as Parameters<typeof defineStep>[0]);
+      } as Parameters<typeof defineStep>[0]) as unknown as StepDefinitionFromInterface<
+        TName,
+        TArgsSchema,
+        TResultSchema,
+        TCompensation
+      >;
     },
   } as StepInterface<TName, TArgsSchema, TResultSchema, TCompensation> & {
     readonly __nataliaAuthoringKind: "step-interface";
@@ -405,9 +411,7 @@ export function defineStepInterface<
               JsonSchemaConstraint | undefined
             >;
           },
-    ) =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- cast return mirrors widened `defineStep` compensation slot
-      StepDefinition<TName, TArgsSchema, TResultSchema, TCompensation extends undefined ? undefined : any>;
+    ) => StepDefinitionFromInterface<TName, TArgsSchema, TResultSchema, TCompensation>;
   };
 }
 
@@ -717,15 +721,6 @@ export function defineTopic(config: {
 // DEFINE WORKFLOW HEADER
 // =============================================================================
 
-const WORKFLOW_HEADER_LOCKED_IN_EXTEND = [
-  "name",
-  "channels",
-  "args",
-  "metadata",
-  "result",
-  "errors",
-] as const;
-
 type ExtStreamsSel<Ext> = Ext extends { streams?: infer St }
   ? St extends StreamDefinitions
     ? St
@@ -779,15 +774,6 @@ type ExtRngSel<Ext> = Ext extends { rng?: infer G }
     ? G
     : Record<string, never>
   : Record<string, never>;
-
-type ForbidWorkflowHeaderOverrides = {
-  readonly name?: never;
-  readonly channels?: never;
-  readonly args?: never;
-  readonly metadata?: never;
-  readonly result?: never;
-  readonly errors?: never;
-};
 
 function assertWorkflowHeaderExtendHasNoLockedKeys(extension: object): void {
   for (const k of WORKFLOW_HEADER_LOCKED_IN_EXTEND) {
@@ -917,7 +903,7 @@ export function defineWorkflowHeader<
     ...config,
     __nataliaAuthoringKind: "header" as const,
     extend: <const Ext extends object>(
-      extension: Ext & ForbidWorkflowHeaderOverrides,
+      extension: Ext & ForbidWorkflowHeaderLockedFieldsInExtend,
     ) => {
       assertWorkflowHeaderExtendHasNoLockedKeys(extension);
       return defineWorkflowInterface<

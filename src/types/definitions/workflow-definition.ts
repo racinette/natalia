@@ -94,21 +94,6 @@ export interface WorkflowDefinition<
     TErrors,
     TIdempotencyKeyFactory
   > {
-  /** Unique workflow name */
-  readonly name: TName;
-
-  /** Channel definitions */
-  readonly channels?: TChannels;
-
-  /** Stream definitions */
-  readonly streams?: TStreams;
-
-  /** Event definitions */
-  readonly events?: TEvents;
-
-  /** Attribute definitions */
-  readonly attributes?: TAttributes;
-
   /** Step definitions */
   readonly steps?: TSteps;
 
@@ -137,27 +122,6 @@ export interface WorkflowDefinition<
    * RNG definitions for deterministic randomness.
    */
   readonly rng?: TRng;
-
-  /** Result schema for encoding/decoding workflow result */
-  readonly result?: TResultSchema;
-
-  /** Arguments schema (required — use `z.undefined()` when the workflow has no args). */
-  readonly args: TArgs;
-
-  /**
-   * Optional immutable metadata schema for workflow instances.
-   */
-  readonly metadata?: TMetadata;
-
-  /** Declared workflow business errors. */
-  readonly errors?: TErrors;
-
-  /**
-   * Optional factory deriving this workflow's idempotency key from its decoded
-   * args. When present, identity is derived from args (callers must not pass an
-   * explicit `idempotencyKey`); when absent, the caller owns the key.
-   */
-  readonly idempotencyKeyFactory?: TIdempotencyKeyFactory;
 
   /**
    * Workflow retention policy for garbage collection.

@@ -369,19 +369,6 @@ export type InferRequestCompensationErrors<R> = R extends {
   : Record<string, never>;
 
 /**
- * Compensation-block `errors` map from a `defineRequest` `compensation` value.
- */
-export type InferRequestCompensationErrorsFromBlock<
-  TComp extends true | RequestCompensationConfig<any, any>,
-> = TComp extends { readonly errors?: infer E }
-  ? [E] extends [undefined]
-    ? Record<string, never>
-    : E extends ErrorDefinitions
-      ? E
-      : Record<string, never>
-  : Record<string, never>;
-
-/**
  * True when request compensation declared a non-empty `errors` map.
  */
 export type HasRequestCompensationErrors<R> =
