@@ -7,7 +7,6 @@
 import { z } from "zod";
 import { createTestWorkflowClient } from "./test-client";
 import {
-  defineWorkflow,
   defineWorkflowHeader,
   defineWorkflowInterface,
 } from "../workflow";
@@ -87,9 +86,11 @@ const orchestratorHeader = defineWorkflowHeader({
   result: z.void(),
 });
 
-const orchestratorWorkflow = defineWorkflow({
-  ...orchestratorHeader,
+const orchestratorInterface = orchestratorHeader.extend({
   childWorkflows: { worker: workerHeader },
+});
+
+const orchestratorWorkflow = orchestratorInterface.implement({
   async execute() {
     return undefined;
   },

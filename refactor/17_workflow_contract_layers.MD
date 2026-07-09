@@ -7,11 +7,9 @@ Public layering so cycle-safe **`WorkflowHeader`** references do not force weak 
 | Layer | Role |
 |-------|------|
 | **`defineWorkflowHeader`** | Minimal graph-safe descriptor (unchanged intent). |
-| **`defineWorkflowInterface`** | **`WorkflowInterface`** — full declarative **public** contract (streams, events, children, requests, step interfaces, …) **without** `execute` / step bodies. Built from **`...header`** plus additive fields. **`external`** is **not** on the interface — pass it on **`.implement({ external, … })`** (implementation-only, for `ctx.external`). |
+| **`defineWorkflowInterface`** | **`WorkflowInterface`** — full declarative **public** contract (streams, events, children, requests, step interfaces, …) **without** `execute` / step bodies. Built via **`header.extend({ … })`** or standalone. **`external`** is **not** on the interface — pass it on **`.implement({ external, … })`** (implementation-only, for `ctx.external`). |
 | **`defineStepInterface`** | **`StepInterface`** — step contract without `execute` / `undo`. |
 | **`.implement(...)`** | Produces concrete **`WorkflowDefinition`** / **`StepDefinition`**, type-checked against the interface. |
-
-**Skip path:** `defineWorkflow({ ...header, execute, ... })` when a team does not want a separate interface type.
 
 ## Authoring chain
 

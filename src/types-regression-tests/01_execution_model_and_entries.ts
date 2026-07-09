@@ -36,6 +36,8 @@ import type { FirstCall as _RemovedFirstCall } from "../types";
 import type { CompensationStepCall as _RemovedCompensationStepCall } from "../types";
 // @ts-expect-error CompensationWorkflowCall is no longer part of the public type surface
 import type { CompensationWorkflowCall as _RemovedCompensationWorkflowCall } from "../types";
+// @ts-expect-error WorkflowScopeContext is no longer part of the public type surface
+import type { WorkflowScopeContext as _RemovedWorkflowScopeContext } from "../types";
 
 type IsAny<T> = 0 extends 1 & T ? true : false;
 type AwaitedValue<T> = T extends PromiseLike<infer U> ? U : never;
@@ -90,8 +92,8 @@ const childWorkflow = defineWorkflow({
   args: z.object({ value: z.number() }),
   result: z.object({ doubled: z.number() }),
   channels: { noopCh: z.object({ token: z.string() }) },
-  async execute(_ctx, args) {
-    return { doubled: args.value * 2 };
+  async execute(ctx) {
+    return { doubled: ctx.args.value * 2 };
   },
 });
 
@@ -106,12 +108,15 @@ const childWorkflow = defineWorkflow({
 
 export const executionModelAcceptanceWorkflow = defineWorkflow({
   name: "executionModelAcceptance",
+  args: z.undefined(),
   steps: { noopStep },
   requests: { noopRequest },
   childWorkflows: { childWorkflow },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx) {
     // Step entry: dispatched, awaitable, resolves to T.
+    void ctx.args;
+
     const stepEntry = ctx.steps.noopStep({ value: "  hi  " });
     type _StepEntryNotAny = Assert<IsAny<typeof stepEntry> extends false ? true : false>;
     type _StepEntryIsBranded = Assert<

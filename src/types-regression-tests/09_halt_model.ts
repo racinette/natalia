@@ -106,7 +106,7 @@ export const haltModelAcceptanceWorkflow = defineWorkflow({
   },
   steps: { compensableStep },
   result: z.object({ ok: z.boolean() }),
-  async execute(ctx, args) {
+  async execute(ctx) {
     type _Factories = Assert<
       typeof ctx.errors extends ErrorFactories<{
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ZodObject `Config` slot; matches z.object() default
@@ -116,11 +116,11 @@ export const haltModelAcceptanceWorkflow = defineWorkflow({
         : false
     >;
 
-    const declared = ctx.errors.WorkflowError("declared", { id: args.id });
+    const declared = ctx.errors.WorkflowError("declared", { id: ctx.args.id });
     void declared;
 
     // @ts-expect-error workflow body cannot reference an unknown error code
-    ctx.errors.UnknownError("not declared", { id: args.id });
+    ctx.errors.UnknownError("not declared", { id: ctx.args.id });
 
     return { ok: true };
   },

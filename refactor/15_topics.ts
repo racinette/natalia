@@ -33,6 +33,7 @@ const auditTopic = defineTopic({
 
 export const topicsAcceptanceWorkflow = defineWorkflow({
   name: "topicsAcceptance",
+  args: z.undefined(),
   topics: { audit: auditTopic },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx) {

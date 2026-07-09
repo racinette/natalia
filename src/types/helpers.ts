@@ -149,28 +149,26 @@ export type InferWorkflowEvents<W> = W extends { events?: infer TEvents }
 /**
  * Extract args schema from a workflow definition or header (decoded — z.output).
  */
-export type InferWorkflowArgs<W> = W extends { args?: infer TArgs }
+export type InferWorkflowArgs<W> = W extends { args: infer TArgs }
   ? TArgs extends StandardSchemaV1<unknown, unknown>
     ? StandardSchemaV1.InferOutput<TArgs>
-    : void
-  : void;
+    : never
+  : never;
 
 /**
  * Extract arg input type from a workflow definition or header (encoded — z.input).
  * Used for StartWorkflowOptions.args.
  */
-export type InferWorkflowArgsInput<W> = W extends { args?: infer TArgSchema }
+export type InferWorkflowArgsInput<W> = W extends { args: infer TArgSchema }
   ? TArgSchema extends StandardSchemaV1<unknown, unknown>
     ? StandardSchemaV1.InferInput<TArgSchema>
-    : void
-  : void;
+    : never
+  : never;
 
 /**
- * Extract the args *schema* itself (not its decoded/encoded value) from a
- * workflow definition or header. Resolves to `never` when no args schema is
- * declared.
+ * Extract the args schema from a workflow definition or header.
  */
-export type InferWorkflowArgsSchema<W> = W extends { args?: infer TArgSchema }
+export type InferWorkflowArgsSchema<W> = W extends { args: infer TArgSchema }
   ? TArgSchema extends StandardSchemaV1<unknown, unknown>
     ? TArgSchema
     : never

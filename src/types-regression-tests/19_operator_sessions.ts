@@ -95,6 +95,7 @@ async function driverSessionLifecycle(): Promise<void> {
 
 const sessionWorkflow = defineWorkflow({
   name: "operatorSessionsRegressionWorkflow",
+  args: z.undefined(),
   streams: { log: z.object({ line: z.string() }) },
   events: { ready: true },
   result: z.object({ ok: z.boolean() }),

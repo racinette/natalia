@@ -53,12 +53,13 @@ const auditTopic = defineTopic({
 ```typescript
 const wf = defineWorkflow({
   name: "checkout",
+  args: z.object({ orderId: z.string(), tenantId: z.string() }),
   topics: { audit: auditTopic },
   result: z.object({ ok: z.boolean() }),
-  async execute(ctx, args) {
+  async execute(ctx) {
     ctx.topics.audit.publish(
-      { type: "booking.confirmed", payload: { orderId: args.orderId } },
-      { metadata: { tenantId: args.tenantId, type: "booking.confirmed" } },
+      { type: "booking.confirmed", payload: { orderId: ctx.args.orderId } },
+      { metadata: { tenantId: ctx.args.tenantId, type: "booking.confirmed" } },
     );
     return { ok: true };
   },

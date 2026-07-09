@@ -52,7 +52,7 @@ export interface PublicWorkflowHeader<
   readonly streams?: TStreams;
   readonly events?: TEvents;
   readonly attributes?: TAttributes;
-  readonly args?: TArgs;
+  readonly args: TArgs;
   readonly metadata?: TMetadata;
   readonly result?: TResult;
   readonly errors?: TErrors;
@@ -86,12 +86,12 @@ export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
  *
  * Use `defineWorkflowHeader()` to create one. Then:
  *
- * - Spread into `defineWorkflow({ ...header, ... })` so the full definition
- *   inherits the same name and schema declarations — single source of truth.
  * - Call **`header.extend({ ... })`** to add streams, events, steps, and other
  *   public interface fields without restating the header slice.
- * - Pass directly to `externalWorkflows` or `childWorkflows` in any workflow
- *   that needs to reference this one.
+ * - Call **`.implement({ execute, ... })`** on the interface for the runnable
+ *   workflow definition.
+ * - Pass the header directly to `externalWorkflows` or `childWorkflows` in any
+ *   workflow that needs to reference this one before the full implementation exists.
  *
  * This resolves circular references cleanly: define the header first, use it
  * in both directions, then fill in the implementations afterward.
@@ -103,27 +103,26 @@ export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
  * });
  *
  * // worker references manager via header — no circular dep
- * const workerWorkflow = defineWorkflow({
- *   ...workerHeader,
+ * const workerWorkflow = workerHeader.extend({}).implement({
  *   externalWorkflows: { manager: managerHeader },
- *   execute: async (ctx, args) => { ... },
+ *   execute: async (ctx) => { ... },
  * });
  *
- * // manager spreads its own header + adds full implementation
- * const managerWorkflow = defineWorkflow({
- *   ...managerHeader,
+ * // manager: header → interface → implementation
+ * const managerWorkflow = managerHeader.extend({
  *   childWorkflows: { worker: workerWorkflow },
- *   execute: async (ctx, args) => { ... },
+ * }).implement({
+ *   execute: async (ctx) => { ... },
  * });
  * ```
  *
  * A workflow can also reference itself (recursive/fractal workflows):
  * ```typescript
  * const treeHeader = defineWorkflowHeader({ name: "tree", args: TreeArgs });
- * const treeWorkflow = defineWorkflow({
- *   ...treeHeader,
+ * const treeWorkflow = treeHeader.extend({
  *   childWorkflows: { node: treeHeader },
- *   execute: async (ctx, args) => { ... },
+ * }).implement({
+ *   execute: async (ctx) => { ... },
  * });
  * ```
  */
@@ -149,7 +148,7 @@ export interface WorkflowHeader<
 > {
   readonly name: TName;
   readonly channels?: TChannels;
-  readonly args?: TArgs;
+  readonly args: TArgs;
   readonly metadata?: TMetadata;
   readonly result?: TResult;
   readonly errors?: TErrors;

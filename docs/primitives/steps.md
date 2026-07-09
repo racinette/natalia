@@ -106,10 +106,10 @@ const fulfillOrder = defineWorkflow({
   args: z.object({ sku: z.string(), quantity: z.number() }),
   steps: { reserveInventory },
   result: z.object({ reservationId: z.string() }),
-  async execute(ctx, args) {
+  async execute(ctx) {
     const { reservationId } = await ctx.steps.reserveInventory({
-      sku: args.sku,
-      quantity: args.quantity,
+      sku: ctx.args.sku,
+      quantity: ctx.args.quantity,
     });
     return { reservationId };
   },
@@ -120,13 +120,13 @@ const fulfillOrder = defineWorkflow({
 
 ```typescript
 const reservation = await ctx.steps.reserveInventory(
-  { sku: args.sku, quantity: args.quantity },
+  { sku: ctx.args.sku, quantity: ctx.args.quantity },
   { timeout: { maxAttempts: 5, seconds: 30 } },
 );
 
 if (!reservation.ok) {
   throw ctx.errors.ReservationFailed("Warehouse did not confirm in time", {
-    sku: args.sku,
+    sku: ctx.args.sku,
   });
 }
 

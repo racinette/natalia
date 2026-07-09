@@ -1,0 +1,37 @@
+---
+description: TypeScript empty intersection operands — never use Record<string, never> as a neutral "no fields" part
+globs: "**/*.ts"
+alwaysApply: false
+---
+
+# Empty intersection operands (`Record<string, never>`)
+
+When a conditional type needs an **empty** piece to intersect (e.g. "omit this field from the context"), do **not** use `Record<string, never>` as the neutral operand.
+
+## Why
+
+`Record<string, never>` is `{ [key: string]: never }` — it carries a **string index signature**. Intersecting it with an interface propagates that index signature to the whole type:
+
+- `string extends keyof T` becomes **true**
+- Any property access (`ctx.args`, `ctx.state`, …) typechecks even when the field was intentionally omitted
+- `@ts-expect-error` and `keyof` regression asserts silently fail (unused directive / false negatives)
+
+## Use instead
+
+```ts
+// Empty part for intersection — no string index signature
+type EmptyPart = Record<never, never>;
+
+type WithOptionalField<TSchema> =
+  HasField<TSchema> extends true
+    ? { readonly field: InferOutput<TSchema> }
+    : EmptyPart;
+
+type Context = CoreContext & WithOptionalField<TArgsSchema>;
+```
+
+Avoid `{}` in this repo if `@typescript-eslint/no-empty-object-type` applies — prefer `Record<never, never>` or a small named alias at the call site.
+
+## Regression signal
+
+If `@ts-expect-error void ctx.someRemovedField` becomes **unused** while the field should be absent, check whether a recent conditional branch introduced `Record<string, never>` into an intersection chain.

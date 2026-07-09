@@ -70,6 +70,7 @@ type _AttachedBrandSeparation = Assert<
 
 const _fooWorkflow = defineWorkflow({
   name: "fooWorkflow",
+  args: z.undefined(),
   result: z.object({ ok: z.boolean() }),
   async execute() {
     return { ok: true };
@@ -80,6 +81,7 @@ type _FooWorkflowName = Assert<IsEqual<typeof _fooWorkflow.name, "fooWorkflow">>
 
 const _barWorkflow = defineWorkflow({
   name: "barWorkflow",
+  args: z.undefined(),
   result: z.object({ ok: z.boolean() }),
   async execute() {
     return { ok: true };
@@ -193,6 +195,7 @@ type _TopicFooName = Assert<IsEqual<typeof _topicFoo.name, "topicFoo">>;
 declare const dynamicName: string;
 const _dynamicWorkflow = defineWorkflow({
   name: dynamicName,
+  args: z.undefined(),
   result: z.void(),
   async execute() {},
 });

@@ -23,7 +23,7 @@ import type {
   WorkflowDefinition,
   JsonSchemaConstraint,
   JsonObjectSchemaConstraint,
-  WorkflowContext,
+  WorkflowExecuteContext,
   PatchDefinitions,
   RngDefinitions,
   WorkflowErrorDefinitions,
@@ -804,15 +804,15 @@ function assertWorkflowHeaderExtendHasNoLockedKeys(extension: object): void {
  * `externalWorkflows` references before the full workflow is defined.
  *
  * A `WorkflowHeader` captures a lightweight authoring contract — `name`,
- * optional `channels`, `args`, `metadata`, and `result` — with no
+ * required `args`, and optional `channels`, `metadata`, and `result` — with no
  * implementation. It exists to break circular workflow dependencies and enable
  * self-referential definitions while keeping declarations as a single source
  * of truth.
  *
  * For the **header → interface** step, call **`.extend({ ... })`** so streams,
  * events, steps, and other public fields are additive only (header fields cannot
- * be overridden). You can still spread the header into **`defineWorkflow({ ... })`**
- * when you prefer a single-shot definition without declaring an interface.
+ * be overridden). Then call **`.implement({ execute, ... })`** for the runnable
+ * workflow definition.
  *
  * The primary use case is breaking circular references between workflows that
  * reference each other, and enabling self-referential (recursive) workflows.
@@ -820,46 +820,44 @@ function assertWorkflowHeaderExtendHasNoLockedKeys(extension: object): void {
  * @example
  * ```typescript
  * // Break a circular reference: worker ↔ manager
+ * const workerHeader = defineWorkflowHeader({
+ *   name: "worker",
+ *   args: z.undefined(),
+ *   channels: { task: TaskPayload },
+ * });
  * const managerHeader = defineWorkflowHeader({
  *   name: "schedulerManager",
+ *   args: z.undefined(),
  *   channels: { workerDone: WorkerDonePayload },
  * });
  *
- * const workerWorkflow = defineWorkflow({
- *   ...workerHeader,
+ * const workerWorkflow = workerHeader.extend({}).implement({
  *   externalWorkflows: { manager: managerHeader },
- *   execute: async (ctx, args) => { ... },
+ *   execute: async (ctx) => { ... },
  * });
  *
- * const managerWorkflow = defineWorkflow({
- *   ...managerHeader,
- *   childWorkflows: { attached: { worker: workerWorkflow } },
- *   execute: async (ctx, args) => { ... },
- * });
- *
- * // Header → public interface → implementation
- * const publicIface = managerHeader.extend({
+ * const managerWorkflow = managerHeader.extend({
  *   streams: { audit: AuditRow },
  *   steps: { notify: notifyStepInterface },
- * });
- * const managerWorkflow2 = publicIface.implement({
+ * }).implement({
+ *   childWorkflows: { attached: { worker: workerWorkflow } },
  *   steps: { notify: notifyStep },
- *   execute: async (ctx, args) => { ... },
+ *   execute: async (ctx) => { ... },
  * });
  *
  * // Self-referential workflow (recursive tree)
  * const treeHeader = defineWorkflowHeader({ name: "tree", args: TreeArgs });
- * const treeWorkflow = defineWorkflow({
- *   ...treeHeader,
+ * const treeWorkflow = treeHeader.extend({
  *   childWorkflows: { attached: { subtree: treeHeader } },
- *   execute: async (ctx, args) => { ... },
+ * }).implement({
+ *   execute: async (ctx) => { ... },
  * });
  * ```
  */
 export function defineWorkflowHeader<
   TName extends string,
+  TArgs extends JsonSchemaConstraint,
   TChannels extends ChannelDefinitions = Record<string, never>,
-  TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<void, void>,
   TResult extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
@@ -867,8 +865,8 @@ export function defineWorkflowHeader<
     (args: StandardSchemaV1.InferOutput<TArgs>) => never,
 >(config: {
   name: TName;
+  args: TArgs;
   channels?: TChannels;
-  args?: TArgs;
   metadata?: TMetadata;
   result?: TResult;
   errors?: TErrors;
@@ -887,14 +885,12 @@ export function defineWorkflowHeader<
       }
     }
   }
-  if (config.args !== undefined) {
-    if (
-      !config.args ||
-      typeof config.args !== "object" ||
-      !("~standard" in config.args)
-    ) {
-      throw new Error("args must be a standard schema");
-    }
+  if (
+    !config.args ||
+    typeof config.args !== "object" ||
+    !("~standard" in config.args)
+  ) {
+    throw new Error("args must be a standard schema");
   }
   if (config.metadata !== undefined) {
     if (
@@ -979,8 +975,6 @@ export function defineWorkflowHeader<
  * **`externalWorkflows`** workflows are **not** part of this public contract — pass them on
  * **`.implement({ externalWorkflows, execute, … })`** so `ctx.externalWorkflows` is typed for the
  * implementation only.
- *
- * Teams that prefer a single object can still use `defineWorkflow({ ...header, execute, ... })`.
  */
 export function defineWorkflowInterface<
   TName extends string,
@@ -1238,10 +1232,12 @@ export function defineWorkflowInterface<
       }
     }
   }
-  if (config.args !== undefined) {
-    if (!config.args || typeof config.args !== "object" || !("~standard" in config.args)) {
-      throw new Error("args must be a standard schema");
-    }
+  if (
+    !config.args ||
+    typeof config.args !== "object" ||
+    !("~standard" in config.args)
+  ) {
+    throw new Error("args must be a standard schema");
   }
   if (config.metadata !== undefined) {
     if (!config.metadata || typeof config.metadata !== "object" || !("~standard" in config.metadata)) {
@@ -1441,10 +1437,14 @@ export function defineWorkflowInterface<
  * Errors are declared on `defineWorkflow.errors` and thrown via
  * `ctx.errors.X(message, details?)`.
  *
+ * `args` is required on every workflow. Use `z.undefined()` when there is no
+ * start payload; `ctx.args` is then typed as `undefined`.
+ *
  * See REFACTOR.MD for the authoritative public API.
  */
 export function defineWorkflow<
   TName extends string,
+  TArgs extends JsonSchemaConstraint,
   TChannels extends ChannelDefinitions = Record<string, never>,
   TStreams extends StreamDefinitions = Record<string, never>,
   TEvents extends EventDefinitions = Record<string, never>,
@@ -1455,7 +1455,6 @@ export function defineWorkflow<
   TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
-  TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TMetadata extends JsonObjectSchemaConstraint = StandardSchemaV1<void, void>,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
@@ -1476,7 +1475,7 @@ export function defineWorkflow<
   patches?: TPatches;
   rng?: TRng;
   result?: TResultSchema;
-  args?: TArgs;
+  args: TArgs;
   metadata?: TMetadata;
   errors?: TErrors;
   idempotencyKeyFactory?: TIdempotencyKeyFactory;
@@ -1489,7 +1488,7 @@ export function defineWorkflow<
       };
   evictAfterSeconds?: number | null;
   execute: (
-    ctx: WorkflowContext<
+    ctx: WorkflowExecuteContext<
       TChannels,
       TStreams,
       TEvents,
@@ -1501,10 +1500,9 @@ export function defineWorkflow<
       TExternalWorkflows,
       TPatches,
       TRng,
-      [],
-      TErrors
+      TErrors,
+      TArgs
     >,
-    args: StandardSchemaV1.InferOutput<TArgs>,
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
 }): WorkflowDefinition<
   TName,
@@ -1687,15 +1685,13 @@ export function defineWorkflow<
     throw new Error("execute must be a function");
   }
 
-  // Validate arg schema if provided
-  if (config.args !== undefined) {
-    if (
-      !config.args ||
-      typeof config.args !== "object" ||
-      !("~standard" in config.args)
-    ) {
-      throw new Error("args must be a standard schema");
-    }
+  // Validate args schema (required)
+  if (
+    !config.args ||
+    typeof config.args !== "object" ||
+    !("~standard" in config.args)
+  ) {
+    throw new Error("args must be a standard schema");
   }
 
   // Validate metadata schema if provided

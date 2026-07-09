@@ -22,6 +22,7 @@ const Command = z.object({ type: z.literal("cancel") });
 
 export const attributesAndStreamsAcceptanceWorkflow = defineWorkflow({
   name: "attributesAndStreamsAcceptance",
+  args: z.undefined(),
   attributes: {
     progress: ProgressAttribute,
   },

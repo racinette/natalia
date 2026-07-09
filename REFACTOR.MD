@@ -613,10 +613,10 @@ defineWorkflow({
     InsufficientFunds: z.object({ amount: z.number(), balance: z.number() }),
     Cancelled: true,
   },
-  execute: async (ctx, args) => {
+  execute: async (ctx) => {
     if (!valid) {
       throw ctx.errors.OrderInvalid("Order is invalid", {
-        orderId: args.orderId,
+        orderId: ctx.args.orderId,
       });
     }
   },

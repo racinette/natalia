@@ -1,6 +1,6 @@
 import type { StandardSchemaV1 } from "../standard-schema";
 import type { JsonObjectSchemaConstraint, JsonSchemaConstraint } from "../json-input";
-import type { WorkflowContext } from "../context/context-interfaces";
+import type { WorkflowExecuteContext } from "../context/context-interfaces";
 import type { WorkflowErrorDefinitions } from "./errors";
 import type {
   PatchDefinitions,
@@ -141,8 +141,8 @@ export interface WorkflowDefinition<
   /** Result schema for encoding/decoding workflow result */
   readonly result?: TResultSchema;
 
-  /** Arguments schema (optional) */
-  readonly args?: TArgs;
+  /** Arguments schema (required — use `z.undefined()` when the workflow has no args). */
+  readonly args: TArgs;
 
   /**
    * Optional immutable metadata schema for workflow instances.
@@ -173,7 +173,7 @@ export interface WorkflowDefinition<
    * Workflow execution function.
    */
   execute(
-    ctx: WorkflowContext<
+    ctx: WorkflowExecuteContext<
       TChannels,
       TStreams,
       TEvents,
@@ -185,9 +185,8 @@ export interface WorkflowDefinition<
       TExternalWorkflows,
       TPatches,
       TRng,
-      [],
-      TErrors
+      TErrors,
+      TArgs
     >,
-    args: StandardSchemaV1.InferOutput<TArgs>,
   ): Promise<StandardSchemaV1.InferInput<TResultSchema>>;
 }

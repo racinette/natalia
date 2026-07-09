@@ -33,9 +33,10 @@ The other reason events exist is the **`never` terminal**: if a workflow reaches
 ```typescript
 const order = defineWorkflow({
   name: "order",
+  args: z.object({ sku: z.string() }),
   events: { orderReady: true, paid: true },
-  async execute(ctx, args) {
-    await ctx.steps.reserveInventory({ sku: args.sku });
+  async execute(ctx) {
+    await ctx.steps.reserveInventory({ sku: ctx.args.sku });
     ctx.events.orderReady.set(); // void, buffered, idempotent on replay
     // …
   },

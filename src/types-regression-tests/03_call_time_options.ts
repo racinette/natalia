@@ -76,6 +76,7 @@ const childHeader = defineWorkflowHeader({
 
 const externalHeader = defineWorkflowHeader({
   name: "callTimeOptionsExternal",
+  args: z.undefined(),
   channels: {
     ping: z.object({ at: z.string() }),
   },
@@ -93,6 +94,7 @@ const humanReviewRequest = defineRequest({
 
 export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
   name: "callTimeOptionsAcceptance",
+  args: z.undefined(),
   steps: { timedStep },
   childWorkflows: { child: childHeader },
   externalWorkflows: { ops: externalHeader, child: childHeader },

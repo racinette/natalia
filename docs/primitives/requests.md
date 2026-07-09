@@ -29,6 +29,7 @@ Declare it on a workflow and await it from `execute`:
 ```typescript
 const onboarding = defineWorkflow({
   name: "onboarding",
+  args: z.undefined(),
   requests: { humanReview },
   result: z.object({ approved: z.boolean() }),
   async execute(ctx) {

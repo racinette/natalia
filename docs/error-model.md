@@ -29,14 +29,15 @@ A workflow declares its externally visible failure vocabulary on `defineWorkflow
 ```typescript
 const order = defineWorkflow({
   name: "order",
+  args: z.object({ orderId: z.string() }),
   errors: {
     OrderInvalid: z.object({ orderId: z.string() }),
     InsufficientFunds: z.object({ amount: z.number(), balance: z.number() }),
     Cancelled: true, // payload-less marker
   },
-  async execute(ctx, args) {
+  async execute(ctx) {
     if (!valid) {
-      throw ctx.errors.OrderInvalid("Order is invalid", { orderId: args.orderId });
+      throw ctx.errors.OrderInvalid("Order is invalid", { orderId: ctx.args.orderId });
     }
     // …
   },
@@ -170,13 +171,14 @@ The ergonomics look like conventions (`throw ctx.errors` with disposition flags)
 ```typescript
 const order = defineWorkflow({
   name: "order",
+  args: z.object({ orderId: z.string() }),
   errors: { OrderInvalid: z.object({ orderId: z.string() }), Cancelled: true },
   childWorkflows: { processOrder },
-  async execute(ctx, args) {
-    if (!args.orderId) {
-      throw ctx.errors.OrderInvalid("missing id", { orderId: args.orderId });
+  async execute(ctx) {
+    if (!ctx.args.orderId) {
+      throw ctx.errors.OrderInvalid("missing id", { orderId: ctx.args.orderId });
     }
-    const child = await ctx.childWorkflows.processOrder({ orderId: args.orderId });
+    const child = await ctx.childWorkflows.processOrder({ orderId: ctx.args.orderId });
     if (!child.ok) {
       throw ctx.errors.Cancelled("downstream failed");
     }
@@ -188,8 +190,8 @@ const order = defineWorkflow({
 **A bug halts; it does not fail**
 
 ```typescript
-async execute(ctx, args) {
-  const total = compute(args); // TypeError → execution halt, not WorkflowResult.failed
+async execute(ctx) {
+  const total = compute(ctx.args); // TypeError → execution halt, not WorkflowResult.failed
   // Fix the code, redeploy, replay. Recorded history is preserved.
 }
 ```

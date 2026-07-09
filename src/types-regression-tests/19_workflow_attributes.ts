@@ -19,6 +19,7 @@ const ProgressAttribute = z.object({
 
 const attributesWorkflow = defineWorkflow({
   name: "workflowAttributesRegression",
+  args: z.undefined(),
   attributes: {
     progress: ProgressAttribute,
   },

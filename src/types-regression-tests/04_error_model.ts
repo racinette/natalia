@@ -44,11 +44,11 @@ export const errorModelAcceptanceWorkflow = defineWorkflow({
   steps: { noopStep },
   childWorkflows: { child: childHeader },
   result: z.object({ ok: z.boolean() }),
-  async execute(ctx, args) {
+  async execute(ctx) {
     // Factory produces a typed throwable.
     const _declined = ctx.errors.PaymentDeclined("Payment declined", {
       reason: "card_declined",
-      amount: args.amount,
+      amount: ctx.args.amount,
     });
 
     type _DeclinedNoAny = Assert<IsAny<typeof _declined> extends false ? true : false>;

@@ -1,13 +1,13 @@
 # Workflow contract authoring: header, interface, implementation
 
-This document captures a **design opinion** for how workflow contracts are layered and how authoring APIs should steer callers toward the right layer—without forbidding simpler styles when that’s intentional.
+This document captures a **design opinion** for how workflow contracts are layered and how authoring APIs should steer callers toward the right layer.
 
 ## What you need to *start* a workflow
 
 To start a workflow instance you need, at minimum:
 
 - `name` — identity.
-- `args`, `result`, `errors`, `metadata` — start payload, terminal contract, failure surface, and optional start metadata (each may be absent only when that omission is deliberate).
+- `args` (required) — start payload schema; use `z.undefined()` when the workflow takes no input. `result`, `errors`, and `metadata` may be omitted when that omission is deliberate.
 - `channels` — the supported way to **communicate with** a running workflow from outside its body. They are the practical “way in” for orchestration and for child↔parent style interaction.
 
 ## Three layers (conceptual)
@@ -24,9 +24,11 @@ The **public** contract of a workflow: everything that can be **declared** and *
 
 This is the layer meant for **discovery and typing** of “what exists on the wire / in the product API,” not for implementation bodies.
 
-### 3. Implementation (`defineWorkflow` or `interface.implement`)
+### 3. Implementation (`interface.implement` or plain `defineWorkflow`)
 
 What is required to **run** the workflow as the executor: concrete `execute`, step bodies, request handlers, compensations’ `undo` / `externalWorkflows`, and any wiring that only the runtime needs.
+
+When a workflow already has a header or interface, use **`.implement({ execute, … })`**. Use **`defineWorkflow({ … })`** directly only for simple, self-contained workflows that do not need the layered contract graph.
 
 ## Why `externalWorkflows` is not on the interface
 
@@ -36,24 +38,15 @@ External workflows are **independent roots you create (`.start`) or reference (`
 
 Declare `externalWorkflows` on `.implement({ externalWorkflows, … })` so `ctx.externalWorkflows` stays an **implementation-only** surface.
 
-## Authoring hierarchy (optional but strict when you use it)
+## Authoring hierarchy
 
-You may:
+Follow the **header → interface → implementation** chain when you want explicit layering and maximum clarity. Start at any level that fits the workflow’s complexity.
 
-- Follow the **header → interface → implementation** chain when you want explicit layering and maximum clarity, or
-- **Skip** it and use **`defineWorkflow({ … })`** alone when a single object is preferable.
-- Start with any level of the hierarchy.
-
-When you *do* follow the hierarchy, the opinion is: **additive only, never overriding** a more general slice with a more specific one by accident.
+When you follow the hierarchy, the opinion is: **additive only, never overriding** a more general slice with a more specific one by accident.
 
 ### `header.extend({ … })`
 
-Moving from **header → interface** should not be “spread the header and hope the next object is consistent.” That pattern makes it too easy to:
-
-- Skip declaring interface-only fields and still pass a header-shaped object into APIs that expect a richer contract, or
-- **Override** `name`, `args`, `channels`, etc. by mistake via object spread.
-
-`defineWorkflowHeader(…).extend({ … })` is the preferred bridge:
+Moving from **header → interface** uses **`defineWorkflowHeader(…).extend({ … })`** — not object spread of the header into another authoring call:
 
 - At the **type** level, header-locked fields (`name`, `channels`, `args`, `metadata`, `result`, `errors`) are not legitimate inputs to `.extend()`.
 - At **runtime**, passing any of those keys on the extend object is an **error** (fail fast)—not silently dropped.
@@ -62,11 +55,7 @@ The extend payload is only the **additive** public fields (streams, events, step
 
 ### `interface.implement({ … })`
 
-The interface → implementation step remains `.implement({ execute, steps, …, externalWorkflows? })`, keeping implementation-only wiring off the public interface type.
-
-## Escape hatch
-
-`defineWorkflow({ …header fields…, execute, … })` remains valid for teams that want one object or for cases where the layered API does not pay for itself. The hierarchy is a **discipline**, not a prison.
+The interface → implementation step is **`.implement({ execute, steps, …, externalWorkflows? })`**, keeping implementation-only wiring off the public interface type.
 
 ## Summary
 
@@ -75,7 +64,7 @@ The interface → implementation step remains `.implement({ execute, steps, …,
 | ------------------ | -------------------------------------------------------------------------------- |
 | **Header**         | Minimal contract to reference/start a child; **channels** are the typed ingress. |
 | **Interface**      | Public, client-introspectable surface (streams, events, …).                      |
-| **Implementation** | Runnable graph: `execute`, concrete steps/requests, `externalWorkflows`, compensations.   |
+| **Implementation** | Runnable graph: `execute`, concrete steps/requests, `externalWorkflows`, compensations. |
 
 
-**Opinionated authoring path:** `defineWorkflowHeader` → `.extend` (additive, locked header slice) → `.implement` (implementation-only extras like `externalWorkflows`). Use plain `defineWorkflow` when you deliberately want a single-shot definition.
+**Authoring path:** `defineWorkflowHeader` → `.extend` (additive, locked header slice) → `.implement` (implementation-only extras like `externalWorkflows`).

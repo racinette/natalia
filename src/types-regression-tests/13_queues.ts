@@ -93,6 +93,7 @@ type _NoErrorsQueue = Assert<IsEqual<HasQueueErrors<typeof queueWithoutDefaultTt
 
 export const queuesAcceptanceWorkflow = defineWorkflow({
   name: "queuesAcceptance",
+  args: z.undefined(),
   queues: { email: emailQueue },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx) {
@@ -137,6 +138,7 @@ export const queuesAcceptanceWorkflow = defineWorkflow({
 
 export const queuesRequireTtlWorkflow = defineWorkflow({
   name: "queuesRequireTtl",
+  args: z.undefined(),
   queues: { email: queueWithoutDefaultTtl },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx) {
@@ -383,6 +385,7 @@ const noErrorsQueue = defineQueue({
 
 const noErrorsWorkflow = defineWorkflow({
   name: "noErrorsQueueWorkflow",
+  args: z.undefined(),
   queues: { notifications: noErrorsQueue },
   result: z.void(),
   async execute() {},

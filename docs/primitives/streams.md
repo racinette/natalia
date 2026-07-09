@@ -25,11 +25,12 @@ Long-running work often needs a **durable, ordered transcript**—training metri
 ```typescript
 const trainingRun = defineWorkflow({
   name: "training-run",
+  args: z.undefined(),
   streams: {
     metrics: z.object({ step: z.number(), loss: z.number() }),
     audit: z.object({ at: z.string(), message: z.string() }),
   },
-  async execute(ctx, args) {
+  async execute(ctx) {
     // …
   },
 });

@@ -37,6 +37,7 @@ Contrast with its neighbors:
 ```typescript
 const indexingRun = defineWorkflow({
   name: "indexing-run",
+  args: z.undefined(),
   attributes: {
     progress: z.object({
       percent: z.number(),
@@ -44,7 +45,7 @@ const indexingRun = defineWorkflow({
     }),
   },
   result: z.object({ ok: z.boolean() }),
-  async execute(ctx, args) {
+  async execute(ctx) {
     ctx.attributes.progress.set({ percent: 0, phase: "queued" }); // void, buffered, not awaited
     // … work …
     ctx.attributes.progress.set({ percent: 0.5, phase: "running" });

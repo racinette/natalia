@@ -31,9 +31,9 @@ Declare the workflows you reach this way under `externalWorkflows`. This is an *
 const coordinator = coordinatorInterface.implement({
   externalWorkflows: { partner: partnerHeader, reconcile: reconcileWorkflow },
   steps: { /* … */ },
-  async execute(ctx, args) {
-    ctx.externalWorkflows.partner.get(args.partnerKey).channels.handoff.send({
-      orderId: args.orderId,
+  async execute(ctx) {
+    ctx.externalWorkflows.partner.get(ctx.args.partnerKey).channels.handoff.send({
+      orderId: ctx.args.orderId,
     });
     return undefined;
   },

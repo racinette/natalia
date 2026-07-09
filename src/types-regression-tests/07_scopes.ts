@@ -47,7 +47,9 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
   childWorkflows: { followUp: followUpHeader },
   externalWorkflows: { followUp: followUpHeader },
   result: z.object({ ok: z.boolean() }),
-  async execute(ctx, args) {
+  async execute(ctx) {
+    type _Args = Assert<IsEqual<(typeof ctx)["args"], { orderId: string }>>;
+
     // -------------------------------------------------------------------------
     // SCOPE INPUT IS A TOP-LEVEL OBJECT
     //
@@ -59,10 +61,10 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
     await ctx.scope(
       "FanOut",
       {
-        normalize: ctx.steps.normalize({ orderId: args.orderId }),
-        approval: ctx.requests.approval({ orderId: args.orderId }),
+        normalize: ctx.steps.normalize({ orderId: ctx.args.orderId }),
+        approval: ctx.requests.approval({ orderId: ctx.args.orderId }),
         followUp: ctx.childWorkflows.followUp({
-          orderId: args.orderId,
+          orderId: ctx.args.orderId,
         }),
       },
       async (scopeCtx, handles) => {
@@ -144,7 +146,7 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
     // -------------------------------------------------------------------------
 
     const detached = ctx.externalWorkflows.followUp.start(
-      { orderId: args.orderId },
+      { orderId: ctx.args.orderId },
       { idempotencyKey: "f-detached-1" },
     );
     // @ts-expect-error external workflow handles are not scope entries
@@ -228,8 +230,8 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
     await ctx.scope(
       "MatchKeyed",
       {
-        normalize: ctx.steps.normalize({ orderId: args.orderId }),
-        approval: ctx.requests.approval({ orderId: args.orderId }),
+        normalize: ctx.steps.normalize({ orderId: ctx.args.orderId }),
+        approval: ctx.requests.approval({ orderId: ctx.args.orderId }),
       },
       async (scopeCtx, handles) => {
         for await (const event of scopeCtx.match(handles)) {
@@ -267,8 +269,8 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
 
     // `all` — wait for all entries to succeed; preserve input shape.
     const allResult = await ctx.all("AllScope", {
-      normalize: ctx.steps.normalize({ orderId: args.orderId }),
-      approval: ctx.requests.approval({ orderId: args.orderId }),
+      normalize: ctx.steps.normalize({ orderId: ctx.args.orderId }),
+      approval: ctx.requests.approval({ orderId: ctx.args.orderId }),
     });
     if (allResult.ok) {
       type _AllResult = Assert<

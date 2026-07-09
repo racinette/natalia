@@ -25,7 +25,7 @@ const processOrder = defineWorkflow({
   channels: {
     cancel: z.object({ reason: z.string() }),
   },
-  async execute(ctx, args) {
+  async execute(ctx) {
     // …
     return { shipped: true };
   },
@@ -40,8 +40,8 @@ const order = defineWorkflow({
   args: z.object({ orderId: z.string() }),
   result: z.object({ ok: z.boolean() }),
   childWorkflows: { processOrder },
-  async execute(ctx, args) {
-    const result = await ctx.childWorkflows.processOrder({ orderId: args.orderId });
+  async execute(ctx) {
+    const result = await ctx.childWorkflows.processOrder({ orderId: ctx.args.orderId });
     return { ok: result.ok };
   },
 });

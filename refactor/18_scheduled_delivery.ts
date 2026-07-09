@@ -34,6 +34,7 @@ const scheduledQueue = defineQueue({
 
 export const scheduledDeliveryAcceptanceWorkflow = defineWorkflow({
   name: "scheduledDeliveryAcceptance",
+  args: z.undefined(),
   queues: { scheduled: scheduledQueue },
   childWorkflows: { followUp: followUpHeader },
   result: z.object({ ok: z.boolean() }),

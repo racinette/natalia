@@ -30,12 +30,13 @@ That matches durable execution: the body records waits and replays them the same
 ```typescript
 const orderWorkflow = defineWorkflow({
   name: "order",
+  args: z.undefined(),
   channels: {
     cancel: z.object({ reason: z.string() }),
     nudge: z.object({ at: z.string(), note: z.string().optional() }),
     operatorCancel: z.object({ reason: z.string() }),
   },
-  async execute(ctx, args) {
+  async execute(ctx) {
     // …
   },
 });

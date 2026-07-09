@@ -103,6 +103,7 @@ type _ApprovalCompHasErrors = Assert<
 
 export const requestsAcceptanceWorkflow = defineWorkflow({
   name: "requestsAcceptance",
+  args: z.undefined(),
   requests: { approval: approvalRequest, ping: pingRequest },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx) {
@@ -330,6 +331,7 @@ const noErrorsRequest = defineRequest({
 
 const noErrorsWorkflow = defineWorkflow({
   name: "noErrorsRequestWorkflow",
+  args: z.undefined(),
   requests: { ping: noErrorsRequest },
   result: z.void(),
   async execute() {},

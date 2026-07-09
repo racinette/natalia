@@ -33,6 +33,7 @@ const compStep = defineStep({
 
 const streamsWorkflow = defineWorkflow({
   name: "streamsRegressionWorkflow",
+  args: z.undefined(),
   streams: {
     log: auditStream,
     metrics: z.object({ step: z.number(), loss: z.number() }),

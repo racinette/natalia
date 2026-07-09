@@ -1,4 +1,5 @@
 import type { HasDefaultTtl } from "../helpers";
+import type { JsonSchemaConstraint } from "../json-input";
 import type { StandardSchemaV1 } from "../standard-schema";
 import type { ErrorDefinitions } from "../definitions/errors";
 import type { PatchAccessor, AttributeDefinitions, ChannelDefinitions, EventDefinitions, PatchDefinitions, StreamDefinitions } from "../definitions/primitives";
@@ -335,10 +336,14 @@ export interface WorkflowContext<
   TRng extends RngDefinitions = Record<string, never>,
   TScopePath extends ScopePath = [],
   TErrors extends ErrorDefinitions = Record<string, never>,
+  TArgsSchema extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
 >
   extends
     BaseContext<TChannels, TStreams, TEvents, TPatches, TRng, TAttributes>,
     ExecutionResolver {
+  /** Decoded workflow args (from the workflow's declared `args` schema). */
+  readonly args: StandardSchemaV1.InferOutput<TArgsSchema>;
+
   /**
    * Steps for durable operations.
    */
@@ -445,7 +450,8 @@ export interface WorkflowContext<
         TPatches,
         TRng,
         AppendScopeName<TScopePath, Name>,
-        TErrors
+        TErrors,
+        TArgsSchema
       >,
       handles: ScopeHandles<E>,
     ) => Promise<R>,
@@ -509,16 +515,10 @@ export interface WorkflowContext<
   ): AsyncIterable<MatchEvents<E>>;
 }
 
-// =============================================================================
-// WORKFLOW CONCURRENCY CONTEXT
-// =============================================================================
-
 /**
- * Scope-local context for structured concurrency in workflow execution.
+ * Scope-local context — {@link WorkflowContext} minus `schedule`.
  *
- * Provided as the first argument to `WorkflowContext.scope(...)`. Same surface
- * as `WorkflowContext` minus `schedule`; the scope path is extended by the
- * scope name.
+ * Nesting only extends `TScopePath`; definition generics and `args` are unchanged.
  */
 export type WorkflowConcurrencyContext<
   TChannels extends ChannelDefinitions,
@@ -534,6 +534,7 @@ export type WorkflowConcurrencyContext<
   TRng extends RngDefinitions = Record<string, never>,
   TScopePath extends ScopePath = [],
   TErrors extends ErrorDefinitions = Record<string, never>,
+  TArgsSchema extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
 > = Omit<
   WorkflowContext<
     TChannels,
@@ -548,9 +549,44 @@ export type WorkflowConcurrencyContext<
     TPatches,
     TRng,
     TScopePath,
-    TErrors
+    TErrors,
+    TArgsSchema
   >,
   "schedule"
+>;
+
+/**
+ * Workflow context for the `execute` callback — root scope path (`[]`), includes `schedule`.
+ */
+export type WorkflowExecuteContext<
+  TChannels extends ChannelDefinitions,
+  TStreams extends StreamDefinitions,
+  TEvents extends EventDefinitions,
+  TAttributes extends AttributeDefinitions = Record<string, never>,
+  TSteps extends StepDefinitions = Record<string, never>,
+  TRequests extends RequestDefinitions = Record<string, never>,
+  TQueues extends QueueDefinitions = Record<string, never>,
+  TChildren extends WorkflowDefinitions = Record<string, never>,
+  TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TPatches extends PatchDefinitions = Record<string, never>,
+  TRng extends RngDefinitions = Record<string, never>,
+  TErrors extends ErrorDefinitions = Record<string, never>,
+  TArgsSchema extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
+> = WorkflowContext<
+  TChannels,
+  TStreams,
+  TEvents,
+  TAttributes,
+  TSteps,
+  TRequests,
+  TQueues,
+  TChildren,
+  TExternalWorkflows,
+  TPatches,
+  TRng,
+  [],
+  TErrors,
+  TArgsSchema
 >;
 
 // =============================================================================

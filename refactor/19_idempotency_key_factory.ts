@@ -55,6 +55,7 @@ const withoutFactoryHeader = defineWorkflowHeader({
 
 const parentWorkflow = defineWorkflow({
   name: "idempotencyParent",
+  args: z.undefined(),
   childWorkflows: {
     withFactory: withFactoryHeader,
     withoutFactory: withoutFactoryHeader,

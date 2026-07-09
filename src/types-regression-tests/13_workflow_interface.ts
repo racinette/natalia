@@ -19,7 +19,6 @@ import {
   defineRequest,
   defineStep,
   defineStepInterface,
-  defineWorkflow,
   defineWorkflowHeader,
   defineWorkflowInterface,
 } from "../workflow";
@@ -66,9 +65,10 @@ const ctx13ChildHeader = defineWorkflowHeader({
   errors: { ChildErr: true },
 });
 
-const ctx13ChildWorkflow = defineWorkflow({
-  ...ctx13ChildHeader,
-  async execute(_ctx, _args) {
+const ctx13ChildInterface = ctx13ChildHeader.extend({});
+
+const ctx13ChildWorkflow = ctx13ChildInterface.implement({
+  async execute(_ctx) {
     return "child-result";
   },
 });
@@ -80,8 +80,9 @@ const ctx13DetachedHeader = defineWorkflowHeader({
   channels: { detachCh: z.string() },
 });
 
-const ctx13DetachedWorkflow = defineWorkflow({
-  ...ctx13DetachedHeader,
+const ctx13DetachedInterface = ctx13DetachedHeader.extend({});
+
+const ctx13DetachedWorkflow = ctx13DetachedInterface.implement({
   async execute() {
     return undefined;
   },
@@ -94,8 +95,9 @@ const ctx13ExtHeader = defineWorkflowHeader({
   channels: { extOut: z.object({ n: z.number() }) },
 });
 
-const ctx13ExtWorkflow = defineWorkflow({
-  ...ctx13ExtHeader,
+const ctx13ExtInterface = ctx13ExtHeader.extend({});
+
+const ctx13ExtWorkflow = ctx13ExtInterface.implement({
   async execute() {
     return 0;
   },
@@ -205,8 +207,8 @@ const ctx13FullInterface = ctx13MainHeader.extend({
 });
 
 void defineWorkflowInterface({
-  ...ctx13MainHeader,
-  steps: { plain: ctx13PlainStepIface },
+  name: "ctx13ExternalWorkflowsReject",
+  args: z.undefined(),
   // @ts-expect-error — `externalWorkflows` is not on `WorkflowInterface`; pass it to `.implement({ externalWorkflows })` only
   externalWorkflows: { partner: ctx13ExtWorkflow },
 });
@@ -218,8 +220,8 @@ const ctx13FullWorkflow = ctx13FullInterface.implement({
     withComp: ctx13CompStep,
   },
   requests: { rpc: ctx13RpcRequest },
-  async execute(ctx, args) {
-    type _Args = Assert<IsEqual<typeof args, { wid: string }>>;
+  async execute(ctx) {
+    type _Args = Assert<IsEqual<(typeof ctx)["args"], { wid: string }>>;
 
     void ctx.workflowId;
     void ctx.timestamp;
@@ -290,7 +292,7 @@ const ctx13FullWorkflow = ctx13FullInterface.implement({
 
     const _scope13Out = await ctx.scope(
       "scope13",
-      { pe: ctx.steps.plain({ factor: args.wid.length }) },
+      { pe: ctx.steps.plain({ factor: ctx.args.wid.length }) },
       async (sctx, handles) => {
         void sctx.channels.cIn;
         void sctx.streams.slog.write;
@@ -402,7 +404,7 @@ const ctx13FullWorkflow = ctx13FullInterface.implement({
     // @ts-expect-error — step args `factor` must be a number
     void ctx.steps.plain({ factor: "not-a-number" });
 
-    return args.wid.length;
+    return ctx.args.wid.length;
   },
 });
 
@@ -509,8 +511,8 @@ void orderHeader.extend({ name: "badName" });
 
 const orderWorkflow = orderInterface.implement({
   steps: { charge: chargeStep },
-  async execute(ctx, _args) {
-    type _Sku = Assert<IsEqual<(typeof _args)["sku"], string>>;
+  async execute(ctx) {
+    type _Sku = Assert<IsEqual<(typeof ctx)["args"]["sku"], string>>;
     void ctx.streams.audit.write;
     return { id: "o1" };
   },
@@ -701,61 +703,32 @@ const transformWorkflowHeader = defineWorkflowHeader({
 const transformWorkflowInterface = transformWorkflowHeader.extend({});
 
 const transformWorkflowFromInterface = transformWorkflowInterface.implement({
-  async execute(_ctx, args) {
+  async execute(ctx) {
     type _ExArgs = Assert<
       IsEqual<
-        typeof args,
+        (typeof ctx)["args"],
         StandardSchemaV1.InferOutput<typeof transformWorkflowArgs>
       >
     >;
     type _ExArgsShape = Assert<
-      IsEqual<typeof args, { decoded: string; len: number }>
+      IsEqual<(typeof ctx)["args"], { decoded: string; len: number }>
     >;
     // @ts-expect-error — execute receives **decoded** args (`InferOutput`), not wire input
-    void args.wire;
-    return { score: args.len };
+    void ctx.args.wire;
+    return { score: ctx.args.len };
   },
 });
 
 void transformWorkflowFromInterface;
 
-const transformWorkflowDirect = defineWorkflow({
-  ...transformWorkflowHeader,
-  async execute(_ctx, args) {
-    type _DirectArgs = Assert<
-      IsEqual<typeof args, { decoded: string; len: number }>
-    >;
-    return { score: args.len };
-  },
-});
-
 const _transformStructuralOk: AssertAssignable<
   TransformWorkflowContractSurface,
-  typeof transformWorkflowDirect
-> = transformWorkflowDirect;
+  typeof transformWorkflowFromInterface
+> = transformWorkflowFromInterface;
 
-const transformManualDecl: TransformWorkflowContract = {
-  name: "tfWf",
-  args: transformWorkflowArgs,
-  result: transformWorkflowResult,
-};
-
-const transformManualImpl = defineWorkflow({
-  ...transformManualDecl,
-  async execute() {
-    return { score: 1 };
-  },
-});
-
-const _transformManualStructuralOk: AssertAssignable<
-  TransformWorkflowContractSurface,
-  typeof transformManualImpl
-> = transformManualImpl;
-
-const _badTransformReturn = defineWorkflow({
-  ...transformWorkflowHeader,
+const _badTransformReturn = transformWorkflowInterface.implement({
   // @ts-expect-error — must return `InferInput` of result schema (`{ score: number }`), not post-transform output
-  async execute(_ctx, _args) {
+  async execute(_ctx) {
     return { doubled: 2 };
   },
 });

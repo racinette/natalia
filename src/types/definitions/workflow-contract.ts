@@ -1,6 +1,6 @@
 import type { StandardSchemaV1 } from "../standard-schema";
 import type { JsonObjectSchemaConstraint, JsonSchemaConstraint } from "../json-input";
-import type { WorkflowContext } from "../context/context-interfaces";
+import type { WorkflowExecuteContext } from "../context/context-interfaces";
 import type { ErrorDefinitions, WorkflowErrorDefinitions } from "./errors";
 import type {
   AttributeDefinitions,
@@ -203,9 +203,9 @@ export type WorkflowImplementInput<
       TExternalWorkflows,
       TPatches,
       TRng,
+      TArgs,
       TErrors
     >,
-    args: StandardSchemaV1.InferOutput<TArgs>,
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
 } & ([TSteps] extends [Record<string, never>]
   ? { steps?: StepsFromInterfaces<TSteps> }
@@ -355,8 +355,9 @@ export type WorkflowContextForInterface<
   TExternalWorkflows extends WorkflowDefinitions,
   TPatches extends PatchDefinitions,
   TRng extends RngDefinitions,
-  TErrors extends WorkflowErrorDefinitions,
-> = WorkflowContext<
+  TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
+  TErrors extends WorkflowErrorDefinitions = Record<string, never>,
+> = WorkflowExecuteContext<
   TChannels,
   TStreams,
   TEvents,
@@ -368,6 +369,6 @@ export type WorkflowContextForInterface<
   TExternalWorkflows,
   TPatches,
   TRng,
-  [],
-  TErrors
+  TErrors,
+  TArgs
 >;

@@ -209,6 +209,7 @@ const manualReviewRequest = defineRequest({
 
 const compRequestsWorkflow = defineWorkflow({
   name: "compRequestsWorkflow",
+  args: z.undefined(),
   requests: {
     compApproval: approvalRequest,
     compManualReview: manualReviewRequest,
@@ -311,6 +312,7 @@ const nonCompensableRequest = defineRequest({
 
 const nonCompensableWorkflow = defineWorkflow({
   name: "compNonCompensableWorkflow",
+  args: z.undefined(),
   requests: { nonCompensable: nonCompensableRequest },
   result: z.object({ ok: z.boolean() }),
   async execute() {
@@ -374,6 +376,7 @@ void voidResultStep;
 
 const childWorkflow = defineWorkflow({
   name: "compChild",
+  args: z.undefined(),
   result: z.object({ ok: z.boolean() }),
   async execute() {
     return { ok: true };
@@ -382,6 +385,7 @@ const childWorkflow = defineWorkflow({
 
 export const compensationModelAcceptanceWorkflow = defineWorkflow({
   name: "compensationModelAcceptance",
+  args: z.undefined(),
   steps: { chargeStep },
   requests: { approvalRequest },
   childWorkflows: { childWorkflow },
@@ -402,7 +406,7 @@ export const compensationModelAcceptanceWorkflow = defineWorkflow({
     // @ts-expect-error general ad hoc compensation registration is removed
     void ctx.addCompensation(async () => undefined);
 
-    const child = ctx.childWorkflows.childWorkflow();
+    const child = ctx.childWorkflows.childWorkflow(undefined);
     // @ts-expect-error child compensation is no longer call-site-bound
     void child.compensate(async () => undefined);
 

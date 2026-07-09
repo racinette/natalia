@@ -58,6 +58,7 @@ export type {
   ErrorFactories,
   WorkflowConcurrencyContext,
   WorkflowContext,
+  WorkflowExecuteContext,
 } from "./types/context/context-interfaces";
 export type {
   CompensationResolver,

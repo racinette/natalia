@@ -27,11 +27,12 @@ Declare it on a workflow and enqueue from `execute`:
 ```typescript
 const onboarding = defineWorkflow({
   name: "onboarding",
+  args: z.object({ userId: z.string() }),
   queues: { notifications },
   result: z.object({ ok: z.boolean() }),
-  async execute(ctx, args) {
+  async execute(ctx) {
     ctx.queues.notifications.enqueue(
-      { userId: args.userId, template: "welcome", body: "Welcome!" },
+      { userId: ctx.args.userId, template: "welcome", body: "Welcome!" },
       { priority: 0, delay: 60, ttl: 1800 },
     );
     return { ok: true };

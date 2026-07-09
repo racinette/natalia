@@ -41,12 +41,13 @@ The intended **lifecycle** is three-step:
 ```typescript
 const flight = defineWorkflow({
   name: "flight",
+  args: z.object({ flightId: z.string() }),
   patches: {
     antifraud: true,    // active: new runs take the patched path
     legacyRetry: false, // deprecated: only replaying histories take it
   },
   steps: { fraudCheck },
-  async execute(ctx, args) {
+  async execute(ctx) {
     // …
   },
 });
@@ -56,7 +57,7 @@ const flight = defineWorkflow({
 
 ```typescript
 if (await ctx.patches.antifraud) {
-  const result = await ctx.join(ctx.steps.fraudCheck({ flightId: args.flightId }));
+  const result = await ctx.join(ctx.steps.fraudCheck({ flightId: ctx.args.flightId }));
   // new behavior, only on executions started after the patch went active
 } else {
   // legacy path, preserved for histories already in flight
