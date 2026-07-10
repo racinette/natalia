@@ -21,6 +21,7 @@ import type {
   NonCompensableStepDefinitions,
   StepCompensationDefinition,
 } from "./steps";
+import type { StepExecuteContext } from "./handlers";
 import type { WorkflowHeader, WorkflowDefinitions } from "./workflow-headers";
 
 /**
@@ -115,8 +116,7 @@ export type StepDefinitionFromInterface<
   TCompensation extends StepCompensationInterface | undefined,
 > = StepInterface<TName, TArgsSchema, TResultSchema, TCompensation> & {
   readonly execute: (
-    args: StandardSchemaV1.InferOutput<TArgsSchema>,
-    opts: { signal: AbortSignal },
+    ctx: StepExecuteContext<TArgsSchema>,
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
 } & ([TCompensation] extends [StepCompensationInterface]
   ? {

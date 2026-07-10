@@ -137,8 +137,8 @@ const chargeStep = defineStep({
       }
     },
   },
-  async execute(args, _opts) {
-    return { chargeId: `c-${args.amount}` };
+  async execute(ctx) {
+    return { chargeId: `c-${ctx.args.amount}` };
   },
 });
 

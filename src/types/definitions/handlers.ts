@@ -26,6 +26,18 @@ export interface HandlerContext {
 }
 
 /**
+ * Step `execute` context — decoded `args` and per-attempt `signal`.
+ *
+ * Steps require an `args` schema, so `args` is always present. There is no
+ * `errors` map: step failures use thrown errors / `AttemptError`.
+ */
+export interface StepExecuteContext<
+  TArgsSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+> extends HandlerContext {
+  readonly args: StandardSchemaV1.InferOutput<TArgsSchema>;
+}
+
+/**
  * Queue handler context for the handler body (retried attempts).
  *
  * The handler receives decoded `ctx.message`, `ctx.signal`, and `ctx.errors`.

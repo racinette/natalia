@@ -8,6 +8,7 @@ import type {
   HandlerAttemptsReadNamespace,
   JsonInput,
   OperatorAttemptsNamespaceExternal,
+  StepExecuteContext,
 } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
 import { session } from "./test-session";
@@ -123,16 +124,30 @@ void empty;
 // @ts-expect-error details must be JSON-serializable (no Set/Map/etc.)
 new AttemptError({ details: new Set(["not-json"]) });
 
+const attemptNamespaceStepArgs = z.object({ id: z.string() });
+
 defineStep({
   name: "attemptNamespaceStep",
-  args: z.object({ id: z.string() }),
+  args: attemptNamespaceStepArgs,
   result: z.object({ ok: z.boolean() }),
-  async execute(args, _opts) {
-    if (args.id === "bad") {
+  async execute(ctx) {
+    type _CtxIsStepExecute = Assert<
+      typeof ctx extends StepExecuteContext<typeof attemptNamespaceStepArgs>
+        ? true
+        : false
+    >;
+    type _ArgsDecoded = Assert<
+      IsEqual<(typeof ctx)["args"], { id: string }>
+    >;
+    void ctx.signal;
+    // @ts-expect-error step execute has no errors map
+    void ctx.errors;
+
+    if (ctx.args.id === "bad") {
       throw new AttemptError({
         type: "StepFailed",
         message: "synthetic",
-        details: { id: args.id },
+        details: { id: ctx.args.id },
       });
     }
     return { ok: true };

@@ -35,6 +35,7 @@ import type {
   QueueInterfaces,
   StepInterface,
   StepCompensationInterface,
+  StepExecuteContext,
 } from "./types";
 import type {
   StepsFromInterfaces,
@@ -116,11 +117,11 @@ function validateErrorDefinitions(
  *   name: 'bookFlight',
  *   args: z.object({ destination: z.string(), customerId: z.string() }),
  *   result: FlightBookingResult,
- *   execute: async (args, { signal }) => {
+ *   execute: async (ctx) => {
  *     const res = await fetch('https://api.flights.com/book', {
  *       method: 'POST',
- *       body: JSON.stringify(args),
- *       signal,
+ *       body: JSON.stringify(ctx.args),
+ *       signal: ctx.signal,
  *     });
  *     return res.json();
  *   },
@@ -131,11 +132,11 @@ function validateErrorDefinitions(
  *   name: 'cancelFlight',
  *   args: z.object({ destination: z.string(), customerId: z.string() }),
  *   result: z.object({ ok: z.boolean() }),
- *   execute: async (args, { signal }) => {
+ *   execute: async (ctx) => {
  *     await fetch('https://api.flights.com/cancel-by-route', {
  *       method: 'POST',
- *       body: JSON.stringify(args),
- *       signal,
+ *       body: JSON.stringify(ctx.args),
+ *       signal: ctx.signal,
  *     });
  *     return { ok: true };
  *   },
@@ -178,8 +179,7 @@ export function defineStep<
     TCompensationResultSchema
   >;
   execute: (
-    args: StandardSchemaV1.InferOutput<TArgsSchema>,
-    opts: { signal: AbortSignal },
+    ctx: StepExecuteContext<TArgsSchema>,
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
   retryPolicy?: RetryPolicyOptions;
 }): StepDefinition<
@@ -212,8 +212,7 @@ export function defineStep<
   result: TResultSchema;
   compensation?: undefined;
   execute: (
-    args: StandardSchemaV1.InferOutput<TArgsSchema>,
-    opts: { signal: AbortSignal },
+    ctx: StepExecuteContext<TArgsSchema>,
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
   retryPolicy?: RetryPolicyOptions;
 }): StepDefinition<TName, TArgsSchema, TResultSchema>;
@@ -222,7 +221,7 @@ export function defineStep(config: {
   args: JsonSchemaConstraint;
   result: JsonSchemaConstraint;
   compensation?: MaximalStepCompensationDefinition;
-  execute: (args: unknown, opts: { signal: AbortSignal }) => Promise<unknown>;
+  execute: (ctx: StepExecuteContext) => Promise<unknown>;
   retryPolicy?: RetryPolicyOptions;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- widened return for runtime-checked overload
 }): StepDefinition<any, any, any, any> {
@@ -290,15 +289,13 @@ export function defineStepInterface<
     impl: TCompensation extends undefined
       ? {
           execute: (
-            args: StandardSchemaV1.InferOutput<TArgsSchema>,
-            opts: { signal: AbortSignal },
+            ctx: StepExecuteContext<TArgsSchema>,
           ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
           retryPolicy?: RetryPolicyOptions;
         }
       : {
           execute: (
-            args: StandardSchemaV1.InferOutput<TArgsSchema>,
-            opts: { signal: AbortSignal },
+            ctx: StepExecuteContext<TArgsSchema>,
           ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
           retryPolicy?: RetryPolicyOptions;
           compensation: StepCompensationDefinition<
@@ -389,12 +386,11 @@ export function defineStepInterface<
         retryPolicy: (impl as { retryPolicy?: RetryPolicyOptions }).retryPolicy ?? config.retryPolicy,
         execute: (impl as {
           execute: (
-            args: StandardSchemaV1.InferOutput<TArgsSchema>,
-            opts: { signal: AbortSignal },
+            ctx: StepExecuteContext<TArgsSchema>,
           ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
         }).execute,
         compensation: mergedComp,
-      } as Parameters<typeof defineStep>[0]) as unknown as StepDefinitionFromInterface<
+      } as unknown as Parameters<typeof defineStep>[0]) as unknown as StepDefinitionFromInterface<
         TName,
         TArgsSchema,
         TResultSchema,
@@ -407,15 +403,13 @@ export function defineStepInterface<
       impl: TCompensation extends undefined
         ? {
             execute: (
-              args: StandardSchemaV1.InferOutput<TArgsSchema>,
-              opts: { signal: AbortSignal },
+              ctx: StepExecuteContext<TArgsSchema>,
             ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
             retryPolicy?: RetryPolicyOptions;
           }
         : {
             execute: (
-              args: StandardSchemaV1.InferOutput<TArgsSchema>,
-              opts: { signal: AbortSignal },
+              ctx: StepExecuteContext<TArgsSchema>,
             ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
             retryPolicy?: RetryPolicyOptions;
             compensation: StepCompensationDefinition<

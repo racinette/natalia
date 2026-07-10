@@ -103,7 +103,7 @@ const chargeCard = defineStep({
       // …
     },
   },
-  async execute(args, { signal }) {
+  async execute(ctx) {
     // …
   },
 });

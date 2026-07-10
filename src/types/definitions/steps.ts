@@ -4,6 +4,7 @@ import type { ErrorDefinitions } from "./errors";
 import type { HandlerAttemptsReadNamespace } from "../introspection";
 import type { JsonSchemaConstraint } from "../json-input";
 import type { CompensationContext } from "../context/context-interfaces";
+import type { StepExecuteContext } from "./handlers";
 import type { QueueDefinitions, TopicDefinitions } from "./messaging";
 import type {
   AttributeDefinitions,
@@ -64,8 +65,7 @@ export type StepDefinition<
    * Use your own application logger for step-level logging.
    */
   readonly execute: (
-    args: StandardSchemaV1.InferOutput<TArgsSchema>,
-    opts: { signal: AbortSignal },
+    ctx: StepExecuteContext<TArgsSchema>,
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
   /** Argument schema for observable, serializable step input. */
   readonly args: TArgsSchema;

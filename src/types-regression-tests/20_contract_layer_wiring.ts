@@ -31,8 +31,8 @@ const layerInnerStep = defineStep({
   name: "layerInnerStep",
   args: z.object({ n: z.number() }),
   result: z.object({ ok: z.boolean() }),
-  async execute(args) {
-    return { ok: args.n > 0 };
+  async execute(ctx) {
+    return { ok: ctx.args.n > 0 };
   },
 });
 

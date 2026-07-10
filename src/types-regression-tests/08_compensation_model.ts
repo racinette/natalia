@@ -21,8 +21,8 @@ const refundStep = defineStep({
   name: "compRefundStep",
   args: z.object({ chargeId: z.string() }),
   result: z.object({ refundId: z.string() }),
-  async execute(args, _opts) {
-    return { refundId: `refund:${args.chargeId}` };
+  async execute(ctx) {
+    return { refundId: `refund:${ctx.args.chargeId}` };
   },
 });
 
@@ -137,8 +137,8 @@ const chargeStep = defineStep({
       return { status: "manual_review" as const };
     },
   },
-  async execute(args, _opts) {
-    return { chargeId: `charge:${args.customerId}`, amount: args.amount };
+  async execute(ctx) {
+    return { chargeId: `charge:${ctx.args.customerId}`, amount: ctx.args.amount };
   },
 });
 

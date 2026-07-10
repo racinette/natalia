@@ -56,8 +56,8 @@ const timedStep = defineStep({
   name: "timedStep",
   args: TimedStepArgs,
   result: TimedStepResult,
-  async execute(args, _opts) {
-    return { value: args.id };
+  async execute(ctx) {
+    return { value: ctx.args.id };
   },
 });
 

@@ -4,6 +4,7 @@ import type {
   AwaitableEntry,
   RequestEntry,
   StepEntry,
+  StepExecuteContext,
   WorkflowEntry,
 } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
@@ -72,12 +73,24 @@ type _StepEntryIsNotPromise = Assert<
 // FIXTURES
 // =============================================================================
 
+const execModelNoopStepArgs = z.object({ value: z.string() });
+
 const noopStep = defineStep({
   name: "execModelNoopStep",
-  args: z.object({ value: z.string() }),
+  args: execModelNoopStepArgs,
   result: z.object({ normalized: z.string() }),
-  async execute(args, _opts) {
-    return { normalized: args.value.trim() };
+  async execute(ctx) {
+    type _CtxIsStepExecute = Assert<
+      typeof ctx extends StepExecuteContext<typeof execModelNoopStepArgs>
+        ? true
+        : false
+    >;
+    type _ArgsDecoded = Assert<
+      IsEqual<(typeof ctx)["args"], { value: string }>
+    >;
+    type _HasSignal = Assert<"signal" extends keyof typeof ctx ? true : false>;
+    type _NoErrors = Assert<"errors" extends keyof typeof ctx ? false : true>;
+    return { normalized: ctx.args.value.trim() };
   },
 });
 

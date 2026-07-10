@@ -94,8 +94,8 @@ const compensableStep = defineStep({
       await ctx.steps.auditStep({ id: "any" });
     },
   },
-  async execute(args, _opts) {
-    return { ack: args.id.length > 0 };
+  async execute(ctx) {
+    return { ack: ctx.args.id.length > 0 };
   },
 });
 

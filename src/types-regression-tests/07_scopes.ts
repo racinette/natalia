@@ -16,8 +16,8 @@ const normalizeStep = defineStep({
   name: "scopesNormalizeStep",
   args: z.object({ orderId: z.string() }),
   result: z.object({ normalized: z.string() }),
-  async execute(args, _opts) {
-    return { normalized: args.orderId.toUpperCase() };
+  async execute(ctx) {
+    return { normalized: ctx.args.orderId.toUpperCase() };
   },
 });
 

@@ -2,7 +2,7 @@
 
 ## What it is
 
-A **step** is a **named unit of side-effecting work** the engine runs **outside** the workflow’s `execute` coroutine: talk to APIs, databases, queues, subprocesses—anything that must not be re-simulated line-by-line on every replay. You define it once with **schemas for arguments and result**, plus an **`execute` function** that receives the decoded args and an **opts** object (including an **abort signal**), and returns a value matching the result schema.
+A **step** is a **named unit of side-effecting work** the engine runs **outside** the workflow’s `execute` coroutine: talk to APIs, databases, queues, subprocesses—anything that must not be re-simulated line-by-line on every replay. You define it once with **schemas for arguments and result**, plus an **`execute` function** that receives a single **`ctx`** with the decoded **`args`** and an abort **`signal`**, and returns a value matching the result schema.
 
 The workflow **does not** embed that implementation in its body. Instead it **dispatches** a step: `ctx.steps.<name>(...)` yields an **entry** you **await** (or hand to structured helpers such as `ctx.scope`). The engine records the call; **the same worker that is executing the workflow runs the step’s `execute`**, persists the outcome, and on replay **replays the recorded result** instead of calling your integration again.
 
@@ -83,12 +83,12 @@ const reserveInventory = defineStep({
   args: z.object({ sku: z.string(), quantity: z.number() }),
   result: z.object({ reservationId: z.string() }),
   retryPolicy: { intervalSeconds: 2, backoffRate: 1.5 },
-  async execute(args, { signal }) {
+  async execute(ctx) {
     const res = await fetch("https://warehouse.example/v1/reservations", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(args),
-      signal,
+      body: JSON.stringify(ctx.args),
+      signal: ctx.signal,
     });
     if (!res.ok) {
       throw new Error(`warehouse returned ${res.status}`);
@@ -141,10 +141,10 @@ const releaseGatewayHold = defineStep({
   name: "releaseGatewayHold",
   args: z.object({ chargeId: z.string() }),
   result: z.object({ released: z.boolean() }),
-  async execute(args, { signal }) {
+  async execute(ctx) {
     const res = await fetch(
-      `https://payments.example/v1/charges/${args.chargeId}/release`,
-      { method: "POST", signal },
+      `https://payments.example/v1/charges/${ctx.args.chargeId}/release`,
+      { method: "POST", signal: ctx.signal },
     );
     const body = (await res.json()) as { released: boolean };
     if (!res.ok) {
@@ -256,18 +256,18 @@ const chargeCard = defineStep({
       }
     },
   },
-  async execute(args, { signal }) {
+  async execute(ctx) {
     const res = await fetch("https://payments.example/v1/charges", {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "idempotency-key": args.gatewayIdempotencyKey,
+        "idempotency-key": ctx.args.gatewayIdempotencyKey,
       },
       body: JSON.stringify({
-        cents: args.cents,
-        customerId: args.customerId,
+        cents: ctx.args.cents,
+        customerId: ctx.args.customerId,
       }),
-      signal,
+      signal: ctx.signal,
     });
     if (!res.ok) {
       throw new Error(`payment returned ${res.status}`);

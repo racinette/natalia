@@ -85,8 +85,8 @@ const chargeStep = defineStep({
       return { status: "refunded" as const };
     },
   },
-  async execute(args, _opts) {
-    return { chargeId: `c-${args.customerId}` };
+  async execute(ctx) {
+    return { chargeId: `c-${ctx.args.customerId}` };
   },
 });
 

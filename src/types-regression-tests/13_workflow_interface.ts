@@ -760,11 +760,11 @@ const transformStepIface = defineStepInterface({
 });
 
 const transformStepDef = transformStepIface.implement({
-  async execute(args, _opts) {
-    type _StepDecodedArgs = Assert<IsEqual<typeof args, number>>;
+  async execute(ctx) {
+    type _StepDecodedArgs = Assert<IsEqual<typeof ctx.args, number>>;
     // @ts-expect-error — step `execute` args are `InferOutput` of the args schema (length), not the raw string input
-    void args.charAt;
-    return args > 0;
+    void ctx.args.charAt;
+    return ctx.args > 0;
   },
 });
 

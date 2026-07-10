@@ -27,7 +27,7 @@ const notify = defineStep({
       return undefined;
     },
   },
-  async execute(args) {
+  async execute(ctx) {
     return { sent: true };
   },
 });

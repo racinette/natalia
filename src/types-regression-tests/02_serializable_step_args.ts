@@ -28,11 +28,11 @@ const bookSerializableFlight = defineStep({
   name: "bookSerializableFlight",
   args: SerializableStepArgs,
   result: SerializableStepResult,
-  async execute(args, _opts) {
-    type _ExecuteArgsNoAny = Assert<IsAny<typeof args> extends false ? true : false>;
+  async execute(ctx) {
+    type _ExecuteArgsNoAny = Assert<IsAny<typeof ctx.args> extends false ? true : false>;
     type _ExecuteArgsAreDecoded = Assert<
       IsEqual<
-        typeof args,
+        typeof ctx.args,
         {
           destination: string;
           passengerId: string;
@@ -42,7 +42,7 @@ const bookSerializableFlight = defineStep({
     >;
 
     return {
-      confirmationId: `${args.destination}:${args.passengerId}`,
+      confirmationId: `${ctx.args.destination}:${ctx.args.passengerId}`,
       bookedAt: new Date(),
     };
   },
