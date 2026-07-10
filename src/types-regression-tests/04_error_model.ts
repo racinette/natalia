@@ -222,7 +222,7 @@ defineStep({
   result: z.void(),
   compensation: {
     result: z.void(),
-    async undo(ctx, _args, _info) {
+    async undo(ctx) {
       // @ts-expect-error compensation undo has no ctx.errors
       void ctx.errors;
     },

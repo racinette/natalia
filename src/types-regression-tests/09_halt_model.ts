@@ -83,7 +83,7 @@ const compensableStep = defineStep({
   compensation: {
     result: z.void(),
     steps: { auditStep },
-    async undo(ctx, _args, _info) {
+    async undo(ctx) {
       // Compensation undo has no `errors` field on the context — throws halt
       // the compensation block instance instead of failing it with a typed
       // business error.

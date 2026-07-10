@@ -81,7 +81,7 @@ const chargeStep = defineStep({
     result: z.object({
       status: z.enum(["refunded", "manual_review"]),
     }),
-    async undo() {
+    async undo(_ctx) {
       return { status: "refunded" as const };
     },
   },
@@ -96,7 +96,7 @@ const noResultCompensableStep = defineStep({
   result: z.void(),
   compensation: {
     result: z.void(),
-    async undo() {},
+    async undo(_ctx) {},
   },
   async execute() {},
 });

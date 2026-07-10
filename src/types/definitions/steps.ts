@@ -96,7 +96,7 @@ export type NonCompensableStepDefinitions = Record<
 >;
 
 /**
- * Forward step outcome passed to compensation `undo` as `info`.
+ * Forward step outcome on step compensation `undo` `ctx.info`.
  *
  * `attempts` lists every persisted execution attempt on that forward step. At
  * least one attempt exists whenever `undo` runs.
@@ -212,10 +212,10 @@ export interface StepCompensationDefinition<
   /** Compensation outcome schema (`z.void()` when there is no structured return). */
   readonly result: TResultSchema;
   /**
-   * Compensation body. Receives the original step args (decoded) and the
-   * forward operation's outcome `info`. Compensation reports its outcome
-   * by return value — there is no `ctx.errors` and no throw machinery for
-   * declared business failures (Part 4).
+   * Compensation body. Receives forward step args on `ctx.args` and the
+   * forward operation's settlement snapshot on `ctx.info`. Compensation reports
+   * its outcome by return value — there is no `ctx.errors` and no throw
+   * machinery for declared business failures (Part 4).
    */
   readonly undo: (
     ctx: CompensationContext<
@@ -227,10 +227,13 @@ export interface StepCompensationDefinition<
       TRequests,
       TQueues,
       TChildren,
-      TExternalWorkflows
+      TExternalWorkflows,
+      Record<string, never>,
+      Record<string, never>,
+      [],
+      TArgsSchema,
+      TForwardResultSchema
     >,
-    args: StandardSchemaV1.InferOutput<TArgsSchema>,
-    info: CompensationInfo<StandardSchemaV1.InferOutput<TForwardResultSchema>>,
   ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
 }
 

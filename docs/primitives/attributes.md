@@ -97,7 +97,7 @@ const chargeCard = defineStep({
   compensation: {
     result: z.void(),
     attributes: { undoProgress: z.object({ percent: z.number() }) },
-    async undo(ctx, args, info) {
+    async undo(ctx) {
       ctx.attributes.undoProgress.set({ percent: 0.5 });
       return undefined;
       // …

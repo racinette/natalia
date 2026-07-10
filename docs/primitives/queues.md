@@ -82,10 +82,10 @@ Enqueue is also available in compensation `undo` callbacks when the compensation
 compensation: {
   result: z.void(),
   queues: { notifications },
-  async undo(ctx, args, info) {
-    if (info.status === "completed") {
+  async undo(ctx) {
+    if (ctx.info.status === "completed") {
       ctx.queues.notifications.enqueue({
-        userId: args.userId,
+        userId: ctx.args.userId,
         template: "welcome",
         body: "Your order was cancelled",
       });

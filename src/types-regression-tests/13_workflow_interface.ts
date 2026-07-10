@@ -151,7 +151,7 @@ const ctx13CompStep = ctx13CompStepIface.implement({
     events: { eUndo: true },
     steps: { ctx13InnerStep },
     externalWorkflows: { partner: ctx13ExtHeader },
-    async undo() {
+    async undo(_ctx) {
       return undefined;
     },
   },

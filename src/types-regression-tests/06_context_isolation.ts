@@ -29,7 +29,7 @@ const compensableForOther = defineStep({
   result: z.object({ ok: z.boolean() }),
   compensation: {
     result: z.void(),
-    async undo() {},
+    async undo(_ctx) {},
   },
   async execute() {
     return { ok: true };
@@ -55,12 +55,12 @@ const compensableStep = defineStep({
     result: z.void(),
     steps: { undoStep },
     requests: { undoRequest },
-    async undo(ctx, args, _info) {
-      type _UndoArgs = Assert<IsEqual<typeof args, { id: string }>>;
+    async undo(ctx) {
+      type _UndoArgs = Assert<IsEqual<typeof ctx.args, { id: string }>>;
 
       // Declared dependencies are reachable.
-      await ctx.steps.undoStep({ id: args.id });
-      await ctx.requests.undoRequest({ id: args.id });
+      await ctx.steps.undoStep({ id: ctx.args.id });
+      await ctx.requests.undoRequest({ id: ctx.args.id });
 
       // The workflow body's steps / requests are NOT visible here.
       // @ts-expect-error compensation undo only sees its own declared dependencies
@@ -94,7 +94,7 @@ defineStep({
   compensation: {
     result: z.void(),
     steps: { compensableForOther },
-    async undo() {},
+    async undo(_ctx) {},
   },
   async execute() {
     return { ok: true };
@@ -109,7 +109,7 @@ defineStep({
   compensation: {
     result: z.void(),
     requests: { compensableRequestForOther },
-    async undo() {},
+    async undo(_ctx) {},
   },
   async execute() {
     return { ok: true };

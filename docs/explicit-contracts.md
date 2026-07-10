@@ -23,7 +23,7 @@ const notify = defineStep({
   result: z.object({ sent: z.boolean() }),
   compensation: {
     result: z.void(),
-    async undo() {
+    async undo(_ctx) {
       return undefined;
     },
   },

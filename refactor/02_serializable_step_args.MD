@@ -62,9 +62,9 @@ verifies:
 
 ## Out of Scope (Deferred)
 
-- Compensation `undo(ctx, args, info)` receiving typed args is fully
+- Compensation `undo(ctx)` with `ctx.args` and `ctx.info` is fully
   exercised by step 08's compensation acceptance test
-  (`src/types-regression-tests/compensation_model.ts`).
+  (`src/types-regression-tests/08_compensation_model.ts`).
 - Per-attempt failure records exposing the original args belong to step 05
   (AttemptAccessor) and step 12 (introspection) — they cannot be type-tested
   in isolation without those steps' surfaces.

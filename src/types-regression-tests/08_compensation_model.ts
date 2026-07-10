@@ -7,10 +7,21 @@ import {
   defineWorkflowHeader,
 } from "../workflow";
 import type {
+  AttributeDefinitions,
+  ChannelDefinitions,
   CompensationId,
   CompensationInfo,
+  EventDefinitions,
+  PatchDefinitions,
+  QueueDefinitions,
   RequestCompensationInfo,
+  RequestDefinitions,
+  RngDefinitions,
+  StepCompensationUndoContext,
+  StepDefinitions,
+  StreamDefinitions,
 } from "../types";
+import type { WorkflowDefinitions } from "../types/definitions/workflow-headers";
 import type { Assert, IsEqual } from "./type-assertions";
 
 // =============================================================================
@@ -44,14 +55,17 @@ const undoChildHeader = defineWorkflowHeader({
 //
 // Declares per-instance primitives (channels/streams/events/attributes),
 // dependency keys (steps/requests/queues/topics/childWorkflows), and an
-// optional `result` schema. The `undo` callback receives the original
-// step args (decoded) and the forward outcome `info`.
+// optional `result` schema. The `undo` callback receives `ctx.args` (original
+// step args, decoded) and `ctx.info` (forward outcome snapshot).
 // =============================================================================
+
+const chargeStepArgs = z.object({ customerId: z.string(), amount: z.number() });
+const chargeStepResult = z.object({ chargeId: z.string(), amount: z.number() });
 
 const chargeStep = defineStep({
   name: "compChargeStep",
-  args: z.object({ customerId: z.string(), amount: z.number() }),
-  result: z.object({ chargeId: z.string(), amount: z.number() }),
+  args: chargeStepArgs,
+  result: chargeStepResult,
   compensation: {
     // Per-instance primitives (declaration slots; full accessor surface lands
     // in steps 13/15/16).
@@ -71,19 +85,19 @@ const chargeStep = defineStep({
       refundId: z.string().optional(),
     }),
 
-    async undo(ctx, args, info) {
+    async undo(ctx) {
       // ---------------------------------------------------------------------
       // Original step args are typed as `InferOutput<TArgs>`.
       // ---------------------------------------------------------------------
       type _Args = Assert<
-        IsEqual<typeof args, { customerId: string; amount: number }>
+        IsEqual<typeof ctx.args, { customerId: string; amount: number }>
       >;
 
       // ---------------------------------------------------------------------
       // Forward outcome info — discriminated on `status`.
       // ---------------------------------------------------------------------
       type _Info = Assert<
-        typeof info extends CompensationInfo<{
+        typeof ctx.info extends CompensationInfo<{
           chargeId: string;
           amount: number;
         }>
@@ -91,30 +105,33 @@ const chargeStep = defineStep({
           : false
       >;
 
-      if (info.status === "completed") {
+      if (ctx.info.status === "completed") {
         const refund = await ctx.steps.refundStep({
-          chargeId: info.result.chargeId,
+          chargeId: ctx.info.result.chargeId,
         });
         return { status: "refunded" as const, refundId: refund.refundId };
       }
 
-      if (info.status === "timed_out") {
+      if (ctx.info.status === "timed_out") {
         type _Reason = Assert<
-          IsEqual<typeof info.reason, "attempts_exhausted" | "deadline">
+          IsEqual<
+            typeof ctx.info.reason,
+            "attempts_exhausted" | "deadline"
+          >
         >;
         // Timed-out forward outcomes do not expose a `result`.
         // @ts-expect-error timed-out forward outcomes do not expose a result
-        void info.result;
+        void ctx.info.result;
 
         // `attempts` is still available — Part 2 says compensation must
         // inspect attempts when the engine never observed completion.
-        await info.attempts.count();
+        await ctx.info.attempts.count();
       }
 
-      if (info.status === "terminated") {
+      if (ctx.info.status === "terminated") {
         // @ts-expect-error terminated forward outcomes do not expose a result
-        void info.result;
-        const _latest = await info.attempts.find({
+        void ctx.info.result;
+        const _latest = await ctx.info.attempts.find({
           sort: [{ path: "attemptNumber", direction: "desc" }],
           limit: 1,
         });
@@ -141,6 +158,33 @@ const chargeStep = defineStep({
     return { chargeId: `charge:${ctx.args.customerId}`, amount: ctx.args.amount };
   },
 });
+
+type _ChargeUndoCtx = Parameters<
+  NonNullable<(typeof chargeStep)["compensation"]>["undo"]
+>[0];
+
+type _UndoCtx = Assert<
+  Pick<_ChargeUndoCtx, "args" | "info"> extends Pick<
+    StepCompensationUndoContext<
+      ChannelDefinitions,
+      StreamDefinitions,
+      EventDefinitions,
+      AttributeDefinitions,
+      StepDefinitions,
+      RequestDefinitions,
+      QueueDefinitions,
+      WorkflowDefinitions,
+      WorkflowDefinitions,
+      PatchDefinitions,
+      RngDefinitions,
+      typeof chargeStepArgs,
+      typeof chargeStepResult
+    >,
+    "args" | "info"
+  >
+    ? true
+    : false
+>;
 
 // =============================================================================
 // COMPENSATION-ID BRAND — distinct per compensable step at the type level.
@@ -173,7 +217,7 @@ defineStep({
   compensation: {
     result: z.void(),
     steps: { chargeStep },
-    async undo() {},
+    async undo(_ctx) {},
   },
   async execute() {
     return { ok: true };
@@ -348,7 +392,7 @@ defineStep({
   compensation: {
     result: z.void(),
     requests: { approvalRequest },
-    async undo() {},
+    async undo(_ctx) {},
   },
   async execute() {
     return { ok: true };
@@ -368,7 +412,7 @@ const voidResultStep = defineStep({
   result: z.object({ ok: z.boolean() }),
   compensation: {
     result: z.void(),
-    async undo(_ctx, _args, _info) {
+    async undo(_ctx) {
       // No return value required.
     },
   },

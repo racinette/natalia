@@ -16,8 +16,8 @@ A compensable step's compensation declaration carries:
   compensation lifecycle);
 - an explicit **`result`** outcome schema (use **`z.void()`** when there is
   no structured return);
-- the **`undo`** body, which receives the original step args (decoded)
-  and the forward operation's outcome `info`.
+- the **`undo`** body, which receives forward step args on `ctx.args`
+  and the forward operation's settlement snapshot on `ctx.info`.
 
 A compensable request declaration carries **`compensation: { result, errors? }`**
 on `defineRequest`. Bare **`compensation: true`** and **`{ errors }`** without
@@ -65,9 +65,7 @@ interface StepCompensationDefinition<...> {
 
   // Compensation body.
   undo: (
-    ctx: CompensationContext<...>,
-    args: InferOutput<TArgsSchema>,
-    info: CompensationInfo<InferOutput<TForwardResultSchema>>,
+    ctx: CompensationContext<..., TArgsSchema, TForwardResultSchema>,
   ) => Promise<TResultSchema extends ... ? InferInput<TResultSchema> : void>;
 }
 ```
@@ -189,13 +187,13 @@ verifies:
    (channels / streams / events / attributes), dependencies (steps /
    requests / queues / topics / childWorkflows), and an optional
    `result` schema.
-2. The `undo` callback receives `(ctx, args, info)` with `args` typed
-   as the step's `InferOutput<TArgsSchema>` and `info` typed as
+2. The `undo` callback receives a single `ctx` with `ctx.args` typed
+   as the step's `InferOutput<TArgsSchema>` and `ctx.info` typed as
    `CompensationInfo<InferOutput<TForwardResultSchema>>`.
-3. `info.status === "completed"` exposes `result`; `"timed_out"` and
-   `"terminated"` do not — `info.result` access on those branches is
+3. `ctx.info.status === "completed"` exposes `result`; `"timed_out"` and
+   `"terminated"` do not — `ctx.info.result` access on those branches is
    rejected.
-4. `info.attempts` is available on every variant.
+4. `ctx.info.attempts` is available on every variant.
 5. `ctx.errors` is absent in `undo`.
 6. Compensation's `ctx` cannot see workflow-only steps / requests
    (covered by step 06; reasserted here).

@@ -138,7 +138,7 @@ defineStep({
   result: z.object({ ok: z.boolean() }),
   // @ts-expect-error step compensation must declare an explicit result schema
   compensation: {
-    async undo() {
+    async undo(_ctx) {
       return undefined;
     },
   },
@@ -153,7 +153,7 @@ defineStep({
   result: z.object({ ok: z.boolean() }),
   compensation: {
     result: z.void(),
-    async undo() {
+    async undo(_ctx) {
       return undefined;
     },
   },

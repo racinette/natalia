@@ -12,7 +12,7 @@ On the **step definition**, optional **`retryPolicy`** sets **how** to retry (in
 
 ### Compensable steps
 
-A step may optionally carry a **`compensation`** block on the **same definition** as `execute`. That declares how to **undo or reconcile** the forward work when the engine schedules compensation: a dedicated **`undo`** callback receives a **compensation** `ctx` (not the workflow body’s `ctx`), the **original step args**, and **`info`** summarizing the forward path’s terminal shape—**completed** (with a persisted result row), **timed out** without a settled result, or **terminated**. You **return** a typed outcome matching the declared **`result`** schema (`z.void()` when there is no structured return); there is no workflow-local `ctx.errors` inside `undo`.
+A step may optionally carry a **`compensation`** block on the **same definition** as `execute`. That declares how to **undo or reconcile** the forward work when the engine schedules compensation: a dedicated **`undo`** callback receives a **compensation** `ctx` (not the workflow body’s `ctx`) with **`ctx.args`** (the original step args) and **`ctx.info`** summarizing the forward path’s terminal shape—**completed** (with a persisted result row), **timed out** without a settled result, or **terminated**. You **return** a typed outcome matching the declared **`result`** schema (`z.void()` when there is no structured return); there is no workflow-local `ctx.errors` inside `undo`.
 
 #### When `undo` runs (attempts vs I/O)
 
@@ -20,9 +20,9 @@ Compensation runs **if and only if** the forward step has **at least one executi
 
 That attempt can be recorded even when your process died **before** any outbound I/O ran, so **you may be in `undo` with no external side effect.** **Forward `execute` must be idempotent** (safe to run again for the same attempt identity your gateway or datastore understands). **`undo` must tolerate “maybe nothing to reverse”**: design release, void, or reconcile calls so a second invocation is harmless, and branch using evidence below—not a single boolean—before doing irreversible work.
 
-#### Deciding what to undo: `info.status` and `info.attempts`
+#### Deciding what to undo: `ctx.info.status` and `ctx.info.attempts`
 
-**`info.status`** is how the forward step **settled** from the engine’s point of view:
+**`ctx.info.status`** is how the forward step **settled** from the engine’s point of view:
 
 - **`completed`** — `execute` **returned successfully** and the result was persisted. On that code path, the side effect your step author defined **did run** (the charge call returned, the row was written, and so on).
 - **`timed_out`** / **`terminated`** — no successful return was recorded.
@@ -33,7 +33,7 @@ The painful case is a **POST that may have landed** while the client never saw a
 
 The contrasting case is when **every failed attempt failed before the request could reach the server**—for example each attempt is **network unreachable**, DNS failure, or connection refused with no bytes accepted. Then you can often conclude **the remote system was never contacted** and **skip destructive undo** (or keep it to logging), because no mutation channel was opened.
 
-**`info.attempts`** is the forward step’s **execution attempt history** (`count()` is always at least **1** in `undo`). Each record has `message`, `type`, and `details` when the try failed in a captured way; successful tries are present too (for steps). Use **`info.status`** together with those records: status says whether the step **returned**; attempts help you judge **reachability** and **whether compensation work is proportionate**. Do not branch on **`if (info.status === "completed")` alone** when deciding how aggressive reversal should be—read whether tries look like **pre-reach** transport errors vs **post-reach** ambiguity.
+**`ctx.info.attempts`** is the forward step’s **execution attempt history** (`count()` is always at least **1** in `undo`). Each record has `message`, `type`, and `details` when the try failed in a captured way; successful tries are present too (for steps). Use **`ctx.info.status`** together with those records: status says whether the step **returned**; attempts help you judge **reachability** and **whether compensation work is proportionate**. Do not branch on **`if (ctx.info.status === "completed")` alone** when deciding how aggressive reversal should be—read whether tries look like **pre-reach** transport errors vs **post-reach** ambiguity.
 
 #### The `undo` body
 
@@ -181,13 +181,13 @@ const chargeCard = defineStep({
       chargeId: z.string().optional(),
       note: z.string().optional(),
     }),
-    async undo(ctx, args, info) {
+    async undo(ctx) {
       const audit = (phase: string, detail: string) => {
         ctx.streams.undoAudit.write({ phase, detail });
       };
 
-      if (info.status !== "completed") {
-        const forwardAttempts = await info.attempts.find();
+      if (ctx.info.status !== "completed") {
+        const forwardAttempts = await ctx.info.attempts.find();
         const onlyPreReach = forwardAttempts.every(
           (a) =>
             a.type === "NetworkError" ||
@@ -201,12 +201,14 @@ const chargeCard = defineStep({
 
         const resolution = await ctx.requests.operatorRecoverChargeCompensation(
           {
-            customerId: args.customerId,
-            cents: args.cents,
-            gatewayIdempotencyKey: args.gatewayIdempotencyKey,
+            customerId: ctx.args.customerId,
+            cents: ctx.args.cents,
+            gatewayIdempotencyKey: ctx.args.gatewayIdempotencyKey,
             phase: "forward_unsettled",
             detail:
-              info.status === "timed_out" ? info.reason : "forward terminated",
+              ctx.info.status === "timed_out"
+                ? ctx.info.reason
+                : "forward terminated",
           },
         );
 
@@ -216,7 +218,7 @@ const chargeCard = defineStep({
         };
       }
 
-      const { chargeId } = info.result;
+      const { chargeId } = ctx.info.result;
 
       while (true) {
         audit("release_attempt", chargeId);

@@ -6,7 +6,11 @@ import type { PatchAccessor, AttributeDefinitions, ChannelDefinitions, EventDefi
 import type { QueueDefinition, QueueDefinitions } from "../definitions/messaging";
 import type { RequestDefinition, RequestDefinitions } from "../definitions/requests";
 import type { RngAccessors, RngDefinitions } from "../definitions/rng";
-import type { StepDefinition, StepDefinitions } from "../definitions/steps";
+import type {
+  CompensationInfo,
+  StepDefinition,
+  StepDefinitions,
+} from "../definitions/steps";
 import type { WorkflowDefinitions } from "../definitions/workflow-headers";
 import type { ExplicitError } from "../results";
 import type {
@@ -148,10 +152,18 @@ export interface CompensationContext<
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
   TScopePath extends ScopePath = [],
+  TArgsSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+  TForwardResultSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
 >
   extends
     BaseContext<TChannels, TStreams, TEvents, TPatches, TRng, TAttributes>,
     CompensationResolver {
+  /** Original forward step args (decoded). */
+  readonly args: StandardSchemaV1.InferOutput<TArgsSchema>;
+  /** Forward step settlement snapshot. */
+  readonly info: CompensationInfo<
+    StandardSchemaV1.InferOutput<TForwardResultSchema>
+  >;
   /**
    * Steps for durable operations.
    */
@@ -249,7 +261,9 @@ export interface CompensationContext<
         TExternalWorkflows,
         TPatches,
         TRng,
-        AppendScopeName<TScopePath, Name>
+        AppendScopeName<TScopePath, Name>,
+        TArgsSchema,
+        TForwardResultSchema
       >,
       handles: ScopeHandles<E>,
     ) => Promise<R>,
@@ -612,6 +626,8 @@ export interface CompensationConcurrencyContext<
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
   TScopePath extends ScopePath = [],
+  TArgsSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+  TForwardResultSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
 >
   extends
     CompensationContext<
@@ -626,7 +642,9 @@ export interface CompensationConcurrencyContext<
       TExternalWorkflows,
       TPatches,
       TRng,
-      TScopePath
+      TScopePath,
+      TArgsSchema,
+      TForwardResultSchema
     > {
   /**
    * Iterate over scope entry completions, yielding `{ key, ... }` events.
@@ -636,3 +654,38 @@ export interface CompensationConcurrencyContext<
     ..._check: ScopeEntryValidation<E>
   ): AsyncIterable<MatchEvents<E>>;
 }
+
+/**
+ * Compensation context for the `undo` callback — root scope path (`[]`),
+ * includes forward `args` and settlement `info`.
+ */
+export type StepCompensationUndoContext<
+  TChannels extends ChannelDefinitions,
+  TStreams extends StreamDefinitions,
+  TEvents extends EventDefinitions,
+  TAttributes extends AttributeDefinitions = Record<string, never>,
+  TSteps extends StepDefinitions = Record<string, never>,
+  TRequests extends RequestDefinitions = Record<string, never>,
+  TQueues extends QueueDefinitions = Record<string, never>,
+  TChildren extends WorkflowDefinitions = Record<string, never>,
+  TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
+  TPatches extends PatchDefinitions = Record<string, never>,
+  TRng extends RngDefinitions = Record<string, never>,
+  TArgsSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+  TForwardResultSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
+> = CompensationContext<
+  TChannels,
+  TStreams,
+  TEvents,
+  TAttributes,
+  TSteps,
+  TRequests,
+  TQueues,
+  TChildren,
+  TExternalWorkflows,
+  TPatches,
+  TRng,
+  [],
+  TArgsSchema,
+  TForwardResultSchema
+>;

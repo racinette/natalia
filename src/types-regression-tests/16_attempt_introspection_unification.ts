@@ -109,31 +109,31 @@ const chargeStep = defineStep({
   result: z.object({ chargeId: z.string() }),
   compensation: {
     result: z.void(),
-    async undo(_ctx, _args, info) {
-      if (info.status === "completed") {
+    async undo(ctx) {
+      if (ctx.info.status === "completed") {
         type _CompletedAttempts = Assert<
           IsEqual<
-            typeof info.attempts,
+            typeof ctx.info.attempts,
             HandlerAttemptsReadNamespace<Attempt>
           >
         >;
         void (0 as unknown as _CompletedAttempts);
 
-        const rows = await info.attempts.find({
+        const rows = await ctx.info.attempts.find({
           fields: { attemptNumber: true, type: true },
         });
         void rows[0]?.attemptNumber;
       }
-      if (info.status === "timed_out") {
+      if (ctx.info.status === "timed_out") {
         // @ts-expect-error timed-out forward outcomes do not expose result
-        void info.result;
-        void info.reason;
-        await info.attempts.count();
+        void ctx.info.result;
+        void ctx.info.reason;
+        await ctx.info.attempts.count();
       }
-      if (info.status === "terminated") {
+      if (ctx.info.status === "terminated") {
         // @ts-expect-error terminated forward outcomes do not expose result
-        void info.result;
-        await info.attempts.get(1);
+        void ctx.info.result;
+        await ctx.info.attempts.get(1);
       }
     },
   },

@@ -56,6 +56,7 @@ export type {
   CompensationContext,
   CompensationConcurrencyContext,
   ErrorFactories,
+  StepCompensationUndoContext,
   WorkflowConcurrencyContext,
   WorkflowContext,
   WorkflowExecuteContext,
