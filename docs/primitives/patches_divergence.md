@@ -2,6 +2,10 @@
 
 > Parked working note. Goal: decide the canonical API for patches, then reconcile all three sources. No source is authoritative yet.
 
+## Cross-cutting: explicit contracts (implemented)
+
+Workflows with a **`patches`** slot use the same required **`args`**, **`metadata`**, and **`result`** declaration as every other workflow. See [explicit-contracts.md](../explicit-contracts.md).
+
 ## Three-source status
 - **docs/patches.md**: `patches: { name: boolean }` slot on `defineWorkflow`; read in body via `await ctx.patches.<name>` → `boolean`; read-only (no setter); awaitable read (flush then resolve), usable inside `ctx.scope`. Explicitly distinguishes the `ctx.patches` versioning primitive from "patch + replay" (the operator halt-resolution op). Matches code.
 - **REFACTOR.MD (no dedicated Part)**: Specifies patches in two scattered, distinct senses — (a) the `patch` / `patch_check` **awaitable read** in the execution model (Part 1 operation table line 108; Part 8 step catalog `patch_check`, line 1621; "receiveNowait and patch trigger buffer flushes", lines 127/3286), and (b) **"patch + replay"** as a halt-resolution operator action (Part 3 lines 25/485/574, Part 1 line 25). Uses the word *patch* for both without flagging the overload.

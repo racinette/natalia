@@ -1,5 +1,5 @@
 import type { JsonInput } from "./json-input";
-import type { AnyWorkflowHeader } from "./definitions/workflow-headers";
+import type { AnyWorkflowReference } from "./definitions/workflow-headers";
 
 // =============================================================================
 // SCHEMA-DERIVED PUBLIC TYPES
@@ -50,7 +50,7 @@ export type WorkflowId = string & { readonly __brand: "WorkflowId" };
  * they are addressable only via the parent workflow's
  * `childWorkflows.<name>` namespace.
  */
-export type AttachedChildWorkflowId<W extends AnyWorkflowHeader> = string & {
+export type AttachedChildWorkflowId<W extends AnyWorkflowReference> = string & {
   readonly __brand: "AttachedChildWorkflowId";
   readonly __workflow: W;
 };

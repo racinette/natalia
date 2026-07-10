@@ -27,6 +27,7 @@ const compPlaneStep = defineStep({
   args: z.object({ id: z.string() }),
   result: z.object({ ok: z.boolean() }),
   compensation: {
+    result: z.void(),
     channels: { undoNotification },
     streams: { undoAudit },
     events: { undoSettled: true },
@@ -106,9 +107,10 @@ void compHandle.channels.typo;
 void compHandle.streams.typo;
 
 async function externalCompPlaneReads(): Promise<void> {
-  const handle = await client.workflows.compPlaneWorkflow.start(session, {
+  const handle = await client.workflows.compPlaneWorkflow.start(session, { metadata: undefined,
     idempotencyKey: "comp-plane-1",
-  });
+  args: undefined,
+    });
 
   const compNs = handle.compensations.steps.compPlaneStep;
   const [compHandleFromFind] = await compNs.find(session, { limit: 1 });

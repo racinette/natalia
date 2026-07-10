@@ -21,7 +21,7 @@ import type {
   NonCompensableStepDefinitions,
   StepCompensationDefinition,
 } from "./steps";
-import type { PublicWorkflowHeader, WorkflowDefinitions } from "./workflow-headers";
+import type { WorkflowHeader, WorkflowDefinitions } from "./workflow-headers";
 
 /**
  * Step compensation contract without `undo` or `externalWorkflows` (declarative slice only).
@@ -43,7 +43,7 @@ export type StepCompensationInterface<
   TQueues extends QueueDefinitions = QueueDefinitions,
   TTopics extends TopicDefinitions = TopicDefinitions,
   TChildren extends WorkflowDefinitions = WorkflowDefinitions,
-  TResultSchema extends JsonSchemaConstraint | undefined = undefined,
+  TResultSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
 > = Omit<
   StepCompensationDefinition<
     TArgsSchema,
@@ -157,7 +157,7 @@ export type RequestInterfaces = Record<
     JsonSchemaConstraint,
     JsonSchemaConstraint,
     Record<string, never>,
-    RequestCompensationDefinition<JsonSchemaConstraint | undefined, ErrorDefinitions> | undefined
+    RequestCompensationDefinition<JsonSchemaConstraint, ErrorDefinitions> | undefined
   >
 >;
 
@@ -276,7 +276,7 @@ export interface WorkflowInterface<
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
-> extends PublicWorkflowHeader<
+> extends WorkflowHeader<
     TName,
     TChannels,
     TStreams,

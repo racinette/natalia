@@ -8,8 +8,8 @@ import type {
   InferWorkflowResult,
 } from "../helpers";
 import type { QueueEnqueueOptions, QueueEnqueueOptionsWithRequiredTtl } from "../definitions/messaging";
-import type { DeadlineOptions, RetentionSetter } from "../definitions/policies";
-import type { AnyWorkflowHeader } from "../definitions/workflow-headers";
+import type { DeadlineOptions, RequiredInvocationField, RetentionSetter } from "../definitions/policies";
+import type { AnyWorkflowReference } from "../definitions/workflow-headers";
 import type { ErrorValue, WorkflowResult } from "../results";
 import type { RequestEntry, SchemaInvocationInput, StepBoundary, TimeoutResult, WorkflowEntry } from "./entries";
 
@@ -78,24 +78,24 @@ export interface ExternalWorkflowHandle<
  * `idempotencyKey` is omitted — child workflows are parent-scoped, not globally
  * keyed. To start an independent root, use `ctx.externalWorkflows.<name>.start`.
  */
-export type AttachedChildWorkflowStartOptions<W extends AnyWorkflowHeader> = {
-  readonly metadata?: InferWorkflowMetadataInput<W>;
-  readonly seed?: string;
-} & DeadlineOptions;
+export type AttachedChildWorkflowStartOptions<W extends AnyWorkflowReference> =
+  RequiredInvocationField<"metadata", InferWorkflowMetadataInput<W>> & {
+    readonly seed?: string;
+  };
 
 /**
  * Start options for attached child workflow calls in the execute body.
  */
-export type ChildStartOptions<W extends AnyWorkflowHeader> = {
-  readonly metadata?: InferWorkflowMetadataInput<W>;
-  readonly seed?: string;
-  readonly retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
-} & DeadlineOptions;
+export type ChildStartOptions<W extends AnyWorkflowReference> =
+  RequiredInvocationField<"metadata", InferWorkflowMetadataInput<W>> & {
+    readonly seed?: string;
+    readonly retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
+  } & DeadlineOptions;
 
 /**
  * Optional invocation extras for child workflow calls in compensation blocks.
  */
-export type CompensationChildWorkflowStartOptions<W extends AnyWorkflowHeader> =
+export type CompensationChildWorkflowStartOptions<W extends AnyWorkflowReference> =
   AttachedChildWorkflowStartOptions<W>;
 
 /**
@@ -117,7 +117,7 @@ export type AttachedChildWorkflowResult<T, TError = unknown> =
  * `AttachedChildWorkflowScopeHandle` inside `ctx.scope`, not on this type.
  */
 export interface AttachedChildWorkflowEntry<
-  W extends AnyWorkflowHeader,
+  W extends AnyWorkflowReference,
   TAwaited,
 > extends WorkflowEntry<TAwaited> {
   readonly [nataliaAttachedChildWorkflowEntryBrand]?: InferWorkflowChannels<W>;
@@ -130,18 +130,18 @@ export interface AttachedChildWorkflowEntry<
  * surface). `channels.*.send` is available for the scope duration.
  */
 export type AttachedChildWorkflowScopeHandle<
-  W extends AnyWorkflowHeader,
+  W extends AnyWorkflowReference,
   TAwaited,
 > = AttachedChildWorkflowEntry<W, TAwaited> &
   ChannelSendSurface<InferWorkflowChannels<W>>;
 
-type AttachedChildWorkflowAwaited<W extends AnyWorkflowHeader> =
+type AttachedChildWorkflowAwaited<W extends AnyWorkflowReference> =
   AttachedChildWorkflowResult<
     InferWorkflowResult<W>,
     ErrorValue<InferWorkflowErrors<W>>
   >;
 
-type AttachedChildWorkflowTimedAwaited<W extends AnyWorkflowHeader> =
+type AttachedChildWorkflowTimedAwaited<W extends AnyWorkflowReference> =
   | AttachedChildWorkflowAwaited<W>
   | { ok: false; status: "timeout" };
 
@@ -155,18 +155,19 @@ type AttachedChildWorkflowTimedAwaited<W extends AnyWorkflowHeader> =
 // =============================================================================
 
 /** Shared start options with an execution deadline made required. */
-type ChildStartOptionsWithDeadline<W extends AnyWorkflowHeader> = {
-  readonly metadata?: InferWorkflowMetadataInput<W>;
-  readonly seed?: string;
-  readonly retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
-} & ({ readonly deadlineSeconds: number } | { readonly deadlineUntil: Date | number });
+type ChildStartOptionsWithDeadline<W extends AnyWorkflowReference> =
+  RequiredInvocationField<"metadata", InferWorkflowMetadataInput<W>> & {
+    readonly seed?: string;
+    readonly retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
+  } & ({ readonly deadlineSeconds: number } | { readonly deadlineUntil: Date | number });
 
 interface ChildWorkflowUnifiedAccessorFn<
-  W extends AnyWorkflowHeader,
+  W extends AnyWorkflowReference,
   TArgsSchema extends StandardSchemaV1<unknown, unknown>,
 > {
   (
     args: SchemaInvocationInput<TArgsSchema>,
+    opts: AttachedChildWorkflowStartOptions<W>,
   ): AttachedChildWorkflowEntry<W, AttachedChildWorkflowAwaited<W>>;
 
   (
@@ -183,16 +184,16 @@ interface ChildWorkflowUnifiedAccessorFn<
 /**
  * The unified child workflow accessor on `ctx.childWorkflows.<name>`.
  */
-export type ChildWorkflowUnifiedAccessor<W extends AnyWorkflowHeader> =
+export type ChildWorkflowUnifiedAccessor<W extends AnyWorkflowReference> =
   ChildWorkflowUnifiedAccessorFn<W, W["args"]>;
 
 interface CompensationChildWorkflowAccessorFn<
-  W extends AnyWorkflowHeader,
+  W extends AnyWorkflowReference,
   TArgsSchema extends StandardSchemaV1<unknown, unknown>,
 > {
   (
     args: SchemaInvocationInput<TArgsSchema>,
-    opts?: CompensationChildWorkflowStartOptions<W>,
+    opts: CompensationChildWorkflowStartOptions<W>,
   ): WorkflowEntry<WorkflowResult<InferWorkflowResult<W>>>;
 }
 
@@ -201,7 +202,7 @@ interface CompensationChildWorkflowAccessorFn<
  * `CompensationContext`. Returns a `WorkflowEntry` whose awaited value is a
  * full `WorkflowResult<T>` — compensation must handle all outcomes.
  */
-export type CompensationChildWorkflowAccessor<W extends AnyWorkflowHeader> =
+export type CompensationChildWorkflowAccessor<W extends AnyWorkflowReference> =
   CompensationChildWorkflowAccessorFn<W, W["args"]>;
 
 // =============================================================================
@@ -264,17 +265,17 @@ export interface QueueAccessor<
  * declares an `idempotencyKeyFactory`: derived-from-args (not passable) when a
  * factory exists, required otherwise.
  */
-export type ExternalWorkflowStartOptions<W extends AnyWorkflowHeader> = {
-  readonly metadata?: InferWorkflowMetadataInput<W>;
-  readonly seed?: string;
-  readonly retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
-} & DeadlineOptions &
-  (HasIdempotencyFactory<W> extends true
-    ? { readonly idempotencyKey?: never }
-    : { readonly idempotencyKey: string });
+export type ExternalWorkflowStartOptions<W extends AnyWorkflowReference> =
+  RequiredInvocationField<"metadata", InferWorkflowMetadataInput<W>> & {
+    readonly seed?: string;
+    readonly retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
+  } & DeadlineOptions &
+    (HasIdempotencyFactory<W> extends true
+      ? { readonly idempotencyKey?: never }
+      : { readonly idempotencyKey: string });
 
 interface ExternalWorkflowAccessorFn<
-  W extends AnyWorkflowHeader,
+  W extends AnyWorkflowReference,
   TArgsSchema extends StandardSchemaV1<unknown, unknown>,
 > {
   /**
@@ -307,6 +308,6 @@ interface ExternalWorkflowAccessorFn<
  * - `get(...)` — reference an existing instance.
  * - `start(...)` — create a new one.
  */
-export type ExternalWorkflowAccessor<W extends AnyWorkflowHeader> =
+export type ExternalWorkflowAccessor<W extends AnyWorkflowReference> =
   ExternalWorkflowAccessorFn<W, W["args"]>;
 

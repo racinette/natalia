@@ -42,6 +42,8 @@ The intended **lifecycle** is three-step:
 const flight = defineWorkflow({
   name: "flight",
   args: z.object({ flightId: z.string() }),
+  metadata: z.undefined(),
+  result: z.void(),
   patches: {
     antifraud: true,    // active: new runs take the patched path
     legacyRetry: false, // deprecated: only replaying histories take it
@@ -49,6 +51,7 @@ const flight = defineWorkflow({
   steps: { fraudCheck },
   async execute(ctx) {
     // …
+    return undefined;
   },
 });
 ```

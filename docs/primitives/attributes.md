@@ -38,6 +38,7 @@ Contrast with its neighbors:
 const indexingRun = defineWorkflow({
   name: "indexing-run",
   args: z.undefined(),
+  metadata: z.undefined(),
   attributes: {
     progress: z.object({
       percent: z.number(),
@@ -94,9 +95,11 @@ const chargeCard = defineStep({
   args: z.object({ customerId: z.string(), amount: z.number() }),
   result: z.object({ chargeId: z.string() }),
   compensation: {
+    result: z.void(),
     attributes: { undoProgress: z.object({ percent: z.number() }) },
     async undo(ctx, args, info) {
       ctx.attributes.undoProgress.set({ percent: 0.5 });
+      return undefined;
       // …
     },
   },

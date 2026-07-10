@@ -7,7 +7,7 @@ import type {
   RetentionSetter,
   WorkflowInvocationBaseOptions,
 } from "./definitions/policies";
-import type { AnyPublicWorkflowHeader } from "./definitions/workflow-headers";
+import type { AnyWorkflowHeader } from "./definitions/workflow-headers";
 import type { AnyWorkflowDefinition } from "./definitions/workflow-definition";
 import type {
   AttachedChildWorkflowId,
@@ -352,17 +352,15 @@ export type RequestCompensationNamespaceExternal<
 // =============================================================================
 
 export type RequestCompensationResultFromBlock<
-  TCompensation extends true | RequestCompensationConfig<any, any> | undefined,
+  TCompensation extends RequestCompensationConfig<any, any> | undefined,
 > = TCompensation extends RequestCompensationConfig<infer TResultSchema>
   ? TResultSchema extends StandardSchemaV1<unknown, unknown>
     ? StandardSchemaV1.InferOutput<TResultSchema>
     : void
-  : TCompensation extends true
-    ? void
-    : unknown;
+  : unknown;
 
 type WithRequestCompensationHandle<
-  TCompensation extends true | RequestCompensationConfig<any, any> | undefined,
+  TCompensation extends RequestCompensationConfig<any, any> | undefined,
   TPayload,
   TCompResult,
   TCompensationErrors extends ErrorDefinitions,
@@ -428,7 +426,7 @@ export type RequestHandleExternal<
   TResponse = unknown,
   TResponseInput = TResponse,
   TErrors extends ErrorDefinitions = Record<string, never>,
-  TCompensation extends true | RequestCompensationConfig<any, any> | undefined = undefined,
+  TCompensation extends RequestCompensationConfig<any, any> | undefined = undefined,
   TCompensationErrors extends ErrorDefinitions = Record<string, never>,
   TCompResult = unknown,
 > = RequestHandleExternalBase<
@@ -451,7 +449,7 @@ export type RequestNamespaceExternal<
   TResponse = unknown,
   TResponseInput = TResponse,
   TErrors extends ErrorDefinitions = Record<string, never>,
-  TCompensation extends true | RequestCompensationConfig<any, any> | undefined = undefined,
+  TCompensation extends RequestCompensationConfig<any, any> | undefined = undefined,
   TCompensationErrors extends ErrorDefinitions = Record<string, never>,
 > = QueryableNamespace<
   RequestHandleExternal<
@@ -566,7 +564,7 @@ export interface QueueNamespaceExternal<
  * type exposes them — this is not a blanket "read-only" surface; it excludes
  * lifecycle verbs, not channel send when present on the type.
  */
-interface AttachedChildWorkflowExternalHandleBase<W extends AnyPublicWorkflowHeader>
+interface AttachedChildWorkflowExternalHandleBase<W extends AnyWorkflowHeader>
   extends FetchableHandle<
     WorkflowRow<
       InferWorkflowArgs<W>,
@@ -598,7 +596,7 @@ interface AttachedChildWorkflowExternalHandleBase<W extends AnyPublicWorkflowHea
   };
 }
 
-type HeaderOnlyExtendForAttachedChildHandle<W extends AnyPublicWorkflowHeader> =
+type HeaderOnlyExtendForAttachedChildHandle<W extends AnyWorkflowHeader> =
   IsHeaderAuthoringKind<W> extends true
     ? {
         /**
@@ -607,13 +605,13 @@ type HeaderOnlyExtendForAttachedChildHandle<W extends AnyPublicWorkflowHeader> =
          *
          * Same compatibility rules as {@link WorkflowHandleExternalBase.extend}.
          */
-        extend<const TW extends AnyPublicWorkflowHeader>(
+        extend<const TW extends AnyWorkflowHeader>(
           contract: TW & ExtendPublicContract<W, TW>,
         ): AttachedChildWorkflowExternalHandleBase<TW> & HeaderOnlyExtendForAttachedChildHandle<TW>;
       }
     : { extend?: never };
 
-export type AttachedChildWorkflowExternalHandle<W extends AnyPublicWorkflowHeader> =
+export type AttachedChildWorkflowExternalHandle<W extends AnyWorkflowHeader> =
   AttachedChildWorkflowExternalHandleBase<W> & HeaderOnlyExtendForAttachedChildHandle<W>;
 
 /**
@@ -621,7 +619,7 @@ export type AttachedChildWorkflowExternalHandle<W extends AnyPublicWorkflowHeade
  * `workflowInstance.childWorkflows.<name>`.
  */
 export type AttachedChildWorkflowNamespaceExternal<
-  W extends AnyPublicWorkflowHeader,
+  W extends AnyWorkflowHeader,
 > = QueryableNamespace<
   AttachedChildWorkflowExternalHandle<W>,
   WorkflowWhereTemplate<
@@ -679,7 +677,7 @@ type RequestDefinitionUnionFromWorkflow<W> =
     : never;
 
 type RequestDefinitionUnionFromWorkflows<
-  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+  TWfs extends Record<string, AnyWorkflowHeader>,
 > = {
   [K in keyof TWfs & string]: RequestDefinitionUnionFromWorkflow<TWfs[K]>;
 }[keyof TWfs & string];
@@ -708,7 +706,7 @@ type WorkflowClientRequestNamespacesFromUnion<TRequestUnion> = {
  
 
 type WorkflowClientRequestNamespaces<
-  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+  TWfs extends Record<string, AnyWorkflowHeader>,
 > =
   IsAny<TWfs> extends true
     ? WorkflowClientLooseRequests
@@ -737,7 +735,7 @@ type QueueDefinitionUnionFromWorkflow<W> =
     : never;
 
 type QueueDefinitionUnionFromWorkflows<
-  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+  TWfs extends Record<string, AnyWorkflowHeader>,
 > = {
   [K in keyof TWfs & string]: QueueDefinitionUnionFromWorkflow<TWfs[K]>;
 }[keyof TWfs & string];
@@ -760,7 +758,7 @@ type WorkflowClientQueueNamespacesFromUnion<TQueueUnion> = {
 };
 
 type WorkflowClientQueueNamespaces<
-  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+  TWfs extends Record<string, AnyWorkflowHeader>,
 > =
   IsAny<TWfs> extends true
     ? WorkflowClientLooseQueues
@@ -793,7 +791,7 @@ type StepDefinitionUnionFromWorkflow<W> =
     : never;
 
 type StepDefinitionUnionFromWorkflows<
-  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+  TWfs extends Record<string, AnyWorkflowHeader>,
 > = {
   [K in keyof TWfs & string]: StepDefinitionUnionFromWorkflow<TWfs[K]>;
 }[keyof TWfs & string];
@@ -839,7 +837,7 @@ type WorkflowClientCompensationRequestNamespacesFromUnion<TRequestUnion> = {
  
 
 type WorkflowClientCompensationStepNamespaces<
-  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+  TWfs extends Record<string, AnyWorkflowHeader>,
 > =
   IsAny<TWfs> extends true
     ? WorkflowClientLooseCompensationSteps
@@ -850,7 +848,7 @@ type WorkflowClientCompensationStepNamespaces<
       : Record<string, never>;
 
 type WorkflowClientCompensationRequestNamespaces<
-  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+  TWfs extends Record<string, AnyWorkflowHeader>,
 > =
   IsAny<TWfs> extends true
     ? WorkflowClientLooseCompensationRequests
@@ -869,7 +867,7 @@ type WorkflowClientCompensationRequestNamespaces<
  * by workflow slot.
  */
 export type WorkflowClientCompensationsTree<
-  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+  TWfs extends Record<string, AnyWorkflowHeader>,
 > = {
   readonly requests: WorkflowClientCompensationRequestNamespaces<TWfs>;
   readonly steps: WorkflowClientCompensationStepNamespaces<TWfs>;
@@ -877,7 +875,7 @@ export type WorkflowClientCompensationsTree<
 
 type WorkflowHandleLooseChildWorkflows = Record<
   string,
-  AttachedChildWorkflowNamespaceExternal<AnyPublicWorkflowHeader>
+  AttachedChildWorkflowNamespaceExternal<AnyWorkflowHeader>
 >;
 
 type WorkflowHandleLooseCompensations = Record<
@@ -950,9 +948,7 @@ type RequestCompensationResultForNamespace<TRequest> =
       ? TResultSchema extends StandardSchemaV1<unknown, unknown>
         ? StandardSchemaV1.InferOutput<TResultSchema>
         : void
-      : TCompensation extends true
-        ? void
-        : never
+      : never
     : unknown;
  
 
@@ -970,14 +966,14 @@ type WorkflowHandleChildWorkflowNamespaces<
   TChildren extends Record<string, unknown>,
 > = {
   [K in keyof TChildren & string]: AttachedChildWorkflowNamespaceExternal<
-    TChildren[K] extends AnyPublicWorkflowHeader
+    TChildren[K] extends AnyWorkflowHeader
       ? TChildren[K]
-      : AnyPublicWorkflowHeader
+      : AnyWorkflowHeader
   >;
 };
 
 
-type WorkflowHandleCompensations<W extends AnyPublicWorkflowHeader> =
+type WorkflowHandleCompensations<W extends AnyWorkflowHeader> =
   InferWorkflowSteps<W> extends infer TSteps
     ? [TSteps] extends [never]
       ? WorkflowHandleLooseCompensations
@@ -988,7 +984,7 @@ type WorkflowHandleCompensations<W extends AnyPublicWorkflowHeader> =
           : WorkflowHandleLooseCompensations
     : WorkflowHandleLooseCompensations;
 
-type WorkflowHandleRequestCompensations<W extends AnyPublicWorkflowHeader> =
+type WorkflowHandleRequestCompensations<W extends AnyWorkflowHeader> =
   InferWorkflowRequests<W> extends infer TRequests
     ? [TRequests] extends [never]
       ? WorkflowHandleLooseRequestCompensations
@@ -999,15 +995,15 @@ type WorkflowHandleRequestCompensations<W extends AnyPublicWorkflowHeader> =
           : WorkflowHandleLooseRequestCompensations
     : WorkflowHandleLooseRequestCompensations;
 
-type WorkflowHandleCompensationsTree<W extends AnyPublicWorkflowHeader> = {
+type WorkflowHandleCompensationsTree<W extends AnyWorkflowHeader> = {
   readonly steps: WorkflowHandleCompensations<W>;
   readonly requests: WorkflowHandleRequestCompensations<W>;
 };
 
-type WorkflowHandleCompensationsRoot<W extends AnyPublicWorkflowHeader> =
+type WorkflowHandleCompensationsRoot<W extends AnyWorkflowHeader> =
   WorkflowHandleCompensationsTree<W>;
 
-type WorkflowHandleChildWorkflows<W extends AnyPublicWorkflowHeader> =
+type WorkflowHandleChildWorkflows<W extends AnyWorkflowHeader> =
   InferWorkflowChildren<W> extends infer TChildren
     ? [TChildren] extends [never]
       ? WorkflowHandleLooseChildWorkflows
@@ -1019,22 +1015,22 @@ type WorkflowHandleChildWorkflows<W extends AnyPublicWorkflowHeader> =
     : WorkflowHandleLooseChildWorkflows;
 
 
-type WorkflowHandleExternalNamespaces<W extends AnyPublicWorkflowHeader> =
+type WorkflowHandleExternalNamespaces<W extends AnyWorkflowHeader> =
   InferWorkflowExternal<W> extends infer TExternalWorkflows
     ? [TExternalWorkflows] extends [never]
-      ? Record<string, WorkflowHandleExternal<AnyPublicWorkflowHeader>>
+      ? Record<string, WorkflowHandleExternal<AnyWorkflowHeader>>
       : IsAny<TExternalWorkflows> extends true
-        ? Record<string, WorkflowHandleExternal<AnyPublicWorkflowHeader>>
+        ? Record<string, WorkflowHandleExternal<AnyWorkflowHeader>>
         : TExternalWorkflows extends Record<string, unknown>
           ? {
               [K in keyof TExternalWorkflows & string]: WorkflowHandleExternal<
-                TExternalWorkflows[K] extends AnyPublicWorkflowHeader
+                TExternalWorkflows[K] extends AnyWorkflowHeader
                   ? TExternalWorkflows[K]
-                  : AnyPublicWorkflowHeader
+                  : AnyWorkflowHeader
               >;
             }
-          : Record<string, WorkflowHandleExternal<AnyPublicWorkflowHeader>>
-    : Record<string, WorkflowHandleExternal<AnyPublicWorkflowHeader>>;
+          : Record<string, WorkflowHandleExternal<AnyWorkflowHeader>>
+    : Record<string, WorkflowHandleExternal<AnyWorkflowHeader>>;
 
 // =============================================================================
 // WORKFLOW HANDLE — globally addressable workflows.
@@ -1044,7 +1040,7 @@ type WorkflowHandleExternalNamespaces<W extends AnyPublicWorkflowHeader> =
 // errors) flow from one source. Replaces the earlier 5-generic shape.
 // =============================================================================
 
-interface WorkflowHandleExternalBase<W extends AnyPublicWorkflowHeader>
+interface WorkflowHandleExternalBase<W extends AnyWorkflowHeader>
   extends FetchableHandle<
       WorkflowRow<
         InferWorkflowArgs<W>,
@@ -1115,8 +1111,8 @@ type WorkflowPrimitiveSchemaMap = Record<string, unknown>;
 type MutuallyAssignable<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 
 type SameWorkflowIdentityName<
-  W extends AnyPublicWorkflowHeader,
-  TW extends AnyPublicWorkflowHeader,
+  W extends AnyWorkflowHeader,
+  TW extends AnyWorkflowHeader,
 > = W extends { readonly name: infer NW }
   ? TW extends { readonly name: infer NTW }
     ? [NW] extends [NTW]
@@ -1161,8 +1157,8 @@ type SchemaSlotsMutuallyCompatible<
     : false;
 
 type ChannelsCompatibleForExtend<
-  W extends AnyPublicWorkflowHeader,
-  TW extends AnyPublicWorkflowHeader,
+  W extends AnyWorkflowHeader,
+  TW extends AnyWorkflowHeader,
 > =
   KeysAreSubsetOf<InferWorkflowChannels<W>, InferWorkflowChannels<TW>> extends true
     ? SchemaSlotsMutuallyCompatible<
@@ -1174,8 +1170,8 @@ type ChannelsCompatibleForExtend<
     : false;
 
 type StreamsCompatibleForExtend<
-  W extends AnyPublicWorkflowHeader,
-  TW extends AnyPublicWorkflowHeader,
+  W extends AnyWorkflowHeader,
+  TW extends AnyWorkflowHeader,
 > =
   KeysAreSubsetOf<InferWorkflowStreams<W>, InferWorkflowStreams<TW>> extends true
     ? SchemaSlotsMutuallyCompatible<InferWorkflowStreams<W>, InferWorkflowStreams<TW>> extends true
@@ -1184,8 +1180,8 @@ type StreamsCompatibleForExtend<
     : false;
 
 type AttributesCompatibleForExtend<
-  W extends AnyPublicWorkflowHeader,
-  TW extends AnyPublicWorkflowHeader,
+  W extends AnyWorkflowHeader,
+  TW extends AnyWorkflowHeader,
 > =
   KeysAreSubsetOf<InferWorkflowAttributes<W>, InferWorkflowAttributes<TW>> extends true
     ? SchemaSlotsMutuallyCompatible<
@@ -1197,8 +1193,8 @@ type AttributesCompatibleForExtend<
     : false;
 
 type EventsKeysSubsetForExtend<
-  W extends AnyPublicWorkflowHeader,
-  TW extends AnyPublicWorkflowHeader,
+  W extends AnyWorkflowHeader,
+  TW extends AnyWorkflowHeader,
 > = HasConcreteStringKeys<InferWorkflowEvents<W>> extends false
   ? true
   : Exclude<keyof InferWorkflowEvents<W>, keyof InferWorkflowEvents<TW>> extends never
@@ -1206,8 +1202,8 @@ type EventsKeysSubsetForExtend<
     : false;
 
 type MetadataCompatibleForExtend<
-  W extends AnyPublicWorkflowHeader,
-  TW extends AnyPublicWorkflowHeader,
+  W extends AnyWorkflowHeader,
+  TW extends AnyWorkflowHeader,
 > = MutuallyAssignable<InferWorkflowMetadata<W>, InferWorkflowMetadata<TW>>;
 
 /**
@@ -1216,8 +1212,8 @@ type MetadataCompatibleForExtend<
  * every channel/stream key on `W` exists on `TW` with mutually assignable schemas).
  */
 type VerifyExtendPublicContract<
-  W extends AnyPublicWorkflowHeader,
-  TW extends AnyPublicWorkflowHeader,
+  W extends AnyWorkflowHeader,
+  TW extends AnyWorkflowHeader,
 > = SameWorkflowIdentityName<W, TW> extends true
   ? MutuallyAssignable<InferWorkflowArgs<W>, InferWorkflowArgs<TW>> extends true
     ? MutuallyAssignable<InferWorkflowResult<W>, InferWorkflowResult<TW>> extends true
@@ -1236,10 +1232,10 @@ type VerifyExtendPublicContract<
     : false
   : false;
 
-type ExtendPublicContract<W extends AnyPublicWorkflowHeader, TW extends AnyPublicWorkflowHeader> =
+type ExtendPublicContract<W extends AnyWorkflowHeader, TW extends AnyWorkflowHeader> =
   VerifyExtendPublicContract<W, TW> extends true ? unknown : never;
 
-type HeaderOnlyExtendForWorkflowHandle<W extends AnyPublicWorkflowHeader> =
+type HeaderOnlyExtendForWorkflowHandle<W extends AnyWorkflowHeader> =
   IsHeaderAuthoringKind<W> extends true
     ? {
         /**
@@ -1251,13 +1247,13 @@ type HeaderOnlyExtendForWorkflowHandle<W extends AnyPublicWorkflowHeader> =
          * and every **`channels` / `streams` / `events`** key on `W` must exist on
          * `TW` with mutually assignable schemas.
          */
-        extend<const TW extends AnyPublicWorkflowHeader>(
+        extend<const TW extends AnyWorkflowHeader>(
           contract: TW & ExtendPublicContract<W, TW>,
         ): WorkflowHandleExternalBase<TW> & HeaderOnlyExtendForWorkflowHandle<TW>;
       }
     : { extend?: never };
 
-export type WorkflowHandleExternal<W extends AnyPublicWorkflowHeader> =
+export type WorkflowHandleExternal<W extends AnyWorkflowHeader> =
   WorkflowHandleExternalBase<W> & HeaderOnlyExtendForWorkflowHandle<W>;
 
 // =============================================================================
@@ -1280,7 +1276,7 @@ export type StartWorkflowOptions<
  * - factory present → identity is derived from args; the key is **not passable**.
  * - factory absent  → the caller **must** supply an explicit `idempotencyKey`.
  */
-export type IdempotencyKeyStartOption<W extends AnyPublicWorkflowHeader> =
+export type IdempotencyKeyStartOption<W extends AnyWorkflowHeader> =
   HasIdempotencyFactory<W> extends true
     ? { readonly idempotencyKey?: never }
     : { readonly idempotencyKey: string };
@@ -1288,7 +1284,7 @@ export type IdempotencyKeyStartOption<W extends AnyPublicWorkflowHeader> =
 /**
  * Factory-aware start options for `client.workflows.<def>.start` / `.execute`.
  */
-export type WorkflowStartOptions<W extends AnyPublicWorkflowHeader> = Omit<
+export type WorkflowStartOptions<W extends AnyWorkflowHeader> = Omit<
   StartWorkflowOptions<InferWorkflowArgsInput<W>, InferWorkflowMetadataInput<W>>,
   "idempotencyKey"
 > &
@@ -1299,7 +1295,7 @@ export type WorkflowStartOptions<W extends AnyPublicWorkflowHeader> = Omit<
  * by `args` (the engine derives the key) when a factory is declared, by an
  * explicit `idempotencyKey` otherwise.
  */
-export type WorkflowGetArgs<W extends AnyPublicWorkflowHeader> =
+export type WorkflowGetArgs<W extends AnyWorkflowHeader> =
   HasIdempotencyFactory<W> extends true
     ? [args: InferWorkflowArgsInput<W>]
     : [idempotencyKey: string];
@@ -1316,7 +1312,7 @@ export type WorkflowGetArgs<W extends AnyPublicWorkflowHeader> =
 // regardless).
 // =============================================================================
 
-export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader>
+export interface WorkflowClientAccessor<W extends AnyWorkflowHeader>
   extends Omit<
     QueryableNamespace<
       WorkflowHandleExternal<W>,
@@ -1366,7 +1362,7 @@ export interface WorkflowClientAccessor<W extends AnyPublicWorkflowHeader>
  * Client-facing workflow API surface shared by dedicated clients and the engine.
  */
 export interface WorkflowClient<
-  TWfs extends Record<string, AnyPublicWorkflowHeader> = Record<string, never>,
+  TWfs extends Record<string, AnyWorkflowHeader> = Record<string, never>,
   TDriver extends StorageDriver<any> = StorageDriver<any>,
 > {
   readonly driver: TDriver;

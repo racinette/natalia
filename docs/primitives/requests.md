@@ -30,6 +30,7 @@ Declare it on a workflow and await it from `execute`:
 const onboarding = defineWorkflow({
   name: "onboarding",
   args: z.undefined(),
+  metadata: z.undefined(),
   requests: { humanReview },
   result: z.object({ approved: z.boolean() }),
   async execute(ctx) {
@@ -200,7 +201,7 @@ Request compensation mirrors [step compensation](./steps.md): declare on the def
 
 ### Declaring a compensable request
 
-Add `compensation: true` or `compensation: { result?, errors? }` to `defineRequest`:
+Add **`compensation: { result, errors? }`** to `defineRequest`. Use **`z.void()`** for **`result`** when the handler returns nothing structured:
 
 ```typescript
 const reserveFlightTicket = defineRequest({
@@ -216,9 +217,8 @@ const reserveFlightTicket = defineRequest({
 });
 ```
 
-- `compensation: true` — no typed compensation result; the handler returns `void` and operator `skip()` takes no result argument.
-- `compensation: { result }` — optional schema for the reported undo outcome (same pattern as step `compensation.result`).
-- `compensation.errors` — optional error map for the **compensation handler only**. It is separate from forward `errors` on the same request.
+- **`compensation.result`** — required schema for the reported undo outcome (same pattern as step `compensation.result`; use `z.void()` when empty).
+- **`compensation.errors`** — optional error map for the **compensation handler only**. Separate from forward `errors` on the same request.
 
 Inline `undo` on `defineRequest` is rejected. There is no separate compensation registration API.
 
@@ -302,7 +302,7 @@ Compensation `ctx.errors` factories mirror forward handlers: `(message, { manual
 
 | Action                                              | Outcome                                                                                              |
 | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `return result`                                     | Compensation block completes with the typed result (or `void` when no `compensation.result` schema). |
+| `return result`                                     | Compensation block completes with the typed **`compensation.result`**. |
 | `throw ctx.errors.X(..., { manual: false })`        | Failed attempt; retry per `compensation.retryPolicy`.                                                |
 | `throw ctx.errors.X(..., { manual: true })`         | Moves compensation block to `manual`.                                                                |
 | Unhandled throw                                     | Failed attempt; retry per `compensation.retryPolicy`.                                                |
@@ -339,7 +339,7 @@ await client.session(async (session) => {
 });
 ```
 
-- `skip(session, result?)` — record the compensation outcome without running the handler again. Omit `result` when the definition used `compensation: true`.
+- `skip(session, result)` — record the compensation outcome without running the handler again. **`result`** must match the declared **`compensation.result`** schema (pass `undefined` when **`result`** is `z.void()`).
 - `escalateToManual(session, …)` — park the block for external completion using the compensation `errors` map shape (same escalation input rules as forward `escalateToManual`).
 
 Both operator actions abort an in-flight compensation handler attempt.
@@ -455,7 +455,7 @@ Declared errors persist `code` and `message`. Schema-backed codes include a `det
 | `pending`   | Compensation block recorded; waiting for handler claim.                                  |
 | `running`   | Compensation handler running under `compensation.retryPolicy`.                           |
 | `manual`    | Parked for external completion (handler throw, retry exhaustion, or `escalateToManual`). |
-| `completed` | Typed compensation result recorded (when `compensation.result` is declared).             |
+| `completed` | Typed compensation result recorded per **`compensation.result`**.             |
 | `skipped`   | Operator recorded completion via `skip` without a handler run.                           |
 
 

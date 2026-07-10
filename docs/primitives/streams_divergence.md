@@ -2,6 +2,12 @@
 
 > **Baseline:** `docs/primitives/streams.md` and `src/types` (implementation). REFACTOR Part 14 is updated to match on doc sweep.
 
+## Cross-cutting: explicit contracts (implemented)
+
+Workflows that declare `streams` must also declare explicit **`args`**, **`metadata`**, and **`result`** on the definition (`z.undefined()` / `z.void()` when empty). Client and child invocation passes explicit **`args`** and **`metadata`** keys. See [explicit-contracts.md](../explicit-contracts.md).
+
+Compensation blocks that declare per-instance **`streams`** also require explicit **`compensation.result`**.
+
 ## Status
 
 | Surface | State |

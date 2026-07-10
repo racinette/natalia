@@ -81,6 +81,7 @@ const compensableStep = defineStep({
   args: z.object({ id: z.string() }),
   result: z.object({ ack: z.boolean() }),
   compensation: {
+    result: z.void(),
     steps: { auditStep },
     async undo(ctx, _args, _info) {
       // Compensation undo has no `errors` field on the context — throws halt

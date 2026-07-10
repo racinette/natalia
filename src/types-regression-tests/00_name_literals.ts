@@ -127,7 +127,8 @@ const _compensableFoo = defineStep({
   name: "compensableFoo",
   args: z.object({ id: z.string() }),
   result: z.object({ ok: z.boolean() }),
-  compensation: { async undo() {} },
+  compensation: {
+    result: z.void(), async undo() {} },
   async execute() {
     return { ok: true };
   },
@@ -137,7 +138,8 @@ const _compensableBar = defineStep({
   name: "compensableBar",
   args: z.object({ id: z.string() }),
   result: z.object({ ok: z.boolean() }),
-  compensation: { async undo() {} },
+  compensation: {
+    result: z.void(), async undo() {} },
   async execute() {
     return { ok: true };
   },

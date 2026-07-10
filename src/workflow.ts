@@ -147,6 +147,7 @@ export function defineStep<
   TName extends string,
   TArgsSchema extends JsonSchemaConstraint,
   TResultSchema extends JsonSchemaConstraint,
+  TCompensationResultSchema extends JsonSchemaConstraint,
   TCompChannels extends ChannelDefinitions = Record<string, never>,
   TCompStreams extends StreamDefinitions = Record<string, never>,
   TCompEvents extends EventDefinitions = Record<string, never>,
@@ -157,7 +158,6 @@ export function defineStep<
   TCompTopics extends TopicDefinitions = Record<string, never>,
   TCompChildren extends WorkflowDefinitions = Record<string, never>,
   TCompExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
-  TCompensationResultSchema extends JsonSchemaConstraint | undefined = undefined,
 >(config: {
   name: TName;
   args: TArgsSchema;
@@ -250,8 +250,9 @@ export function defineStep(config: {
       throw new Error("Step compensation undo must be a function");
     }
     if (
-      config.compensation.result !== undefined &&
-      !isStandardSchema(config.compensation.result)
+      !config.compensation.result ||
+      typeof config.compensation.result !== "object" ||
+      !("~standard" in config.compensation.result)
     ) {
       throw new Error("Step compensation result must be a standard schema");
     }
@@ -313,7 +314,22 @@ export function defineStepInterface<
             TopicDefinitions,
             WorkflowDefinitions,
             WorkflowDefinitions,
-            JsonSchemaConstraint | undefined
+            TCompensation extends StepCompensationInterface<
+              TArgsSchema,
+              TResultSchema,
+              infer _TCh,
+              infer _TSt,
+              infer _TE,
+              infer _TA,
+              infer _TS,
+              infer _TR,
+              infer _TQ,
+              infer _TT,
+              infer _TChild,
+              infer TCompRes
+            >
+              ? TCompRes
+              : JsonSchemaConstraint
           >;
         },
   ) => StepDefinitionFromInterface<TName, TArgsSchema, TResultSchema, TCompensation>;
@@ -338,8 +354,15 @@ export function defineStepInterface<
     ) {
       throw new Error("Step compensation must be an object");
     }
-    if (typeof (config.compensation as { undo?: unknown }).undo === "function") {
+    if ((config.compensation as { undo?: unknown }).undo === "function") {
       throw new Error("Step interface compensation must not include undo — add it in implement()");
+    }
+    if (
+      !config.compensation.result ||
+      typeof config.compensation.result !== "object" ||
+      !("~standard" in config.compensation.result)
+    ) {
+      throw new Error("Step interface compensation result must be a standard schema");
     }
     if ((config.compensation as { externalWorkflows?: unknown }).externalWorkflows !== undefined) {
       throw new Error(
@@ -408,7 +431,22 @@ export function defineStepInterface<
               TopicDefinitions,
               WorkflowDefinitions,
               WorkflowDefinitions,
-              JsonSchemaConstraint | undefined
+              TCompensation extends StepCompensationInterface<
+                TArgsSchema,
+                TResultSchema,
+                infer _TCh,
+                infer _TSt,
+                infer _TE,
+                infer _TA,
+                infer _TS,
+                infer _TR,
+                infer _TQ,
+                infer _TT,
+                infer _TChild,
+                infer TCompRes
+              >
+                ? TCompRes
+                : JsonSchemaConstraint
             >;
           },
     ) => StepDefinitionFromInterface<TName, TArgsSchema, TResultSchema, TCompensation>;
@@ -430,7 +468,7 @@ export function defineRequest<
   TPayloadSchema extends JsonSchemaConstraint,
   TResponseSchema extends JsonSchemaConstraint,
   TErrors extends ErrorDefinitions,
-  TCompensationResultSchema extends JsonSchemaConstraint | undefined = undefined,
+  TCompensationResultSchema extends JsonSchemaConstraint,
   TCompensationErrors extends ErrorDefinitions = Record<string, never>,
 >(config: {
   name: TName;
@@ -452,7 +490,7 @@ export function defineRequest<
   TName extends string,
   TPayloadSchema extends JsonSchemaConstraint,
   TResponseSchema extends JsonSchemaConstraint,
-  TCompensationResultSchema extends JsonSchemaConstraint | undefined = undefined,
+  TCompensationResultSchema extends JsonSchemaConstraint,
   TCompensationErrors extends ErrorDefinitions = Record<string, never>,
 >(config: {
   name: TName;
@@ -479,35 +517,7 @@ export function defineRequest<
   payload: TPayloadSchema;
   response: TResponseSchema;
   errors: TErrors;
-  compensation: true;
-}): RequestDefinition<TName, TPayloadSchema, TResponseSchema, TErrors, true>;
-export function defineRequest<
-  TName extends string,
-  TPayloadSchema extends JsonSchemaConstraint,
-  TResponseSchema extends JsonSchemaConstraint,
-  TErrors extends ErrorDefinitions,
->(config: {
-  name: TName;
-  payload: TPayloadSchema;
-  response: TResponseSchema;
-  errors: TErrors;
 }): RequestDefinition<TName, TPayloadSchema, TResponseSchema, TErrors>;
-export function defineRequest<
-  TName extends string,
-  TPayloadSchema extends JsonSchemaConstraint,
-  TResponseSchema extends JsonSchemaConstraint,
->(config: {
-  name: TName;
-  payload: TPayloadSchema;
-  response: TResponseSchema;
-  compensation: true;
-}): RequestDefinition<
-  TName,
-  TPayloadSchema,
-  TResponseSchema,
-  Record<string, never>,
-  true
->;
 export function defineRequest<
   TName extends string,
   TPayloadSchema extends JsonSchemaConstraint,
@@ -528,12 +538,10 @@ export function defineRequest<
   TPayloadSchema extends JsonSchemaConstraint,
   TResponseSchema extends JsonSchemaConstraint,
   TErrors extends ErrorDefinitions = Record<string, never>,
-  TCompensation extends
-    | RequestCompensationDefinition<
-        JsonSchemaConstraint | undefined,
-        ErrorDefinitions
-      >
-    | undefined = undefined,
+  TCompensation extends RequestCompensationDefinition<
+    JsonSchemaConstraint,
+    ErrorDefinitions
+  > | undefined = undefined,
 >(config: {
   name: TName;
   payload: TPayloadSchema;
@@ -566,28 +574,25 @@ export function defineRequest<
     }
   }
   if (config.compensation !== undefined) {
-    if (config.compensation !== true) {
-      if (
-        typeof config.compensation !== "object" ||
-        config.compensation === null ||
-        Array.isArray(config.compensation)
-      ) {
-        throw new Error("Request compensation must be true or an object");
-      }
-      if (
-        "result" in config.compensation &&
-        config.compensation.result !== undefined &&
-        !isStandardSchema(config.compensation.result)
-      ) {
-        throw new Error("Request compensation result must be a standard schema");
-      }
-      if (config.compensation.errors !== undefined) {
-        for (const [key, definition] of Object.entries(config.compensation.errors)) {
-          if (definition !== true && !isStandardSchema(definition)) {
-            throw new Error(
-              `Request compensation error "${key}" must be \`true\` or a standard schema`,
-            );
-          }
+    if (
+      typeof config.compensation !== "object" ||
+      config.compensation === null ||
+      Array.isArray(config.compensation)
+    ) {
+      throw new Error("Request compensation must be an object");
+    }
+    if (
+      !config.compensation.result ||
+      !isStandardSchema(config.compensation.result)
+    ) {
+      throw new Error("Request compensation result must be a standard schema");
+    }
+    if (config.compensation.errors !== undefined) {
+      for (const [key, definition] of Object.entries(config.compensation.errors)) {
+        if (definition !== true && !isStandardSchema(definition)) {
+          throw new Error(
+            `Request compensation error "${key}" must be \`true\` or a standard schema`,
+          );
         }
       }
     }

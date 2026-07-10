@@ -107,7 +107,7 @@ declare const childAcc: ChildWorkflowUnifiedAccessor<typeof childWf>;
 
 async function unifiedAccessorAssertions() {
   // attached: await -> success/failure union
-  const r = await childAcc({ orderId: "o" });
+  const r = await childAcc({ orderId: "o" }, { metadata: undefined });
   if (r.ok) {
     const _shipped: boolean = r.result.shipped;
     void _shipped;
@@ -122,7 +122,7 @@ async function unifiedAccessorAssertions() {
   void childAcc({ orderId: "o" }).start;
 
   // execution deadline => adds the timeout variant to the awaited union
-  const rt = await childAcc({ orderId: "o" }, { deadlineSeconds: 30 });
+  const rt = await childAcc({ orderId: "o" }, { metadata: undefined, deadlineSeconds: 30 });
   if (!rt.ok && rt.status === "timeout") {
     void rt;
   }
@@ -153,14 +153,14 @@ declare const clientF: WorkflowClientAccessor<typeof wfWithFactory>;
 
 async function clientIdentityAssertions() {
   // no factory => idempotencyKey is REQUIRED on start
-  await clientNoF.start(session, { idempotencyKey: "k", args: { orderId: "o" } });
+  await clientNoF.start(session, { metadata: undefined, idempotencyKey: "k", args: { orderId: "o" } });
   // @ts-expect-error no factory => idempotencyKey is required
-  await clientNoF.start(session, { args: { orderId: "o" } });
+  await clientNoF.start(session, { metadata: undefined, args: { orderId: "o" } });
 
   // factory => idempotencyKey is NOT passable (derived from args)
-  await clientF.start(session, { args: { orderId: "o" } });
+  await clientF.start(session, { metadata: undefined, args: { orderId: "o" } });
   // @ts-expect-error factory => idempotencyKey is not passable
-  await clientF.start(session, { args: { orderId: "o" }, idempotencyKey: "k" });
+  await clientF.start(session, { metadata: undefined, args: { orderId: "o" }, idempotencyKey: "k" });
 
   // get: no factory => by key; factory => by args
   clientNoF.get("k");
@@ -183,16 +183,16 @@ extReal.get({ orderId: "o" });
 extRealF.get("k");
 
 // externalWorkflows.start creates an independent root; identity is conditional
-const started = extReal.start({ orderId: "o" }, { idempotencyKey: "k" });
+const started = extReal.start({ orderId: "o" }, { metadata: undefined, idempotencyKey: "k" });
 const _startedKey: string = started.idempotencyKey;
 void _startedKey;
 started.channels.cancel.send({ reason: "x" });
 // @ts-expect-error no factory => idempotencyKey required on start
-extReal.start({ orderId: "o" }, {});
+extReal.start({ orderId: "o" }, { metadata: undefined,});
 // factory => key derived from args, not passable
-extRealF.start({ orderId: "o" }, {});
+extRealF.start({ orderId: "o" }, { metadata: undefined,});
 // @ts-expect-error factory => idempotencyKey not passable on start
-extRealF.start({ orderId: "o" }, { idempotencyKey: "k" });
+extRealF.start({ orderId: "o" }, { metadata: undefined, idempotencyKey: "k" });
 
 // ===========================================================================
 // SECTION 5 — scope semantics: a timed-out child counts as a keyed FAILURE.
@@ -202,7 +202,7 @@ extRealF.start({ orderId: "o" }, { idempotencyKey: "k" });
 // combinators bucket every `{ ok: false }` member as a failure.
 // ===========================================================================
 declare const childAccForTimeout: ChildWorkflowUnifiedAccessor<typeof childWf>;
-const _timedEntry = childAccForTimeout({ orderId: "o" }, { deadlineSeconds: 30 });
+const _timedEntry = childAccForTimeout({ orderId: "o" }, { metadata: undefined, deadlineSeconds: 30 });
 void _timedEntry;
 type TimedEntry = typeof _timedEntry;
 

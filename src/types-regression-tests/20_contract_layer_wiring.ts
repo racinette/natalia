@@ -41,6 +41,7 @@ const layerCompStepIface = defineStepInterface({
   args: z.object({ token: z.string() }),
   result: z.object({ paid: z.boolean() }),
   compensation: {
+    result: z.void(),
     channels: { cUndo: z.number() },
     steps: { layerInnerStep },
   },
@@ -51,6 +52,7 @@ const layerCompStep = layerCompStepIface.implement({
     return { paid: true };
   },
   compensation: {
+    result: z.void(),
     steps: { layerInnerStep },
     async undo(ctx) {
       void ctx.channels.cUndo;
@@ -66,7 +68,9 @@ type _LayerCompSlotNotAny = Assert<
 
 type _LayerCompHasUndo = Assert<
   typeof layerCompStep extends {
-    readonly compensation: { readonly undo: (...args: never[]) => unknown };
+    readonly compensation: {
+      readonly undo: (...args: never[]) => unknown;
+    };
   }
     ? true
     : false
@@ -114,7 +118,7 @@ void layerMainIface.implement({
   },
   async execute(ctx) {
     void ctx.steps.withComp({ token: "t" });
-    void ctx.childWorkflows.child({ seed: 1 });
+    void ctx.childWorkflows.child({ seed: 1 }, { metadata: undefined });
     return ctx.args.wid.length;
   },
 });
@@ -154,7 +158,7 @@ const layerNoopParent = layerNoopParentHeader.extend({
   childWorkflows: { noop: layerNoopChildWf },
 }).implement({
   async execute(ctx) {
-    void ctx.childWorkflows.noop(undefined);
+    void ctx.childWorkflows.noop(undefined, { metadata: undefined });
     // @ts-expect-error child workflows always take args — pass `undefined` when schema is z.undefined()
     void ctx.childWorkflows.noop();
   },

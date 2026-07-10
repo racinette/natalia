@@ -65,9 +65,12 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
       {
         normalize: ctx.steps.normalize({ orderId: ctx.args.orderId }),
         approval: ctx.requests.approval({ orderId: ctx.args.orderId }),
-        followUp: ctx.childWorkflows.followUp({
-          orderId: ctx.args.orderId,
-        }),
+        followUp: ctx.childWorkflows.followUp(
+          {
+            orderId: ctx.args.orderId,
+          },
+          { metadata: undefined },
+        ),
       },
       async (scopeCtx, handles) => {
         handles.followUp.channels.notify.send({ msg: "from-scope" });
@@ -149,7 +152,7 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
 
     const detached = ctx.externalWorkflows.followUp.start(
       { orderId: ctx.args.orderId },
-      { idempotencyKey: "f-detached-1" },
+      { metadata: undefined, idempotencyKey: "f-detached-1" },
     );
     // @ts-expect-error external workflow handles are not scope entries
     await ctx.scope(

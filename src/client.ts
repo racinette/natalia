@@ -1,5 +1,5 @@
 import type {
-  AnyPublicWorkflowHeader,
+  AnyWorkflowHeader,
   CompensationBlockNamespaceExternal,
   DeadLetterHandleExternal,
   DeadLetterNamespaceExternal,
@@ -22,7 +22,7 @@ import type {
  * the stubbed runtime methods.
  */
 export abstract class AbstractWorkflowClient<
-  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+  TWfs extends Record<string, AnyWorkflowHeader>,
   TDriver extends StorageDriver<unknown>,
 > implements WorkflowClient<TWfs, TDriver>
 {
@@ -39,7 +39,7 @@ export abstract class AbstractWorkflowClient<
     this.driver = driver;
     const workflowAccessors: Record<
       string,
-      WorkflowClientAccessor<AnyPublicWorkflowHeader>
+      WorkflowClientAccessor<AnyWorkflowHeader>
     > = {};
     const requestAccessors: Record<string, RequestNamespaceExternal> = {};
     const queueAccessors: Record<string, QueueNamespaceExternal> = {};
@@ -68,12 +68,12 @@ export abstract class AbstractWorkflowClient<
         find: ((_session: unknown, _query: unknown, _opts?: unknown) => {
           this.assertClientAvailable();
           throw new Error("Not implemented");
-        }) as WorkflowClientAccessor<AnyPublicWorkflowHeader>["find"],
+        }) as WorkflowClientAccessor<AnyWorkflowHeader>["find"],
         count: async (_session: unknown, _query?: unknown) => {
           this.assertClientAvailable();
           throw new Error("Not implemented");
         },
-      } as WorkflowClientAccessor<AnyPublicWorkflowHeader>;
+      } as WorkflowClientAccessor<AnyWorkflowHeader>;
 
       const requests = (workflows[name] as { requests?: Record<string, { name?: string; compensation?: unknown }> })
         .requests;
@@ -265,7 +265,7 @@ export abstract class AbstractWorkflowClient<
 }
 
 class StaticWorkflowClient<
-  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+  TWfs extends Record<string, AnyWorkflowHeader>,
   TDriver extends StorageDriver<unknown>,
 > extends AbstractWorkflowClient<TWfs, TDriver>
 {
@@ -277,14 +277,14 @@ class StaticWorkflowClient<
 /**
  * Create a typed client surface from workflow public contracts.
  *
- * Accepts `PublicWorkflowHeader`, **`WorkflowInterface`**, or full
+ * Accepts `WorkflowHeader`, **`WorkflowInterface`**, or full
  * `WorkflowDefinition` maps (structural typing). Use when callers need the
  * typed client API (start/execute/get and introspection) without owning engine
  * lifecycle; method bodies are stubs until wired to a real runtime. Requires an
  * explicit {@link StorageDriver} — there is no default driver.
  */
 export function createWorkflowClient<
-  TWfs extends Record<string, AnyPublicWorkflowHeader>,
+  TWfs extends Record<string, AnyWorkflowHeader>,
   TDriver extends StorageDriver<unknown>,
 >(
   workflows: TWfs,

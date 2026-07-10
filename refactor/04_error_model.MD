@@ -40,7 +40,7 @@ site narrow on purpose.
 - The scope body's `ctx.errors` is **the same factory map as the
   parent workflow body** — there is no scope-local error namespace.
 - Compensation `undo` has **no** `ctx.errors`. Compensation reports
-  outcomes through its optional `result` schema.
+  outcomes through its **`compensation.result`** schema.
 
 ### Throw rules (per Part 3 and Part 4)
 

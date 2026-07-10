@@ -10,7 +10,7 @@ import type {
   AttachedChildWorkflowExternalHandle,
   AttachedChildWorkflowId,
   AttachedChildWorkflowNamespaceExternal,
-  AnyPublicWorkflowHeader,
+  AnyWorkflowHeader,
   AttemptHandle,
   AttributeReaderAccessorExternal,
   ChannelAccessorExternal,
@@ -95,6 +95,7 @@ const noResultCompensableStep = defineStep({
   args: z.object({ id: z.string() }),
   result: z.void(),
   compensation: {
+    result: z.void(),
     async undo() {},
   },
   async execute() {},
@@ -817,14 +818,14 @@ type _HeaderOnlyChildWorkflowsFallback = Assert<
     typeof _headerOnlyHandle.childWorkflows,
     Record<
       string,
-      AttachedChildWorkflowNamespaceExternal<AnyPublicWorkflowHeader>
+      AttachedChildWorkflowNamespaceExternal<AnyWorkflowHeader>
     >
   >
 >;
 type _HeaderOnlyExternalWorkflowsFallback = Assert<
   IsEqual<
     typeof _headerOnlyHandle.externalWorkflows,
-    Record<string, WorkflowHandleExternal<AnyPublicWorkflowHeader>>
+    Record<string, WorkflowHandleExternal<AnyWorkflowHeader>>
   >
 >;
 

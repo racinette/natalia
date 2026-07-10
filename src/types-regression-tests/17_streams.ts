@@ -19,6 +19,7 @@ const compStep = defineStep({
   args: z.object({ id: z.string() }),
   result: z.object({ ok: z.boolean() }),
   compensation: {
+    result: z.void(),
     streams: { undoAudit: auditStream },
     async undo(ctx) {
       const _offset = ctx.streams.undoAudit.write({ line: "undo" });
@@ -59,9 +60,10 @@ const client = createTestWorkflowClient({
 });
 
 async function externalStreamReads(): Promise<void> {
-  const handle = await client.workflows.streamsRegressionWorkflow.start(session, {
+  const handle = await client.workflows.streamsRegressionWorkflow.start(session, { metadata: undefined,
     idempotencyKey: "streams-regression-1",
-  });
+  args: undefined,
+    });
 
   type _LogReader = Assert<
     IsEqual<

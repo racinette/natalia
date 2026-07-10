@@ -42,9 +42,10 @@ const client = createTestWorkflowClient({
 });
 
 async function externalAttributeReads(): Promise<void> {
-  const handle = await client.workflows.workflowAttributesRegression.start(session, {
+  const handle = await client.workflows.workflowAttributesRegression.start(session, { metadata: undefined,
     idempotencyKey: "workflow-attr-1",
-  });
+  args: undefined,
+    });
 
   type _ProgressReader = Assert<
     IsEqual<

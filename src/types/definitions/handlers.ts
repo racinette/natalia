@@ -1,3 +1,4 @@
+import type { JsonSchemaConstraint } from "../json-input";
 import type { StandardSchemaV1 } from "../standard-schema";
 import type { ErrorDefinitions } from "./errors";
 import type { RequestCompensationConfig } from "./requests";
@@ -177,12 +178,12 @@ export interface RequestHandlerRetryPolicy extends RetryPolicyOptions {
 }
 
 export type RequestCompensationHandlerReturn<
-  TCompensation extends true | RequestCompensationConfig<any, any>,
-> = TCompensation extends { readonly result?: infer TResultSchema }
+  TCompensation extends RequestCompensationConfig<any, any>,
+> = TCompensation extends RequestCompensationConfig<infer TResultSchema, any>
   ? TResultSchema extends StandardSchemaV1<unknown, unknown>
     ? StandardSchemaV1.InferInput<TResultSchema>
-    : void
-  : void;
+    : never
+  : never;
 
 /**
  * Compensation handler registration nested under
@@ -193,7 +194,10 @@ export type RequestCompensationHandlerReturn<
 export type RequestCompensationRegistrationOptions<
   TPayload = unknown,
   TForwardResponse = unknown,
-  TCompensation extends true | RequestCompensationConfig<any, any> = true,
+  TCompensation extends RequestCompensationConfig<any, any> = RequestCompensationConfig<
+    JsonSchemaConstraint,
+    Record<string, never>
+  >,
   TCompensationErrors extends ErrorDefinitions = Record<string, never>,
   TForwardErrors extends ErrorDefinitions = Record<string, never>,
 > =
@@ -222,7 +226,7 @@ export type RequestHandlerRegistrationOptions<
   TErrors extends ErrorDefinitions = Record<string, never>,
   TPayload = unknown,
   TResponse = unknown,
-  TCompensation extends true | RequestCompensationConfig<any, any> | undefined = undefined,
+  TCompensation extends RequestCompensationConfig<any, any> | undefined = undefined,
   TCompensationErrors extends ErrorDefinitions = Record<string, never>,
 > = {
   readonly retryPolicy?: RequestHandlerRetryPolicy;
@@ -234,7 +238,7 @@ export type RequestHandlerRegistrationOptions<
       readonly compensation?: RequestCompensationRegistrationOptions<
         TPayload,
         TResponse,
-        Extract<TCompensation, true | RequestCompensationConfig<any, any>>,
+        Extract<TCompensation, RequestCompensationConfig<any, any>>,
         TCompensationErrors,
         TErrors
       >;

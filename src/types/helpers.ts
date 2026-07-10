@@ -376,7 +376,7 @@ export type InferRequestCompensationDef<R> = R extends {
 }
   ? [C] extends [undefined]
     ? undefined
-    : C extends true | RequestCompensationConfig<any, any>
+    : C extends RequestCompensationConfig<any, any>
       ? C
       : undefined
   : undefined;

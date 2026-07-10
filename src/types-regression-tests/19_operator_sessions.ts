@@ -138,7 +138,7 @@ async function clientSessionEntry(): Promise<void> {
 
     const handle = await client.workflows.operatorSessionsRegressionWorkflow.start(
       session,
-      { idempotencyKey: "sessions-regression-1" },
+      { args: undefined, metadata: undefined, idempotencyKey: "sessions-regression-1" },
     );
 
     await handle.fetchRow(session, { fields: { status: true } });

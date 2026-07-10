@@ -12,7 +12,7 @@ On the **step definition**, optional **`retryPolicy`** sets **how** to retry (in
 
 ### Compensable steps
 
-A step may optionally carry a **`compensation`** block on the **same definition** as `execute`. That declares how to **undo or reconcile** the forward work when the engine schedules compensation: a dedicated **`undo`** callback receives a **compensation** `ctx` (not the workflow body’s `ctx`), the **original step args**, and **`info`** summarizing the forward path’s terminal shape—**completed** (with a persisted result row), **timed out** without a settled result, or **terminated**. You **return** an optional typed outcome when the block declares a **`result`** schema; there is no workflow-local `ctx.errors` inside `undo`.
+A step may optionally carry a **`compensation`** block on the **same definition** as `execute`. That declares how to **undo or reconcile** the forward work when the engine schedules compensation: a dedicated **`undo`** callback receives a **compensation** `ctx` (not the workflow body’s `ctx`), the **original step args**, and **`info`** summarizing the forward path’s terminal shape—**completed** (with a persisted result row), **timed out** without a settled result, or **terminated**. You **return** a typed outcome matching the declared **`result`** schema (`z.void()` when there is no structured return); there is no workflow-local `ctx.errors` inside `undo`.
 
 #### When `undo` runs (attempts vs I/O)
 
@@ -48,8 +48,8 @@ Treat **`undo` like a workflow `execute` body** for this compensation invocation
 Similar surface, different failure and outcome model:
 
 - **No `errors` on the compensation block.** A workflow declares **`errors`** and may **`throw ctx.errors.X(...)`** to fail the run in a typed, caller-visible way. **`undo` has no `ctx.errors`**—it cannot “error out” of the compensation block that way.
-- **Only three ways out:** reach a normal **`return`**, be **`skip`ped** from the outside on the compensation block handle (client: look up the instance inside `client.session` and call **`.skip(session, …)`** with an operator-supplied outcome when the block declares a **`result`** schema), or **halt**. An **unhandled throw inside `undo` does not fail the parent workflow**—it **halts** the compensation block instance until the underlying issue is fixed (patch/replay) or an operator intervenes.
-- **Optional `compensation.result` schema.** When declared, **`return`** values are persisted as the **summary of that compensation run**—for admins scanning a case or for queries over compensation rows. They are **not** consumed by the parent workflow body the way a step or workflow **result** is; they are **documentation of how undo settled**.
+- **Only three ways out:** reach a normal **`return`**, be **`skip`ped** from the outside on the compensation block handle (client: look up the instance inside `client.session` and call **`.skip(session, …)`** with an operator-supplied outcome matching the declared **`result`** schema), or **halt**. An **unhandled throw inside `undo` does not fail the parent workflow**—it **halts** the compensation block instance until the underlying issue is fixed (patch/replay) or an operator intervenes.
+- **`compensation.result` schema.** Declare **`z.void()`** when `undo` has no structured return, or a concrete schema when the compensation outcome should be persisted for operators and queries. **`return`** values are stored as the **summary of that compensation run**—for admins scanning a case or for queries over compensation rows. They are **not** consumed by the parent workflow body the way a step or workflow **result** is; they are **documentation of how undo settled**.
 - **Streams (and similar) for progress, not for the outcome.** Append to a **stream** (or set an **attribute**, and so on) to make **rollback progress observable** while `undo` is still running. The **return value** (when you declare **`result`**) is the compact **final summary**; the stream is the **timeline**.
 
 #### Awaiting steps from `undo`
@@ -104,6 +104,7 @@ const reserveInventory = defineStep({
 const fulfillOrder = defineWorkflow({
   name: "fulfill-order",
   args: z.object({ sku: z.string(), quantity: z.number() }),
+  metadata: z.undefined(),
   steps: { reserveInventory },
   result: z.object({ reservationId: z.string() }),
   async execute(ctx) {

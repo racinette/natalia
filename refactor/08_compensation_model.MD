@@ -14,13 +14,14 @@ A compensable step's compensation declaration carries:
   queues, topics, and child workflows; child workflows are exempt
   from the non-compensable filter because each child owns its own
   compensation lifecycle);
-- an optional **`result`** outcome schema;
+- an explicit **`result`** outcome schema (use **`z.void()`** when there is
+  no structured return);
 - the **`undo`** body, which receives the original step args (decoded)
   and the forward operation's outcome `info`.
 
-A compensable request declaration carries `compensation: true` or
-`compensation: { result?, errors? }` on `defineRequest`. Forward and
-compensation handlers register together on
+A compensable request declaration carries **`compensation: { result, errors? }`**
+on `defineRequest`. Bare **`compensation: true`** and **`{ errors }`** without
+**`result`** are rejected. Forward and compensation handlers register together on
 `client.requests.<definitionName>.registerHandler` — there is no
 inline `undo` on `defineRequest` and no separate compensation
 registration API.
@@ -35,7 +36,7 @@ and Part 8). Each invocation gets its own externally addressable id
 - `REFACTOR.MD` Part 2: Compensation Model Redesign.
 - `REFACTOR.MD` Part 1.6: compensation as a sibling workflow.
 - `REFACTOR.MD` Part 4: compensation `undo` has no `ctx.errors`;
-  outcomes via the optional `result` schema.
+  outcomes via the required **`compensation.result`** schema.
 - `REFACTOR.MD` Part 11: request compensation registration.
 - `REFACTOR.MD` Part 15: `CompensationInfo.attempts` /
   `RequestCompensationInfo.attempts`.
@@ -59,8 +60,8 @@ interface StepCompensationDefinition<...> {
   topics?:         { [name: string]: TopicDefinition };
   childWorkflows?: { [name: string]: WorkflowDefinition };
 
-  // Optional outcome schema.
-  result?: TResultSchema;
+  // Outcome schema (`z.void()` when there is no structured return).
+  result: TResultSchema;
 
   // Compensation body.
   undo: (
@@ -81,9 +82,10 @@ existing `CompensationContext` shape.
 ### `defineRequest.compensation`
 
 ```typescript
-type RequestCompensationDefinition<TResultSchema> =
-  | true
-  | { result?: TResultSchema; errors?: ErrorDefinitions };
+type RequestCompensationConfig<TResultSchema> = {
+  result: TResultSchema;
+  errors?: ErrorDefinitions;
+};
 ```
 
 Inline `undo` is rejected. Register forward and compensation handlers
@@ -199,7 +201,7 @@ verifies:
    (covered by step 06; reasserted here).
 7. Compensable steps and compensable requests are rejected as
    `compensation.steps` / `compensation.requests` dependencies.
-8. `defineRequest.compensation` accepts `true` or `{ result?, errors? }`;
+8. `defineRequest.compensation` accepts `{ result, errors? }` only;
    inline `undo` is rejected.
 9. `client.requests.<name>.registerHandler(..., { compensation: { handler,
    retryPolicy, maxConcurrent? } })` accepts a compensable request and

@@ -1,27 +1,24 @@
 import type { JsonSchemaConstraint } from "../json-input";
+import type { StandardSchemaV1 } from "../standard-schema";
 import type { ErrorDefinitions } from "./errors";
 import type { NoDefinitionExtension } from "./type-augmentation";
 
 /**
- * Optional compensation payload schema and handler error codes for a
+ * Compensation payload schema and optional handler error codes for a
  * compensable request (`compensation` on `defineRequest`).
- *
- * When `TResultSchema` is set, `result` is required on the config object.
  */
 export type RequestCompensationConfig<
-  TResultSchema extends JsonSchemaConstraint | undefined = undefined,
+  TResultSchema extends JsonSchemaConstraint,
   TCompensationErrors extends ErrorDefinitions = Record<string, never>,
-> = (TResultSchema extends undefined
-  // eslint-disable-next-line @typescript-eslint/no-empty-object-type -- optional result slot; see type-augmentation.ts
-  ? {}
-  : { readonly result: TResultSchema }) & {
+> = {
+  readonly result: TResultSchema;
   readonly errors?: TCompensationErrors;
 };
 
 export type RequestCompensationDefinition<
-  TResultSchema extends JsonSchemaConstraint | undefined = undefined,
+  TResultSchema extends JsonSchemaConstraint,
   TCompensationErrors extends ErrorDefinitions = Record<string, never>,
-> = true | RequestCompensationConfig<TResultSchema, TCompensationErrors>;
+> = RequestCompensationConfig<TResultSchema, TCompensationErrors>;
 
 /**
  * Request definition — created via `defineRequest()`.
@@ -35,10 +32,7 @@ export type RequestDefinition<
   TPayloadSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TResponseSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TErrors extends ErrorDefinitions = Record<string, never>,
-  TCompensation extends
-    | true
-    | RequestCompensationConfig<any, any>
-    | undefined = undefined,
+  TCompensation extends RequestCompensationConfig<any, any> | undefined = undefined,
 > = {
   readonly name: TName;
   /** Payload schema for observable, serializable request input. */
@@ -53,7 +47,6 @@ export type RequestDefinition<
       readonly compensation: TCompensation;
     });
 
- 
 export type NonCompensableRequestDefinition = RequestDefinition<
   string,
   any,
@@ -63,7 +56,6 @@ export type NonCompensableRequestDefinition = RequestDefinition<
 > & {
   readonly compensation?: never;
 };
- 
 
 export type NonCompensableRequestDefinitions = Record<
   string,
@@ -73,9 +65,15 @@ export type NonCompensableRequestDefinitions = Record<
 /**
  * Map of request definitions.
  */
- 
 export type RequestDefinitions = Record<
   string,
   RequestDefinition<string, any, any, any, any>
 >;
- 
+
+export type InferRequestCompensationResultInput<
+  TCompensation extends RequestCompensationConfig<any, any>,
+> = TCompensation extends RequestCompensationConfig<infer TResultSchema, any>
+  ? TResultSchema extends StandardSchemaV1<unknown, unknown>
+    ? StandardSchemaV1.InferInput<TResultSchema>
+    : never
+  : never;

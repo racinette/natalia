@@ -17,7 +17,10 @@ partner.channels.notify.send({ n: 1 });
 // create a new independent instance and move on
 const reconcile = ctx.externalWorkflows.reconcile.start(
   { window: "2026-06-29" },
-  { idempotencyKey: "reconcile-2026-06-29" },
+  {
+    metadata: undefined,
+    idempotencyKey: "reconcile-2026-06-29",
+  },
 );
 ```
 
@@ -55,8 +58,8 @@ The defining axis:
 
 Independent roots live in the engine’s **global identity namespace**, so identity is explicit. How the key is supplied depends on whether the target declares an **`idempotencyKeyFactory`**:
 
-- **No factory** — `.start(args, { idempotencyKey })` requires the key, and `.get(idempotencyKey)` looks up by it. Starting a global root without a stable, predefined identity is a real decision; the type system makes you own it.
-- **Factory present** — the key is derived from the workflow’s arguments. `.start(args, {})` takes no key (passing one is rejected), and `.get(args)` looks the instance up *by args* (the engine derives the same key). The factory is the single source of identity, so `get(args)` always finds what `start(args)` created.
+- **No factory** — `.start(args, { idempotencyKey, metadata, … })` requires the key and explicit **`metadata`** (pass `undefined` when the schema is `z.undefined()`). `.get(idempotencyKey)` looks up by key.
+- **Factory present** — the key is derived from the workflow’s arguments. `.start(args, { metadata, … })` takes no key (passing one is rejected), and `.get(args)` looks the instance up *by args*. The factory is the single source of identity, so `get(args)` always finds what `start(args)` created.
 
 ## What it is NOT
 
@@ -80,7 +83,11 @@ partner.idempotencyKey; // the key you looked up
 ```typescript
 const handle = ctx.externalWorkflows.fulfillOrder.start(
   { orderId: "order-42" },
-  { idempotencyKey: "fulfill:order-42", deadlineSeconds: 3_600 },
+  {
+    metadata: undefined,
+    idempotencyKey: "fulfill:order-42",
+    deadlineSeconds: 3_600,
+  },
 );
 handle.channels.expedite.send({ priority: "high" });
 ```
@@ -91,12 +98,17 @@ handle.channels.expedite.send({ priority: "high" });
 const fulfillOrder = defineWorkflow({
   name: "fulfill-order",
   args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
+  result: z.object({ shipped: z.boolean() }),
   idempotencyKeyFactory: (args) => `fulfill:${args.orderId}`,
   // …
 });
 
 // start: no key passed — derived from args
-ctx.externalWorkflows.fulfillOrder.start({ orderId: "order-42" }, {});
+ctx.externalWorkflows.fulfillOrder.start(
+  { orderId: "order-42" },
+  { metadata: undefined },
+);
 // get: look up the same instance by args
 ctx.externalWorkflows.fulfillOrder.get({ orderId: "order-42" });
 ```

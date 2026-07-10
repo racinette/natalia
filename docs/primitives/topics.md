@@ -54,6 +54,7 @@ const auditTopic = defineTopic({
 const wf = defineWorkflow({
   name: "checkout",
   args: z.object({ orderId: z.string(), tenantId: z.string() }),
+  metadata: z.object({ tenantId: z.string() }),
   topics: { audit: auditTopic },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx) {

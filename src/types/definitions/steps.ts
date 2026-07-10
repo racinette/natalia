@@ -187,7 +187,7 @@ export interface StepCompensationDefinition<
   TTopics extends TopicDefinitions = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
-  TResultSchema extends JsonSchemaConstraint | undefined = undefined,
+  TResultSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
 > {
   /** Per-instance channels for this compensation block. */
   readonly channels?: TChannels;
@@ -209,8 +209,8 @@ export interface StepCompensationDefinition<
   readonly childWorkflows?: TChildren;
   /** Declared external workflow dependencies. */
   readonly externalWorkflows?: TExternalWorkflows;
-  /** Optional outcome schema. Default: `void`. */
-  readonly result?: TResultSchema;
+  /** Compensation outcome schema (`z.void()` when there is no structured return). */
+  readonly result: TResultSchema;
   /**
    * Compensation body. Receives the original step args (decoded) and the
    * forward operation's outcome `info`. Compensation reports its outcome
@@ -231,12 +231,7 @@ export interface StepCompensationDefinition<
     >,
     args: StandardSchemaV1.InferOutput<TArgsSchema>,
     info: CompensationInfo<StandardSchemaV1.InferOutput<TForwardResultSchema>>,
-  ) => Promise<
-    | void
-    | (TResultSchema extends JsonSchemaConstraint
-        ? StandardSchemaV1.InferInput<TResultSchema>
-        : void)
-  >;
+  ) => Promise<StandardSchemaV1.InferInput<TResultSchema>>;
 }
 
 /**
@@ -255,7 +250,7 @@ export type MaximalStepCompensationDefinition = StepCompensationDefinition<
   TopicDefinitions,
   WorkflowDefinitions,
   WorkflowDefinitions,
-  JsonSchemaConstraint | undefined
+  JsonSchemaConstraint
 >;
 
 /** Upper-bound step shape used by compensation block typing. */

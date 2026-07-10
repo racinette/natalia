@@ -2,6 +2,10 @@
 
 > Parked working note. Goal: decide the canonical API for attributes, then reconcile all three sources. No source is authoritative yet.
 
+## Cross-cutting: explicit contracts (implemented)
+
+When attributes land on `defineWorkflow`, the surrounding workflow contract already requires explicit **`args`**, **`metadata`**, and **`result`**. Step **`compensation.attributes`** slots require explicit **`compensation.result`** on the same block. See [explicit-contracts.md](../explicit-contracts.md).
+
 ## Three-source status
 - **docs/attributes.md**: Full surface — `attributes` slot on `defineWorkflow`, `ctx.attributes.<name>.set(value)` (void, buffered) in body, external `handle.attributes.<name>.get({ afterVersion, signal })` / `getNowait()` returning `{ status, value, version }` | `not_set` | `never`. Also a per-block `attributes` slot on step `compensation`. AHEAD of code (except the compensation slot).
 - **REFACTOR.MD Part 13 (Attributes)**: Same — `ctx.attributes.progress.set(...)`, external `get`/`getNowait` result unions, `workflow_attributes` table (`workflow_id`,`attribute_name`,`value`,`version`), per-instance NOTIFY long-poll, `never` driven by `wf_ended:<id>`. AHEAD of code.

@@ -27,7 +27,7 @@ const _retryPolicy: RetryPolicyOptions = {
 };
 
 // @ts-expect-error retry policy no longer owns total workflow-side deadlines
-const _retryPolicyNoDeadlineSeconds: RetryPolicyOptions = { deadlineSeconds: 30 };
+const _retryPolicyNoDeadlineSeconds: RetryPolicyOptions = { metadata: undefined, deadlineSeconds: 30 };
 
 // =============================================================================
 // STEP BOUNDARY — workflow-side observation boundary.
@@ -154,9 +154,12 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     // (no `channels.*.send` on the direct entry; no `idempotencyKey` on invocation opts).
     // -------------------------------------------------------------------------
 
-    const childEntry = ctx.childWorkflows.child({
-      id: "c-1",
-    });
+    const childEntry = ctx.childWorkflows.child(
+      {
+        id: "c-1",
+      },
+      { metadata: undefined },
+    );
 
     type _ChildEntryAwaitable = Assert<
       typeof childEntry extends AwaitableEntry<infer _> ? true : false
@@ -191,7 +194,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
 
     await ctx.scope(
       "callTimeChildChannels",
-      { c: ctx.childWorkflows.child({ id: "c-1b" }) },
+      { c: ctx.childWorkflows.child({ id: "c-1b" }, { metadata: undefined }) },
       async (sctx, { c }) => {
         const sendReturn: void = c.channels.cancel.send({ reason: "user" });
         void sendReturn;
@@ -202,7 +205,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     );
 
     // Timeout overload adds `{ ok: false; status: "timeout" }`.
-    const _timedChild = await ctx.childWorkflows.child({ id: "c-2" }, { deadlineSeconds: 60 });
+    const _timedChild = await ctx.childWorkflows.child({ id: "c-2" }, { metadata: undefined, deadlineSeconds: 60 });
     type _TimedChildHasTimeout = Assert<
       Extract<typeof _timedChild, { ok: false; status: "timeout" }> extends never
         ? false
@@ -227,7 +230,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
 
     const detached = ctx.externalWorkflows.child.start(
       { id: "d-1" },
-      { idempotencyKey: "child-detached-1" },
+      { metadata: undefined, idempotencyKey: "child-detached-1" },
     );
     type _DetachedIsForeignHandle = Assert<
       typeof detached extends ExternalWorkflowHandle<infer _> ? true : false
@@ -243,7 +246,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
       typeof detached extends PromiseLike<unknown> ? false : true
     >;
     // @ts-expect-error childWorkflows are attached-only; detached starts live on externalWorkflows.<name>.start()
-    void ctx.childWorkflows.child({ id: "x" }).start;
+    void ctx.childWorkflows.child({ id: "x" }, { metadata: undefined }).start;
 
     // -------------------------------------------------------------------------
     // EXTERNAL WORKFLOW ACCESSORS
@@ -259,7 +262,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     //
     // Two overloads:
     //   - (payload)                              → response directly
-    //   - (payload, { priority?, timeout })      → timeout union (timeout required when opts supplied)
+    //   - (payload, { metadata: undefined, priority?, timeout })      → timeout union (timeout required when opts supplied)
     //
     // Requests delegate resolution; configuration of retries, deadlines,
     // and exhaustion-fallbacks lives on the handler registration, not here.

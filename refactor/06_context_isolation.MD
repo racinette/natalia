@@ -14,7 +14,7 @@ time.
   shared compensation namespace; definition-time filtering against
   compensable dependencies.
 - `REFACTOR.MD` Part 4: workflow `ctx.errors` versus compensation
-  `undo` (no `ctx.errors`; outcomes via the optional `result` schema).
+  `undo` (no `ctx.errors`; outcomes via **`compensation.result`**).
 
 ## Public API Target
 
@@ -31,7 +31,7 @@ time.
 | `ctx.streams`          | workflow instance streams         | per-instance compensation block streams (step 08)       |
 | `ctx.events`           | workflow instance events          | per-instance compensation block events (step 08)        |
 | `ctx.attributes`       | workflow instance attributes      | per-instance compensation block attributes (step 08)    |
-| `ctx.errors`           | workflow's declared errors        | **absent** — use the optional `result` schema instead   |
+| `ctx.errors`           | workflow's declared errors        | **absent** — report outcomes via **`compensation.result`** (`z.void()` when empty) |
 
 The workflow body cannot read or write compensation block primitives, and
 a compensation block cannot read or write workflow body primitives.
@@ -43,7 +43,7 @@ primitive (queue, topic, request, child workflow).
 Compensation block dependencies must not themselves be compensable.
 
 - `compensation.steps` rejects steps with `compensation:` set.
-- `compensation.requests` rejects requests with `compensation: true | { ... }`.
+- `compensation.requests` rejects requests with a **`compensation`** block set.
 - `compensation.childWorkflows` is exempt — each child workflow owns
   its own internal compensation lifecycle.
 - `compensation.queues` and `compensation.topics` (step 13 / 15) have

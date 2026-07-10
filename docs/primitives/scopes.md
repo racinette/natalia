@@ -46,7 +46,7 @@ Observe one handle’s outcome.
 - A **child workflow** handle joins to `{ ok: true; result } | { ok: false; status: "failed"; error }`.
 - Passing `{ timeout }` to `join` adds `{ ok: false; status: "join_timeout" }`—an **observation** timeout that does not cancel, fail, or compensate the underlying work. You may join the same handle again afterward.
 
-There are **two distinct timeouts**, and they compose. A **join timeout** (`ctx.join(handle, { timeout })`) bounds *your wait* and leaves the entry running. An **execution deadline**, set at the entry’s own call site (e.g. `ctx.childWorkflows.X(args, { deadlineSeconds })`), bounds *the work itself*: when it fires the entry is terminated and settles as `{ ok: false; status: "timeout" }`. A single join can surface either, and they are distinguishable by status (`"timeout"` vs `"join_timeout"`).
+There are **two distinct timeouts**, and they compose. A **join timeout** (`ctx.join(handle, { timeout })`) bounds *your wait* and leaves the entry running. An **execution deadline**, set at the entry’s own call site (e.g. `ctx.childWorkflows.X(args, { metadata: undefined, deadlineSeconds })`), bounds *the work itself*: when it fires the entry is terminated and settles as `{ ok: false; status: "timeout" }`. A single join can surface either, and they are distinguishable by status (`"timeout"` vs `"join_timeout"`).
 
 ### Convenience combinators
 
@@ -147,7 +147,7 @@ Inside a scope, a child-workflow entry’s handle gains a `channels.<name>.send(
 ```typescript
 await ctx.scope(
   "cancelable-order",
-  { order: ctx.childWorkflows.processOrder({ orderId: "o-1" }) },
+  { order: ctx.childWorkflows.processOrder({ orderId: "o-1" }, { metadata: undefined }) },
   async (ctx, { order }) => {
     const fromOutside = await ctx.channels.operatorCancel.receive();
     order.channels.cancel.send({ reason: fromOutside.reason });

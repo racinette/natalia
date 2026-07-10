@@ -132,6 +132,7 @@ const ctx13CompStepIface = defineStepInterface({
   args: z.object({ token: z.string() }),
   result: z.object({ paid: z.boolean() }),
   compensation: {
+    result: z.void(),
     channels: { cUndo: z.number() },
     streams: { sUndo: z.object({ row: z.string() }) },
     events: { eUndo: true },
@@ -144,6 +145,7 @@ const ctx13CompStep = ctx13CompStepIface.implement({
     return { paid: true };
   },
   compensation: {
+    result: z.void(),
     channels: { cUndo: z.number() },
     streams: { sUndo: z.object({ row: z.string() }) },
     events: { eUndo: true },
@@ -380,9 +382,12 @@ const ctx13FullWorkflow = ctx13FullInterface.implement({
       break;
     }
 
-    const _childAEntry = ctx.childWorkflows.childA({
-      seed: 1,
-    });
+    const _childAEntry = ctx.childWorkflows.childA(
+      {
+        seed: 1,
+      },
+      { metadata: undefined },
+    );
     type _ChildAResult = AttachedChildWorkflowResult<
       string,
       ErrorValue<InferWorkflowErrors<typeof ctx13ChildWorkflow>>

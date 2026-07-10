@@ -477,6 +477,7 @@ client.requests.pingRequestAcceptance.registerHandler(
     retryPolicy: { maxAttempts: 1 },
     // @ts-expect-error non-compensable requests cannot register compensation handlers
     compensation: {
+    result: z.void(),
       handler: async () => ({ cancelled: false }),
       retryPolicy: { timeoutSeconds: 30 },
     },

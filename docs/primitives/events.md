@@ -34,6 +34,8 @@ The other reason events exist is the **`never` terminal**: if a workflow reaches
 const order = defineWorkflow({
   name: "order",
   args: z.object({ sku: z.string() }),
+  metadata: z.undefined(),
+  result: z.void(),
   events: { orderReady: true, paid: true },
   async execute(ctx) {
     await ctx.steps.reserveInventory({ sku: ctx.args.sku });

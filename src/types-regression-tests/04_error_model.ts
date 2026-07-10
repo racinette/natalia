@@ -114,9 +114,12 @@ export const errorModelAcceptanceWorkflow = defineWorkflow({
     // The `error` field is `ErrorValue<TChildErrors>` with `type: "ExplicitError"`.
     // ----------------------------------------------------------------------
 
-    const child = await ctx.childWorkflows.child({
-      id: "c-1",
-    });
+    const child = await ctx.childWorkflows.child(
+      {
+        id: "c-1",
+      },
+      { metadata: undefined },
+    );
     if (!child.ok) {
       if (child.status === "failed") {
         // Discriminate on `code` directly — Part 4 line 720.
@@ -218,6 +221,7 @@ defineStep({
   args: z.object({ id: z.string() }),
   result: z.void(),
   compensation: {
+    result: z.void(),
     async undo(ctx, _args, _info) {
       // @ts-expect-error compensation undo has no ctx.errors
       void ctx.errors;

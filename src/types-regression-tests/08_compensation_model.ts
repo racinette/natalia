@@ -171,6 +171,7 @@ defineStep({
   args: z.object({ chargeId: z.string() }),
   result: z.object({ ok: z.boolean() }),
   compensation: {
+    result: z.void(),
     steps: { chargeStep },
     async undo() {},
   },
@@ -202,6 +203,7 @@ const manualReviewRequest = defineRequest({
   payload: z.object({ chargeId: z.string() }),
   response: z.object({ accepted: z.boolean() }),
   compensation: {
+    result: z.void(),
     errors: {
       NeedsOperator: true,
     },
@@ -330,6 +332,7 @@ nonCompensableClient.requests.compNonCompensableRequest.registerHandler(
   {
     // @ts-expect-error non-compensable requests cannot register compensation handlers
     compensation: {
+    result: z.void(),
       handler: async () => undefined,
       retryPolicy: { timeoutSeconds: 30 },
     },
@@ -343,6 +346,7 @@ defineStep({
   args: z.object({ chargeId: z.string() }),
   result: z.object({ ok: z.boolean() }),
   compensation: {
+    result: z.void(),
     requests: { approvalRequest },
     async undo() {},
   },
@@ -363,6 +367,7 @@ const voidResultStep = defineStep({
   args: z.object({ id: z.string() }),
   result: z.object({ ok: z.boolean() }),
   compensation: {
+    result: z.void(),
     async undo(_ctx, _args, _info) {
       // No return value required.
     },
@@ -411,7 +416,7 @@ export const compensationModelAcceptanceWorkflow = defineWorkflow({
     // @ts-expect-error general ad hoc compensation registration is removed
     void ctx.addCompensation(async () => undefined);
 
-    const child = ctx.childWorkflows.childWorkflow(undefined);
+    const child = ctx.childWorkflows.childWorkflow(undefined, { metadata: undefined });
     // @ts-expect-error child compensation is no longer call-site-bound
     void child.compensate(async () => undefined);
 

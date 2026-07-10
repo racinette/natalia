@@ -4,27 +4,66 @@ import type { AttributeDefinitions, ChannelDefinitions, EventDefinitions, Stream
 import type { WorkflowErrorDefinitions } from "./errors";
 
 /**
- * Map of workflow definitions for child/external workflow references.
- * Accepts both full `WorkflowDefinition` objects and lightweight
- * `WorkflowHeader` descriptors — `WorkflowDefinition` satisfies
- * `AnyWorkflowHeader` structurally so the two are interchangeable here.
+ * Locked workflow contract slice shared by graph references and full headers.
  */
-export type WorkflowDefinitions = Record<string, AnyWorkflowHeader>;
+export interface WorkflowContractCore<
+  TName extends string = string,
+  TArgs extends JsonSchemaConstraint = StandardSchemaV1<
+    void,
+    void
+  >,
+  TMetadata extends JsonObjectSchemaConstraint = JsonObjectSchemaConstraint,
+  TResult extends JsonSchemaConstraint = JsonSchemaConstraint,
+  TErrors extends WorkflowErrorDefinitions = Record<string, never>,
+  TIdempotencyKeyFactory extends
+    | ((args: StandardSchemaV1.InferOutput<TArgs>) => string)
+    | undefined = undefined,
+> {
+  readonly name: TName;
+  readonly args: TArgs;
+  readonly metadata: TMetadata;
+  readonly result: TResult;
+  readonly errors?: TErrors;
+  readonly idempotencyKeyFactory?: TIdempotencyKeyFactory;
+}
 
 /**
- * Public workflow descriptor for externalWorkflows/client-facing APIs.
+ * Graph-safe workflow reference for `childWorkflows` / `externalWorkflows` maps
+ * before `.extend()` adds streams and other interface fields.
  *
- * Captures the contract clients need to interact with workflow instances:
- * - identity (`name`)
- * - start contract (`args`, `metadata`, `result`)
- * - interaction surface (`channels`, `streams`, `events`)
- * - terminal payload contract (`result` schema)
- *
- * This type intentionally excludes implementation details (`execute`, `steps`,
- * `rng`, hooks, etc.). Full `WorkflowDefinition` objects satisfy this
- * shape structurally and can be used where only client contracts are needed.
+ * Created by `defineWorkflowHeader()`.
  */
-export interface PublicWorkflowHeader<
+export interface WorkflowReference<
+  TName extends string = string,
+  TChannels extends ChannelDefinitions = Record<string, never>,
+  TArgs extends JsonSchemaConstraint = StandardSchemaV1<
+    void,
+    void
+  >,
+  TMetadata extends JsonObjectSchemaConstraint = JsonObjectSchemaConstraint,
+  TResult extends JsonSchemaConstraint = JsonSchemaConstraint,
+  TErrors extends WorkflowErrorDefinitions = Record<string, never>,
+  TIdempotencyKeyFactory extends
+    | ((args: StandardSchemaV1.InferOutput<TArgs>) => string)
+    | undefined = undefined,
+> extends WorkflowContractCore<
+  TName,
+  TArgs,
+  TMetadata,
+  TResult,
+  TErrors,
+  TIdempotencyKeyFactory
+> {
+  readonly channels?: TChannels;
+}
+
+/**
+ * Full public workflow contract for clients and operator surfaces.
+ *
+ * Satisfied by `WorkflowInterface` and `WorkflowDefinition`. Excludes
+ * implementation details (`execute`, runnable step bodies, …).
+ */
+export interface WorkflowHeader<
   TName extends string = string,
   TChannels extends ChannelDefinitions = Record<string, never>,
   TStreams extends StreamDefinitions = Record<string, never>,
@@ -40,32 +79,31 @@ export interface PublicWorkflowHeader<
   TIdempotencyKeyFactory extends
     | ((args: StandardSchemaV1.InferOutput<TArgs>) => string)
     | undefined = undefined,
+> extends WorkflowContractCore<
+  TName,
+  TArgs,
+  TMetadata,
+  TResult,
+  TErrors,
+  TIdempotencyKeyFactory
 > {
-  readonly name: TName;
   readonly channels?: TChannels;
   readonly streams?: TStreams;
   readonly events?: TEvents;
   readonly attributes?: TAttributes;
-  readonly args: TArgs;
-  readonly metadata: TMetadata;
-  readonly result: TResult;
-  readonly errors?: TErrors;
-  /**
-   * Optional factory deriving this workflow's idempotency key from its decoded
-   * args. See `WorkflowHeader.idempotencyKeyFactory`.
-   */
-  readonly idempotencyKeyFactory?: TIdempotencyKeyFactory;
 }
 
 /**
- * Any public workflow descriptor shape.
+ * Map of workflow references for child/external workflow graph edges.
  */
-export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
+export type WorkflowDefinitions = Record<string, AnyWorkflowReference>;
+
+/**
+ * Any graph-safe workflow reference shape.
+ */
+export type AnyWorkflowReference = WorkflowReference<
   string,
   ChannelDefinitions,
-  StreamDefinitions,
-  EventDefinitions,
-  AttributeDefinitions,
   JsonSchemaConstraint,
   JsonObjectSchemaConstraint,
   JsonSchemaConstraint,
@@ -75,97 +113,14 @@ export type AnyPublicWorkflowHeader = PublicWorkflowHeader<
 >;
 
 /**
- * Minimal workflow descriptor used by workflow authoring to break circular
- * dependencies between workflow modules.
- *
- * Use `defineWorkflowHeader()` to create one. Then:
- *
- * - Call **`header.extend({ ... })`** to add streams, events, steps, and other
- *   public interface fields without restating the header slice.
- * - Call **`.implement({ execute, ... })`** on the interface for the runnable
- *   workflow definition.
- * - Pass the header directly to `externalWorkflows` or `childWorkflows` in any
- *   workflow that needs to reference this one before the full implementation exists.
- *
- * This resolves circular references cleanly: define the header first, use it
- * in both directions, then fill in the implementations afterward.
- *
- * ```typescript
- * const managerHeader = defineWorkflowHeader({
- *   name: "scheduler",
- *   args: z.undefined(),
- *   metadata: z.undefined(),
- *   result: z.void(),
- *   channels: { done: DonePayload },
- * });
- *
- * // worker references manager via header — no circular dep
- * const workerWorkflow = workerHeader.extend({}).implement({
- *   externalWorkflows: { manager: managerHeader },
- *   execute: async (ctx) => { ... },
- * });
- *
- * // manager: header → interface → implementation
- * const managerWorkflow = managerHeader.extend({
- *   childWorkflows: { worker: workerWorkflow },
- * }).implement({
- *   execute: async (ctx) => { ... },
- * });
- * ```
- *
- * A workflow can also reference itself (recursive/fractal workflows):
- * ```typescript
- * const treeHeader = defineWorkflowHeader({
- *   name: "tree",
- *   args: TreeArgs,
- *   metadata: z.undefined(),
- *   result: z.void(),
- * });
- * const treeWorkflow = treeHeader.extend({
- *   childWorkflows: { node: treeHeader },
- * }).implement({
- *   execute: async (ctx) => { ... },
- * });
- * ```
- */
-export interface WorkflowHeader<
-  TName extends string = string,
-  TChannels extends ChannelDefinitions = Record<string, never>,
-  TArgs extends JsonSchemaConstraint = StandardSchemaV1<
-    void,
-    void
-  >,
-  TMetadata extends JsonObjectSchemaConstraint = JsonObjectSchemaConstraint,
-  TResult extends JsonSchemaConstraint = JsonSchemaConstraint,
-  TErrors extends WorkflowErrorDefinitions = Record<string, never>,
-  TIdempotencyKeyFactory extends
-    | ((args: StandardSchemaV1.InferOutput<TArgs>) => string)
-    | undefined = undefined,
-> {
-  readonly name: TName;
-  readonly channels?: TChannels;
-  readonly args: TArgs;
-  readonly metadata: TMetadata;
-  readonly result: TResult;
-  readonly errors?: TErrors;
-  /**
-   * Optional factory deriving this workflow's idempotency key from its decoded
-   * args. When present, identity is derived from args (callers must not pass an
-   * explicit `idempotencyKey`, and lookups address it by args); when absent, the
-   * caller owns the key.
-   */
-  readonly idempotencyKeyFactory?: TIdempotencyKeyFactory;
-}
-
-/**
- * Any workflow header shape.
- * Used as the constraint for `childWorkflows` and `externalWorkflows` entries —
- * both full `WorkflowDefinition` objects and lightweight `WorkflowHeader`
- * descriptors satisfy this type.
+ * Any full public workflow contract shape (client / handle upper bound).
  */
 export type AnyWorkflowHeader = WorkflowHeader<
   string,
   ChannelDefinitions,
+  StreamDefinitions,
+  EventDefinitions,
+  AttributeDefinitions,
   JsonSchemaConstraint,
   JsonObjectSchemaConstraint,
   JsonSchemaConstraint,

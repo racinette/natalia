@@ -30,6 +30,8 @@ A workflow declares its externally visible failure vocabulary on `defineWorkflow
 const order = defineWorkflow({
   name: "order",
   args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
+  result: z.void(),
   errors: {
     OrderInvalid: z.object({ orderId: z.string() }),
     InsufficientFunds: z.object({ amount: z.number(), balance: z.number() }),
@@ -55,7 +57,10 @@ This is the **only** failure surface the external caller can observe by schema. 
 When a step times out, a request invocation times out, or a child workflow fails, the engine does **not** unwind your stack. The awaited entry resolves to a discriminated union you inspect locally:
 
 ```typescript
-const child = await ctx.childWorkflows.processOrder({ orderId: "o-1" });
+const child = await ctx.childWorkflows.processOrder(
+  { orderId: "o-1" },
+  { metadata: undefined },
+);
 if (!child.ok && child.status === "failed") {
   throw ctx.errors.OrderProcessingFailed("child failed", {
     childError: child.error,
@@ -95,7 +100,11 @@ type WorkflowResult<T, TError> =
 `TError` is `ErrorValue<your declared errors>` — discriminated on `error.code` with typed `details` per entry:
 
 ```typescript
-const result = await client.workflows.order.execute({ args, idempotencyKey: "o-1" });
+const result = await client.workflows.order.execute(session, {
+  args,
+  metadata: undefined,
+  idempotencyKey: "o-1",
+});
 if (!result.ok && result.status === "failed") {
   switch (result.error.code) {
     case "OrderInvalid":      result.error.details.orderId; break;
@@ -111,7 +120,7 @@ if (!result.ok && result.status === "failed") {
 
 Compensation `undo` callbacks run as separate execution paths. They **do not** receive `ctx.errors`, and the parent workflow's declared errors are not visible inside them.
 
-An `undo` reports success or partial outcome by **returning** through its optional `result` schema. There is no compensation equivalent of `ctx.errors.X(...)`.
+An `undo` reports success or partial outcome by **returning** through its **`compensation.result`** schema (`z.void()` when there is no structured return). There is no compensation equivalent of `ctx.errors.X(...)`.
 
 An unexpected throw inside `undo` **halts that compensation block instance** — a distinct halt from a workflow-body halt. It does not fail the parent workflow as a declared business error. See [primitives/steps.md](./primitives/steps.md) for the compensation surface.
 
@@ -172,13 +181,18 @@ The ergonomics look like conventions (`throw ctx.errors` with disposition flags)
 const order = defineWorkflow({
   name: "order",
   args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
+  result: z.object({ ok: z.boolean() }),
   errors: { OrderInvalid: z.object({ orderId: z.string() }), Cancelled: true },
   childWorkflows: { processOrder },
   async execute(ctx) {
     if (!ctx.args.orderId) {
       throw ctx.errors.OrderInvalid("missing id", { orderId: ctx.args.orderId });
     }
-    const child = await ctx.childWorkflows.processOrder({ orderId: ctx.args.orderId });
+    const child = await ctx.childWorkflows.processOrder(
+      { orderId: ctx.args.orderId },
+      { metadata: undefined },
+    );
     if (!child.ok) {
       throw ctx.errors.Cancelled("downstream failed");
     }
@@ -199,7 +213,11 @@ async execute(ctx) {
 **Caller handles only terminal shapes**
 
 ```typescript
-const r = await client.workflows.order.execute({ args, idempotencyKey: "o-1" });
+const r = await client.workflows.order.execute(session, {
+  args,
+  metadata: undefined,
+  idempotencyKey: "o-1",
+});
 if (r.ok) r.data;
 else if (r.status === "failed") r.error.code;
 else r.reason; // operator-terminated

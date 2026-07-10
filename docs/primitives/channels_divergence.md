@@ -2,6 +2,10 @@
 
 > Parked working note. Goal: decide the canonical API for channels, then reconcile all three sources. No source is authoritative yet.
 
+## Cross-cutting: explicit contracts (implemented)
+
+Workflows with **`channels`** declare explicit **`args`**, **`metadata`**, and **`result`**. Attached child calls that return channel-capable scope handles pass explicit **`metadata`** in the start-options bag (second argument). See [explicit-contracts.md](../explicit-contracts.md) and [child-workflows.md](./child-workflows.md).
+
 ## Three-source status
 - **docs/channels.md**: Conceptual + examples. Internal read via `ctx.channels.<name>.receive()` (no-arg blocking) and `ctx.listen({...})` multiplex; external/handle is send-only (`channels.<name>.send(...)`). NO timeout/deadline args shown; NO `receiveNowait`; NO Part 14 `Date` deadline.
 - **REFACTOR.MD**: `receive` has timeout overloads and Part 14 *extends* `receive` to accept `number | Date` (absolute deadline). `receiveNowait` is an awaitable read (flushes buffer) — Part 1/§ op tables. External/foreign/detached handles are send-only (`ChannelSendSurface`); no external receive.

@@ -2,10 +2,13 @@
 
 ## What it is
 
-A **child workflow** is a workflow run as a **dispatched entry of its parent**, with its lifecycle **owned by the parent** under structured concurrency. You invoke one inside the body with `ctx.childWorkflows.<name>(args, opts?)`. The call returns an **awaitable entry**: the parent observes the child’s outcome by `await`-ing it directly, by joining it in a scope, or implicitly through the structured-concurrency helpers. When the entry is placed inside a `ctx.scope`, the scope hands you a **handle** to the running child that is also **sendable**—you can deliver messages to it on its channels while it runs.
+A **child workflow** is a workflow run as a **dispatched entry of its parent**, with its lifecycle **owned by the parent** under structured concurrency. You invoke one inside the body with `ctx.childWorkflows.<name>(args, opts)`. The call returns an **awaitable entry**: the parent observes the child’s outcome by `await`-ing it directly, by joining it in a scope, or implicitly through the structured-concurrency helpers. When the entry is placed inside a `ctx.scope`, the scope hands you a **handle** to the running child that is also **sendable**—you can deliver messages to it on its channels while it runs.
 
 ```typescript
-const result = await ctx.childWorkflows.processOrder({ orderId: "o-1" });
+const result = await ctx.childWorkflows.processOrder(
+  { orderId: "o-1" },
+  { metadata: undefined },
+);
 // { ok: true; result } | { ok: false; status: "failed"; error }
 ```
 
@@ -21,6 +24,7 @@ A child workflow is an ordinary workflow—nothing special at the definition sit
 const processOrder = defineWorkflow({
   name: "process-order",
   args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
   result: z.object({ shipped: z.boolean() }),
   channels: {
     cancel: z.object({ reason: z.string() }),
@@ -38,16 +42,20 @@ To use it as a child, declare it on the parent under `childWorkflows`:
 const order = defineWorkflow({
   name: "order",
   args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
   childWorkflows: { processOrder },
   async execute(ctx) {
-    const result = await ctx.childWorkflows.processOrder({ orderId: ctx.args.orderId });
+    const result = await ctx.childWorkflows.processOrder(
+      { orderId: ctx.args.orderId },
+      { metadata: undefined },
+    );
     return { ok: result.ok };
   },
 });
 ```
 
-Call-time options are `metadata`, `seed`, `retention`, and an optional **execution deadline** (`deadlineSeconds` / `deadlineUntil`). There is no `retry` (workflows are not retried—an unrecoverable error halts for fix-and-replay, it does not re-run the body), and there is no `idempotencyKey` (see below).
+Call-time options are **`metadata`** (required in the options bag — pass `undefined` when the child schema is `z.undefined()`), **`seed`**, **`retention`**, and an optional **execution deadline** (`deadlineSeconds` / `deadlineUntil`). There is no `retry` (workflows are not retried—an unrecoverable error halts for fix-and-replay, it does not re-run the body), and there is no `idempotencyKey` (see below).
 
 ## Why it exists
 
@@ -128,7 +136,10 @@ Note the two distinct timeouts. A **join timeout** bounds *your wait* and leaves
 **Await the outcome directly**
 
 ```typescript
-const result = await ctx.childWorkflows.processOrder({ orderId: "o-1" });
+const result = await ctx.childWorkflows.processOrder(
+  { orderId: "o-1" },
+  { metadata: undefined },
+);
 if (result.ok) {
   result.result; // the child's typed result
 } else {
@@ -140,7 +151,10 @@ if (result.ok) {
 **With an execution deadline** — adds a `timeout` variant to the awaited union
 
 ```typescript
-const result = await ctx.childWorkflows.processOrder({ orderId: "o-1" }, { deadlineSeconds: 60 });
+const result = await ctx.childWorkflows.processOrder(
+  { orderId: "o-1" },
+  { metadata: undefined, deadlineSeconds: 60 },
+);
 // { ok: true; result } | { ok: false; status: "failed"; error } | { ok: false; status: "timeout" }
 ```
 
@@ -148,8 +162,8 @@ const result = await ctx.childWorkflows.processOrder({ orderId: "o-1" }, { deadl
 
 ```typescript
 const all = await ctx.all("fan-out", {
-  a: ctx.childWorkflows.processOrder({ orderId: "a" }),
-  b: ctx.childWorkflows.processOrder({ orderId: "b" }),
+  a: ctx.childWorkflows.processOrder({ orderId: "a" }, { metadata: undefined }),
+  b: ctx.childWorkflows.processOrder({ orderId: "b" }, { metadata: undefined }),
 });
 ```
 
@@ -160,7 +174,7 @@ Inside a scope, the child’s handle exposes `channels.<name>.send(...)`. The pa
 ```typescript
 await ctx.scope(
   "cancelable-order",
-  { order: ctx.childWorkflows.processOrder({ orderId: "o-1" }) },
+  { order: ctx.childWorkflows.processOrder({ orderId: "o-1" }, { metadata: undefined }) },
   async (ctx, { order }) => {
     const fromOutside = await ctx.channels.operatorCancel.receive();
     order.channels.cancel.send({ reason: fromOutside.reason });

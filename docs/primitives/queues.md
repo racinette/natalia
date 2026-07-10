@@ -28,6 +28,7 @@ Declare it on a workflow and enqueue from `execute`:
 const onboarding = defineWorkflow({
   name: "onboarding",
   args: z.object({ userId: z.string() }),
+  metadata: z.undefined(),
   queues: { notifications },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx) {
@@ -79,6 +80,7 @@ Enqueue is also available in compensation `undo` callbacks when the compensation
 
 ```typescript
 compensation: {
+  result: z.void(),
   queues: { notifications },
   async undo(ctx, args, info) {
     if (info.status === "completed") {
@@ -88,6 +90,7 @@ compensation: {
         body: "Your order was cancelled",
       });
     }
+    return undefined;
   },
 },
 ```

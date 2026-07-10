@@ -52,10 +52,13 @@ workflow executor itself.
 
 Child workflows are not retried by the parent — they either run to
 completion, fail with a typed `error: ErrorValue<TChildErrors>`, or (when
-a timeout is supplied) the parent observation times out.
+a deadline is supplied) the parent observation times out.
 
-- `(args)` — awaits to `{ ok: true; result } | { ok: false; status: "failed"; error }`.
-- `(args, { retry?, timeout })` — adds `{ ok: false; status: "timeout" }`.
+- `(args, opts)` — **`opts` is required**; must include explicit **`metadata`**
+  (pass `undefined` when the child schema is `z.undefined()`). Awaits to
+  `{ ok: true; result } | { ok: false; status: "failed"; error }`.
+- `(args, { metadata, deadlineSeconds | deadlineUntil, … })` — adds
+  `{ ok: false; status: "timeout" }` to the awaited union.
 
 The returned entry is an `AttachedChildWorkflowEntry<W, TAwaited>` —
 awaitable for the success/failure union only (no `channels.X.send` on this
@@ -96,6 +99,15 @@ Awaitable reads (`channel.receiveNowait`, `patch`) keep their existing
 shape — they belong to a different category in Part 1.2 ("awaitable
 read") and resolve to a value rather than dispatching work.
 
+### Client workflow start
+
+Root starts on `client.workflows.<name>.start(session, opts)` require explicit
+**`args`**, **`metadata`**, and **`idempotencyKey`** (unless a factory derives
+the key — step 19). When the workflow schema is `z.undefined()` for args or
+metadata, pass the key with value **`undefined`**; omission is rejected.
+
+Regression anchor: `src/types-regression-tests/21_explicit_contracts.ts`.
+
 ### Removed
 
 - `.resolve(ctx)`, `.retry(...)`, `.timeout(...)`, `.failure(...)`,
@@ -128,9 +140,10 @@ verifies:
    `deadlineUntil` shape is rejected.
 3. Step accessors expose three overloads producing `T` / `T` / timeout
    union respectively.
-4. Child workflow accessors expose two call overloads — without timeout
-   the awaited value is the success-or-failure union; with timeout it
-   adds the `timeout` variant.
+4. Child workflow accessors require a start-options bag with explicit
+   **`metadata`**; without a deadline the awaited value is the
+   success-or-failure union; with **`deadlineSeconds`** / **`deadlineUntil`**
+   it adds the **`timeout`** variant.
 5. The attached child entry is awaitable for the union; it does **not**
    expose `channels` on the direct entry; `idempotencyKey` is rejected on
    invocation options.

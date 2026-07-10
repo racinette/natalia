@@ -85,7 +85,7 @@ const voidCompRequest = defineRequest({
   name: "aiuVoidCompRequest",
   payload: z.object({ id: z.string() }),
   response: z.object({ ok: z.boolean() }),
-  compensation: true,
+  compensation: { result: z.void() },
 });
 
 const plainRequest = defineRequest({
@@ -108,6 +108,7 @@ const chargeStep = defineStep({
   args: z.object({ amount: z.number() }),
   result: z.object({ chargeId: z.string() }),
   compensation: {
+    result: z.void(),
     async undo(_ctx, _args, info) {
       if (info.status === "completed") {
         type _CompletedAttempts = Assert<

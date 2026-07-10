@@ -21,6 +21,19 @@ If we land the above coherently, the public API is close to â€œfeature completeâ
 
 ---
 
+## Implemented: explicit workflow and compensation contracts
+
+**Status:** types + regression tests + user docs (`docs/explicit-contracts.md`, `docs/header-interface-implementation.md`).
+
+- Required **`args`**, **`metadata`**, **`result`** on all workflow definitions (`z.undefined()` / `z.void()` when empty).
+- Required explicit **`args`** and **`metadata`** at client start, child call, and external start.
+- Required **`compensation.result`** on compensable steps and requests; **`compensation: true`** removed.
+- **`WorkflowReference`** (graph header from `defineWorkflowHeader`) vs **`WorkflowHeader`** (full public contract).
+
+Refactor anchor: `refactor/17_workflow_contract_layers.MD`. Regression: `21_explicit_contracts.ts`.
+
+---
+
 ## 20. List / browse ergonomics (introspection)
 
 ### Baseline (for reading this proposal only)

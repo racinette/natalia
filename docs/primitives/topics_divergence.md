@@ -2,6 +2,10 @@
 
 > Parked working note. Goal: decide the canonical API for topics, then reconcile all three sources. No source is authoritative yet.
 
+## Cross-cutting: explicit contracts (implemented)
+
+Workflows that declare `topics` must also declare explicit **`args`**, **`metadata`**, and **`result`**. Compensation **`topics`** dependencies require explicit **`compensation.result`**. See [explicit-contracts.md](../explicit-contracts.md).
+
 ## Three-source status
 - **docs/topics.md**: Full surface — `ctx.topics.<name>.publish(...)`, a `topics` slot on `defineWorkflow`, and client-side `registerTopicConsumer` / `registerBatchTopicConsumer` with `filter` / `retryPolicy` / `onConsumeError` / `neverExpire`. AHEAD of code.
 - **REFACTOR.MD Part 12 (Topics)**: Same full surface as docs, plus DB schema (`topic_records`, `topic_consumers`, `topic_consumer_attempt`), `affected_consumers` routing SQL, batch polling loop, retention sweeper, `TopicRecord<TPayload,TMetadata>` type. AHEAD of code.

@@ -33,20 +33,28 @@ export type DeadlineOptions =
   | { deadlineSeconds?: undefined; deadlineUntil?: undefined };
 
 /**
+ * Required invocation field: when the schema decodes to `undefined`, callers
+ * must pass the key with value `undefined` (omission is not allowed).
+ */
+export type RequiredInvocationField<
+  K extends string,
+  T,
+> = [T] extends [undefined] ? { readonly [P in K]: undefined } : { readonly [P in K]: T };
+
+/**
  * Base invocation options for workflow starts/calls.
  */
-export type WorkflowInvocationBaseOptions<TArgsInput, TMetadataInput> = {
-  /**
-   * Optional idempotency key for workflow identity.
-   * If omitted, the engine generates a unique key.
-   */
-  idempotencyKey?: string;
-  args?: TArgsInput;
-  /** Optional immutable metadata for this workflow instance. */
-  metadata?: TMetadataInput;
-  /** Optional deterministic RNG seed override for the child workflow instance. */
-  seed?: string;
-};
+export type WorkflowInvocationBaseOptions<TArgsInput, TMetadataInput> =
+  RequiredInvocationField<"args", TArgsInput> &
+    RequiredInvocationField<"metadata", TMetadataInput> & {
+      /**
+       * Optional idempotency key for workflow identity.
+       * If omitted, the engine generates a unique key.
+       */
+      idempotencyKey?: string;
+      /** Optional deterministic RNG seed override for the child workflow instance. */
+      seed?: string;
+    };
 
 // =============================================================================
 // RETENTION

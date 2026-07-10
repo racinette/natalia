@@ -31,6 +31,8 @@ That matches durable execution: the body records waits and replays them the same
 const orderWorkflow = defineWorkflow({
   name: "order",
   args: z.undefined(),
+  metadata: z.undefined(),
+  result: z.void(),
   channels: {
     cancel: z.object({ reason: z.string() }),
     nudge: z.object({ at: z.string(), note: z.string().optional() }),
@@ -38,6 +40,7 @@ const orderWorkflow = defineWorkflow({
   },
   async execute(ctx) {
     // …
+    return undefined;
   },
 });
 ```
@@ -85,7 +88,7 @@ Callers with a handle to **this** instance send on `operatorCancel`. While `proc
 ```typescript
 await ctx.scope(
   "cancelable-order",
-  { order: ctx.childWorkflows.processOrder({ orderId: "o-1" }) },
+  { order: ctx.childWorkflows.processOrder({ orderId: "o-1" }, { metadata: undefined }) },
   async (ctx, { order }) => {
     const fromOutside = await ctx.channels.operatorCancel.receive();
     order.channels.cancel.send({ reason: fromOutside.reason });

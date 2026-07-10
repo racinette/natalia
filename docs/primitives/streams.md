@@ -26,12 +26,15 @@ Long-running work often needs a **durable, ordered transcript**—training metri
 const trainingRun = defineWorkflow({
   name: "training-run",
   args: z.undefined(),
+  metadata: z.undefined(),
+  result: z.void(),
   streams: {
     metrics: z.object({ step: z.number(), loss: z.number() }),
     audit: z.object({ at: z.string(), message: z.string() }),
   },
   async execute(ctx) {
     // …
+    return undefined;
   },
 });
 ```
@@ -111,4 +114,4 @@ for (;;) {
 }
 ```
 
-Compensation block instances declare their own stream slots on `defineStep.compensation`; external reads use the same reader surface on `compHandle.streams.<name>`.
+Compensation block instances declare their own stream slots on `defineStep.compensation` (with a required **`result`** schema); external reads use the same reader surface on `compHandle.streams.<name>`.

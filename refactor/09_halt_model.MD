@@ -118,7 +118,7 @@ Step 12 attaches these verb signatures to the concrete external handles.
 | Workflow `execute` body                        | `ctx.errors.X(...)` from `defineWorkflow.errors`           | execution halt               |
 | Scope body                                     | parent body's `ctx.errors.X(...)`                           | execution halt               |
 | Step / request timeout or child workflow failure | return-value union from the awaited entry                | no throw machinery involved  |
-| Compensation `undo`                            | none; typed return values via the optional `result` schema | compensation block halt      |
+| Compensation `undo`                            | none; typed return values via **`compensation.result`** | compensation block halt      |
 
 ### Operator session (Part 19)
 

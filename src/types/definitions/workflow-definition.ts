@@ -14,7 +14,7 @@ import type { RequestDefinitions } from "./requests";
 import type { RetentionSetter } from "./policies";
 import type { RngDefinitions } from "./rng";
 import type { StepDefinitions } from "./steps";
-import type { PublicWorkflowHeader, WorkflowDefinitions } from "./workflow-headers";
+import type { WorkflowHeader, WorkflowDefinitions } from "./workflow-headers";
 
 /**
  * Any workflow definition shape.
@@ -76,7 +76,7 @@ export interface WorkflowDefinition<
   TIdempotencyKeyFactory extends
     | ((args: StandardSchemaV1.InferOutput<TArgs>) => string)
     | undefined = undefined,
-> extends PublicWorkflowHeader<
+> extends WorkflowHeader<
     TName,
     TChannels,
     TStreams,

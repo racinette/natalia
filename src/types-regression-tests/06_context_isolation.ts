@@ -28,6 +28,7 @@ const compensableForOther = defineStep({
   args: z.object({ id: z.string() }),
   result: z.object({ ok: z.boolean() }),
   compensation: {
+    result: z.void(),
     async undo() {},
   },
   async execute() {
@@ -39,7 +40,7 @@ const compensableRequestForOther = defineRequest({
   name: "ctxIsoCompensableRequestForOther",
   payload: z.object({ id: z.string() }),
   response: z.object({ ok: z.boolean() }),
-  compensation: true,
+  compensation: { result: z.void() },
 });
 
 // =============================================================================
@@ -51,6 +52,7 @@ const compensableStep = defineStep({
   args: z.object({ id: z.string() }),
   result: z.object({ ok: z.boolean() }),
   compensation: {
+    result: z.void(),
     steps: { undoStep },
     requests: { undoRequest },
     async undo(ctx, args, _info) {
@@ -90,6 +92,7 @@ defineStep({
   args: z.object({ id: z.string() }),
   result: z.object({ ok: z.boolean() }),
   compensation: {
+    result: z.void(),
     steps: { compensableForOther },
     async undo() {},
   },
@@ -104,6 +107,7 @@ defineStep({
   args: z.object({ id: z.string() }),
   result: z.object({ ok: z.boolean() }),
   compensation: {
+    result: z.void(),
     requests: { compensableRequestForOther },
     async undo() {},
   },
