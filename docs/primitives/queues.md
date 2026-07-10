@@ -160,7 +160,7 @@ client.queues.notifications.registerHandler(handler, {
 });
 ```
 
-`retentionPolicy` runs once when a message reaches a terminal state (`processed` or `dead_lettered`). Return seconds to keep the row, or `null` to keep it indefinitely. The callback receives the decoded message, terminal status, dead-letter reason (if any), and a parent-scoped `attempts` read namespace.
+`retentionPolicy` runs once when a message reaches a terminal state (`processed` or `dead_lettered`). Return seconds to keep the row, or `null` to keep it indefinitely. The callback receives a single `ctx` with terminal status, decoded `message`, dead-letter reason (if any), and a parent-scoped `attempts` read namespace.
 
 See [error-model.md](../error-model.md) for how queue handler errors relate to workflow errors.
 

@@ -131,7 +131,7 @@ return { decision: "reject", note: "Policy violation" };
 
 When handler retries are exhausted, the engine moves the invocation to `manual` with persisted attempt history. Use `throw ctx.errors.X(..., { manual: true })` during the handler when external resolution is needed early, or query `status: "manual"` and resolve through request handles.
 
-Optional `retentionPolicy` runs once when an invocation reaches a terminal state (`resolved` or `timedOut`). Return seconds to keep the row, or `null` to keep it indefinitely. The callback receives the decoded payload, terminal status, response when resolved, and a parent-scoped `attempts` read namespace (`find`, `count`, …). `manual` is not terminal — retention runs when the invocation later resolves or the workflow call times out.
+Optional `retentionPolicy` runs once when an invocation reaches a terminal state (`resolved` or `timedOut`). Return seconds to keep the row, or `null` to keep it indefinitely. The callback receives a single `ctx` with terminal status, decoded `payload`, response when resolved, and a parent-scoped `attempts` read namespace (`find`, `count`, …). `manual` is not terminal — retention runs when the invocation later resolves or the workflow call times out.
 
 ```typescript
 client.requests.humanReview.registerHandler(handler, {
@@ -195,7 +195,7 @@ See [Resolving Requests Asynchronously](../resolving-requests-asynchronously.md)
 
 ## Request compensation
 
-When a workflow fails and enters compensation, the engine schedules a compensation block for each forward request invocation on a **compensable** definition. The compensation handler receives the original request payload and a summary of how the forward invocation ended. It runs on the client under its own retry policy — the same split as forward handlers.
+When a workflow fails and enters compensation, the engine schedules a compensation block for each forward request invocation on a **compensable** definition. The compensation handler receives a single `ctx` with `ctx.payload` and `ctx.forward`. It runs on the client under its own retry policy — the same split as forward handlers.
 
 Request compensation mirrors [step compensation](./steps.md): declare on the definition, register a handler on the client, inspect forward outcome via `ctx.forward`, and report the undo outcome through `return` or manual escalation through `throw`.
 

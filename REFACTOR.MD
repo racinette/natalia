@@ -216,14 +216,12 @@ interface StepCompensation<TArgs, TResult, TComp> {
   result?: TComp;
 
   undo: (
-    ctx: CompensationContext,
-    args: InferOutput<TArgs>,
-    info: CompensationInfo<InferOutput<TResult>>,
+    ctx: CompensationContext<..., TArgs, TForwardResult>,
   ) => Promise<TComp extends undefined ? void : InferInput<TComp>>;
 }
 ```
 
-The signature `undo(ctx, args, info)` separates the original input (`args`) from the engine-level outcome of the forward step (`info`).
+`undo` receives a single `ctx`: `ctx.args` is the original forward input; `ctx.info` is the engine-level forward settlement snapshot (`CompensationInfo`).
 
 ### Compensation outcome doctrine
 
@@ -253,8 +251,8 @@ const cancelHotelStep = defineStep({
   name: "cancelHotelStep",
   args: z.object({ confirmationId: z.string() }),
   result: z.void(),
-  execute: async (args, { signal }) => {
-    await hotelAPI.cancel(args.confirmationId, { signal });
+  execute: async (ctx) => {
+    await hotelAPI.cancel(ctx.args.confirmationId, { signal: ctx.signal });
   },
 });
 
@@ -267,16 +265,18 @@ const bookHotel = defineStep({
     checkOut: z.string(),
   }),
   result: z.object({ confirmationId: z.string() }),
-  execute: async (args, { signal }) => {
-    return { confirmationId: await hotelAPI.book(args, { signal }) };
+  execute: async (ctx) => {
+    return {
+      confirmationId: await hotelAPI.book(ctx.args, { signal: ctx.signal }),
+    };
   },
 
   compensation: {
     steps: { cancelHotelStep },
-    undo: async (ctx, args, info) => {
-      if (info.status === "completed") {
+    undo: async (ctx) => {
+      if (ctx.info.status === "completed") {
         await ctx.steps.cancelHotelStep({
-          confirmationId: info.result.confirmationId,
+          confirmationId: ctx.info.result.confirmationId,
         });
       }
     },
@@ -2312,10 +2312,12 @@ const bookFlight = defineStep({
   name: "bookFlight",
   args: z.object({ destination: z.string(), passengerId: z.string() }),
   result: z.object({ confirmationId: z.string() }),
-  execute: async (args, { signal }) => {
-    const booking = await flightAPI.book(args.destination, args.passengerId, {
-      signal,
-    });
+  execute: async (ctx) => {
+    const booking = await flightAPI.book(
+      ctx.args.destination,
+      ctx.args.passengerId,
+      { signal: ctx.signal },
+    );
     return { confirmationId: booking.id };
   },
 });
@@ -2334,7 +2336,7 @@ The `args` field is a `JsonSchemaConstraint` — the same constraint as everythi
 The codebase follows a strict encode-on-write, decode-on-read discipline using `StandardSchemaV1`'s two type parameters. Standard Schema does not support bidirectional transforms (there is no `encode(Output) → Input`), so the write side must always accept `InferInput` (the JSON-serializable form):
 
 - **Call sites** (write side) accept `InferInput`: `ctx.steps.X(args)`, `ctx.children.attached.X(args)`, `ctx.errors.X(message, details)`, `channel.send(data)`, `stream.write(data)`. The developer provides the serializable form.
-- **Callbacks** (read side) receive `InferOutput`: step `execute(ctx)` with `ctx.args`, queue/request/topic handlers with domain fields on `ctx`, compensation `undo` callbacks, `idempotencyKeyFactory(args)`. The engine deserializes from the database and validates through the schema, producing the decoded form.
+- **Callbacks** (read side) receive `InferOutput`: step `execute(ctx)` with `ctx.args`, queue/request handlers with domain fields on `ctx`, step `undo(ctx)` with `ctx.args` and `ctx.info`, request compensation handlers with `ctx.payload` and `ctx.forward`, `idempotencyKeyFactory(args)`. The engine deserializes from the database and validates through the schema, producing the decoded form.
 - **External results** (read side) are typed as `InferOutput`: step results, workflow results, error details, operation results and compensation info. The external caller receives the decoded form.
 
 For most schemas (no transforms), `InferInput` and `InferOutput` are identical and the distinction is invisible. The distinction only matters for schemas with transforms (e.g., `z.string().datetime()` where input is `string` and output is `Date`).
@@ -2517,7 +2519,7 @@ defineStep({
   name: string,
   args: JsonSchemaConstraint,
   result: JsonSchemaConstraint,
-  execute: (args, opts) => Promise<Result>,
+  execute: (ctx: StepExecuteContext) => Promise<Result>,
   retryPolicy?: RetryPolicyOptions,
   compensation?: {
     channels?:       { [name: string]: JsonSchemaConstraint },
@@ -2533,7 +2535,7 @@ defineStep({
       detached?: { [name: string]: WorkflowDefinition },
     },
     result?:         JsonSchemaConstraint,
-    undo: (ctx, args, info) => Promise<Result>,
+    undo: (ctx: CompensationContext) => Promise<Result>,
   },
 });
 ```
