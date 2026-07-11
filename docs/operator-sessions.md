@@ -77,8 +77,7 @@ await handle.skip(session, result, { strategy: "sigkill" });
 await handle.streams.metrics.readNowait(session, 0);
 await handle.channels.approval.send(session, { approved: true });
 await client.workflows.order.start(session, {
-  idempotencyKey: "k-1",
-  args,
+  args: { orderId: "o-1" },
   metadata: undefined,
 });
 await deadLetter.retry(session);

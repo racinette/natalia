@@ -2,25 +2,22 @@
 
 ## What it is
 
-An **external workflow** is an **independent (root) workflow instance** that lives on its own lifecycle, addressed globally by its `idempotencyKey`. You declare the target on the workflow’s implementation under `externalWorkflows`, then interact with it inside the body through `ctx.externalWorkflows.<name>`, which offers two operations:
+An **external workflow** is an **independent (root) workflow instance** that lives on its own lifecycle, addressed globally through the target workflow's [identity](./workflow-identity.md). You declare the target on the workflow's implementation under `externalWorkflows`, then interact with it inside the body through `ctx.externalWorkflows.<name>`, which offers two operations:
 
-- **`.get(...)`** — **reference** an instance that already exists.
+- **`.get(identity)`** — **reference** an instance that already exists.
 - **`.start(args, opts)`** — **create** a new instance (a fire-and-forget durable start).
 
-Both return an **`ExternalWorkflowHandle`**—a **send-only** handle (`channels.<name>.send(...)` plus the `idempotencyKey`). There is no awaitable result and no lifecycle control; you message the instance, you do not own it.
+Both return an **`ExternalWorkflowHandle`**—a **send-only** handle (`channels.<name>.send(...)` plus the derived `idempotencyKey`). There is no awaitable result and no lifecycle control; you message the instance, you do not own it.
 
 ```typescript
-// reference an existing instance
-const partner = ctx.externalWorkflows.partner.get("idem-1");
+// reference an existing instance (identity shape from the target's identity.schema)
+const partner = ctx.externalWorkflows.partner.get({ token: "idem-1" });
 partner.channels.notify.send({ n: 1 });
 
 // create a new independent instance and move on
 const reconcile = ctx.externalWorkflows.reconcile.start(
   { window: "2026-06-29" },
-  {
-    metadata: undefined,
-    idempotencyKey: "reconcile-2026-06-29",
-  },
+  { metadata: undefined },
 );
 ```
 
@@ -35,9 +32,9 @@ const coordinator = coordinatorInterface.implement({
   externalWorkflows: { partner: partnerHeader, reconcile: reconcileWorkflow },
   steps: { /* … */ },
   async execute(ctx) {
-    ctx.externalWorkflows.partner.get(ctx.args.partnerKey).channels.handoff.send({
-      orderId: ctx.args.orderId,
-    });
+    ctx.externalWorkflows.partner
+      .get({ token: ctx.args.partnerToken })
+      .channels.handoff.send({ orderId: ctx.args.orderId });
     return undefined;
   },
 });
@@ -56,66 +53,67 @@ The defining axis:
 
 ## Identity
 
-Independent roots live in the engine’s **global identity namespace**, so identity is explicit. How the key is supplied depends on whether the target declares an **`idempotencyKeyFactory`**:
+Independent roots use the same [workflow identity](./workflow-identity.md) rules as client starts:
 
-- **No factory** — `.start(args, { idempotencyKey, metadata, … })` requires the key and explicit **`metadata`** (pass `undefined` when the schema is `z.undefined()`). `.get(idempotencyKey)` looks up by key.
-- **Factory present** — the key is derived from the workflow’s arguments. `.start(args, { metadata, … })` takes no key (passing one is rejected), and `.get(args)` looks the instance up *by args*. The factory is the single source of identity, so `get(args)` always finds what `start(args)` created.
+- When the target declares **`deriveIdentity`**, `.start(args, { metadata, … })` passes args and metadata only; the engine derives identity and the persisted key.
+- When **`deriveIdentity` is omitted**, `.start(args, { identity, metadata, … })` requires an explicit `identity` object matching `identity.schema`.
+- **`.get(identity)`** always takes the decoded identity object — never a raw idempotency key string.
+
+Start options never accept `idempotencyKey`. The handle's `idempotencyKey` field is the derived string from `deriveIdempotencyKey`.
 
 ## What it is NOT
 
 - **Not** awaitable. There is no result to observe in the parent body—the handle is send-only.
 - **Not** a lifecycle handle: no `sigkill`/`sigterm`/`skip`, and no events or streams. Only `channels.send()` is exposed—deliberately, to prevent tight coupling between the two workflows.
 - **Not** a child. A started external workflow **outlives** the parent and is not torn down with it; the parent finishing or being terminated does not affect it.
-- **Not** part of the public `WorkflowInterface`. The `externalWorkflows` map is an **implementation** concern—declared on `.implement({ externalWorkflows: { … } })`, never on the interface a caller sees, so the public contract doesn’t imply lifecycle coupling to other workflows.
+- **Not** part of the public `WorkflowInterface`. The `externalWorkflows` map is an **implementation** concern—declared on `.implement({ externalWorkflows: { … } })`, never on the interface a caller sees, so the public contract does not imply lifecycle coupling to other workflows.
 
 ## Examples
 
-**Reference an existing instance** (no factory → by key)
+**Reference an existing instance** (explicit identity on the target)
 
 ```typescript
-const partner = ctx.externalWorkflows.partner.get("idem-1");
+const partner = ctx.externalWorkflows.partner.get({ key: "partner-1" });
 partner.channels.notify.send({ n: 1 });
-partner.idempotencyKey; // the key you looked up
+partner.idempotencyKey; // derived string from identity.key
 ```
 
-**Create a new independent root** (no factory → key required)
+**Create a new independent root** (derived identity from args)
 
 ```typescript
-const handle = ctx.externalWorkflows.fulfillOrder.start(
-  { orderId: "order-42" },
-  {
-    metadata: undefined,
-    idempotencyKey: "fulfill:order-42",
-    deadlineSeconds: 3_600,
-  },
-);
-handle.channels.expedite.send({ priority: "high" });
-```
-
-**Factory-declared identity** (key derived from args)
-
-```typescript
-const fulfillOrder = defineWorkflow({
+const fulfillOrder = defineWorkflowHeader({
   name: "fulfill-order",
   args: z.object({ orderId: z.string() }),
   metadata: z.undefined(),
   result: z.object({ shipped: z.boolean() }),
-  idempotencyKeyFactory: (args) => `fulfill:${args.orderId}`,
-  // …
+  identity: {
+    schema: z.object({ orderId: z.string() }),
+    deriveIdentity: ({ args }) => ({ orderId: args.orderId }),
+    deriveIdempotencyKey: (id) => `fulfill:${id.orderId}`,
+  },
 });
 
-// start: no key passed — derived from args
-ctx.externalWorkflows.fulfillOrder.start(
+const handle = ctx.externalWorkflows.fulfillOrder.start(
   { orderId: "order-42" },
-  { metadata: undefined },
+  { metadata: undefined, deadlineSeconds: 3_600 },
 );
-// get: look up the same instance by args
+handle.channels.expedite.send({ priority: "high" });
+
 ctx.externalWorkflows.fulfillOrder.get({ orderId: "order-42" });
+```
+
+**Create with explicit identity** (no `deriveIdentity` on target)
+
+```typescript
+await ctx.externalWorkflows.audit.start(undefined, {
+  metadata: undefined,
+  identity: { key: "audit-2026-06-29" },
+});
 ```
 
 ## Notes
 
 - **Sends are buffered.** A send to a non-existent instance does not throw in the body—the `send` returns `void`, and a not-found outcome is resolved at the engine level rather than surfaced synchronously to the caller.
 - **`.start` is buffered and synchronous.** It returns the `ExternalWorkflowHandle` immediately; the instance is dispatched at the next batch commit.
-- **For a richer handle**, use the client: `client.workflows.<name>.get(...)` (by `args` with a factory, by `idempotencyKey` otherwise) returns a full external handle with status, `wait()`, and operator verbs. The in-body `ExternalWorkflowHandle` is intentionally narrower.
-- **Operator introspection:** a parent instance exposes `instance.externalWorkflows.<name>` as a full workflow handle (lifecycle verbs, `idempotencyKey`), while its owned `instance.childWorkflows.<name>` exposes a narrower attached handle — see [Child workflows — Operator introspection](./child-workflows.md#operator-introspection).
+- **For a richer handle**, use the client: `client.workflows.<name>.get(identity)` returns a full external handle with status, `wait()`, and operator verbs. The in-body `ExternalWorkflowHandle` is intentionally narrower.
+- **Operator introspection:** a parent instance exposes `instance.externalWorkflows.<name>` as a full workflow handle (lifecycle verbs, derived `idempotencyKey`), while its owned `instance.childWorkflows.<name>` exposes a narrower attached handle — see [Child workflows — Operator introspection](./child-workflows.md#operator-introspection).

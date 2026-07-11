@@ -64,7 +64,7 @@ Composition. Some work is itself a full workflow—its own steps, retries, chann
 That is the primitive’s defining axis, held against its sibling:
 
 - **`childWorkflows`** — a workflow you **spawn and own**: awaitable, sendable while running *via its scope handle*, **not** globally addressable (no `idempotencyKey`), torn down with the parent.
-- **[`externalWorkflows`](./external-workflows.md)** — an **independent root** you either **create** (`.start`) or **reference** (`.get`): globally addressable by `idempotencyKey`, a send-only `ExternalWorkflowHandle`, not awaitable, runs on its own lifecycle.
+- **[`externalWorkflows`](./external-workflows.md)** — an **independent root** you either **create** (`.start`) or **reference** (`.get(identity)`): globally addressable through [workflow identity](./workflow-identity.md), a send-only `ExternalWorkflowHandle`, not awaitable, runs on its own lifecycle.
 
 The line between them is **create-an-owned-child** vs **touch-an-independent-root** — not a call-time toggle.
 
@@ -80,7 +80,7 @@ They are not hidden, though. Child workflows remain **fully observable from the 
 
 ## What it is NOT
 
-- **Not** globally addressable. No `idempotencyKey`; reach them through `parentHandle.childWorkflows.<name>`, not `client.workflows.<name>.get(key)`.
+- **Not** globally addressable. No `idempotencyKey`; reach them through `parentHandle.childWorkflows.<name>`, not `client.workflows.<name>.get(identity)`.
 - **Not** sendable from the *bare* entry. The awaitable entry returned by `ctx.childWorkflows.<name>(...)` does not carry `channels.send` on its own. Messaging is available on the **scope handle**: place the entry in a `ctx.scope`, and the handle the scope gives you exposes `channels.<name>.send(...)` for as long as the child runs.
 - **Not** startable as an independent root. There is no `.start` on the child accessor; that is an [`externalWorkflows`](./external-workflows.md) operation.
 - **Not** retried by the parent, and **not** independently terminable by operators (see [Operator introspection](#operator-introspection)).
@@ -92,7 +92,7 @@ Child workflows are observable from outside the parent body through the client, 
 
 ```typescript
 await client.session(async (session) => {
-  const parent = client.workflows.order.get("order-42");
+  const parent = client.workflows.order.get({ orderId: "order-42" });
 
   const children = await parent.childWorkflows.processOrder.find(
     session,
@@ -117,7 +117,7 @@ The returned handle supports introspection and messaging declared on the child w
 
 Operators cannot call `sigkill()`, `sigterm()`, or `skip()` on an attached child handle. The child's lifetime is owned by the parent body and its structured-concurrency scope. When an operator terminates the parent workflow, attached children are torn down with it.
 
-To inspect or control an independent root with full lifecycle verbs (`sigkill`, `sigterm`, `skip`, `idempotencyKey`), use [`externalWorkflows`](./external-workflows.md) or global `client.workflows.<def>.get(...)`.
+To inspect or control an independent root with full lifecycle verbs (`sigkill`, `sigterm`, `skip`, derived `idempotencyKey`), use [`externalWorkflows`](./external-workflows.md) or global `client.workflows.<def>.get(identity)` — see [Workflow identity](./workflow-identity.md).
 
 See [Operator sessions](../operator-sessions.md) for how snapshot and command calls take `session` as the first argument.
 

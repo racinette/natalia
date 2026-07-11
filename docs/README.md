@@ -2,6 +2,7 @@
 
 ## Start here
 
+- [Workflow identity](./primitives/workflow-identity.md) — identity block, start options, and `.get` lookup for globally addressable workflows
 - [Explicit contracts](./explicit-contracts.md) — required `args` / `metadata` / `result` at definition; explicit invocation keys; required `compensation.result`
 - [Workflow contract authoring](./header-interface-implementation.md) — header → interface → implementation layering
 - [Error model](./error-model.md) — failures, halts, and handler vocabulary
@@ -11,6 +12,7 @@
 
 | Topic | Guide | Divergence tracker |
 | --- | --- | --- |
+| Workflow identity | [workflow-identity.md](./primitives/workflow-identity.md) | — |
 | Steps | [steps.md](./primitives/steps.md) | [steps_divergence.md](./primitives/steps_divergence.md) |
 | Requests | [requests.md](./primitives/requests.md) | — |
 | Child workflows | [child-workflows.md](./primitives/child-workflows.md) | — |

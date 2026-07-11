@@ -29,7 +29,7 @@ The changes are organized into two categories:
 7. **Context isolation** — isolated units of work receive only their declared args, dependencies, primitives, and local `errors`
 8. **Scopes and structured-concurrency consumption** — `ctx.scope` and the convenience helpers orchestrate steps, requests, and child workflows as scope entries; concurrency comes from dispatched entries, not from user-declared concurrent code paths
 9. **Database schema** — a single durable execution tree per workflow body, parallel compensation block instances modelled as workflow-shaped subordinate execution trees, and parallel primitive tables
-10. `**idempotencyKeyFactory`\*\* — derive idempotency keys from workflow args, make `idempotencyKey` required
+10. **Workflow identity** — mandatory `identity` block on every workflow; conditional `identity` at start; `.get(identity)` lookup (see Part 17)
 11. **Serializable step arguments** — `args` schema on `defineStep`, single object arg pattern, full observability
 
 ---
@@ -822,9 +822,9 @@ A workflow can start child workflows in three shapes; the resulting handle types
 
 **Channel send.** Detached and foreign handles always expose `channels.X.send`. For attached children, the **direct** call return value is **not** a long-lived messaging handle: settle with `await ctx.children.attached.X(...)` for the outcome, or pass the entry into `ctx.scope` and use `handles.x.channels.*.send` plus `ctx.join(handles.x)` while the child runs in the background for the scope.
 
-Attached children deliberately do not have an `idempotencyKey`. They are not globally addressable — their identity is "the attached child of this parent at this dispatch site," not a key under the workflow definition. Detached children are real root workflows with an idempotency key, addressable via `client.workflows.<def>.get(idempotencyKey)` like any other workflow.
+Attached children deliberately do not have an `idempotencyKey`. They are not globally addressable — their identity is "the attached child of this parent at this dispatch site," not a key under the workflow definition. Detached children are real root workflows with a derived idempotency key, addressable via `client.workflows.<def>.get(identity)` like any other workflow (Part 17).
 
-`ForeignWorkflowHandle<W>` is also what `ctx.external.X.get(...)` returns inside workflow logic, accepting either an `idempotencyKey` or `args` (when the target workflow declares an `idempotencyKeyFactory`). Detached starts and external lookups produce the same handle type. The client-level direct-access lookup (`client.workflows.X.get(...)`) returns the richer `WorkflowHandleExternal<W>` because external callers need the full operator-action surface.
+`ForeignWorkflowHandle<W>` is also what `ctx.externalWorkflows.<name>.get(identity)` returns inside workflow logic (Part 17). Detached starts and external lookups produce the same handle type. The client-level direct-access lookup (`client.workflows.<def>.get(identity)`) returns the richer `WorkflowHandleExternal<W>` because external callers need the full operator-action surface.
 
 #### Attached child workflow entries (workflow body level)
 
@@ -914,7 +914,7 @@ interface QueryableNamespace<
 
 There are no "subset handles" with curated bulk operations. The handle returned by `find` is the canonical handle for that entity; bulk operator actions are expressed by mapping over the array.
 
-Where an entity has more than one identity-based addressing scheme (e.g. root workflows are addressable by `idempotencyKey` and, when an `idempotencyKeyFactory` is declared, by `args`), the namespace adds extra `.get(...)` overloads. The `find` / `count` shape is unaffected.
+Globally addressable workflows are looked up by decoded **identity** (Part 17): `.get(identity: InferWorkflowIdentityOutput<W>)`. The `find` / `count` shape is unaffected.
 
 ##### Row prefetch and `fetchRow`
 
@@ -994,11 +994,10 @@ workflowInstance.children.attached.<name>:
   >;
 
 // Detached children — full external handle, parent-scoped (also visible globally).
-// Identity-based lookup uses idempotency key (or args, when factory declared).
+// Identity-based lookup uses decoded identity (Part 17).
 workflowInstance.children.detached.<name>:
   Omit<QueryableNamespace<WorkflowHandleExternal<W>, …, never>, "get"> & {
-    get(idempotencyKey: string): WorkflowHandleExternal<W>;
-    get(args: InferOutput<TArgs>): WorkflowHandleExternal<W>;  // when HasFactory
+    get(identity: InferWorkflowIdentityOutput<W>): WorkflowHandleExternal<W>;
   };
 ```
 
@@ -1008,7 +1007,7 @@ The two namespaces return **different handle types** because attached and detach
 
 `workflowInstance.children.detached.<name>.find(...)` returns a regular `WorkflowHandleExternal<W>` — the same handle type that `client.workflows.<name>.find(...)` returns. The detachedness is metadata: `parent_step_id` is set, but the child is otherwise globally addressable, has its own `idempotencyKey`, and supports the full operator action surface (`sigkill()`, `sigterm()`, `skip(result, opts?)`).
 
-Detached children also appear in the global `client.workflows.<def>.find(...)` query. The parent-scoped namespace is a convenience: it pre-filters to detached children of this parent. `.get(idempotencyKey | args)` is available there too, though its semantics narrow correspondingly: "this detached child must be an immediate child of this parent AND have this idempotency key (or args that derive it)."
+Detached children also appear in the global `client.workflows.<def>.find(...)` query. The parent-scoped namespace is a convenience: it pre-filters to detached children of this parent. `.get(identity)` is available there too, though its semantics narrow correspondingly: "this detached child must be an immediate child of this parent AND match this identity."
 
 ##### Attached children
 
@@ -1130,12 +1129,11 @@ client.workflows.<def>:
   & {
       start<TRaw>(
         session: OperatorSession<TRaw>,
-        opts: StartWorkflowOptions<TArgs, HasFactory>,
+        opts: WorkflowStartOptions<W>,
       ): Promise<WorkflowHandleExternal<W>>;
 
-      // Identity-based lookups. Synchronous, query-grounding, no I/O.
-      get(idempotencyKey: string): WorkflowHandleExternal<W>;
-      get(args: InferOutput<TArgs>): WorkflowHandleExternal<W>;  // when HasFactory
+      // Identity-based lookup. Synchronous, query-grounding, no I/O.
+      get(identity: InferWorkflowIdentityOutput<W>): WorkflowHandleExternal<W>;
     }
   & Omit<
       QueryableNamespace<
@@ -1148,11 +1146,7 @@ client.workflows.<def>:
     >;
 ```
 
-The `Omit<..., "get">` reflects that the identity-based `.get` is replaced by the two domain-specific overloads (`idempotencyKey` and, when factory is declared, `args`). The shape of `find` / `count` is unchanged from the unified shape.
-
-`.get(args)` is the new overload: when the workflow definition declares an `idempotencyKeyFactory`, the engine derives the idempotency key from the args at call time and performs the same fast direct-access lookup. The same overload is added to `ctx.external.<W>.get(...)` inside workflow logic.
-
-`.get(idempotencyKey | args)` is the fast path when the operator already knows the addressing key. `find(session, query?, opts?)` returns every matching handle; singleton checks are caller-owned (e.g. `find(session, …, { limit: 2 })` and inspect `length`).
+`.get(identity)` is the fast path when the operator already knows the instance identity (Part 17). `find(session, query?, opts?)` returns every matching handle; singleton checks are caller-owned (e.g. `find(session, …, { limit: 2 })` and inspect `length`).
 
 `find` excludes attached children automatically (`row.attached = TRUE` rows are filtered out). Detached children appear in `find` results because they are globally addressable workflows.
 
@@ -2210,70 +2204,130 @@ The deadline clock starts from creation time, not scheduled start. If `delaySeco
 
 ---
 
-## Part 17: `idempotencyKeyFactory`
+## Part 17: Workflow identity
+
+> User-facing guide: [`docs/primitives/workflow-identity.md`](docs/primitives/workflow-identity.md)
 
 ### Problem
 
-`idempotencyKey` is currently optional on workflow start calls. This means some workflow instances may lack a meaningful external identifier, making error tracing, deduplication, and child workflow identity incomplete.
+Globally addressable workflow instances need a stable external identifier for deduplication, lookup, and operator tracing. Letting callers pass an optional opaque `idempotencyKey` string at start conflates **domain identity** (what the instance means) with **storage key** (how the row is indexed), and makes derived-from-args workflows awkward.
 
 ### Solution
 
-Make `idempotencyKey` required on all workflow start calls. To avoid boilerplate when the key can be deterministically derived from the workflow arguments, introduce `idempotencyKeyFactory` on `defineWorkflow`:
+Every `defineWorkflow` / `defineWorkflowHeader` declares a mandatory **`identity`** block:
 
 ```typescript
 defineWorkflow({
   name: "orderWorkflow",
-  args: z.object({ orderId: z.string(), customerId: z.string() }),
-  idempotencyKeyFactory: (args) => `order-${args.orderId}`,
-  // ...
+  args: z.object({ orderId: z.string() }),
+  metadata: z.object({ tenantId: z.string() }),
+  result: z.object({ ok: z.boolean() }),
+  identity: {
+    schema: z.object({ tenantId: z.string(), orderId: z.string() }),
+    deriveIdentity: ({ args, metadata }) => ({
+      tenantId: metadata.tenantId,
+      orderId: args.orderId,
+    }),
+    deriveIdempotencyKey: (id) => `${id.tenantId}:order:${id.orderId}`,
+  },
+  async execute(ctx) {
+    return { ok: true };
+  },
 });
 ```
 
-The factory receives the post-validation args (same as the `execute` callback) and returns a `string`. When a factory is defined, `idempotencyKey` becomes optional on start calls — the factory generates it from the args. An explicit `idempotencyKey` overrides the factory.
+| Field | Required | Role |
+| --- | --- | --- |
+| `schema` | yes | JSON object schema for the identity value used at `.get(...)` and inside `deriveIdempotencyKey`. |
+| `deriveIdempotencyKey` | yes | Maps decoded identity → persisted `idempotency_key` column. |
+| `deriveIdentity` | no | When present, engine builds identity from start `args` + `metadata`; callers must not pass `identity` at start. |
+
+`identity` is **header-locked**: it cannot be overridden in `defineWorkflowHeader(...).extend({ … })`.
+
+### Start options
+
+Start / execute never accept `idempotencyKey`. The conditional start shape:
 
 ```typescript
-// With factory: key auto-generated from args → "order-o-123"
-await client.workflows.order.start({
-  args: { orderId: "o-123", customerId: "cust-456" },
-});
+type IdentityStartField<W> =
+  HasDeriveIdentity<W> extends true
+    ? { readonly identity?: never }
+    : { readonly identity: InferWorkflowIdentityInput<W> };
 
-// With factory: explicit key overrides → "custom-key"
-await client.workflows.order.start({
-  idempotencyKey: "custom-key",
-  args: { orderId: "o-123", customerId: "cust-456" },
-});
+type WorkflowStartOptions<W> =
+  StartWorkflowOptions<InferWorkflowArgsInput<W>, InferWorkflowMetadataInput<W>>
+  & IdentityStartField<W>;
+// idempotencyKey omitted from StartWorkflowOptions
+```
 
-// Without factory: key is required
-await client.workflows.other.start({
-  idempotencyKey: "explicit-key",
-  args: { ... },
+**With `deriveIdentity`:**
+
+```typescript
+await client.workflows.order.start(session, {
+  args: { orderId: "o-123" },
+  metadata: { tenantId: "acme" },
 });
 ```
 
-### Type
+**Without `deriveIdentity`:**
 
 ```typescript
-type StartWorkflowOptions<
-  TArgs,
-  HasFactory extends boolean,
-> = HasFactory extends true
-  ? { args: TArgs; idempotencyKey?: string } & ScheduledDeliveryOptions
-  : { args: TArgs; idempotencyKey: string } & ScheduledDeliveryOptions;
+await client.workflows.audit.start(session, {
+  args: undefined,
+  metadata: undefined,
+  identity: { key: "nightly-2026-06-29" },
+});
 ```
 
-This applies to `client.workflows.<def>.start(...)` (root workflows) — globally addressable starts that still take `{ args, idempotencyKey?, ... }` in one options bag. Detached children use the same **idempotency** rules but pass workflow args as the first argument: `ctx.children.detached.X(args, { idempotencyKey?, ... })`.
+The same rules apply to `client.workflows.<def>.execute(...)`, `ctx.externalWorkflows.<name>.start(...)`, and compensation `undo` bodies calling external workflows.
 
-It does **not** apply to attached children. Attached children are not globally addressable (Part 5) and do not have an idempotency key. Their start options are simply:
+### Lookup (`.get`)
+
+Identity-based lookup always uses the **decoded identity object** (`InferWorkflowIdentityOutput<W>`), never a raw idempotency key string:
 
 ```typescript
-type AttachedChildWorkflowInvocationOptions<TMetadata> = {
-  metadata?: TMetadata;
+client.workflows.order.get({ tenantId: "acme", orderId: "o-123" });
+ctx.externalWorkflows.partner.get({ token: "partner-1" });
+```
+
+Handles and row reads still expose **`idempotencyKey: string`** as the derived persistence field (output of `deriveIdempotencyKey`). `find` / `count` predicates may filter on that column.
+
+### Attached children
+
+Attached child starts are unchanged: args as the first call argument, options bag with explicit `metadata` (and optional `seed`, retention, deadlines). **No `identity` field** — attached children are not globally addressable. Independent roots use `externalWorkflows` or client `.start` / `.get`.
+
+```typescript
+type AttachedChildWorkflowStartOptions<W> = {
+  metadata: InferWorkflowMetadataInput<W>;
   seed?: string;
+  // no identity, no idempotencyKey
 } & ScheduledDeliveryOptions;
-// Attached child args are the first call argument (like steps), not wrapped in `{ args }`.
 ```
 
-No `idempotencyKey` field, no `idempotencyKeyFactory` interaction.
+### Client accessor shape (identity era)
+
+```typescript
+client.workflows.<def>:
+  & {
+      start<TRaw>(
+        session: OperatorSession<TRaw>,
+        opts: WorkflowStartOptions<W>,
+      ): Promise<WorkflowHandleExternal<W>>;
+
+      execute<TRaw>(
+        session: OperatorSession<TRaw>,
+        opts: WorkflowStartOptions<W>,
+      ): Promise<WorkflowResult<...>>;
+
+      // Identity-based lookup. Synchronous, query-grounding, no I/O.
+      get(identity: InferWorkflowIdentityOutput<W>): WorkflowHandleExternal<W>;
+    }
+  & Omit<QueryableNamespace<...>, "get">;
+```
+
+The same `.get(identity)` shape applies to `ctx.externalWorkflows.<name>.get(...)` inside workflow logic.
+
+`HasDeriveIdentity<W>` replaces the former `HasIdempotencyKeyFactory<W>` discriminator for start-option typing.
 
 ---
 
@@ -2336,7 +2390,7 @@ The `args` field is a `JsonSchemaConstraint` — the same constraint as everythi
 The codebase follows a strict encode-on-write, decode-on-read discipline using `StandardSchemaV1`'s two type parameters. Standard Schema does not support bidirectional transforms (there is no `encode(Output) → Input`), so the write side must always accept `InferInput` (the JSON-serializable form):
 
 - **Call sites** (write side) accept `InferInput`: `ctx.steps.X(args)`, `ctx.children.attached.X(args)`, `ctx.errors.X(message, details)`, `channel.send(data)`, `stream.write(data)`. The developer provides the serializable form.
-- **Callbacks** (read side) receive `InferOutput`: step `execute(ctx)` with `ctx.args`, queue/request handlers with domain fields on `ctx`, step `undo(ctx)` with `ctx.args` and `ctx.info`, request compensation handlers with `ctx.payload` and `ctx.forward`, `idempotencyKeyFactory(args)`. The engine deserializes from the database and validates through the schema, producing the decoded form.
+- **Callbacks** (read side) receive `InferOutput`: step `execute(ctx)` with `ctx.args`, queue/request handlers with domain fields on `ctx`, step `undo(ctx)` with `ctx.args` and `ctx.info`, request compensation handlers with `ctx.payload` and `ctx.forward`, `deriveIdentity({ args, metadata })` and `deriveIdempotencyKey(identity)`. The engine deserializes from the database and validates through the schema, producing the decoded form.
 - **External results** (read side) are typed as `InferOutput`: step results, workflow results, error details, operation results and compensation info. The external caller receives the decoded form.
 
 For most schemas (no transforms), `InferInput` and `InferOutput` are identical and the distinction is invisible. The distinction only matters for schemas with transforms (e.g., `z.string().datetime()` where input is `string` and output is `Date`).
@@ -2497,7 +2551,11 @@ defineWorkflow({
     attached:            { [name: string]: WorkflowDefinition },
     detached:            { [name: string]: WorkflowDefinition },
   },
-  idempotencyKeyFactory: (args: InferOutput<TArgs>) => string,
+  identity: {
+    schema: JsonObjectSchemaConstraint,
+    deriveIdempotencyKey: (identity: InferOutput<schema>) => string,
+    deriveIdentity?: (input: { args: InferOutput<TArgs>; metadata: InferOutput<TMetadata> }) => InferOutput<schema>,
+  },
 });
 ```
 
@@ -2639,10 +2697,10 @@ Removed context APIs:
 - `FindResult<T>` is `Promise<readonly T[]>`. Use `limit` to bound large scans; singleton checks are caller-owned (`find(..., { limit: 2 })`).
 - `FindOptions<TWhereTemplate>` is parameterized by the same row-shaped predicate template, so sort paths and predicates are checked against one type (`SearchSort<TWhereTemplate>` from Part 9 — only homogeneous comparable paths are sortable).
 - Subset handles (`CompensationBlockSubsetHandle`, `RequestCompensationSubsetHandle`) are removed. Bulk operator actions are expressed by mapping over `find` results.
-- `client.workflows.<def>` adds `find(query, opts?)`, `count(query, opts?)` alongside `.start(...)` and `.get(idempotencyKey | args)`. Global `find` excludes attached children automatically.
+- `client.workflows.<def>` adds `find(query, opts?)`, `count(query, opts?)` alongside `.start(...)` and `.get(identity)` (Part 17). Global `find` excludes attached children automatically.
 - `client.compensations.{requests,steps}` adds global L1 compensation search keyed by definition `name`, aggregated across registered workflows. Workflow-scoped L2 remains on `workflowHandle.compensations.{requests,steps}` keyed by slot.
 - `workflowInstance.compensations.steps.<step>`, `workflowInstance.compensations.requests.<request>`, and `workflowInstance.children.attached.<name>` expose `.get(id)` plus `find` / `count`.
-- `client.workflows.<def>.get(args)` is a new overload available when the workflow declares `idempotencyKeyFactory`. The engine derives the key from args at call time. The same overload is added to `ctx.external.<W>.get(...)` inside workflow logic and to `workflowInstance.children.detached.<name>.get(...)`.
+- `client.workflows.<def>.get(identity)` and `ctx.externalWorkflows.<name>.get(identity)` look up by decoded identity. `HasDeriveIdentity<W>` controls whether start options require an explicit `identity` field. The same shape applies to `workflowInstance.children.detached.<name>.get(identity)`.
 
 #### Row prefetch and `fetchRow`
 

@@ -11,6 +11,7 @@ Every workflow — whether created with `defineWorkflowHeader`, `defineWorkflowI
 | **`args`** | No start payload | `z.undefined()` |
 | **`metadata`** | No operator metadata | `z.undefined()` |
 | **`result`** | No meaningful completion value | `z.void()` |
+| **`identity`** | Always required — see [Workflow identity](./primitives/workflow-identity.md) | `schema` + `deriveIdempotencyKey`; optional `deriveIdentity` |
 
 Optional maps (`errors`, `channels`, `streams`, …) stay optional: omit the slot when the workflow does not use that feature.
 
@@ -46,20 +47,26 @@ Request compensation is always **`compensation: { result, errors? }`**. Register
 
 ## Invocation time
 
-Starts and attached child calls require an options bag with explicit **`args`** and **`metadata`**. When the schema decodes to `undefined`, pass the key with value **`undefined`**.
+Starts and attached child calls require an options bag with explicit **`args`** and **`metadata`**. When the schema decodes to `undefined`, pass the key with value **`undefined`**. Globally addressable starts also follow [workflow identity](./primitives/workflow-identity.md): pass **`identity`** when the definition has no `deriveIdentity`; omit `identity` when `deriveIdentity` is declared. Start options never include `idempotencyKey`.
 
 ```typescript
-// Client root start
+// Client root start — explicit identity (no deriveIdentity on definition)
 await client.workflows.report.start(session, {
   args: { month: "2026-06" },
   metadata: { tenantId: "acme" },
-  idempotencyKey: "report-2026-06",
+  identity: { tenantId: "acme", month: "2026-06" },
 });
 
 await client.workflows.noop.start(session, {
   args: undefined,
   metadata: undefined,
-  idempotencyKey: "noop-1",
+  identity: { key: "noop-1" },
+});
+
+// Client root start — derived identity (deriveIdentity on definition)
+await client.workflows.processOrder.start(session, {
+  args: { orderId: "o-1" },
+  metadata: { tenantId: "acme" },
 });
 
 // Attached child (inside execute)
@@ -68,13 +75,10 @@ await ctx.childWorkflows.processOrder(
   { metadata: undefined },
 );
 
-// External root start
+// External root start — derived identity on target
 await ctx.externalWorkflows.reconcile.start(
   { window: "2026-06-29" },
-  {
-    metadata: undefined,
-    idempotencyKey: "reconcile-2026-06-29",
-  },
+  { metadata: undefined },
 );
 ```
 

@@ -103,7 +103,7 @@ type WorkflowResult<T, TError> =
 const result = await client.workflows.order.execute(session, {
   args,
   metadata: undefined,
-  idempotencyKey: "o-1",
+  identity: { orderId: args.orderId },
 });
 if (!result.ok && result.status === "failed") {
   switch (result.error.code) {
@@ -216,7 +216,7 @@ async execute(ctx) {
 const r = await client.workflows.order.execute(session, {
   args,
   metadata: undefined,
-  idempotencyKey: "o-1",
+  identity: { orderId: args.orderId },
 });
 if (r.ok) r.data;
 else if (r.status === "failed") r.error.code;

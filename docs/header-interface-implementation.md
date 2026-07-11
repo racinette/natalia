@@ -4,28 +4,29 @@ This document describes how workflow contracts are layered and which authoring A
 
 ## What you need to start a workflow
 
-Every workflow declares four locked fields up front:
+Every workflow declares locked fields up front:
 
-- **`name`** — identity.
+- **`name`** — definition name.
 - **`args`** — start payload schema. Use `z.undefined()` when the workflow takes no input.
 - **`metadata`** — operator/context metadata schema. Use `z.undefined()` when there is none.
 - **`result`** — completion schema. Use `z.void()` when the workflow returns nothing meaningful.
+- **`identity`** — [workflow identity](./primitives/workflow-identity.md) block (`schema`, `deriveIdempotencyKey`, optional `deriveIdentity`).
 
 Optional maps (`errors`, `channels`, …) follow the same explicit pattern: declare a schema, or omit the slot entirely when the workflow does not use that feature.
 
-When you **start** a workflow — from the client, from an attached child call, or from an external start — pass **`args`** and **`metadata`** in the start options. If the schema is `z.undefined()`, pass the key with value **`undefined`**. Omitting the key is a type error.
+When you **start** a workflow — from the client, from an attached child call, or from an external start — pass **`args`** and **`metadata`** in the start options (use `undefined` when the schema is `z.undefined()`). If the workflow has no `deriveIdentity`, also pass **`identity`**. Start options never include `idempotencyKey`. See [Workflow identity](./primitives/workflow-identity.md).
 
 ```typescript
 await client.workflows.report.start(session, {
   args: { month: "2026-06" },
   metadata: { tenantId: "acme" },
-  idempotencyKey: "report-2026-06",
+  identity: { tenantId: "acme", month: "2026-06" },
 });
 
-await client.workflows.noop.start(session, {
-  args: undefined,
-  metadata: undefined,
-  idempotencyKey: "noop-1",
+await client.workflows.processOrder.start(session, {
+  args: { orderId: "o-42" },
+  metadata: { tenantId: "acme" },
+  // identity derived via deriveIdentity on the definition
 });
 ```
 
@@ -33,7 +34,7 @@ await client.workflows.noop.start(session, {
 
 ### 1. Header (`defineWorkflowHeader`)
 
-The **minimal graph reference** for a workflow: identity, the locked contract fields above, optional **channels**, and optional **errors** / **idempotencyKeyFactory**.
+The **minimal graph reference** for a workflow: the locked contract fields above (including **`identity`**), optional **channels**, and optional **errors**.
 
 `defineWorkflowHeader` produces a **`WorkflowReference`**. Use it to break import cycles and to type **`childWorkflows`** / **`externalWorkflows`** slots without pulling in full implementations.
 
@@ -43,6 +44,14 @@ const fulfillOrderHeader = defineWorkflowHeader({
   args: z.object({ orderId: z.string() }),
   metadata: z.object({ tenantId: z.string() }),
   result: z.object({ shipped: z.boolean() }),
+  identity: {
+    schema: z.object({ tenantId: z.string(), orderId: z.string() }),
+    deriveIdentity: ({ args, metadata }) => ({
+      tenantId: metadata.tenantId,
+      orderId: args.orderId,
+    }),
+    deriveIdempotencyKey: (id) => `${id.tenantId}:${id.orderId}`,
+  },
   channels: {
     expedite: z.object({ priority: z.enum(["normal", "high"]) }),
   },
@@ -75,7 +84,7 @@ Follow **header → interface → implementation** when you want explicit layeri
 
 Move from **header → interface** with **`defineWorkflowHeader(…).extend({ … })`**:
 
-- Header-locked fields (`name`, `args`, `metadata`, `result`, `errors`, `channels`) cannot appear in the extend payload.
+- Header-locked fields (`name`, `args`, `metadata`, `result`, `errors`, `channels`, **`identity`**) cannot appear in the extend payload.
 - Runtime rejects any of those keys on the extend object.
 
 The extend payload adds public fields only (streams, events, step interfaces, child-workflow references, …).
@@ -94,4 +103,4 @@ Move from **interface → implementation** with **`.implement({ execute, steps, 
 
 **Authoring path:** `defineWorkflowHeader` → `.extend` (additive public fields) → `.implement` (implementation-only extras like `externalWorkflows`).
 
-For required schemas and invocation keys, see [Explicit contracts](./explicit-contracts.md).
+For required schemas and invocation keys, see [Explicit contracts](./explicit-contracts.md). For identity declaration and start/get lookup, see [Workflow identity](./primitives/workflow-identity.md).
