@@ -84,8 +84,7 @@ const chargeStep = defineStep({
   args: chargeStepArgs,
   result: chargeStepResult,
   compensation: {
-    // Per-instance primitives (declaration slots; full accessor surface lands
-    // in steps 13/15/16).
+    // Per-instance primitives (channels/streams/events/attributes).
     channels: { undoNotification: z.object({ note: z.string() }) },
     streams: { undoAudit: z.object({ entry: z.string() }) },
     events: { undoSettled: true },
@@ -175,6 +174,11 @@ const chargeStep = defineStep({
         { event: "undo.started" },
         { metadata: { source: "compensation" } },
       );
+
+      ctx.attributes.undoProgress.set({ percent: 50 });
+
+      // @ts-expect-error compensation attribute value must match schema
+      ctx.attributes.undoProgress.set({ percent: "half" });
 
       return { status: "manual_review" as const };
     },

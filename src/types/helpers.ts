@@ -1,7 +1,7 @@
 import type { StandardSchemaV1 } from "./standard-schema";
 import type { AttributeDefinitions, ChannelDefinitions, EventDefinitions, StreamDefinitions } from "./definitions/primitives";
 import type { ErrorDefinitions } from "./definitions/errors";
-import type { QueueDefinition, QueueDefinitions } from "./definitions/messaging";
+import type { QueueDefinition, QueueDefinitions, TopicDefinitions } from "./definitions/messaging";
 import type { JsonObjectSchemaConstraint, JsonSchemaConstraint } from "./json-input";
 import type {
   RequestCompensationConfig,
@@ -233,6 +233,18 @@ export type InferWorkflowRequests<W> = W extends { requests?: infer TRequests }
 export type InferWorkflowQueues<W> = W extends { queues?: infer TQueues }
   ? TQueues extends QueueDefinitions
     ? TQueues
+    : never
+  : never;
+
+/**
+ * Extract declared workflow topics from a full workflow definition.
+ *
+ * Header-only workflow descriptors do not carry this field and resolve to
+ * `never` so callers can choose an explicit fallback policy.
+ */
+export type InferWorkflowTopics<W> = W extends { topics?: infer TTopics }
+  ? TTopics extends TopicDefinitions
+    ? TTopics
     : never
   : never;
 

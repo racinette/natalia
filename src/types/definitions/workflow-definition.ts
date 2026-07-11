@@ -9,7 +9,7 @@ import type {
   EventDefinitions,
   StreamDefinitions,
 } from "./primitives";
-import type { QueueDefinitions } from "./messaging";
+import type { QueueDefinitions, TopicDefinitions } from "./messaging";
 import type { RequestDefinitions } from "./requests";
 import type { RetentionSetter } from "./policies";
 import type { RngDefinitions } from "./rng";
@@ -34,6 +34,7 @@ export type AnyWorkflowDefinition = WorkflowDefinition<
   StepDefinitions,
   RequestDefinitions,
   QueueDefinitions,
+  TopicDefinitions,
   WorkflowDefinitions,
   WorkflowDefinitions,
   JsonSchemaConstraint,
@@ -65,6 +66,7 @@ export interface WorkflowDefinition<
   TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
+  TTopics extends TopicDefinitions = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
@@ -97,6 +99,9 @@ export interface WorkflowDefinition<
 
   /** Queue definitions (for ctx.queues) */
   readonly queues?: TQueues;
+
+  /** Topic definitions (for ctx.topics) */
+  readonly topics?: TTopics;
 
   /**
    * Child workflow definitions. Child workflows are always parent-owned and
@@ -140,6 +145,7 @@ export interface WorkflowDefinition<
       TSteps,
       TRequests,
       TQueues,
+      TTopics,
       TChildren,
       TExternalWorkflows,
       TPatches,

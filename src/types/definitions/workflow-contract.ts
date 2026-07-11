@@ -9,7 +9,7 @@ import type {
   EventDefinitions,
   StreamDefinitions,
 } from "./primitives";
-import type { QueueDefinition, QueueDefinitions, TopicDefinitions } from "./messaging";
+import type { QueueDefinition, QueueDefinitions, TopicDefinition, TopicDefinitions } from "./messaging";
 import type {
   RequestCompensationDefinition,
   RequestDefinition,
@@ -171,6 +171,15 @@ export type QueueInterfaces = Record<
   >
 >;
 
+export type TopicInterfaces = Record<
+  string,
+  TopicDefinition<
+    string,
+    JsonSchemaConstraint,
+    JsonSchemaConstraint | undefined
+  >
+>;
+
 export type StepsFromInterfaces<T extends StepInterfaces> = {
   [K in keyof T]: T[K] extends StepInterface<infer N, infer A, infer R, infer C>
     ? StepDefinitionFromInterface<N, A, R, C>
@@ -205,6 +214,10 @@ export type QueuesFromInterfaces<T extends QueueInterfaces> = {
   [K in keyof T]: T[K];
 };
 
+export type TopicsFromInterfaces<T extends TopicInterfaces> = {
+  [K in keyof T]: T[K];
+};
+
 export type WorkflowImplementInput<
   _TName extends string,
   TChannels extends ChannelDefinitions,
@@ -214,6 +227,7 @@ export type WorkflowImplementInput<
   TSteps extends StepInterfaces,
   TRequests extends RequestInterfaces,
   TQueues extends QueueInterfaces,
+  TTopics extends TopicInterfaces,
   TChildren extends WorkflowDefinitions,
   TExternalWorkflows extends WorkflowDefinitions,
   TResultSchema extends JsonSchemaConstraint,
@@ -234,6 +248,7 @@ export type WorkflowImplementInput<
       StepsFromInterfaces<TSteps>,
       RequestsFromInterfaces<TRequests>,
       QueuesFromInterfaces<TQueues>,
+      TopicsFromInterfaces<TTopics>,
       TChildren,
       TExternalWorkflows,
       TPatches,
@@ -269,6 +284,7 @@ export interface WorkflowInterface<
   TSteps extends StepInterfaces = Record<string, never>,
   TRequests extends RequestInterfaces = Record<string, never>,
   TQueues extends QueueInterfaces = Record<string, never>,
+  TTopics extends TopicInterfaces = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
@@ -292,6 +308,7 @@ export interface WorkflowInterface<
   readonly steps?: TSteps;
   readonly requests?: TRequests;
   readonly queues?: TQueues;
+  readonly topics?: TTopics;
   readonly childWorkflows?: TChildren;
   readonly patches?: TPatches;
   readonly rng?: TRng;
@@ -336,6 +353,7 @@ export type AnyWorkflowInterface = WorkflowInterface<
   StepInterfaces,
   RequestInterfaces,
   QueueInterfaces,
+  TopicInterfaces,
   WorkflowDefinitions,
   JsonSchemaConstraint,
   JsonSchemaConstraint,

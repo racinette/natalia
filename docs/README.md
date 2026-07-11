@@ -26,6 +26,12 @@
 | Queues | [queues.md](./primitives/queues.md) | — |
 | Patches | [patches.md](./primitives/patches.md) | [patches_divergence.md](./primitives/patches_divergence.md) |
 
+## Implementation details
+
+| Topic | Document |
+| --- | --- |
+| Topics (PostgreSQL) | [topics-postgresql.md](./implementation-details/topics-postgresql.md) |
+
 ## Related
 
 - [Resolving requests asynchronously](./resolving-requests-asynchronously.md)

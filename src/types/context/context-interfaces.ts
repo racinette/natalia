@@ -360,6 +360,7 @@ export interface WorkflowContext<
   TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
+  TTopics extends TopicDefinitions = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
@@ -422,6 +423,19 @@ export interface WorkflowContext<
    
 
   /**
+   * Topics for durable publish from workflow bodies.
+   */
+  readonly topics: {
+    [K in keyof TTopics]: TTopics[K] extends TopicDefinition<
+      any,
+      infer TRecordSchema,
+      infer TMetadataSchema
+    >
+      ? TopicAccessor<TRecordSchema, TMetadataSchema>
+      : never;
+  };
+
+  /**
    * Child workflow accessors. One accessor per declared child — the call
    * runs it parent-owned and awaitable.
    */
@@ -475,6 +489,7 @@ export interface WorkflowContext<
         TSteps,
         TRequests,
         TQueues,
+        TTopics,
         TChildren,
         TExternalWorkflows,
         TPatches,
@@ -558,6 +573,7 @@ export type WorkflowConcurrencyContext<
   TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
+  TTopics extends TopicDefinitions = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
@@ -574,6 +590,7 @@ export type WorkflowConcurrencyContext<
     TSteps,
     TRequests,
     TQueues,
+    TTopics,
     TChildren,
     TExternalWorkflows,
     TPatches,
@@ -596,6 +613,7 @@ export type WorkflowExecuteContext<
   TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
+  TTopics extends TopicDefinitions = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
@@ -610,6 +628,7 @@ export type WorkflowExecuteContext<
   TSteps,
   TRequests,
   TQueues,
+  TTopics,
   TChildren,
   TExternalWorkflows,
   TPatches,

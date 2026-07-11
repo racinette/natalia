@@ -35,6 +35,7 @@ import type {
   StepInterfaces,
   RequestInterfaces,
   QueueInterfaces,
+  TopicInterfaces,
   StepInterface,
   StepCompensationInterface,
   StepExecuteContext,
@@ -43,6 +44,7 @@ import type {
   StepsFromInterfaces,
   RequestsFromInterfaces,
   QueuesFromInterfaces,
+  TopicsFromInterfaces,
   ForbidWorkflowHeaderLockedFieldsInExtend,
   StepDefinitionFromInterface,
 } from "./types/definitions/workflow-contract";
@@ -758,6 +760,12 @@ type ExtQueuesSel<Ext> = Ext extends { queues?: infer Q }
     : Record<string, never>
   : Record<string, never>;
 
+type ExtTopicsSel<Ext> = Ext extends { topics?: infer T }
+  ? T extends TopicInterfaces
+    ? T
+    : Record<string, never>
+  : Record<string, never>;
+
 type ExtChildrenSel<Ext> = Ext extends { childWorkflows?: infer C }
   ? C extends WorkflowDefinitions
     ? C
@@ -896,6 +904,7 @@ export function defineWorkflowHeader<
     ExtStepsSel<Ext>,
     ExtRequestsSel<Ext>,
     ExtQueuesSel<Ext>,
+    ExtTopicsSel<Ext>,
     ExtChildrenSel<Ext>,
     TResult,
     TArgs,
@@ -916,6 +925,7 @@ export function defineWorkflowHeader<
         ExtStepsSel<Ext>,
         ExtRequestsSel<Ext>,
         ExtQueuesSel<Ext>,
+        ExtTopicsSel<Ext>,
         ExtChildrenSel<Ext>,
         TExternalWorkflows,
         TResult,
@@ -934,6 +944,7 @@ export function defineWorkflowHeader<
       StepsFromInterfaces<ExtStepsSel<Ext>>,
       RequestsFromInterfaces<ExtRequestsSel<Ext>>,
       QueuesFromInterfaces<ExtQueuesSel<Ext>>,
+      TopicsFromInterfaces<ExtTopicsSel<Ext>>,
       ExtChildrenSel<Ext>,
       TExternalWorkflows,
       TResult,
@@ -1018,6 +1029,7 @@ export function defineWorkflowHeader<
         ExtStepsSel<Ext>,
         ExtRequestsSel<Ext>,
         ExtQueuesSel<Ext>,
+        ExtTopicsSel<Ext>,
         ExtChildrenSel<Ext>,
         TResult,
         TArgs,
@@ -1038,6 +1050,7 @@ export function defineWorkflowHeader<
         ExtStepsSel<Ext>,
         ExtRequestsSel<Ext>,
         ExtQueuesSel<Ext>,
+        ExtTopicsSel<Ext>,
         ExtChildrenSel<Ext>,
         TResult,
         TArgs,
@@ -1076,6 +1089,7 @@ export function defineWorkflowInterface<
   TSteps extends StepInterfaces = Record<string, never>,
   TRequests extends RequestInterfaces = Record<string, never>,
   TQueues extends QueueInterfaces = Record<string, never>,
+  TTopics extends TopicInterfaces = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
   TResultSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
   TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
@@ -1094,6 +1108,7 @@ export function defineWorkflowInterface<
     TSteps,
     TRequests,
     TQueues,
+    TTopics,
     TChildren,
     TResultSchema,
     TArgs,
@@ -1112,6 +1127,7 @@ export function defineWorkflowInterface<
   TSteps,
   TRequests,
   TQueues,
+  TTopics,
   TChildren,
   TResultSchema,
   TArgs,
@@ -1132,6 +1148,7 @@ export function defineWorkflowInterface<
       TSteps,
       TRequests,
       TQueues,
+      TTopics,
       TChildren,
       TExternalWorkflows,
       TResultSchema,
@@ -1150,6 +1167,7 @@ export function defineWorkflowInterface<
     StepsFromInterfaces<TSteps>,
     RequestsFromInterfaces<TRequests>,
     QueuesFromInterfaces<TQueues>,
+    TopicsFromInterfaces<TTopics>,
     TChildren,
     TExternalWorkflows,
     TResultSchema,
@@ -1316,6 +1334,33 @@ export function defineWorkflowInterface<
       }
     }
   }
+  if (config.topics !== undefined) {
+    if (typeof config.topics !== "object" || Array.isArray(config.topics)) {
+      throw new Error("topics must be an object");
+    }
+    for (const [name, topic] of Object.entries(config.topics)) {
+      if (!topic || typeof topic !== "object") {
+        throw new Error(`Topic interface '${name}' must be an object`);
+      }
+      if (!(topic as { name?: unknown }).name || typeof (topic as { name: string }).name !== "string") {
+        throw new Error(`Topic interface '${name}' must have a name`);
+      }
+      if (
+        !(topic as { record?: unknown }).record ||
+        typeof (topic as { record: object }).record !== "object" ||
+        !("~standard" in (topic as { record: object }).record)
+      ) {
+        throw new Error(`Topic interface '${name}' must have a standard record schema`);
+      }
+      if (
+        (topic as { metadata?: unknown }).metadata !== undefined &&
+        (typeof (topic as { metadata: object }).metadata !== "object" ||
+          !("~standard" in (topic as { metadata: object }).metadata))
+      ) {
+        throw new Error(`Topic interface '${name}' metadata must be a standard schema when provided`);
+      }
+    }
+  }
   if (config.childWorkflows !== undefined) {
     if (typeof config.childWorkflows !== "object" || Array.isArray(config.childWorkflows)) {
       throw new Error("childWorkflows must be an object");
@@ -1405,6 +1450,7 @@ export function defineWorkflowInterface<
         TSteps,
         TRequests,
         TQueues,
+        TTopics,
         TChildren,
         TExternalWorkflows,
         TResultSchema,
@@ -1418,6 +1464,11 @@ export function defineWorkflowInterface<
       if ((impl as { queues?: unknown }).queues !== undefined) {
         throw new Error(
           "queues must be declared on the workflow interface — pass them to extend(), not implement()",
+        );
+      }
+      if ((impl as { topics?: unknown }).topics !== undefined) {
+        throw new Error(
+          "topics must be declared on the workflow interface — pass them to extend(), not implement()",
         );
       }
       if (impl.externalWorkflows !== undefined) {
@@ -1439,6 +1490,7 @@ export function defineWorkflowInterface<
         steps: impl.steps ?? ({} as StepsFromInterfaces<TSteps>),
         requests: impl.requests ?? ({} as RequestsFromInterfaces<TRequests>),
         queues: config.queues ?? ({} as QueuesFromInterfaces<TQueues>),
+        topics: config.topics ?? ({} as TopicsFromInterfaces<TTopics>),
         __nataliaAuthoringKind: "definition" as const,
       };
       return defineWorkflow(merged as unknown as Parameters<typeof defineWorkflow>[0]) as unknown as WorkflowDefinition<
@@ -1450,6 +1502,7 @@ export function defineWorkflowInterface<
         StepsFromInterfaces<TSteps>,
         RequestsFromInterfaces<TRequests>,
         QueuesFromInterfaces<TQueues>,
+        TopicsFromInterfaces<TTopics>,
         TChildren,
         TExternalWorkflows,
         TResultSchema,
@@ -1470,6 +1523,7 @@ export function defineWorkflowInterface<
     TSteps,
     TRequests,
     TQueues,
+    TTopics,
     TChildren,
     TResultSchema,
     TArgs,
@@ -1490,6 +1544,7 @@ export function defineWorkflowInterface<
         TSteps,
         TRequests,
         TQueues,
+        TTopics,
         TChildren,
         TExternalWorkflows,
         TResultSchema,
@@ -1508,6 +1563,7 @@ export function defineWorkflowInterface<
       StepsFromInterfaces<TSteps>,
       RequestsFromInterfaces<TRequests>,
       QueuesFromInterfaces<TQueues>,
+      TopicsFromInterfaces<TTopics>,
       TChildren,
       TExternalWorkflows,
       TResultSchema,
@@ -1567,6 +1623,7 @@ export function defineWorkflow<
   TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
+  TTopics extends TopicDefinitions = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
@@ -1585,6 +1642,7 @@ export function defineWorkflow<
   steps?: TSteps;
   requests?: TRequests;
   queues?: TQueues;
+  topics?: TTopics;
   childWorkflows?: TChildren;
   externalWorkflows?: TExternalWorkflows;
   patches?: TPatches;
@@ -1607,6 +1665,7 @@ export function defineWorkflow<
       TSteps,
       TRequests,
       TQueues,
+      TTopics,
       TChildren,
       TExternalWorkflows,
       TPatches,
@@ -1624,6 +1683,7 @@ export function defineWorkflow<
   TSteps,
   TRequests,
   TQueues,
+  TTopics,
   TChildren,
   TExternalWorkflows,
   TResultSchema,
@@ -1753,6 +1813,31 @@ export function defineWorkflow<
       }
       if (!queue.message || !("~standard" in queue.message)) {
         throw new Error(`Queue '${name}' must have a standard message schema`);
+      }
+    }
+  }
+
+  // Validate topics
+  const topics = config.topics ?? ({} as TTopics);
+  if (config.topics !== undefined) {
+    if (typeof config.topics !== "object" || Array.isArray(config.topics)) {
+      throw new Error("topics must be an object");
+    }
+    for (const [name, topic] of Object.entries(config.topics)) {
+      if (!topic || typeof topic !== "object") {
+        throw new Error(`Topic '${name}' must be a valid topic definition`);
+      }
+      if (!topic.name || typeof topic.name !== "string") {
+        throw new Error(`Topic '${name}' must have a name`);
+      }
+      if (!topic.record || !("~standard" in topic.record)) {
+        throw new Error(`Topic '${name}' must have a standard record schema`);
+      }
+      if (
+        topic.metadata !== undefined &&
+        (typeof topic.metadata !== "object" || !("~standard" in topic.metadata))
+      ) {
+        throw new Error(`Topic '${name}' metadata must be a standard schema when provided`);
       }
     }
   }
@@ -1917,6 +2002,7 @@ export function defineWorkflow<
     steps,
     requests,
     queues,
+    topics,
     childWorkflows,
     externalWorkflows,
     errors,
@@ -1932,6 +2018,7 @@ export function defineWorkflow<
     TSteps,
     TRequests,
     TQueues,
+    TTopics,
     TChildren,
     TExternalWorkflows,
     TResultSchema,
