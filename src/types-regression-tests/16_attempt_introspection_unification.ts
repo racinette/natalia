@@ -49,6 +49,7 @@ import type {
   InferRequestErrors,
 } from "../types/helpers";
 import type { Assert, IsEqual } from "./type-assertions";
+import { explicitKeyIdentity } from "./test-identity";
 import { session } from "./test-session";
 
 // =============================================================================
@@ -146,6 +147,7 @@ const aiuWorkflow = defineWorkflow({
   name: "aiuWorkflow",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   requests: {
     compensable: compensableRequest,
     voidComp: voidCompRequest,

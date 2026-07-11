@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { defineStep, defineWorkflow } from "../workflow";
 import type { Assert, IsEqual } from "./type-assertions";
+import { explicitKeyIdentity } from "./test-identity";
 
 type IsAny<T> = 0 extends 1 & T ? true : false;
 
@@ -85,6 +86,7 @@ export const serializableStepArgsAcceptanceWorkflow = defineWorkflow({
   name: "serializableStepArgsAcceptance",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   steps: { bookSerializableFlight },
   result: z.object({ confirmationId: z.string(), bookedAt: z.coerce.date() }),
   async execute(ctx) {

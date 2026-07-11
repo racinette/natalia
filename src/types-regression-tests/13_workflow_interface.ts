@@ -49,6 +49,14 @@ import type {
   WorkflowInterface,
 } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
+import {
+  explicitKeyIdentity,
+  flagArgIdentity,
+  orderIdIdentity,
+  seedArgIdentity,
+  tokenArgIdentity,
+  widArgIdentity,
+} from "./test-identity";
 
 /** Structural assignability: `U` must be assignable to `T`. */
 type AssertAssignable<T, U extends T> = U;
@@ -62,6 +70,7 @@ const ctx13ChildHeader = defineWorkflowHeader({
   args: z.object({ seed: z.number() }),
   metadata: z.undefined(),
   result: z.string(),
+  identity: seedArgIdentity,
   channels: { childPing: z.boolean() },
   errors: { ChildErr: true },
 });
@@ -79,6 +88,7 @@ const ctx13DetachedHeader = defineWorkflowHeader({
   args: z.object({ flag: z.boolean() }),
   metadata: z.undefined(),
   result: z.void(),
+  identity: flagArgIdentity,
   channels: { detachCh: z.string() },
 });
 
@@ -95,6 +105,7 @@ const ctx13ExtHeader = defineWorkflowHeader({
   args: z.object({ token: z.string() }),
   metadata: z.undefined(),
   result: z.number(),
+  identity: tokenArgIdentity,
   channels: { extOut: z.object({ n: z.number() }) },
 });
 
@@ -173,6 +184,7 @@ const ctx13MainHeader = defineWorkflowHeader({
   args: z.object({ wid: z.string() }),
   result: z.number(),
   metadata: z.object({ region: z.string() }),
+  identity: widArgIdentity,
   channels: {
     cIn: z.object({ a: z.number() }),
     cAux: z.string(),
@@ -216,6 +228,7 @@ void defineWorkflowInterface({
   args: z.undefined(),
   metadata: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
   // @ts-expect-error — `externalWorkflows` is not on `WorkflowInterface`; pass it to `.implement({ externalWorkflows })` only
   externalWorkflows: { partner: ctx13ExtWorkflow },
 });
@@ -272,7 +285,7 @@ const ctx13FullWorkflow = ctx13FullInterface.implement({
     void ctx.childWorkflows.childA;
     void ctx.childWorkflows.childD;
 
-    const _extPartner = ctx.externalWorkflows.partner.get("idem-1");
+    const _extPartner = ctx.externalWorkflows.partner.get({ token: "idem-1" });
     type _ExtPartner = Assert<
       IsEqual<
         typeof _extPartner,
@@ -429,6 +442,11 @@ const ctx13NarrowIface = defineWorkflowInterface({
   args: z.object({ only: z.string() }),
   metadata: z.undefined(),
   result: z.void(),
+  identity: {
+    schema: z.object({ only: z.string() }),
+    deriveIdentity: ({ args }) => ({ only: args.only }),
+    deriveIdempotencyKey: (id) => id.only,
+  },
   channels: { sole: z.number() },
 });
 
@@ -456,6 +474,7 @@ const ctx13IfaceTwoSteps = defineWorkflowInterface({
   args: z.void(),
   metadata: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
   steps: {
     a: ctx13PlainStepIface,
     b: ctx13PlainStepIface,
@@ -497,6 +516,16 @@ const orderHeader = defineWorkflowHeader({
   args: z.object({ sku: z.string() }),
   metadata: z.undefined(),
   result: z.object({ id: z.string() }),
+  identity: {
+    schema: z.object({ sku: z.string() }),
+    deriveIdentity: ({
+      args,
+    }: {
+      args: { sku: string };
+      metadata: unknown;
+    }) => ({ sku: args.sku }),
+    deriveIdempotencyKey: (id: { sku: string }) => id.sku,
+  },
   channels: { notice: z.string() },
 });
 
@@ -521,6 +550,8 @@ const orderInterface = orderHeader.extend({
 
 // @ts-expect-error — header-locked keys cannot be passed to `.extend()`
 void orderHeader.extend({ name: "badName" });
+// @ts-expect-error — header-locked keys cannot be passed to `.extend()`
+void orderHeader.extend({ identity: explicitKeyIdentity });
 
 const orderWorkflow = orderInterface.implement({
   steps: { charge: chargeStep },
@@ -544,6 +575,16 @@ const tripleHeader = defineWorkflowHeader({
   args: z.object({ q: z.string() }),
   metadata: z.undefined(),
   result: z.number(),
+  identity: {
+    schema: z.object({ q: z.string() }),
+    deriveIdentity: ({
+      args,
+    }: {
+      args: { q: string };
+      metadata: unknown;
+    }) => ({ q: args.q }),
+    deriveIdempotencyKey: (id: { q: string }) => id.q,
+  },
   channels: { ctl: z.boolean() },
   errors: { TripleErr: true },
 });
@@ -574,6 +615,7 @@ type TripleContract = WorkflowInterface<
   z.ZodObject<{ q: z.ZodString }>,
   z.ZodUndefined,
   { TripleErr: true },
+  (typeof tripleHeader)["identity"],
   Record<string, never>,
   Record<string, never>
 >;
@@ -597,6 +639,11 @@ const tripleInterfaceOnly: TripleContract = {
   args: z.object({ q: z.string() }),
   metadata: z.undefined(),
   result: z.number(),
+  identity: {
+    schema: z.object({ q: z.string() }),
+    deriveIdentity: ({ args }) => ({ q: args.q }),
+    deriveIdempotencyKey: (id) => id.q,
+  },
   errors: { TripleErr: true },
   streams: { log: z.object({ line: z.string() }) },
   events: { done: true },
@@ -700,6 +747,7 @@ type TransformWorkflowContract = WorkflowInterface<
   typeof transformWorkflowArgs,
   z.ZodUndefined,
   Record<string, never>,
+  (typeof transformWorkflowHeader)["identity"],
   Record<string, never>,
   Record<string, never>
 >;
@@ -714,6 +762,17 @@ const transformWorkflowHeader = defineWorkflowHeader({
   args: transformWorkflowArgs,
   metadata: z.undefined(),
   result: transformWorkflowResult,
+  identity: {
+    schema: z.object({ decoded: z.string(), len: z.number() }),
+    deriveIdentity: ({
+      args,
+    }: {
+      args: { decoded: string; len: number };
+      metadata: unknown;
+    }) => ({ decoded: args.decoded, len: args.len }),
+    deriveIdempotencyKey: (id: { decoded: string; len: number }) =>
+      `${id.decoded}:${id.len}`,
+  },
 });
 
 const transformWorkflowInterface = transformWorkflowHeader.extend({});
@@ -775,6 +834,7 @@ const transformStepWorkflowIface = defineWorkflowInterface({
   args: z.void(),
   metadata: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
   steps: { tf: transformStepIface },
 });
 
@@ -804,6 +864,7 @@ const fulfillmentHeader = defineWorkflowHeader({
   args: z.object({ orderId: z.string() }),
   metadata: z.undefined(),
   result: z.void(),
+  identity: orderIdIdentity,
 });
 
 const fulfillmentInterface = fulfillmentHeader.extend({

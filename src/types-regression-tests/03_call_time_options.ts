@@ -12,6 +12,7 @@ import type {
   StepBoundary,
 } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
+import { explicitKeyIdentity, idArgIdentity } from "./test-identity";
 
 type IsAny<T> = 0 extends 1 & T ? true : false;
 
@@ -66,6 +67,7 @@ const childHeader = defineWorkflowHeader({
   args: z.object({ id: z.string() }),
   metadata: z.undefined(),
   result: z.object({ childValue: z.string() }),
+  identity: idArgIdentity,
   channels: {
     cancel: z.object({ reason: z.string() }),
     nudge: z.object({ at: z.string() }),
@@ -80,6 +82,7 @@ const externalHeader = defineWorkflowHeader({
   args: z.undefined(),
   metadata: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
   channels: {
     ping: z.object({ at: z.string() }),
   },
@@ -99,6 +102,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
   name: "callTimeOptionsAcceptance",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   steps: { timedStep },
   childWorkflows: { child: childHeader },
   externalWorkflows: { ops: externalHeader, child: childHeader },
@@ -151,7 +155,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     // overload.
     //
     // AttachedChildWorkflowEntry: awaitable for the success/failure union only
-    // (no `channels.*.send` on the direct entry; no `idempotencyKey` on invocation opts).
+    // (no `channels.*.send` on the direct entry; no `identity` on invocation opts).
     // -------------------------------------------------------------------------
 
     const childEntry = ctx.childWorkflows.child(
@@ -170,8 +174,8 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
 
     ctx.childWorkflows.child(
       { id: "c-1" },
-      // @ts-expect-error child workflow options omit idempotencyKey (independent roots use externalWorkflows.start)
-      { idempotencyKey: "child-1" },
+      // @ts-expect-error child workflow options omit identity (independent roots use externalWorkflows.start)
+      { identity: { id: "c-1" } },
     );
 
     // The entry is awaitable for the success/failure union:
@@ -225,12 +229,12 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     // DETACHED CHILD WORKFLOW STARTS
     //
     // Buffered, synchronous; returns ExternalWorkflowHandle<W>. Send-capable
-    // and carries idempotencyKey. Not awaitable.
+    // and carries derived idempotencyKey. Not awaitable.
     // -------------------------------------------------------------------------
 
     const detached = ctx.externalWorkflows.child.start(
       { id: "d-1" },
-      { metadata: undefined, idempotencyKey: "child-detached-1" },
+      { metadata: undefined },
     );
     type _DetachedIsForeignHandle = Assert<
       typeof detached extends ExternalWorkflowHandle<infer _> ? true : false
@@ -251,7 +255,7 @@ export const callTimeOptionsAcceptanceWorkflow = defineWorkflow({
     // -------------------------------------------------------------------------
     // EXTERNAL WORKFLOW ACCESSORS
     // -------------------------------------------------------------------------
-    const externalHandle = ctx.externalWorkflows.ops.get("externalWorkflows-1");
+    const externalHandle = ctx.externalWorkflows.ops.get({ key: "externalWorkflows-1" });
     type _ExternalHandle = Assert<
       typeof externalHandle extends ExternalWorkflowHandle<infer _> ? true : false
     >;

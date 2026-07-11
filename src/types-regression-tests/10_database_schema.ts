@@ -17,6 +17,7 @@ import type {
   WorkflowStatus,
 } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
+import { idArgIdentity, tenantOrderIdentity } from "./test-identity";
 
 // =============================================================================
 // BRANDED IDS — symmetry across the four id kinds in the public surface.
@@ -49,6 +50,7 @@ const _childHeader = defineWorkflowHeader({
   args: z.object({ id: z.string() }),
   metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
+  identity: idArgIdentity,
 });
 
 declare const _attachedId: AttachedChildWorkflowId<typeof _childHeader>;
@@ -65,6 +67,7 @@ const _otherHeader = defineWorkflowHeader({
   args: z.object({ id: z.string() }),
   metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
+  identity: idArgIdentity,
 });
 declare const _otherAttachedId: AttachedChildWorkflowId<typeof _otherHeader>;
 type _AttachedBrandSeparation = Assert<
@@ -251,6 +254,7 @@ export const schemaAcceptanceWorkflow = defineWorkflow({
   args: z.object({ orderId: z.string() }),
   result: z.object({ ok: z.boolean() }),
   metadata: z.object({ tenantId: z.string() }),
+  identity: tenantOrderIdentity,
   async execute() {
     return { ok: true };
   },

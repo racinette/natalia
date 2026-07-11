@@ -8,6 +8,7 @@ import type {
   WorkflowEntry,
 } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
+import { explicitKeyIdentity, valueArgIdentity } from "./test-identity";
 
 // =============================================================================
 // REMOVED PUBLIC TYPES — must NOT be exported from "../types".
@@ -105,6 +106,7 @@ const childWorkflow = defineWorkflow({
   args: z.object({ value: z.number() }),
   metadata: z.undefined(),
   result: z.object({ doubled: z.number() }),
+  identity: valueArgIdentity,
   channels: { noopCh: z.object({ token: z.string() }) },
   async execute(ctx) {
     return { doubled: ctx.args.value * 2 };
@@ -124,6 +126,7 @@ export const executionModelAcceptanceWorkflow = defineWorkflow({
   name: "executionModelAcceptance",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   steps: { noopStep },
   requests: { noopRequest },
   childWorkflows: { childWorkflow },

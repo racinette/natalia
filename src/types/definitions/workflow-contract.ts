@@ -22,7 +22,7 @@ import type {
   StepCompensationDefinition,
 } from "./steps";
 import type { StepExecuteContext } from "./handlers";
-import type { WorkflowHeader, WorkflowDefinitions } from "./workflow-headers";
+import type { AnyWorkflowIdentity, WorkflowHeader, WorkflowDefinitions } from "./workflow-headers";
 
 /**
  * Step compensation contract without `undo` or `externalWorkflows` (declarative slice only).
@@ -274,6 +274,7 @@ export interface WorkflowInterface<
   TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TMetadata extends JsonObjectSchemaConstraint = JsonObjectSchemaConstraint,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
+  TIdentity extends AnyWorkflowIdentity = AnyWorkflowIdentity,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
 > extends WorkflowHeader<
@@ -285,7 +286,8 @@ export interface WorkflowInterface<
     TArgs,
     TMetadata,
     TResultSchema,
-    TErrors
+    TErrors,
+    TIdentity
   > {
   readonly steps?: TSteps;
   readonly requests?: TRequests;
@@ -314,6 +316,7 @@ export const WORKFLOW_HEADER_LOCKED_IN_EXTEND = [
   "metadata",
   "result",
   "errors",
+  "identity",
 ] as const;
 
 type WorkflowHeaderLockedForExtend =
@@ -338,6 +341,7 @@ export type AnyWorkflowInterface = WorkflowInterface<
   JsonSchemaConstraint,
   JsonObjectSchemaConstraint,
   WorkflowErrorDefinitions,
+  AnyWorkflowIdentity,
   PatchDefinitions,
   RngDefinitions
 >;

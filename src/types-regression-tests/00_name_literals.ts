@@ -9,6 +9,7 @@ import {
 } from "../workflow";
 import type { AttachedChildWorkflowId, CompensationId } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
+import { explicitKeyIdentity, idArgIdentity } from "./test-identity";
 
 // =============================================================================
 // NAME LITERALS PRESERVED ACROSS ALL `define*` FACTORIES
@@ -39,6 +40,7 @@ const _fooHeader = defineWorkflowHeader({
   args: z.object({ id: z.string() }),
   metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
+  identity: idArgIdentity,
 });
 
 type _FooHeaderName = Assert<IsEqual<typeof _fooHeader.name, "foo">>;
@@ -48,6 +50,7 @@ const _barHeader = defineWorkflowHeader({
   args: z.object({ id: z.string() }),
   metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
+  identity: idArgIdentity,
 });
 
 type _BarHeaderName = Assert<IsEqual<typeof _barHeader.name, "bar">>;
@@ -75,6 +78,7 @@ const _fooWorkflow = defineWorkflow({
   args: z.undefined(),
   metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
+  identity: explicitKeyIdentity,
   async execute() {
     return { ok: true };
   },
@@ -87,6 +91,7 @@ const _barWorkflow = defineWorkflow({
   args: z.undefined(),
   metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
+  identity: explicitKeyIdentity,
   async execute() {
     return { ok: true };
   },
@@ -204,6 +209,7 @@ const _dynamicWorkflow = defineWorkflow({
   args: z.undefined(),
   metadata: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
   async execute() {},
 });
 type _DynamicWorkflowName = Assert<IsEqual<typeof _dynamicWorkflow.name, string>>;

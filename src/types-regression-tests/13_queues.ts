@@ -31,6 +31,7 @@ import type {
 import type { DeadLetterId, DeadLetterReason, DeadLetterRow } from "../types/schema";
 import type { HasDefaultTtl, HasQueueErrors, InferQueueErrors } from "../types/helpers";
 import type { Assert, IsEqual } from "./type-assertions";
+import { explicitKeyIdentity } from "./test-identity";
 import { session } from "./test-session";
 
 const ProviderRejectedDetails = z.object({
@@ -95,6 +96,7 @@ export const queuesAcceptanceWorkflow = defineWorkflow({
   name: "queuesAcceptance",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   queues: { email: emailQueue },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx) {
@@ -141,6 +143,7 @@ export const queuesRequireTtlWorkflow = defineWorkflow({
   name: "queuesRequireTtl",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   queues: { email: queueWithoutDefaultTtl },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx) {
@@ -389,6 +392,7 @@ const noErrorsWorkflow = defineWorkflow({
   name: "noErrorsQueueWorkflow",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   queues: { notifications: noErrorsQueue },
   result: z.void(),
   async execute() {},

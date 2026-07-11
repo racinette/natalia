@@ -11,6 +11,7 @@ import type {
 } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
 import { session } from "./test-session";
+import { explicitKeyIdentity } from "./test-identity";
 
 const auditStream = z.object({ line: z.string() });
 
@@ -36,6 +37,7 @@ const streamsWorkflow = defineWorkflow({
   name: "streamsRegressionWorkflow",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   streams: {
     log: auditStream,
     metrics: z.object({ step: z.number(), loss: z.number() }),
@@ -60,10 +62,11 @@ const client = createTestWorkflowClient({
 });
 
 async function externalStreamReads(): Promise<void> {
-  const handle = await client.workflows.streamsRegressionWorkflow.start(session, { metadata: undefined,
-    idempotencyKey: "streams-regression-1",
-  args: undefined,
-    });
+  const handle = await client.workflows.streamsRegressionWorkflow.start(session, {
+    metadata: undefined,
+    identity: { key: "streams-regression-1" },
+    args: undefined,
+  });
 
   type _LogReader = Assert<
     IsEqual<

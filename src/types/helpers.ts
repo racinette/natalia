@@ -2,7 +2,7 @@ import type { StandardSchemaV1 } from "./standard-schema";
 import type { AttributeDefinitions, ChannelDefinitions, EventDefinitions, StreamDefinitions } from "./definitions/primitives";
 import type { ErrorDefinitions } from "./definitions/errors";
 import type { QueueDefinition, QueueDefinitions } from "./definitions/messaging";
-import type { JsonSchemaConstraint } from "./json-input";
+import type { JsonObjectSchemaConstraint, JsonSchemaConstraint } from "./json-input";
 import type {
   RequestCompensationConfig,
   RequestDefinitions,
@@ -263,36 +263,56 @@ export type InferWorkflowExternal<W> = W extends {
   : never;
 
 /**
- * Extract the `idempotencyKeyFactory` declared on a workflow header/definition,
- * or `undefined` when none is declared.
+ * Extract the `identity` block declared on a workflow header/definition.
  */
-export type InferIdempotencyKeyFactory<W> = W extends {
-  idempotencyKeyFactory?: infer TFactory;
-}
-  ? TFactory extends (args: never) => string
-    ? TFactory
-    : undefined
-  : undefined;
+export type InferWorkflowIdentity<W> = W extends { readonly identity: infer I }
+  ? I
+  : never;
 
 /**
- * True when the workflow declares an `idempotencyKeyFactory` — its identity key
- * is derived from args, so callers must NOT pass an explicit `idempotencyKey`
- * (and lookups address it by `args`). False when no factory is declared — the
- * caller owns the key.
+ * Extract the identity schema from a workflow header/definition.
  */
-export type HasIdempotencyFactory<W> =
-  InferIdempotencyKeyFactory<W> extends (args: never) => never
-    ? false // the `=> never` sentinel that `define*` uses for "no factory declared"
-    : InferIdempotencyKeyFactory<W> extends (args: never) => string
-      ? true
-      : false;
+export type InferWorkflowIdentitySchema<W> = InferWorkflowIdentity<W> extends {
+  readonly schema: infer S;
+}
+  ? S extends JsonObjectSchemaConstraint
+    ? S
+    : never
+  : never;
+
+/**
+ * Wire/input shape for caller-supplied identity at start (schema input).
+ */
+export type InferWorkflowIdentityInput<W> = StandardSchemaV1.InferInput<
+  InferWorkflowIdentitySchema<W>
+>;
+
+/**
+ * Decoded identity shape used for `.get(...)` lookup and `deriveIdempotencyKey`.
+ */
+export type InferWorkflowIdentityOutput<W> = StandardSchemaV1.InferOutput<
+  InferWorkflowIdentitySchema<W>
+>;
+
+/**
+ * True when the workflow declares `deriveIdentity` — start calls pass
+ * `{ args, metadata }` only and must not supply `identity`. False when callers
+ * must pass an explicit `identity` at start.
+ */
+export type HasDeriveIdentity<W> = "deriveIdentity" extends keyof InferWorkflowIdentity<W>
+  ? InferWorkflowIdentity<W> extends {
+      readonly deriveIdentity: (...args: any[]) => any;
+    }
+    ? true
+    : false
+  : false;
 
 /**
  * True when a queue definition declares `defaultTtl` on `defineQueue` — enqueue
  * may omit `ttl` and inherit the default. False when `defaultTtl` was omitted
  * at definition time — enqueue must pass `ttl` explicitly.
  *
- * Mirrors {@link HasIdempotencyFactory}: discrimination is on an inferred generic
+ * Mirrors {@link HasDeriveIdentity}: discrimination is on an inferred generic
  * (`TDefaultTtl`), not on the optional `defaultTtl` property (optional properties
  * always union with `undefined`, so property presence cannot be narrowed).
  */

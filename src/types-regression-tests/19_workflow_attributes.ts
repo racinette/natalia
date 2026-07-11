@@ -11,6 +11,7 @@ import type {
 } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
 import { session } from "./test-session";
+import { explicitKeyIdentity } from "./test-identity";
 
 const ProgressAttribute = z.object({
   percent: z.number(),
@@ -21,6 +22,7 @@ const attributesWorkflow = defineWorkflow({
   name: "workflowAttributesRegression",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   attributes: {
     progress: ProgressAttribute,
   },
@@ -42,10 +44,11 @@ const client = createTestWorkflowClient({
 });
 
 async function externalAttributeReads(): Promise<void> {
-  const handle = await client.workflows.workflowAttributesRegression.start(session, { metadata: undefined,
-    idempotencyKey: "workflow-attr-1",
-  args: undefined,
-    });
+  const handle = await client.workflows.workflowAttributesRegression.start(session, {
+    metadata: undefined,
+    identity: { key: "workflow-attr-1" },
+    args: undefined,
+  });
 
   type _ProgressReader = Assert<
     IsEqual<

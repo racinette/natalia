@@ -7,6 +7,7 @@ import {
 } from "../workflow";
 import type { MatchEvent } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
+import { orderIdIdentity } from "./test-identity";
 
 // =============================================================================
 // FIXTURES
@@ -32,6 +33,7 @@ const followUpHeader = defineWorkflowHeader({
   args: z.object({ orderId: z.string() }),
   metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
+  identity: orderIdIdentity,
   channels: { notify: z.object({ msg: z.string() }) },
   errors: { FollowUpFailed: z.object({ orderId: z.string() }) },
 });
@@ -44,6 +46,7 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
   name: "scopesAcceptance",
   args: z.object({ orderId: z.string() }),
   metadata: z.undefined(),
+  identity: orderIdIdentity,
   steps: { normalize: normalizeStep },
   requests: { approval: approvalRequest },
   childWorkflows: { followUp: followUpHeader },
@@ -152,7 +155,7 @@ export const scopesAcceptanceWorkflow = defineWorkflow({
 
     const detached = ctx.externalWorkflows.followUp.start(
       { orderId: ctx.args.orderId },
-      { metadata: undefined, idempotencyKey: "f-detached-1" },
+      { metadata: undefined },
     );
     // @ts-expect-error external workflow handles are not scope entries
     await ctx.scope(

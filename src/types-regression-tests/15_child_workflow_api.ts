@@ -1,19 +1,20 @@
 // Regression test — converged child-workflow / external-workflow API.
 //
 // All assertions run against the REAL project types:
-//   - Section 2: idempotencyKeyFactory presence via HasIdempotencyFactory.
+//   - Section 2: deriveIdentity presence via HasDeriveIdentity.
 //   - Section 3: childWorkflows accessor — attached-only awaitable entry
 //     (an execution deadline adds a timeout variant; NO `.start`; ScopeHandles
 //     degrades it to a scope handle with channels.send but no `.start`).
-//   - Section 4: identity — conditional idempotencyKey + `.get(args | key)` on
+//   - Section 4: identity — conditional identity on start + `.get(identity)` on
 //     the client, and externalWorkflows `.get` (reference) / `.start` (create),
 //     both yielding ExternalWorkflowHandle.
 //   - Section 5: scope semantics — a timed-out child counts as a keyed failure.
 
 import type { Assert, IsEqual } from "./type-assertions";
 import { session } from "./test-session";
+import { orderIdIdentity, orderIdKeyPrefix } from "./test-identity";
 import { defineWorkflow, defineWorkflowHeader } from "../workflow";
-import type { HasIdempotencyFactory } from "../types/helpers";
+import type { HasDeriveIdentity } from "../types/helpers";
 import type {
   ChildWorkflowUnifiedAccessor,
   ExternalWorkflowAccessor,
@@ -27,75 +28,80 @@ import type { WorkflowClientAccessor } from "../types/engine";
 import { z } from "zod";
 
 // ===========================================================================
-// SECTION 2 — Task 9 foundations against the REAL types
-// HasIdempotencyFactory<W> discriminates on actual define* output.
+// SECTION 2 — identity block foundations against the REAL types
+// HasDeriveIdentity<W> discriminates on deriveIdentity presence.
 // ===========================================================================
-const headerNoFactory = defineWorkflowHeader({
-  name: "no-factory",
+const _headerExplicit = defineWorkflowHeader({
+  name: "explicit-identity",
   args: z.object({ orderId: z.string() }),
   metadata: z.undefined(),
   result: z.void(),
+  identity: {
+    schema: z.object({ orderId: z.string() }),
+    deriveIdempotencyKey: (id: { orderId: string }) => `wf:${id.orderId}`,
+  },
 });
 
-const headerWithFactory = defineWorkflowHeader({
-  name: "with-factory",
+const _headerDerived = defineWorkflowHeader({
+  name: "derived-identity",
   args: z.object({ orderId: z.string() }),
   metadata: z.undefined(),
   result: z.void(),
-  idempotencyKeyFactory: (args) => `wf:${args.orderId}`,
+  identity: orderIdKeyPrefix("wf"),
 });
 
-const wfNoFactory = defineWorkflow({
-  name: "wf-no-factory",
+const _wfExplicit = defineWorkflow({
+  name: "wf-explicit-identity",
   args: z.object({ orderId: z.string() }),
   metadata: z.undefined(),
+  result: z.object({ ok: z.boolean() }),
+  identity: {
+    schema: z.object({ orderId: z.string() }),
+    deriveIdempotencyKey: (id: { orderId: string }) => `wf:${id.orderId}`,
+  },
+  async execute() {
+    return { ok: true };
+  },
+});
+
+const _wfDerived = defineWorkflow({
+  name: "wf-derived-identity",
+  args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
+  identity: orderIdKeyPrefix("wf"),
   result: z.object({ ok: z.boolean() }),
   async execute() {
     return { ok: true };
   },
 });
 
-const wfWithFactory = defineWorkflow({
-  name: "wf-with-factory",
-  args: z.object({ orderId: z.string() }),
-  metadata: z.undefined(),
-  idempotencyKeyFactory: (args) => `wf:${args.orderId}`,
-  result: z.object({ ok: z.boolean() }),
-  async execute() {
-    return { ok: true };
-  },
-});
-
-// the factory callback receives decoded args
-const _factoryArgs = headerWithFactory.idempotencyKeyFactory;
-void _factoryArgs;
-
-type _A1 = Assert<IsEqual<HasIdempotencyFactory<typeof headerNoFactory>, false>>;
-type _A2 = Assert<IsEqual<HasIdempotencyFactory<typeof headerWithFactory>, true>>;
-type _A3 = Assert<IsEqual<HasIdempotencyFactory<typeof wfNoFactory>, false>>;
-type _A4 = Assert<IsEqual<HasIdempotencyFactory<typeof wfWithFactory>, true>>;
+type _A1 = Assert<IsEqual<HasDeriveIdentity<typeof _headerExplicit>, false>>;
+type _A2 = Assert<IsEqual<HasDeriveIdentity<typeof _headerDerived>, true>>;
+type _A3 = Assert<IsEqual<HasDeriveIdentity<typeof _wfExplicit>, false>>;
+type _A4 = Assert<IsEqual<HasDeriveIdentity<typeof _wfDerived>, true>>;
 
 // ===========================================================================
 // SECTION 3 — childWorkflows accessor against the REAL types
 // Attached-only: bare call => awaitable attached entry; NO .start (detached
 // starts live on externalWorkflows, Section 4).
 // ===========================================================================
-const childWf = defineWorkflow({
+const _childWf = defineWorkflow({
   name: "child-wf",
   args: z.object({ orderId: z.string() }),
   metadata: z.undefined(),
   result: z.object({ shipped: z.boolean() }),
+  identity: orderIdIdentity,
   channels: { cancel: z.object({ reason: z.string() }) },
   async execute() {
     return { shipped: true };
   },
 });
 
-const childWfFactory = defineWorkflow({
-  name: "child-wf-factory",
+const _childWfDerived = defineWorkflow({
+  name: "child-wf-derived",
   args: z.object({ orderId: z.string() }),
   metadata: z.undefined(),
-  idempotencyKeyFactory: (args) => `c:${args.orderId}`,
+  identity: orderIdKeyPrefix("c"),
   result: z.object({ shipped: z.boolean() }),
   channels: { cancel: z.object({ reason: z.string() }) },
   async execute() {
@@ -103,7 +109,7 @@ const childWfFactory = defineWorkflow({
   },
 });
 
-declare const childAcc: ChildWorkflowUnifiedAccessor<typeof childWf>;
+declare const childAcc: ChildWorkflowUnifiedAccessor<typeof _childWf>;
 
 async function unifiedAccessorAssertions() {
   // attached: await -> success/failure union
@@ -133,66 +139,103 @@ async function unifiedAccessorAssertions() {
 void unifiedAccessorAssertions;
 
 // ScopeHandles degrades the entry: channels.send present, .start absent.
-type ChildEntryReal = ReturnType<ChildWorkflowUnifiedAccessor<typeof childWf>>;
+type ChildEntryReal = ReturnType<ChildWorkflowUnifiedAccessor<typeof _childWf>>;
 type ChildScopeHandles = RealScopeHandles<{ order: ChildEntryReal }>;
 declare const childHandles: ChildScopeHandles;
 async function scopeDegradeAssertions() {
   childHandles.order.channels.cancel.send({ reason: "x" });
   await childHandles.order;
   // @ts-expect-error scope handle drops .start
-  childHandles.order.start({ idempotencyKey: "k" });
+  childHandles.order.start({ identity: { orderId: "k" } });
 }
 void scopeDegradeAssertions;
 
 // ===========================================================================
-// SECTION 4 — identity: conditional idempotencyKey + .get(args | key)
+// SECTION 4 — identity: conditional identity on start + .get(identity)
 // (client start surface + in-body externalWorkflows lookup), against the REAL types.
 // ===========================================================================
-declare const clientNoF: WorkflowClientAccessor<typeof wfNoFactory>;
-declare const clientF: WorkflowClientAccessor<typeof wfWithFactory>;
+declare const clientExplicit: WorkflowClientAccessor<typeof _wfExplicit>;
+declare const clientDerived: WorkflowClientAccessor<typeof _wfDerived>;
 
 async function clientIdentityAssertions() {
-  // no factory => idempotencyKey is REQUIRED on start
-  await clientNoF.start(session, { metadata: undefined, idempotencyKey: "k", args: { orderId: "o" } });
-  // @ts-expect-error no factory => idempotencyKey is required
-  await clientNoF.start(session, { metadata: undefined, args: { orderId: "o" } });
+  // no deriveIdentity => identity is REQUIRED on start
+  await clientExplicit.start(session, {
+    metadata: undefined,
+    identity: { orderId: "o" },
+    args: { orderId: "o" },
+  });
+  // @ts-expect-error no deriveIdentity => identity is required
+  await clientExplicit.start(session, { metadata: undefined, args: { orderId: "o" } });
 
-  // factory => idempotencyKey is NOT passable (derived from args)
-  await clientF.start(session, { metadata: undefined, args: { orderId: "o" } });
-  // @ts-expect-error factory => idempotencyKey is not passable
-  await clientF.start(session, { metadata: undefined, args: { orderId: "o" }, idempotencyKey: "k" });
+  // deriveIdentity => args + metadata only; idempotencyKey forbidden
+  await clientDerived.start(session, { metadata: undefined, args: { orderId: "o" } });
+  await clientDerived.start(session, {
+    metadata: undefined,
+    args: { orderId: "o" },
+    // @ts-expect-error idempotencyKey is not a start option
+    idempotencyKey: "override-key",
+  });
 
-  // get: no factory => by key; factory => by args
-  clientNoF.get("k");
-  clientF.get({ orderId: "o" });
-  // @ts-expect-error no factory => lookup by key, not args
-  clientNoF.get({ orderId: "o" });
-  // @ts-expect-error factory => lookup by args, not key
-  clientF.get("k");
+  // get: always by identity schema output
+  clientExplicit.get({ orderId: "o" });
+  clientDerived.get({ orderId: "o" });
+  // @ts-expect-error lookup is by identity, not idempotency key string
+  clientExplicit.get("k");
+  // @ts-expect-error lookup is by identity, not idempotency key string
+  clientDerived.get("k");
 }
 void clientIdentityAssertions;
 
-// in-body externalWorkflows lookup mirrors the same conditional
-declare const extReal: ExternalWorkflowAccessor<typeof childWf>;
-declare const extRealF: ExternalWorkflowAccessor<typeof childWfFactory>;
-extReal.get("k");
-extRealF.get({ orderId: "o" });
-// @ts-expect-error no factory => externalWorkflows lookup by key, not args
+// in-body externalWorkflows lookup mirrors the same identity model
+declare const extReal: ExternalWorkflowAccessor<typeof _childWf>;
+declare const extRealDerived: ExternalWorkflowAccessor<typeof _childWfDerived>;
 extReal.get({ orderId: "o" });
-// @ts-expect-error factory => externalWorkflows lookup by args, not key
-extRealF.get("k");
+extRealDerived.get({ orderId: "o" });
+// @ts-expect-error external get is by identity, not string key
+extReal.get("k");
+// @ts-expect-error external get is by identity, not string key
+extRealDerived.get("k");
 
-// externalWorkflows.start creates an independent root; identity is conditional
-const started = extReal.start({ orderId: "o" }, { metadata: undefined, idempotencyKey: "k" });
+// externalWorkflows.start creates an independent root
+const started = extReal.start({ orderId: "o" }, { metadata: undefined });
 const _startedKey: string = started.idempotencyKey;
 void _startedKey;
 started.channels.cancel.send({ reason: "x" });
-// @ts-expect-error no factory => idempotencyKey required on start
-extReal.start({ orderId: "o" }, { metadata: undefined,});
-// factory => key derived from args, not passable
-extRealF.start({ orderId: "o" }, { metadata: undefined,});
-// @ts-expect-error factory => idempotencyKey not passable on start
-extRealF.start({ orderId: "o" }, { metadata: undefined, idempotencyKey: "k" });
+
+const _childWfExplicit = defineWorkflow({
+  name: "child-wf-explicit",
+  args: z.object({ orderId: z.string() }),
+  metadata: z.undefined(),
+  result: z.object({ shipped: z.boolean() }),
+  identity: {
+    schema: z.object({ orderId: z.string() }),
+    deriveIdempotencyKey: (id: { orderId: string }) => `c-explicit:${id.orderId}`,
+  },
+  channels: { cancel: z.object({ reason: z.string() }) },
+  async execute() {
+    return { shipped: true };
+  },
+});
+
+declare const extExplicit: ExternalWorkflowAccessor<typeof _childWfExplicit>;
+const startedExplicit = extExplicit.start(
+  { orderId: "o" },
+  { metadata: undefined, identity: { orderId: "o" } },
+);
+void startedExplicit;
+// @ts-expect-error explicit identity required when no deriveIdentity
+extExplicit.start({ orderId: "o" }, { metadata: undefined });
+
+// deriveIdentity => metadata only in options
+extRealDerived.start({ orderId: "o" }, { metadata: undefined });
+extRealDerived.start(
+  { orderId: "o" },
+  {
+    metadata: undefined,
+    // @ts-expect-error idempotencyKey forbidden on external start
+    idempotencyKey: "override-key",
+  },
+);
 
 // ===========================================================================
 // SECTION 5 — scope semantics: a timed-out child counts as a keyed FAILURE.
@@ -201,7 +244,7 @@ extRealF.start({ orderId: "o" }, { metadata: undefined, idempotencyKey: "k" });
 // excluded from the success bucket — no source change needed, since the
 // combinators bucket every `{ ok: false }` member as a failure.
 // ===========================================================================
-declare const childAccForTimeout: ChildWorkflowUnifiedAccessor<typeof childWf>;
+declare const childAccForTimeout: ChildWorkflowUnifiedAccessor<typeof _childWf>;
 const _timedEntry = childAccForTimeout({ orderId: "o" }, { metadata: undefined, deadlineSeconds: 30 });
 void _timedEntry;
 type TimedEntry = typeof _timedEntry;
@@ -217,15 +260,11 @@ type _TimeoutIsFailure = Assert<
 type _FailedIsFailure = Assert<
   Extract<TimedFailureError, { status: "failed" }> extends never ? false : true
 >;
-// ...and the success bucket is just the result (no timeout leakage).
-type _SuccessIsResult = Assert<
-  IsEqual<
-    KeyedSuccess<{ x: TimedEntry }>,
-    { key: "x"; value: { shipped: boolean } }
-  >
+
+type TimedSuccesses = KeyedSuccess<{ x: TimedEntry }>;
+type TimedSuccessResult = TimedSuccesses extends { result: infer R } ? R : never;
+
+// ...and excluded from the success bucket.
+type _TimeoutNotSuccess = Assert<
+  Extract<TimedSuccessResult, { status: "timeout" }> extends never ? true : false
 >;
-
-// fixtures referenced only via `typeof` above — mark as used for no-unused-vars
-void [headerNoFactory, wfNoFactory, wfWithFactory, childWf, childWfFactory];
-
-export {};

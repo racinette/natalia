@@ -14,6 +14,7 @@ import type {
 } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
 import { session } from "./test-session";
+import { idArgIdentity } from "./test-identity";
 
 // =============================================================================
 // HALT STATUS UNIONS
@@ -103,6 +104,7 @@ export const haltModelAcceptanceWorkflow = defineWorkflow({
   name: "haltModelAcceptance",
   args: z.object({ id: z.string() }),
   metadata: z.undefined(),
+  identity: idArgIdentity,
   errors: {
     WorkflowError: z.object({ id: z.string() }),
   },

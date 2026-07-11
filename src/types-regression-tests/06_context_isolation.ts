@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { defineRequest, defineStep, defineWorkflow } from "../workflow";
 import type { Assert, IsEqual } from "./type-assertions";
+import { explicitKeyIdentity } from "./test-identity";
 
 // =============================================================================
 // FIXTURES
@@ -140,6 +141,7 @@ export const contextIsolationAcceptanceWorkflow = defineWorkflow({
   name: "contextIsolationAcceptance",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   steps: { compensableStep, workflowOnlyStep },
   requests: { workflowOnlyRequest },
   errors: {

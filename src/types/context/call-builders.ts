@@ -1,13 +1,19 @@
 import type { StandardSchemaV1 } from "../standard-schema";
 import type { ChannelDefinitions } from "../definitions/primitives";
 import type {
-  HasIdempotencyFactory,
+  HasDeriveIdentity,
   InferWorkflowChannels,
   InferWorkflowErrors,
+  InferWorkflowIdentityInput,
+  InferWorkflowIdentityOutput,
   InferWorkflowMetadataInput,
   InferWorkflowResult,
 } from "../helpers";
-import type { QueueEnqueueOptions, QueueEnqueueOptionsWithRequiredTtl } from "../definitions/messaging";
+import type {
+  QueueEnqueueOptions,
+  QueueEnqueueOptionsWithRequiredTtl,
+  TopicDefinition,
+} from "../definitions/messaging";
 import type { DeadlineOptions, RequiredInvocationField, RetentionSetter } from "../definitions/policies";
 import type { AnyWorkflowReference } from "../definitions/workflow-headers";
 import type { ErrorValue, WorkflowResult } from "../results";
@@ -256,37 +262,58 @@ export interface QueueAccessor<
 }
 
 // =============================================================================
+// TOPIC ACCESSOR
+// =============================================================================
+
+/**
+ * Workflow-side accessor for publishing to a declared topic.
+ *
+ * `publish` is a synchronous buffered operation — returns `void`, not awaitable.
+ */
+export interface TopicAccessor<
+  TRecordSchema extends StandardSchemaV1,
+  TMetadataSchema extends StandardSchemaV1 | undefined = undefined,
+> {
+  publish(
+    record: SchemaInvocationInput<TRecordSchema>,
+    ...args: TMetadataSchema extends StandardSchemaV1
+      ? [opts: { metadata: SchemaInvocationInput<TMetadataSchema> }]
+      : []
+  ): void;
+}
+
+/** Resolve the publish accessor for a {@link TopicDefinition}. */
+export type TopicAccessorForDefinition<T extends TopicDefinition> =
+  T extends TopicDefinition<any, infer TRecordSchema, infer TMetadataSchema>
+    ? TopicAccessor<TRecordSchema, TMetadataSchema>
+    : never;
+
+// =============================================================================
 // EXTERNAL WORKFLOW ACCESSOR
 // =============================================================================
 
 /**
- * Start options for `externalWorkflows.<name>.start(...)` — the shared start
- * options plus the identity key, made conditional on whether the workflow
- * declares an `idempotencyKeyFactory`: derived-from-args (not passable) when a
- * factory exists, required otherwise.
+ * Start options for `externalWorkflows.<name>.start(...)` — metadata plus an
+ * optional explicit `identity` when the target workflow omits `deriveIdentity`.
  */
 export type ExternalWorkflowStartOptions<W extends AnyWorkflowReference> =
   RequiredInvocationField<"metadata", InferWorkflowMetadataInput<W>> & {
     readonly seed?: string;
     readonly retention?: number | RetentionSetter<"complete" | "failed" | "terminated">;
   } & DeadlineOptions &
-    (HasIdempotencyFactory<W> extends true
-      ? { readonly idempotencyKey?: never }
-      : { readonly idempotencyKey: string });
+    (HasDeriveIdentity<W> extends true
+      ? { readonly identity?: never }
+      : { readonly identity: InferWorkflowIdentityInput<W> });
 
 interface ExternalWorkflowAccessorFn<
   W extends AnyWorkflowReference,
   TArgsSchema extends StandardSchemaV1<unknown, unknown>,
 > {
   /**
-   * Reference an existing independent workflow instance — by `args` when a
-   * factory is declared (the engine derives the key), by `idempotencyKey`
-   * otherwise.
+   * Reference an existing independent workflow instance by decoded identity.
    */
   get(
-    ...lookup: HasIdempotencyFactory<W> extends true
-      ? [args: SchemaInvocationInput<TArgsSchema>]
-      : [idempotencyKey: string]
+    identity: InferWorkflowIdentityOutput<W>,
   ): ExternalWorkflowHandle<InferWorkflowChannels<W>>;
 
   /**

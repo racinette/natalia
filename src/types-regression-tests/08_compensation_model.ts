@@ -1,8 +1,10 @@
 import { z } from "zod";
 import { createTestWorkflowClient } from "./test-client";
 import {
+  defineQueue,
   defineRequest,
   defineStep,
+  defineTopic,
   defineWorkflow,
   defineWorkflowHeader,
 } from "../workflow";
@@ -20,9 +22,11 @@ import type {
   StepCompensationUndoContext,
   StepDefinitions,
   StreamDefinitions,
+  TopicDefinitions,
 } from "../types";
 import type { WorkflowDefinitions } from "../types/definitions/workflow-headers";
 import type { Assert, IsEqual } from "./type-assertions";
+import { explicitKeyIdentity } from "./test-identity";
 
 // =============================================================================
 // FIXTURES — non-compensable dependencies usable inside a compensation block.
@@ -48,6 +52,19 @@ const undoChildHeader = defineWorkflowHeader({
   args: z.object({ chargeId: z.string() }),
   metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
+  identity: explicitKeyIdentity,
+});
+
+const undoQueue = defineQueue({
+  name: "compUndoQueue",
+  message: z.object({ chargeId: z.string() }),
+  defaultTtl: 3600,
+});
+
+const undoTopic = defineTopic({
+  name: "compUndoTopic",
+  record: z.object({ event: z.string() }),
+  metadata: z.object({ source: z.string() }),
 });
 
 // =============================================================================
@@ -77,6 +94,8 @@ const chargeStep = defineStep({
     // Dependencies.
     steps: { refundStep },
     requests: { reconcileRequest },
+    queues: { undoQueue },
+    topics: { undoTopic },
     childWorkflows: { undoChild: undoChildHeader },
 
     // Outcome schema.
@@ -151,6 +170,12 @@ const chargeStep = defineStep({
       // @ts-expect-error compensation undo cannot see workflow-only requests
       void ctx.requests.workflowOnlyRequest;
 
+      ctx.queues.undoQueue.enqueue({ chargeId: "c-1" });
+      ctx.topics.undoTopic.publish(
+        { event: "undo.started" },
+        { metadata: { source: "compensation" } },
+      );
+
       return { status: "manual_review" as const };
     },
   },
@@ -173,6 +198,7 @@ type _UndoCtx = Assert<
       StepDefinitions,
       RequestDefinitions,
       QueueDefinitions,
+      TopicDefinitions,
       WorkflowDefinitions,
       WorkflowDefinitions,
       PatchDefinitions,
@@ -258,6 +284,7 @@ const compRequestsWorkflow = defineWorkflow({
   name: "compRequestsWorkflow",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   requests: {
     compApproval: approvalRequest,
     compManualReview: manualReviewRequest,
@@ -362,6 +389,7 @@ const nonCompensableWorkflow = defineWorkflow({
   name: "compNonCompensableWorkflow",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   requests: { nonCompensable: nonCompensableRequest },
   result: z.object({ ok: z.boolean() }),
   async execute() {
@@ -430,6 +458,7 @@ const childWorkflow = defineWorkflow({
   name: "compChild",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   result: z.object({ ok: z.boolean() }),
   async execute() {
     return { ok: true };
@@ -440,6 +469,7 @@ export const compensationModelAcceptanceWorkflow = defineWorkflow({
   name: "compensationModelAcceptance",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   steps: { chargeStep },
   requests: { approvalRequest },
   childWorkflows: { childWorkflow },

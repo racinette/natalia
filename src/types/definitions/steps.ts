@@ -168,11 +168,6 @@ export type RequestCompensationInfo<
  *
  * The `undo` callback's `ctx` is wired through the compensation context with
  * the declared per-instance primitives and dependency surface.
- *
- * Note: queues / topics accessors on compensation context land in their own
- * steps (13 / 15). Per-instance primitive accessors on `CompensationContext`
- * follow the step's `compensation` declaration (channels, streams, events,
- * attributes).
  */
 export interface StepCompensationDefinition<
   TArgsSchema extends JsonSchemaConstraint = JsonSchemaConstraint,
@@ -226,6 +221,7 @@ export interface StepCompensationDefinition<
       TSteps,
       TRequests,
       TQueues,
+      TTopics,
       TChildren,
       TExternalWorkflows,
       Record<string, never>,

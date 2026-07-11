@@ -31,8 +31,8 @@ import type { AnyWorkflowReference } from "./definitions/workflow-headers";
  * `RequestCompensationInstanceId`) at the type level.
  *
  * Operators rarely address workflows by `WorkflowId` directly — they use
- * `idempotencyKey`, `args` (when an `idempotencyKeyFactory` is declared), or
- * one of the parent-scoped namespaces. The brand exists for symmetry with the
+ * decoded `identity` (from the workflow's identity schema) or one of the
+ * parent-scoped namespaces. The brand exists for symmetry with the
  * other id types and to keep workflow ids type-distinguishable from plain
  * strings.
  */

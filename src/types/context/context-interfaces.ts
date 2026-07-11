@@ -3,7 +3,7 @@ import type { JsonSchemaConstraint } from "../json-input";
 import type { StandardSchemaV1 } from "../standard-schema";
 import type { ErrorDefinitions } from "../definitions/errors";
 import type { PatchAccessor, AttributeDefinitions, ChannelDefinitions, EventDefinitions, PatchDefinitions, StreamDefinitions } from "../definitions/primitives";
-import type { QueueDefinition, QueueDefinitions } from "../definitions/messaging";
+import type { QueueDefinition, QueueDefinitions, TopicDefinition, TopicDefinitions } from "../definitions/messaging";
 import type { RequestDefinition, RequestDefinitions } from "../definitions/requests";
 import type { RngAccessors, RngDefinitions } from "../definitions/rng";
 import type {
@@ -19,6 +19,7 @@ import type {
   ExternalWorkflowAccessor,
   QueueAccessor,
   RequestAccessor,
+  TopicAccessor,
 } from "./call-builders";
 import type { BlockingResult, CompensationResolver, ExecutionResolver } from "./deterministic-handles";
 import type { AwaitableEntry, JoinOptions, JoinResult, JoinTimeoutResult, SchemaInvocationInput, StepAccessor } from "./entries";
@@ -147,6 +148,7 @@ export interface CompensationContext<
   TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
+  TTopics extends TopicDefinitions = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
@@ -212,6 +214,19 @@ export interface CompensationContext<
    
 
   /**
+   * Topics for durable publish from compensation undo paths.
+   */
+  readonly topics: {
+    [K in keyof TTopics]: TTopics[K] extends TopicDefinition<
+      any,
+      infer TRecordSchema,
+      infer TMetadataSchema
+    >
+      ? TopicAccessor<TRecordSchema, TMetadataSchema>
+      : never;
+  };
+
+  /**
    * Child workflows. One accessor per declared child — the call runs it
    * attached under the parent (full `WorkflowResult` awaited in compensation).
    */
@@ -257,6 +272,7 @@ export interface CompensationContext<
         TSteps,
         TRequests,
         TQueues,
+        TTopics,
         TChildren,
         TExternalWorkflows,
         TPatches,
@@ -621,6 +637,7 @@ export interface CompensationConcurrencyContext<
   TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
+  TTopics extends TopicDefinitions = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
@@ -638,6 +655,7 @@ export interface CompensationConcurrencyContext<
       TSteps,
       TRequests,
       TQueues,
+      TTopics,
       TChildren,
       TExternalWorkflows,
       TPatches,
@@ -667,6 +685,7 @@ export type StepCompensationUndoContext<
   TSteps extends StepDefinitions = Record<string, never>,
   TRequests extends RequestDefinitions = Record<string, never>,
   TQueues extends QueueDefinitions = Record<string, never>,
+  TTopics extends TopicDefinitions = Record<string, never>,
   TChildren extends WorkflowDefinitions = Record<string, never>,
   TExternalWorkflows extends WorkflowDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
@@ -681,6 +700,7 @@ export type StepCompensationUndoContext<
   TSteps,
   TRequests,
   TQueues,
+  TTopics,
   TChildren,
   TExternalWorkflows,
   TPatches,

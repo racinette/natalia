@@ -17,6 +17,7 @@ import type {
 } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
 import { session } from "./test-session";
+import { explicitKeyIdentity } from "./test-identity";
 
 const undoProgress = z.object({ percent: z.number(), phase: z.string() });
 const undoAudit = z.object({ entry: z.string() });
@@ -57,6 +58,7 @@ const compPlaneWorkflow = defineWorkflow({
   name: "compPlaneWorkflow",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   steps: { compPlaneStep },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx) {
@@ -107,10 +109,11 @@ void compHandle.channels.typo;
 void compHandle.streams.typo;
 
 async function externalCompPlaneReads(): Promise<void> {
-  const handle = await client.workflows.compPlaneWorkflow.start(session, { metadata: undefined,
-    idempotencyKey: "comp-plane-1",
-  args: undefined,
-    });
+  const handle = await client.workflows.compPlaneWorkflow.start(session, {
+    metadata: undefined,
+    identity: { key: "comp-plane-1" },
+    args: undefined,
+  });
 
   const compNs = handle.compensations.steps.compPlaneStep;
   const [compHandleFromFind] = await compNs.find(session, { limit: 1 });

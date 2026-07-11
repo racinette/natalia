@@ -4,6 +4,39 @@ import type { AttributeDefinitions, ChannelDefinitions, EventDefinitions, Stream
 import type { WorkflowErrorDefinitions } from "./errors";
 
 /**
+ * Upper bound for identity blocks on erased workflow references / headers.
+ */
+export type AnyWorkflowIdentity = {
+  readonly schema: JsonObjectSchemaConstraint;
+  readonly deriveIdentity?: (...args: any[]) => any;
+  readonly deriveIdempotencyKey: (...args: any[]) => string;
+};
+
+/**
+ * Mandatory workflow identity configuration declared on every workflow header /
+ * definition. `deriveIdempotencyKey` maps the decoded identity to the persisted
+ * idempotency key; `deriveIdentity` is optional — when absent, callers supply
+ * `identity` at start.
+ */
+export type WorkflowIdentityBlock<
+  TIdentitySchema extends JsonObjectSchemaConstraint = JsonObjectSchemaConstraint,
+  TArgs extends JsonSchemaConstraint = JsonSchemaConstraint,
+  TMetadata extends JsonObjectSchemaConstraint = JsonObjectSchemaConstraint,
+  TDeriveIdentity extends
+    | ((input: {
+        readonly args: StandardSchemaV1.InferOutput<TArgs>;
+        readonly metadata: StandardSchemaV1.InferOutput<TMetadata>;
+      }) => StandardSchemaV1.InferOutput<TIdentitySchema>)
+    | undefined = undefined,
+> = {
+  readonly schema: TIdentitySchema;
+  readonly deriveIdentity?: TDeriveIdentity;
+  readonly deriveIdempotencyKey: (
+    identity: StandardSchemaV1.InferOutput<TIdentitySchema>,
+  ) => string;
+};
+
+/**
  * Locked workflow contract slice shared by graph references and full headers.
  */
 export interface WorkflowContractCore<
@@ -15,16 +48,14 @@ export interface WorkflowContractCore<
   TMetadata extends JsonObjectSchemaConstraint = JsonObjectSchemaConstraint,
   TResult extends JsonSchemaConstraint = JsonSchemaConstraint,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
-  TIdempotencyKeyFactory extends
-    | ((args: StandardSchemaV1.InferOutput<TArgs>) => string)
-    | undefined = undefined,
+  TIdentity extends AnyWorkflowIdentity = AnyWorkflowIdentity,
 > {
   readonly name: TName;
   readonly args: TArgs;
   readonly metadata: TMetadata;
   readonly result: TResult;
   readonly errors?: TErrors;
-  readonly idempotencyKeyFactory?: TIdempotencyKeyFactory;
+  readonly identity: TIdentity;
 }
 
 /**
@@ -43,16 +74,14 @@ export interface WorkflowReference<
   TMetadata extends JsonObjectSchemaConstraint = JsonObjectSchemaConstraint,
   TResult extends JsonSchemaConstraint = JsonSchemaConstraint,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
-  TIdempotencyKeyFactory extends
-    | ((args: StandardSchemaV1.InferOutput<TArgs>) => string)
-    | undefined = undefined,
+  TIdentity extends AnyWorkflowIdentity = AnyWorkflowIdentity,
 > extends WorkflowContractCore<
   TName,
   TArgs,
   TMetadata,
   TResult,
   TErrors,
-  TIdempotencyKeyFactory
+  TIdentity
 > {
   readonly channels?: TChannels;
 }
@@ -76,16 +105,14 @@ export interface WorkflowHeader<
   TMetadata extends JsonObjectSchemaConstraint = JsonObjectSchemaConstraint,
   TResult extends JsonSchemaConstraint = JsonSchemaConstraint,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
-  TIdempotencyKeyFactory extends
-    | ((args: StandardSchemaV1.InferOutput<TArgs>) => string)
-    | undefined = undefined,
+  TIdentity extends AnyWorkflowIdentity = AnyWorkflowIdentity,
 > extends WorkflowContractCore<
   TName,
   TArgs,
   TMetadata,
   TResult,
   TErrors,
-  TIdempotencyKeyFactory
+  TIdentity
 > {
   readonly channels?: TChannels;
   readonly streams?: TStreams;
@@ -108,8 +135,7 @@ export type AnyWorkflowReference = WorkflowReference<
   JsonObjectSchemaConstraint,
   JsonSchemaConstraint,
   WorkflowErrorDefinitions,
-   
-  ((args: any) => string) | undefined
+  AnyWorkflowIdentity
 >;
 
 /**
@@ -125,6 +151,5 @@ export type AnyWorkflowHeader = WorkflowHeader<
   JsonObjectSchemaConstraint,
   JsonSchemaConstraint,
   WorkflowErrorDefinitions,
-   
-  ((args: any) => string) | undefined
+  AnyWorkflowIdentity
 >;

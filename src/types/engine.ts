@@ -72,7 +72,7 @@ import type {
   QueryableNamespace,
 } from "./introspection";
 import type {
-  HasIdempotencyFactory,
+  HasDeriveIdentity,
   InferWorkflowArgs,
   InferWorkflowArgsInput,
   InferWorkflowAttributes,
@@ -81,6 +81,8 @@ import type {
   InferWorkflowErrors,
   InferWorkflowExternal,
   InferWorkflowEvents,
+  InferWorkflowIdentityInput,
+  InferWorkflowIdentityOutput,
   InferWorkflowMetadata,
   InferWorkflowMetadataInput,
   InferWorkflowQueues,
@@ -1271,34 +1273,31 @@ export type StartWorkflowOptions<
 } & DeadlineOptions;
 
 /**
- * The `idempotencyKey` slot on a start call, conditional on whether the
- * workflow declares an `idempotencyKeyFactory`:
- * - factory present → identity is derived from args; the key is **not passable**.
- * - factory absent  → the caller **must** supply an explicit `idempotencyKey`.
+ * The `identity` slot on a start call, conditional on `deriveIdentity`:
+ * - `deriveIdentity` present → omit `identity` (engine derives from args + metadata).
+ * - `deriveIdentity` absent  → caller **must** supply explicit `identity`.
  */
-export type IdempotencyKeyStartOption<W extends AnyWorkflowHeader> =
-  HasIdempotencyFactory<W> extends true
-    ? { readonly idempotencyKey?: never }
-    : { readonly idempotencyKey: string };
+export type IdentityStartField<W extends AnyWorkflowHeader> =
+  HasDeriveIdentity<W> extends true
+    ? { readonly identity?: never }
+    : { readonly identity: InferWorkflowIdentityInput<W> };
 
 /**
- * Factory-aware start options for `client.workflows.<def>.start` / `.execute`.
+ * Start options for `client.workflows.<def>.start` / `.execute`.
  */
 export type WorkflowStartOptions<W extends AnyWorkflowHeader> = Omit<
   StartWorkflowOptions<InferWorkflowArgsInput<W>, InferWorkflowMetadataInput<W>>,
   "idempotencyKey"
 > &
-  IdempotencyKeyStartOption<W>;
+  IdentityStartField<W>;
 
 /**
- * Identity lookup arguments for `.get(...)`, conditional on the factory:
- * by `args` (the engine derives the key) when a factory is declared, by an
- * explicit `idempotencyKey` otherwise.
+ * Identity lookup arguments for `.get(...)` — always the decoded identity schema
+ * output, never a raw idempotency key string.
  */
-export type WorkflowGetArgs<W extends AnyWorkflowHeader> =
-  HasIdempotencyFactory<W> extends true
-    ? [args: InferWorkflowArgsInput<W>]
-    : [idempotencyKey: string];
+export type WorkflowGetArgs<W extends AnyWorkflowHeader> = [
+  identity: InferWorkflowIdentityOutput<W>,
+];
 
 // =============================================================================
 // CLIENT-LEVEL WORKFLOW ACCESSOR
@@ -1350,10 +1349,8 @@ export interface WorkflowClientAccessor<W extends AnyWorkflowHeader>
   >;
 
   /**
-   * Get an externalWorkflows handle to an existing workflow instance by its identity:
-   * by `args` when the workflow declares an `idempotencyKeyFactory` (the engine
-   * derives the same key), otherwise by an explicit `idempotencyKey`.
-   * Synchronous; no I/O.
+   * Get an externalWorkflows handle to an existing workflow instance by its
+   * decoded identity (schema output). Synchronous; no I/O.
    */
   get(...lookup: WorkflowGetArgs<W>): WorkflowHandleExternal<W>;
 }

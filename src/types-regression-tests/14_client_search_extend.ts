@@ -35,6 +35,7 @@ import {
 } from "../types/search-query";
 import type { Assert, IsEqual } from "./type-assertions";
 import { session } from "./test-session";
+import { explicitKeyIdentity, flagArgIdentity } from "./test-identity";
 
 // =============================================================================
 // Contracts — catalog (rich row), shadow (different args), worker header + iface
@@ -45,6 +46,22 @@ const catalogHeader = defineWorkflowHeader({
   args: z.object({ sku: z.string(), qty: z.number() }),
   result: z.object({ lineId: z.string() }),
   metadata: z.object({ region: z.string() }),
+  identity: {
+    schema: z.object({ sku: z.string(), qty: z.number(), region: z.string() }),
+    deriveIdentity: ({
+      args,
+      metadata,
+    }: {
+      args: { sku: string; qty: number };
+      metadata: { region: string };
+    }) => ({
+      sku: args.sku,
+      qty: args.qty,
+      region: metadata.region,
+    }),
+    deriveIdempotencyKey: (id: { sku: string; qty: number; region: string }) =>
+      `${id.region}:${id.sku}:${id.qty}`,
+  },
 });
 
 const catalogInterface = catalogHeader.extend({
@@ -62,6 +79,7 @@ const shadowInterface = defineWorkflowInterface({
   args: z.object({ flag: z.boolean() }),
   metadata: z.undefined(),
   result: z.void(),
+  identity: flagArgIdentity,
 });
 
 const shadowWorkflow = shadowInterface.implement({
@@ -75,6 +93,16 @@ const workerHeader = defineWorkflowHeader({
   args: z.object({ task: z.string() }),
   metadata: z.undefined(),
   result: z.number(),
+  identity: {
+    schema: z.object({ task: z.string() }),
+    deriveIdentity: ({
+      args,
+    }: {
+      args: { task: string };
+      metadata: unknown;
+    }) => ({ task: args.task }),
+    deriveIdempotencyKey: (id: { task: string }) => id.task,
+  },
 });
 
 const workerInterface = workerHeader.extend({
@@ -87,6 +115,16 @@ const orchestratorHeader = defineWorkflowHeader({
   args: z.object({ ref: z.string() }),
   metadata: z.undefined(),
   result: z.void(),
+  identity: {
+    schema: z.object({ ref: z.string() }),
+    deriveIdentity: ({
+      args,
+    }: {
+      args: { ref: string };
+      metadata: unknown;
+    }) => ({ ref: args.ref }),
+    deriveIdempotencyKey: (id: { ref: string }) => id.ref,
+  },
 });
 
 const orchestratorInterface = orchestratorHeader.extend({
@@ -200,7 +238,7 @@ async function _client14SearchSurface(
   >;
   void _shadowFind;
 
-  const orch = c.workflows.orchestrator.get("idem-orch");
+  const orch = c.workflows.orchestrator.get({ ref: "idem-orch" });
   type _OrchHandle = Assert<
     IsEqual<typeof orch, WorkflowHandleExternal<typeof orchestratorWorkflow>>
   >;
@@ -253,7 +291,11 @@ async function _client14ExtendSurface(
     workerWeak: typeof workerHeader;
   }>,
 ) {
-  const catalogRoot = c.workflows.catalog.get("idem-catalog");
+  const catalogRoot = c.workflows.catalog.get({
+    sku: "idem-catalog",
+    qty: 1,
+    region: "us",
+  });
   type _CatalogRoot = Assert<
     IsEqual<typeof catalogRoot, WorkflowHandleExternal<typeof catalogInterface>>
   >;
@@ -262,7 +304,7 @@ async function _client14ExtendSurface(
   // @ts-expect-error — catalog registry entry is `WorkflowInterface`: handle has no `extend`
   void catalogRoot.extend(catalogInterface);
 
-  const weakRoot = c.workflows.workerWeak.get("idem-worker-weak");
+  const weakRoot = c.workflows.workerWeak.get({ task: "idem-worker-weak" });
   type _WeakRoot = Assert<
     IsEqual<typeof weakRoot, WorkflowHandleExternal<typeof workerHeader>>
   >;
@@ -278,7 +320,7 @@ async function _client14ExtendSurface(
   // @ts-expect-error — after widen, `extend` is omitted / possibly undefined (`extend?: never`); cannot invoke
   void workerStrong.extend(workerInterface);
 
-  const orch2 = c.workflows.orchestrator.get("idem-orch-2");
+  const orch2 = c.workflows.orchestrator.get({ ref: "idem-orch-2" });
   type _Orch2Handle = Assert<
     IsEqual<typeof orch2, WorkflowHandleExternal<typeof orchestratorWorkflow>>
   >;
@@ -319,6 +361,7 @@ const extendWrongNameHeader = defineWorkflowHeader({
   args: z.void(),
   metadata: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
 });
 
 const extendWrongNameIface = defineWorkflowInterface({
@@ -326,6 +369,7 @@ const extendWrongNameIface = defineWorkflowInterface({
   args: z.void(),
   metadata: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
 });
 
 const extendChHeader = defineWorkflowHeader({
@@ -333,6 +377,7 @@ const extendChHeader = defineWorkflowHeader({
   args: z.void(),
   metadata: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
   channels: { ch1: z.object({ a: z.string() }) },
 });
 
@@ -341,6 +386,7 @@ const extendChIfaceWrongKey = defineWorkflowInterface({
   args: z.void(),
   metadata: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
   channels: { ch2: z.object({ a: z.string() }) },
 });
 
@@ -349,6 +395,7 @@ const extendChIfaceOk = defineWorkflowInterface({
   args: z.void(),
   metadata: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
   channels: {
     ch1: z.object({ a: z.string() }),
     chAux: z.boolean(),
@@ -360,6 +407,17 @@ const extendArgsHeader = defineWorkflowHeader({
   args: z.object({ a: z.array(z.object({ b: z.string() })) }),
   metadata: z.undefined(),
   result: z.void(),
+  identity: {
+    schema: z.object({ a: z.array(z.object({ b: z.string() })) }),
+    deriveIdentity: ({
+      args,
+    }: {
+      args: { a: Array<{ b: string }> };
+      metadata: unknown;
+    }) => ({ a: args.a }),
+    deriveIdempotencyKey: (id: { a: Array<{ b: string }> }) =>
+      JSON.stringify(id.a),
+  },
 });
 
 const extendArgsIfaceWrong = defineWorkflowInterface({
@@ -367,6 +425,17 @@ const extendArgsIfaceWrong = defineWorkflowInterface({
   args: z.object({ a: z.array(z.object({ b: z.number() })) }),
   metadata: z.undefined(),
   result: z.void(),
+  identity: {
+    schema: z.object({ a: z.array(z.object({ b: z.number() })) }),
+    deriveIdentity: ({
+      args,
+    }: {
+      args: { a: Array<{ b: number }> };
+      metadata: unknown;
+    }) => ({ a: args.a }),
+    deriveIdempotencyKey: (id: { a: Array<{ b: number }> }) =>
+      JSON.stringify(id.a),
+  },
 });
 
 /** Same channel key as the header, but incompatible decoded payload (easy to miss vs a wrong key). */
@@ -375,6 +444,7 @@ const extendChPayloadHeader = defineWorkflowHeader({
   args: z.void(),
   metadata: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
   channels: { ch1: z.object({ n: z.number() }) },
 });
 
@@ -383,6 +453,7 @@ const extendChPayloadIfaceWrong = defineWorkflowInterface({
   args: z.void(),
   metadata: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
   channels: { ch1: z.object({ n: z.string() }) },
 });
 
@@ -401,20 +472,20 @@ async function _client14ExtendWrongContract(
     wrongChPayload: typeof extendChPayloadHeader;
   }>,
 ) {
-  const hN = cx.workflows.wrongName.get("idem-wn");
+  const hN = cx.workflows.wrongName.get({ key: "idem-wn" });
   // @ts-expect-error — widen target must share the same `name` literal as the header
   void hN.extend(extendWrongNameIface);
 
-  const hC = cx.workflows.wrongCh.get("idem-ch");
+  const hC = cx.workflows.wrongCh.get({ key: "idem-ch" });
   void hC.extend(extendChIfaceOk);
   // @ts-expect-error — header exposes `ch1`; widen target replaces the slot with `ch2`
   void hC.extend(extendChIfaceWrongKey);
 
-  const hA = cx.workflows.wrongArgs.get("idem-args");
+  const hA = cx.workflows.wrongArgs.get({ a: [{ b: "idem-args" }] });
   // @ts-expect-error — decoded `args` disagree on nested `b` (`string` vs `number`)
   void hA.extend(extendArgsIfaceWrong);
 
-  const hP = cx.workflows.wrongChPayload.get("idem-p");
+  const hP = cx.workflows.wrongChPayload.get({ key: "idem-p" });
   // @ts-expect-error — same channel key `ch1` but incompatible nested field type (`number` vs `string`)
   void hP.extend(extendChPayloadIfaceWrong);
 }

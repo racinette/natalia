@@ -17,6 +17,7 @@ import type {
   StepInterface,
 } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
+import { explicitKeyIdentity, seedArgIdentity, widArgIdentity } from "./test-identity";
 
 type IsAny<T> = 0 extends 1 & T ? true : false;
 
@@ -92,6 +93,7 @@ const layerChildHeader = defineWorkflowHeader({
   args: z.object({ seed: z.number() }),
   metadata: z.undefined(),
   result: z.string(),
+  identity: seedArgIdentity,
 });
 
 const layerChildWf = layerChildHeader.extend({}).implement({
@@ -105,6 +107,7 @@ const layerMainHeader = defineWorkflowHeader({
   args: z.object({ wid: z.string() }),
   metadata: z.undefined(),
   result: z.number(),
+  identity: widArgIdentity,
 });
 
 const layerMainIface = layerMainHeader.extend({
@@ -141,6 +144,7 @@ const layerNoopChildHeader = defineWorkflowHeader({
   args: z.undefined(),
   metadata: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
 });
 
 const layerNoopChildWf = layerNoopChildHeader.extend({}).implement({
@@ -152,6 +156,7 @@ const layerNoopParentHeader = defineWorkflowHeader({
   args: z.undefined(),
   metadata: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
 });
 
 const layerNoopParent = layerNoopParentHeader.extend({
@@ -190,6 +195,7 @@ defineWorkflowHeader({
   name: "layerMissingMetadata",
   args: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
 });
 
 // @ts-expect-error result schema is required on every workflow header
@@ -197,6 +203,7 @@ defineWorkflowHeader({
   name: "layerMissingResult",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
 });
 
 const _layerExplicitContractHeader = defineWorkflowHeader({
@@ -204,6 +211,7 @@ const _layerExplicitContractHeader = defineWorkflowHeader({
   args: z.undefined(),
   metadata: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
 });
 
 type _NoMetadataIsUndefined = Assert<
@@ -218,5 +226,6 @@ defineWorkflow({
   name: "layerMissingMetadataWf",
   args: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
   async execute() {},
 });

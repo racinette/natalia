@@ -47,11 +47,6 @@ export type RequiredInvocationField<
 export type WorkflowInvocationBaseOptions<TArgsInput, TMetadataInput> =
   RequiredInvocationField<"args", TArgsInput> &
     RequiredInvocationField<"metadata", TMetadataInput> & {
-      /**
-       * Optional idempotency key for workflow identity.
-       * If omitted, the engine generates a unique key.
-       */
-      idempotencyKey?: string;
       /** Optional deterministic RNG seed override for the child workflow instance. */
       seed?: string;
     };

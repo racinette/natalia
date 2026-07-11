@@ -21,6 +21,8 @@ import type {
   RequestDefinitions,
   WorkflowDefinitions,
   WorkflowDefinition,
+  AnyWorkflowIdentity,
+  WorkflowReference,
   JsonSchemaConstraint,
   JsonObjectSchemaConstraint,
   WorkflowExecuteContext,
@@ -853,19 +855,97 @@ export function defineWorkflowHeader<
   TArgs extends JsonSchemaConstraint,
   TMetadata extends JsonObjectSchemaConstraint,
   TResult extends JsonSchemaConstraint,
+  const TIdentity extends {
+    readonly schema: JsonObjectSchemaConstraint;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- widened identity input for contravariant deriveIdempotencyKey
+    readonly deriveIdempotencyKey: (identity: any) => string;
+    readonly deriveIdentity?: (input: {
+      readonly args: StandardSchemaV1.InferOutput<TArgs>;
+      readonly metadata: StandardSchemaV1.InferOutput<TMetadata>;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- widened return for optional deriveIdentity
+    }) => any;
+  },
   TChannels extends ChannelDefinitions = Record<string, never>,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
-  TIdempotencyKeyFactory extends (args: StandardSchemaV1.InferOutput<TArgs>) => string =
-    (args: StandardSchemaV1.InferOutput<TArgs>) => never,
 >(config: {
   name: TName;
   args: TArgs;
   metadata: TMetadata;
   result: TResult;
+  identity: TIdentity;
   channels?: TChannels;
   errors?: TErrors;
-  idempotencyKeyFactory?: TIdempotencyKeyFactory;
-}) {
+}): WorkflowReference<
+  TName,
+  TChannels,
+  TArgs,
+  TMetadata,
+  TResult,
+  TErrors,
+  TIdentity
+> & {
+  readonly __nataliaAuthoringKind: "header";
+  extend: <const Ext extends object>(
+    extension: Ext & ForbidWorkflowHeaderLockedFieldsInExtend,
+  ) => WorkflowInterface<
+    TName,
+    TChannels,
+    ExtStreamsSel<Ext>,
+    ExtEventsSel<Ext>,
+    ExtAttributesSel<Ext>,
+    ExtStepsSel<Ext>,
+    ExtRequestsSel<Ext>,
+    ExtQueuesSel<Ext>,
+    ExtChildrenSel<Ext>,
+    TResult,
+    TArgs,
+    TMetadata,
+    TErrors,
+    TIdentity,
+    ExtPatchesSel<Ext>,
+    ExtRngSel<Ext>
+  > & {
+    readonly __nataliaAuthoringKind: "interface";
+    implement: <TExternalWorkflows extends WorkflowDefinitions = Record<string, never>>(
+      impl: WorkflowImplementInput<
+        TName,
+        TChannels,
+        ExtStreamsSel<Ext>,
+        ExtEventsSel<Ext>,
+        ExtAttributesSel<Ext>,
+        ExtStepsSel<Ext>,
+        ExtRequestsSel<Ext>,
+        ExtQueuesSel<Ext>,
+        ExtChildrenSel<Ext>,
+        TExternalWorkflows,
+        TResult,
+        TArgs,
+        TMetadata,
+        TErrors,
+        ExtPatchesSel<Ext>,
+        ExtRngSel<Ext>
+      >,
+    ) => WorkflowDefinition<
+      TName,
+      TChannels,
+      ExtStreamsSel<Ext>,
+      ExtEventsSel<Ext>,
+      ExtAttributesSel<Ext>,
+      StepsFromInterfaces<ExtStepsSel<Ext>>,
+      RequestsFromInterfaces<ExtRequestsSel<Ext>>,
+      QueuesFromInterfaces<ExtQueuesSel<Ext>>,
+      ExtChildrenSel<Ext>,
+      TExternalWorkflows,
+      TResult,
+      TArgs,
+      TMetadata,
+      TErrors,
+      ExtPatchesSel<Ext>,
+      ExtRngSel<Ext>,
+      TIdentity
+    > & { readonly __nataliaAuthoringKind: "definition" };
+  };
+} {
   if (!config.name || typeof config.name !== "string") {
     throw new Error("Workflow name must be a non-empty string");
   }
@@ -903,6 +983,25 @@ export function defineWorkflowHeader<
   if (config.errors !== undefined) {
     validateErrorDefinitions(config.errors, "errors");
   }
+  if (
+    !config.identity ||
+    typeof config.identity !== "object" ||
+    !("schema" in config.identity) ||
+    !config.identity.schema ||
+    typeof config.identity.schema !== "object" ||
+    !("~standard" in config.identity.schema)
+  ) {
+    throw new Error("identity.schema must be a standard schema");
+  }
+  if (typeof config.identity.deriveIdempotencyKey !== "function") {
+    throw new Error("identity.deriveIdempotencyKey must be a function");
+  }
+  if (
+    config.identity.deriveIdentity !== undefined &&
+    typeof config.identity.deriveIdentity !== "function"
+  ) {
+    throw new Error("identity.deriveIdentity must be a function when provided");
+  }
   const headerAuthoring = {
     ...config,
     __nataliaAuthoringKind: "header" as const,
@@ -924,6 +1023,7 @@ export function defineWorkflowHeader<
         TArgs,
         TMetadata,
         TErrors,
+        TIdentity,
         ExtPatchesSel<Ext>,
         ExtRngSel<Ext>
       >({
@@ -943,6 +1043,7 @@ export function defineWorkflowHeader<
         TArgs,
         TMetadata,
         TErrors,
+        TIdentity,
         ExtPatchesSel<Ext>,
         ExtRngSel<Ext>
       >);
@@ -980,6 +1081,7 @@ export function defineWorkflowInterface<
   TArgs extends JsonSchemaConstraint = StandardSchemaV1<void, void>,
   TMetadata extends JsonObjectSchemaConstraint = JsonObjectSchemaConstraint,
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
+  const TIdentity extends AnyWorkflowIdentity = AnyWorkflowIdentity,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
 >(
@@ -997,6 +1099,7 @@ export function defineWorkflowInterface<
     TArgs,
     TMetadata,
     TErrors,
+    TIdentity,
     TPatches,
     TRng
   >,
@@ -1014,6 +1117,7 @@ export function defineWorkflowInterface<
   TArgs,
   TMetadata,
   TErrors,
+  TIdentity,
   TPatches,
   TRng
 > & {
@@ -1053,7 +1157,8 @@ export function defineWorkflowInterface<
     TMetadata,
     TErrors,
     TPatches,
-    TRng
+    TRng,
+    TIdentity
   > & { readonly __nataliaAuthoringKind: "definition" };
 } {
   if (!config.name || typeof config.name !== "string") {
@@ -1352,7 +1457,8 @@ export function defineWorkflowInterface<
         TMetadata,
         TErrors,
         TPatches,
-        TRng
+        TRng,
+        TIdentity
       > & { readonly __nataliaAuthoringKind: "definition" };
     },
   } as WorkflowInterface<
@@ -1369,6 +1475,7 @@ export function defineWorkflowInterface<
     TArgs,
     TMetadata,
     TErrors,
+    TIdentity,
     TPatches,
     TRng
   > & {
@@ -1408,7 +1515,8 @@ export function defineWorkflowInterface<
       TMetadata,
       TErrors,
       TPatches,
-      TRng
+      TRng,
+      TIdentity
     > & { readonly __nataliaAuthoringKind: "definition" };
   };
 }
@@ -1442,6 +1550,16 @@ export function defineWorkflow<
   TArgs extends JsonSchemaConstraint,
   TMetadata extends JsonObjectSchemaConstraint,
   TResultSchema extends JsonSchemaConstraint,
+  const TIdentity extends {
+    readonly schema: JsonObjectSchemaConstraint;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- widened identity input for contravariant deriveIdempotencyKey
+    readonly deriveIdempotencyKey: (identity: any) => string;
+    readonly deriveIdentity?: (input: {
+      readonly args: StandardSchemaV1.InferOutput<TArgs>;
+      readonly metadata: StandardSchemaV1.InferOutput<TMetadata>;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- widened return for optional deriveIdentity
+    }) => any;
+  },
   TChannels extends ChannelDefinitions = Record<string, never>,
   TStreams extends StreamDefinitions = Record<string, never>,
   TEvents extends EventDefinitions = Record<string, never>,
@@ -1454,13 +1572,12 @@ export function defineWorkflow<
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
-  TIdempotencyKeyFactory extends (args: StandardSchemaV1.InferOutput<TArgs>) => string =
-    (args: StandardSchemaV1.InferOutput<TArgs>) => never,
 >(config: {
   name: TName;
   args: TArgs;
   metadata: TMetadata;
   result: TResultSchema;
+  identity: TIdentity;
   channels?: TChannels;
   streams?: TStreams;
   events?: TEvents;
@@ -1473,7 +1590,6 @@ export function defineWorkflow<
   patches?: TPatches;
   rng?: TRng;
   errors?: TErrors;
-  idempotencyKeyFactory?: TIdempotencyKeyFactory;
   retention?:
     | number
     | {
@@ -1516,7 +1632,7 @@ export function defineWorkflow<
   TErrors,
   TPatches,
   TRng,
-  TIdempotencyKeyFactory
+  TIdentity
 > {
   // Validate name
   if (!config.name || typeof config.name !== "string") {
@@ -1700,6 +1816,27 @@ export function defineWorkflow<
     throw new Error("metadata must be a standard schema");
   }
 
+  // Validate identity block (required)
+  if (
+    !config.identity ||
+    typeof config.identity !== "object" ||
+    !("schema" in config.identity) ||
+    !config.identity.schema ||
+    typeof config.identity.schema !== "object" ||
+    !("~standard" in config.identity.schema)
+  ) {
+    throw new Error("identity.schema must be a standard schema");
+  }
+  if (typeof config.identity.deriveIdempotencyKey !== "function") {
+    throw new Error("identity.deriveIdempotencyKey must be a function");
+  }
+  if (
+    config.identity.deriveIdentity !== undefined &&
+    typeof config.identity.deriveIdentity !== "function"
+  ) {
+    throw new Error("identity.deriveIdentity must be a function when provided");
+  }
+
   // Validate errors if provided
   const errors = config.errors ?? ({} as TErrors);
   if (config.errors !== undefined) {
@@ -1802,6 +1939,7 @@ export function defineWorkflow<
     TMetadata,
     TErrors,
     TPatches,
-    TRng
+    TRng,
+    TIdentity
   >;
 }

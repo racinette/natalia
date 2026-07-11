@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineStep, defineWorkflow, defineWorkflowHeader } from "../workflow";
 import type { ErrorValue, ExplicitError, Failure, FailureInfo } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
+import { amountIdentity, idArgIdentity } from "./test-identity";
 
 type IsAny<T> = 0 extends 1 & T ? true : false;
 
@@ -19,6 +20,7 @@ const childHeader = defineWorkflowHeader({
   args: z.object({ id: z.string() }),
   metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
+  identity: idArgIdentity,
   errors: {
     ChildFailed: z.object({ reason: z.string() }),
   },
@@ -39,6 +41,7 @@ export const errorModelAcceptanceWorkflow = defineWorkflow({
   name: "errorModelAcceptance",
   args: z.object({ amount: z.number() }),
   metadata: z.undefined(),
+  identity: amountIdentity,
   errors: {
     PaymentDeclined: PaymentDeclinedDetails,
     MissingApproval: true,

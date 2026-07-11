@@ -72,6 +72,7 @@ export type {
   AttributeAccessor,
   ChannelHandle,
   ChannelReceiveCall,
+  ChannelReceiveDeadline,
   EventAccessor,
   StreamAccessor,
 } from "./types/context/io-accessors";
@@ -102,4 +103,5 @@ export type {
   QueueAccessor,
   RequestAccessor,
   RequestCallOptions,
+  TopicAccessor,
 } from "./types/context/call-builders";

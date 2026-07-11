@@ -46,6 +46,7 @@ import type {
 } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
 import { session } from "./test-session";
+import { orderIdIdentity, tenantOrderIdentity } from "./test-identity";
 
 // =============================================================================
 // FIXTURES
@@ -56,6 +57,7 @@ const followUpHeader = defineWorkflowHeader({
   args: z.object({ orderId: z.string() }),
   metadata: z.undefined(),
   result: z.object({ ok: z.boolean() }),
+  identity: orderIdIdentity,
   channels: { nudge: z.object({ at: z.string() }) },
   errors: {
     FollowUpFailed: z.object({ reason: z.string() }),
@@ -128,6 +130,7 @@ const auditHeader = defineWorkflowHeader({
   args: z.object({ orderId: z.string() }),
   metadata: z.undefined(),
   result: z.object({ persisted: z.boolean() }),
+  identity: orderIdIdentity,
 });
 
 const opsChildWorkflow = defineWorkflow({
@@ -135,6 +138,7 @@ const opsChildWorkflow = defineWorkflow({
   args: z.object({ orderId: z.string() }),
   metadata: z.undefined(),
   result: z.object({ done: z.boolean() }),
+  identity: orderIdIdentity,
   channels: {
     childCommand: z.object({ source: z.string() }),
   },
@@ -154,6 +158,7 @@ const _orderWorkflow = defineWorkflow({
   args: z.object({ orderId: z.string() }),
   result: z.object({ ok: z.boolean() }),
   metadata: z.object({ tenantId: z.string() }),
+  identity: tenantOrderIdentity,
   channels: {
     orderUpdates: z.object({ orderId: z.string() }),
   },
@@ -930,7 +935,6 @@ declare const clientAcc: WorkflowClientAccessor<typeof _orderWorkflow>;
 
 async function _exerciseClient(): Promise<void> {
   const _handle = await clientAcc.start(session, {
-    idempotencyKey: "wf-1",
     args: { orderId: "o-1" },
     metadata: { tenantId: "acme" },
   });
@@ -939,7 +943,6 @@ async function _exerciseClient(): Promise<void> {
   >;
 
   const _result = await clientAcc.execute(session, {
-    idempotencyKey: "wf-2",
     args: { orderId: "o-2" },
     metadata: { tenantId: "acme" },
   });
@@ -947,7 +950,7 @@ async function _exerciseClient(): Promise<void> {
     typeof _result extends WorkflowResult<{ ok: boolean }, unknown> ? true : false
   >;
 
-  const _synchronousHandle = clientAcc.get("wf-3");
+  const _synchronousHandle = clientAcc.get({ tenantId: "acme", orderId: "o-3" });
   type _GetReturn = Assert<
     IsEqual<
       typeof _synchronousHandle,

@@ -16,6 +16,7 @@ import { createTestWorkflowClient } from "./test-client";
 import { session } from "./test-session";
 import type { WorkflowHeader, WorkflowReference } from "../types";
 import type { Assert, IsEqual } from "./type-assertions";
+import { explicitKeyIdentity } from "./test-identity";
 
 // =============================================================================
 // Phase 1 — start / child / external invocation: explicit args & metadata
@@ -26,6 +27,7 @@ const explicitStartHeader = defineWorkflowHeader({
   args: z.undefined(),
   metadata: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
 });
 
 const explicitStartWf = explicitStartHeader.extend({}).implement({
@@ -40,19 +42,19 @@ async function _explicitStartInvocation(client: typeof _explicitStartClient) {
   await client.workflows.explicitStart.start(session, {
     args: undefined,
     metadata: undefined,
-    idempotencyKey: "k1",
+    identity: { key: "k1" },
   });
 
   // @ts-expect-error args must be explicit undefined when workflow args schema is z.undefined()
   await client.workflows.explicitStart.start(session, {
     metadata: undefined,
-    idempotencyKey: "k2",
+    identity: { key: "k2" },
   });
 
   // @ts-expect-error metadata must be explicit undefined when metadata schema is z.undefined()
   await client.workflows.explicitStart.start(session, {
     args: undefined,
-    idempotencyKey: "k3",
+    identity: { key: "k3" },
   });
 }
 
@@ -61,6 +63,21 @@ const explicitObjectMetaHeader = defineWorkflowHeader({
   args: z.object({ id: z.string() }),
   metadata: z.object({ tenantId: z.string() }),
   result: z.void(),
+  identity: {
+    schema: z.object({ id: z.string(), tenantId: z.string() }),
+    deriveIdentity: ({
+      args,
+      metadata,
+    }: {
+      args: { id: string };
+      metadata: { tenantId: string };
+    }) => ({
+      id: args.id,
+      tenantId: metadata.tenantId,
+    }),
+    deriveIdempotencyKey: (id: { id: string; tenantId: string }) =>
+      `${id.tenantId}:${id.id}`,
+  },
 });
 
 const explicitObjectMetaWf = explicitObjectMetaHeader.extend({}).implement({
@@ -75,13 +92,11 @@ async function _explicitObjectMetaStart(client: typeof _explicitObjectMetaClient
   await client.workflows.explicitObjectMeta.start(session, {
     args: { id: "a1" },
     metadata: { tenantId: "t1" },
-    idempotencyKey: "k4",
   });
 
   // @ts-expect-error metadata is required when workflow declares an object metadata schema
   await client.workflows.explicitObjectMeta.start(session, {
     args: { id: "a2" },
-    idempotencyKey: "k5",
   });
 }
 
@@ -90,6 +105,7 @@ const explicitChildParent = defineWorkflow({
   args: z.undefined(),
   metadata: z.undefined(),
   result: z.void(),
+  identity: explicitKeyIdentity,
   childWorkflows: { child: explicitStartHeader },
   async execute(ctx) {
     await ctx.childWorkflows.child(undefined, {
@@ -112,16 +128,17 @@ async function _explicitExternalStart() {
     args: z.undefined(),
     metadata: z.undefined(),
     result: z.void(),
+    identity: explicitKeyIdentity,
     externalWorkflows: { ext: explicitStartHeader },
     async execute(ctx) {
       await ctx.externalWorkflows.ext.start(undefined, {
         metadata: undefined,
-        idempotencyKey: "ext-1",
+        identity: { key: "ext-1" },
       });
 
       // @ts-expect-error external start metadata must be explicit undefined when schema is z.undefined()
       await ctx.externalWorkflows.ext.start(undefined, {
-        idempotencyKey: "ext-2",
+        identity: { key: "ext-2" },
       });
     },
   });
@@ -213,13 +230,8 @@ defineRequest({
 // Phase 3 — header hierarchy (WorkflowReference ⊂ WorkflowHeader via shared core)
 // =============================================================================
 
-type _WorkflowReferenceIsPublicSlice = Assert<
-  WorkflowReference extends Pick<
-    WorkflowHeader,
-    "name" | "args" | "metadata" | "result" | "channels" | "errors" | "idempotencyKeyFactory"
-  >
-    ? true
-    : false
+type _WorkflowHeaderHasIdentity = Assert<
+  "identity" extends keyof WorkflowHeader ? true : false
 >;
 
 type _ReferenceMissingHeaderOnlyFields = Assert<

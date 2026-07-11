@@ -14,7 +14,11 @@ import type { RequestDefinitions } from "./requests";
 import type { RetentionSetter } from "./policies";
 import type { RngDefinitions } from "./rng";
 import type { StepDefinitions } from "./steps";
-import type { WorkflowHeader, WorkflowDefinitions } from "./workflow-headers";
+import type {
+  AnyWorkflowIdentity,
+  WorkflowHeader,
+  WorkflowDefinitions,
+} from "./workflow-headers";
 
 /**
  * Any workflow definition shape.
@@ -38,8 +42,7 @@ export type AnyWorkflowDefinition = WorkflowDefinition<
   WorkflowErrorDefinitions,
   PatchDefinitions,
   RngDefinitions,
-   
-  ((args: any) => string) | undefined
+  AnyWorkflowIdentity
 >;
 
 // =============================================================================
@@ -73,9 +76,7 @@ export interface WorkflowDefinition<
   TErrors extends WorkflowErrorDefinitions = Record<string, never>,
   TPatches extends PatchDefinitions = Record<string, never>,
   TRng extends RngDefinitions = Record<string, never>,
-  TIdempotencyKeyFactory extends
-    | ((args: StandardSchemaV1.InferOutput<TArgs>) => string)
-    | undefined = undefined,
+  TIdentity extends AnyWorkflowIdentity = AnyWorkflowIdentity,
 > extends WorkflowHeader<
     TName,
     TChannels,
@@ -86,7 +87,7 @@ export interface WorkflowDefinition<
     TMetadata,
     TResultSchema,
     TErrors,
-    TIdempotencyKeyFactory
+    TIdentity
   > {
   /** Step definitions */
   readonly steps?: TSteps;

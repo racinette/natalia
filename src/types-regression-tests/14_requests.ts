@@ -40,6 +40,7 @@ import type {
   InferRequestErrors,
 } from "../types/helpers";
 import type { Assert, IsEqual } from "./type-assertions";
+import { explicitKeyIdentity } from "./test-identity";
 import { session } from "./test-session";
 
 const approvalRequest = defineRequest({
@@ -105,6 +106,7 @@ export const requestsAcceptanceWorkflow = defineWorkflow({
   name: "requestsAcceptance",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   requests: { approval: approvalRequest, ping: pingRequest },
   result: z.object({ ok: z.boolean() }),
   async execute(ctx) {
@@ -334,6 +336,7 @@ const noErrorsWorkflow = defineWorkflow({
   name: "noErrorsRequestWorkflow",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   requests: { ping: noErrorsRequest },
   result: z.void(),
   async execute() {},

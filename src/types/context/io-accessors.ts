@@ -1,5 +1,8 @@
 import type { AtomicResult, BlockingResult } from "./deterministic-handles";
 
+/** Relative timeout (seconds) or absolute deadline for channel receive. */
+export type ChannelReceiveDeadline = number | Date;
+
 // =============================================================================
 // CHANNEL HANDLE, STREAM ACCESSOR, EVENT ACCESSOR (WORKFLOW INTERNAL)
 // =============================================================================
@@ -40,23 +43,24 @@ export interface ChannelHandle<T> extends AsyncIterable<T> {
   receive(): ChannelReceiveCall<T>;
 
   /**
-   * Receive with timeout (in seconds).
-   * Returns `undefined` when the timeout expires before a message arrives.
+   * Receive with a relative timeout (seconds) or absolute deadline.
+   * Returns `undefined` when the deadline passes before a message arrives.
    *
    * Returns a `ChannelReceiveCall<T | undefined>` that can be directly awaited
    * or passed into `ctx.select()` / `ctx.listen()`.
    */
-  receive(timeoutSeconds: number): ChannelReceiveCall<T | undefined>;
+  receive(timeoutOrDeadline: ChannelReceiveDeadline): ChannelReceiveCall<T | undefined>;
 
   /**
-   * Receive with timeout (in seconds) and an explicit timeout default.
-   * Returns `defaultValue` when the timeout expires before a message arrives.
+   * Receive with a relative timeout (seconds) or absolute deadline and an
+   * explicit timeout default.
+   * Returns `defaultValue` when the deadline passes before a message arrives.
    *
    * Returns a `ChannelReceiveCall<T | TDefault>` that can be directly awaited
    * or passed into `ctx.select()` / `ctx.listen()`.
    */
   receive<TDefault>(
-    timeoutSeconds: number,
+    timeoutOrDeadline: ChannelReceiveDeadline,
     defaultValue: TDefault,
   ): ChannelReceiveCall<T | TDefault>;
 

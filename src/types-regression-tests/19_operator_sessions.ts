@@ -22,6 +22,7 @@ import type { MockSessionRaw } from "./mock-storage-driver";
 import { createTestWorkflowClient } from "./test-client";
 import type { Assert, IsEqual } from "./type-assertions";
 import { session } from "./test-session";
+import { explicitKeyIdentity } from "./test-identity";
 
 // =============================================================================
 // CORE SESSION TYPES
@@ -97,6 +98,7 @@ const sessionWorkflow = defineWorkflow({
   name: "operatorSessionsRegressionWorkflow",
   args: z.undefined(),
   metadata: z.undefined(),
+  identity: explicitKeyIdentity,
   streams: { log: z.object({ line: z.string() }) },
   events: { ready: true },
   result: z.object({ ok: z.boolean() }),
@@ -138,7 +140,7 @@ async function clientSessionEntry(): Promise<void> {
 
     const handle = await client.workflows.operatorSessionsRegressionWorkflow.start(
       session,
-      { args: undefined, metadata: undefined, idempotencyKey: "sessions-regression-1" },
+      { args: undefined, metadata: undefined, identity: { key: "sessions-regression-1" } },
     );
 
     await handle.fetchRow(session, { fields: { status: true } });
@@ -165,9 +167,9 @@ async function clientSessionEntry(): Promise<void> {
 }
 
 async function watchIoWithoutSession(): Promise<void> {
-  const handle = client.workflows.operatorSessionsRegressionWorkflow.get(
-    "sessions-regression-1",
-  );
+  const handle = client.workflows.operatorSessionsRegressionWorkflow.get({
+    key: "sessions-regression-1",
+  });
 
   await handle.events.ready.wait({ signal: AbortSignal.timeout(1_000) });
   await handle.streams.log.read(0, { signal: AbortSignal.timeout(1_000) });
